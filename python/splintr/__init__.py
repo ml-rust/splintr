@@ -92,4 +92,4 @@ __all__ = [
     "O200K_AGENT_TOKENS",
     "LLAMA3_AGENT_TOKENS",
 ]
-__version__ = "0.3.0"
+__version__ = "0.4.0"

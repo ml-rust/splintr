@@ -59,7 +59,7 @@ print(batch_tokens)  # [[9906, 11, 1917, 0], [4438, 527, 499, 30], ...]
 
 ```toml
 [dependencies]
-splintr = "0.3.0"
+splintr = "0.4.0"
 ```
 
 ```rust

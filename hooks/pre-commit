@@ -49,6 +49,19 @@ else
     echo -e "${GREEN}OK${NC}"
 fi
 
+# 4. Update uv.lock if pyproject.toml changed
+if git diff --cached --name-only | grep -q "pyproject.toml"; then
+    echo -n "Updating uv.lock... "
+    if ! uv lock > /dev/null 2>&1; then
+        echo -e "${RED}FAILED${NC}"
+        echo -e "${YELLOW}Run:${NC} uv lock"
+        FAILED=1
+    else
+        git add uv.lock
+        echo -e "${GREEN}OK${NC}"
+    fi
+fi
+
 echo ""
 
 if [ $FAILED -ne 0 ]; then
