@@ -104,9 +104,10 @@ tokenizer = Tokenizer(
 
 **Encoding:**
 
-- `encode(text: str) -> list[int]`: Encode text to token IDs, treating special tokens as regular text
+- `encode(text: str) -> list[int]`: Encode text to token IDs (sequential, optimal for most use cases)
 - `encode_with_special(text: str) -> list[int]`: Encode text, recognizing special tokens in the input
-- `encode_batch(texts: list[str]) -> list[list[int]]`: Encode multiple texts in parallel
+- `encode_batch(texts: list[str]) -> list[list[int]]`: Encode multiple texts in parallel (uses Rayon)
+- `encode_rayon(text: str) -> list[int]`: Encode using Rayon parallelization (only beneficial for texts >1MB)
 
 **Decoding:**
 
@@ -159,7 +160,22 @@ BPE tokens don't always align with UTF-8 character boundaries. For example, a mu
 
 ### Rust API
 
-The Rust API provides similar functionality with strongly-typed interfaces. See the [API documentation](https://docs.rs/splintr) for detailed information.
+The Rust API provides similar functionality with strongly-typed interfaces:
+
+**Encoding:**
+
+- `encode(&self, text: &str) -> Vec<u32>`: Sequential encoding (optimal for texts <1MB)
+- `encode_with_special(&self, text: &str) -> Vec<u32>`: Encode with special token recognition
+- `encode_batch(&self, texts: &[String]) -> Vec<Vec<u32>>`: Parallel encoding across texts
+- `encode_rayon(&self, text: &str) -> Vec<u32>`: Parallel encoding within text (for texts >1MB)
+
+**Decoding:**
+
+- `decode(&self, tokens: &[u32]) -> Result<String, TokenizerError>`: Decode to UTF-8 string
+- `decode_bytes(&self, tokens: &[u32]) -> Vec<u8>`: Decode to raw bytes
+- `decode_lossy(&self, tokens: &[u32]) -> String`: Decode with replacement for invalid UTF-8
+
+See the [API documentation](https://docs.rs/splintr) for detailed information.
 
 ## Streaming Decoder
 
@@ -200,36 +216,51 @@ This approach ensures that:
 
 ## Performance
 
-Benchmarks performed on Linux (6.16.8-arch3-1) with 24 CPU cores, comparing splintr to tiktoken (the reference Python implementation).
+Benchmarks performed on Linux (6.16.8-arch3-1) with 24 CPU cores, comparing splintr against tiktoken (reference Python implementation), Hugging Face tokenizers, and TokenDagger.
 
 ### Single Text Encoding
 
-Performance on various text types:
+Splintr achieves **3-4x faster** single-text encoding compared to tiktoken across various text sizes:
 
-| Content Type     | Size          | splintr (ms) | tiktoken (ms) | Speedup  |
-| ---------------- | ------------- | ------------ | ------------- | -------- |
-| Long English     | 450,000 chars | 7.94         | 19.91         | **2.5x** |
-| Python Code      | 59,200 chars  | 1.67         | 5.90          | **3.5x** |
-| JSON             | 29,000 chars  | 1.20         | 2.76          | **2.3x** |
-| Numbers          | 55,000 chars  | 2.27         | 6.09          | **2.7x** |
-| Whitespace-heavy | 50,000 chars  | 1.36         | 4.91          | **3.6x** |
-| Chinese          | 11,500 chars  | 1.09         | 1.45          | **1.3x** |
+![Single Text Encoding Comparison](images/benchmark_single.png)
+
+**Latency by text type:**
+
+![Latency Comparison](images/benchmark_single_latency.png)
+
+Splintr consistently maintains lower latency across different content types (Python code, JSON, English prose, Chinese text), making it ideal for interactive applications and real-time processing.
 
 ### Batch Encoding
 
-Batch operations show significant speedup through parallelism:
+For batch operations, splintr achieves **10-12x speedup** over tiktoken by parallelizing across texts:
 
-| Configuration      | splintr parallel (ms) | tiktoken (ms) | Speedup vs tiktoken |
-| ------------------ | --------------------- | ------------- | ------------------- |
-| 10 × 1,000 chars   | 0.25                  | 0.48          | **1.9x**            |
-| 100 × 1,000 chars  | 1.11                  | 4.66          | **4.2x**            |
-| 1,000 × 100 chars  | 1.42                  | 6.95          | **4.9x**            |
-| 100 × 10,000 chars | 8.24                  | 45.72         | **5.5x**            |
+![Batch Encoding Throughput](images/benchmark_batch.png)
 
-**Parallel speedup within splintr:**
+| Configuration    | Splintr      | Tiktoken   | Speedup  |
+| ---------------- | ------------ | ---------- | -------- |
+| 1,000 × 100 chars | 111 MB/s    | 9 MB/s     | **12.3x** |
+| 100 × 1,000 chars | 89 MB/s     | 8 MB/s     | **11.1x** |
+| 10 × 10,000 chars | 72 MB/s     | 7 MB/s     | **10.3x** |
 
-- 100 × 1,000 chars: 8.6x faster (parallel vs sequential)
-- 1,000 × 100 chars: 16.8x faster (parallel vs sequential)
+![Batch Speedup vs Tiktoken](images/benchmark_batch_speedup.png)
+
+The batch encoding speedup scales effectively across different batch configurations, with higher speedups on larger batches where parallelization overhead is amortized.
+
+### Design Decision: Sequential by Default
+
+Splintr uses **sequential encoding for single texts** and **parallel encoding across batches**. This design choice is based on empirical benchmarking:
+
+![Sequential vs Rayon Internal Parallelization](images/benchmark_splintr.png)
+
+**Key findings:**
+
+- **Sequential is faster** for texts up to ~1MB (typical LLM use case)
+- Rayon's parallelization overhead only pays off at ~1MB+ text sizes
+- Most real-world inputs (prompts, documents, code) are well under 1MB
+- `encode()` uses sequential processing for optimal single-text performance
+- `encode_batch()` parallelizes across multiple texts for maximum throughput
+
+This architecture ensures splintr is optimized for the most common tokenization patterns in LLM applications while still providing excellent batch performance for data processing pipelines.
 
 ### Running Benchmarks
 
@@ -261,12 +292,14 @@ The benchmark suite tests:
 
 You can customize the benchmark by modifying `benchmark.py` or adding your own test data in the `data/` directory.
 
-## Supported Models
+## Supported Vocabularies
 
-| Model         | Use Case             | Vocabulary Size | Special Tokens | Import Constant       |
+| Vocabulary    | Used By              | Vocabulary Size | Special Tokens | Import Constant       |
 | ------------- | -------------------- | --------------- | -------------- | --------------------- |
 | `cl100k_base` | GPT-4, GPT-3.5-turbo | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN` |
 | `o200k_base`  | GPT-4o               | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`  |
+
+More vocabularies will be added in future releases.
 
 **OpenAI standard tokens:**
 
@@ -355,6 +388,19 @@ The pre-commit hook automatically runs formatting, clippy, and tests before each
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Citation
+
+If you use Splintr in your research, please cite:
+
+```bibtex
+@software{splintr,
+  author = {Farhan Syah},
+  title = {Splintr: High-Performance BPE Tokenizer},
+  year = {2025},
+  url = {https://github.com/farhan-syah/splintr}
+}
+```
 
 ## Acknowledgments
 

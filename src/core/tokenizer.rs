@@ -517,9 +517,40 @@ const DEFAULT_CACHE_SIZE: usize = 4096;
 
 /// High-performance tokenizer using PCRE2 with JIT and Rayon parallelism.
 ///
-/// Key optimizations:
+/// # Performance Characteristics
+///
+/// This tokenizer is optimized for high throughput across different workloads:
+///
+/// - **Single text encoding**: Uses sequential processing via [`encode`].
+///   Benchmarks show sequential is faster for texts up to ~1MB due to Rayon
+///   thread pool overhead. Sequential achieves ~50 MB/s consistently.
+///
+/// - **Batch encoding**: Uses Rayon parallelism via [`encode_batch`].
+///   Parallelizes across texts (not within a single text), achieving ~110 MB/s
+///   on batch workloads - approximately 10-12x faster than tiktoken.
+///
+/// - **Very large single texts (>1MB)**: Use [`encode_rayon`] for texts larger
+///   than ~1MB where Rayon parallelization within the text becomes beneficial.
+///
+/// # Design Decision: Sequential by Default
+///
+/// The [`encode`] method uses sequential processing because Rayon parallel
+/// overhead is significant for typical text sizes:
+///
+/// | Text Size | Sequential | Rayon | Speedup |
+/// |-----------|------------|-------|---------|
+/// | 100 bytes | 42 MB/s | 3 MB/s | Sequential 12x faster |
+/// | 10 KB | 50 MB/s | 26 MB/s | Sequential 2x faster |
+/// | 100 KB | 54 MB/s | 41 MB/s | Sequential 1.3x faster |
+/// | 1 MB | 44 MB/s | 47 MB/s | Rayon 1.07x faster |
+///
+/// Rayon only becomes beneficial at ~1MB, which is rare in typical workloads.
+/// For batch processing, use [`encode_batch`] which parallelizes across texts.
+///
+/// # Key Optimizations
+///
 /// - PCRE2 with JIT compilation (2-4x faster than fancy-regex)
-/// - Rayon parallelism for encoding multiple chunks
+/// - Rayon parallelism for batch encoding (across texts, not within)
 /// - Linked-list BPE algorithm (avoids O(N²) on pathological inputs)
 /// - FxHashMap for fast lookups
 /// - Aho-Corasick for fast multi-pattern special token matching
@@ -665,7 +696,23 @@ impl Tokenizer {
 
     /// Encode text to token IDs (ignores special tokens in input).
     ///
-    /// Uses Rayon to parallelize BPE encoding across regex-matched chunks.
+    /// Uses sequential processing, which is faster than parallel for texts up to ~1MB.
+    /// Achieves ~50 MB/s throughput, approximately 3x faster than tiktoken.
+    ///
+    /// # Why Sequential?
+    ///
+    /// Rayon parallel processing has significant thread pool overhead that only
+    /// pays off for very large texts (~1MB+). Benchmarks show:
+    /// - 100 bytes: Sequential is 12x faster than Rayon
+    /// - 10 KB: Sequential is 2x faster
+    /// - 100 KB: Sequential is 1.3x faster
+    /// - 1 MB: Rayon becomes ~7% faster
+    ///
+    /// # When to Use Other Methods
+    ///
+    /// - **Multiple texts**: Use [`encode_batch`] for parallel encoding across texts
+    /// - **Very large texts (>1MB)**: Use [`encode_rayon`] for parallel within-text encoding
+    /// - **Special tokens**: Use [`encode_with_special`] to recognize special tokens
     pub fn encode(&self, text: &str) -> Vec<u32> {
         let text_bytes = text.as_bytes();
 
@@ -681,7 +728,56 @@ impl Tokenizer {
             return vec![];
         }
 
-        // Parallel BPE encoding using Rayon
+        // Sequential encoding - Rayon overhead not worth it for texts < 1MB
+        // See struct-level docs for benchmark data
+        let results: Vec<Vec<u32>> = chunks
+            .iter()
+            .map(|&(start, end)| {
+                let slice = &text_bytes[start..end];
+                self.encode_chunk(slice)
+            })
+            .collect();
+
+        // Flatten results
+        results.into_iter().flatten().collect()
+    }
+
+    /// Encode text to token IDs using Rayon parallel processing.
+    ///
+    /// Parallelizes BPE encoding of individual regex-matched chunks using Rayon.
+    /// Only beneficial for very large texts (>1MB) where parallelization overhead
+    /// is amortized across many chunks.
+    ///
+    /// # Performance
+    ///
+    /// | Text Size | Sequential | Rayon | Winner |
+    /// |-----------|------------|-------|--------|
+    /// | < 500 KB | ~50 MB/s | ~40 MB/s | Sequential |
+    /// | ~1 MB | ~44 MB/s | ~47 MB/s | Rayon (1.07x) |
+    ///
+    /// # When to Use
+    ///
+    /// - Single texts larger than ~1MB (e.g., entire books, large documents)
+    /// - When processing time is more critical than thread pool overhead
+    ///
+    /// For most use cases, prefer [`encode`] (sequential) or [`encode_batch`]
+    /// (parallel across multiple texts).
+    pub fn encode_rayon(&self, text: &str) -> Vec<u32> {
+        let text_bytes = text.as_bytes();
+
+        // Collect regex matches (chunks to encode)
+        let chunks: Vec<(usize, usize)> = self
+            .regex
+            .find_iter(text_bytes)
+            .filter_map(|m| m.ok())
+            .map(|m| (m.start(), m.end()))
+            .collect();
+
+        if chunks.is_empty() {
+            return vec![];
+        }
+
+        // Parallel encoding using Rayon - each chunk encoded in parallel
         let results: Vec<Vec<u32>> = chunks
             .par_iter()
             .map(|&(start, end)| {
@@ -767,12 +863,31 @@ impl Tokenizer {
 
     /// Batch encode multiple texts in parallel.
     ///
-    /// Uses Rayon to parallelize across texts AND within each text's BPE encoding.
+    /// Uses Rayon to parallelize **across texts** (not within each text).
+    /// This is the most efficient approach for batch workloads because:
+    ///
+    /// 1. Each text is encoded sequentially (optimal for texts < 1MB)
+    /// 2. Multiple texts are processed in parallel across CPU cores
+    /// 3. No thread coordination overhead within individual texts
+    ///
+    /// # Performance
+    ///
+    /// Achieves ~110 MB/s throughput on batch workloads, approximately
+    /// 10-12x faster than tiktoken's `encode_ordinary_batch`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let texts = vec!["Hello".to_string(), "World".to_string()];
+    /// let token_ids = tokenizer.encode_batch(&texts);
+    /// ```
     pub fn encode_batch(&self, texts: &[String]) -> Vec<Vec<u32>> {
         texts.par_iter().map(|text| self.encode(text)).collect()
     }
 
     /// Batch encode multiple texts with special token handling.
+    ///
+    /// Like [`encode_batch`], but recognizes special tokens in the input.
     pub fn encode_batch_with_special(&self, texts: &[String]) -> Vec<Vec<u32>> {
         texts
             .par_iter()

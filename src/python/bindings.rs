@@ -478,6 +478,7 @@ impl PyTokenizer {
     /// Encode text to token IDs.
     ///
     /// Special tokens in the input are treated as regular text.
+    /// This method uses sequential encoding which is optimal for most use cases.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -486,6 +487,25 @@ impl PyTokenizer {
     ///     List of token IDs
     fn encode(&self, text: &str) -> Vec<u32> {
         self.inner.encode(text)
+    }
+
+    /// Encode text to token IDs using Rayon parallel processing.
+    ///
+    /// This method parallelizes the BPE encoding of individual chunks using Rayon.
+    /// It has higher overhead than `encode()` due to thread pool coordination,
+    /// but can be faster for very large texts (typically >1MB) where the
+    /// parallelization benefit outweighs the overhead.
+    ///
+    /// For most use cases, prefer `encode()` (sequential) or `encode_batch()`
+    /// (parallel across multiple texts).
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_rayon(&self, text: &str) -> Vec<u32> {
+        self.inner.encode_rayon(text)
     }
 
     /// Encode text with special token handling.
