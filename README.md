@@ -1,25 +1,30 @@
-# Splintr
+![Splintr](images/splntr.png)
 
-[![Crates.io](https://img.shields.io/crates/v/splintr.svg)](https://crates.io/crates/splintr)
-[![PyPI](https://img.shields.io/pypi/v/splintr-rs.svg)](https://pypi.org/project/splintr-rs/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Crates.io](https://img.shields.io/crates/v/splintr.svg)](https://crates.io/crates/splintr) [![PyPI](https://img.shields.io/pypi/v/splintr-rs.svg)](https://pypi.org/project/splintr-rs/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance BPE tokenizer implemented in Rust with Python bindings, designed for efficient tokenization of text in machine learning applications, particularly for large language models.
+**A high-performance BPE tokenizer built in Rust with Python bindings, focused on speed, safety, and resource optimization.**
 
-## Features
+## The Problem
 
-Splintr implements several optimizations that make tokenization faster and more efficient:
+Tokenization is everywhere in modern AI. Whether you're building LLM applications, training models, or processing data pipelines, you're tokenizing text constantly. But existing tokenizers have a problem: they're slow.
 
-- **PCRE2 with JIT compilation**: Uses PCRE2's just-in-time compilation for regex matching, providing 2-4x speedup over fancy-regex on pattern matching operations
-- **Rayon parallelism**: Leverages multiple CPU cores for encoding batches of text and individual regex chunks within each text
-- **Linked-list BPE algorithm**: Implements BPE using a linked-list structure that avoids O(N²) complexity on pathological inputs with many repetitive patterns
-- **FxHashMap**: Uses rustc's FxHasher for faster lookups compared to the default SipHash, trading cryptographic security for speed in non-adversarial contexts
-- **Aho-Corasick for special tokens**: Employs the Aho-Corasick algorithm for fast multi-pattern matching of special tokens, avoiding regex alternation overhead
-- **LRU cache**: Caches frequently encoded text chunks to avoid redundant BPE encoding operations
-- **UTF-8 streaming decoder**: Safely handles token-by-token decoding for LLM output, buffering incomplete UTF-8 sequences across token boundaries
-- **Extended agent tokens**: 54 special tokens for chat models, Chain-of-Thought reasoning, ReAct agents, tool calling, RAG citations, and multimodal applications (see [Special Tokens](docs/special_tokens.md))
+When you need to tokenize batches of prompts, documents, or training data, you're stuck waiting. Python-based tokenizers can't fully leverage modern multi-core CPUs. You need something faster.
 
-## Installation
+## The Solution
+
+Splintr brings Rust performance to Python. Built from the ground up for speed and efficiency:
+
+![Batch Encoding Throughput](images/benchmark_batch.png)
+
+| Configuration | Splintr      | Tiktoken | HuggingFace | TokenDagger |
+| ------------- | ------------ | -------- | ----------- | ----------- |
+| 1,000 texts   | **111 MB/s** | 9 MB/s   | 28 MB/s     | 9 MB/s      |
+| 500 texts     | **107 MB/s** | 10 MB/s  | 27 MB/s     | 8 MB/s      |
+| 100 texts     | **69 MB/s**  | 7 MB/s   | 20 MB/s     | 6 MB/s      |
+
+**10-12x faster than tiktoken. 4x faster than HuggingFace. Built in Rust, accessible from Python.**
+
+## Quick Start
 
 ### Python
 
@@ -27,21 +32,10 @@ Splintr implements several optimizations that make tokenization faster and more 
 pip install splintr-rs
 ```
 
-### Rust
-
-```toml
-[dependencies]
-splintr = "0.3.0"
-```
-
-## Quick Start
-
-### Python
-
 ```python
 from splintr import Tokenizer
 
-# Load a pretrained tokenizer
+# Load a pretrained vocabulary
 tokenizer = Tokenizer.from_pretrained("cl100k_base")
 
 # Encode text to token IDs
@@ -52,13 +46,18 @@ print(tokens)  # [9906, 11, 1917, 0]
 text = tokenizer.decode(tokens)
 print(text)  # "Hello, world!"
 
-# Batch encode multiple texts in parallel
+# Batch encode multiple texts in parallel (this is where it shines)
 texts = ["Hello, world!", "How are you?", "Machine learning is fun!"]
 batch_tokens = tokenizer.encode_batch(texts)
 print(batch_tokens)  # [[9906, 11, 1917, 0], [4438, 527, 499, 30], ...]
 ```
 
 ### Rust
+
+```toml
+[dependencies]
+splintr = "0.3.0"
+```
 
 ```rust
 use splintr::{Tokenizer, CL100K_BASE_PATTERN};
@@ -73,14 +72,165 @@ let tokenizer = Tokenizer::new(encoder, special_tokens, CL100K_BASE_PATTERN)?;
 let tokens = tokenizer.encode("Hello, world!");
 println!("{:?}", tokens);
 
-// Decode tokens
-let text = tokenizer.decode(&tokens)?;
-println!("{}", text);
-
 // Batch encode
 let texts = vec!["Hello".to_string(), "World".to_string()];
 let batch_tokens = tokenizer.encode_batch(&texts);
 ```
+
+## Key Features
+
+**Performance where it matters:**
+
+- **12x faster batch encoding** - Parallel processing across multiple texts using Rayon
+- **3-4x faster single text encoding** - Optimized sequential algorithm for typical use cases
+- **Smart parallelization** - Sequential for small texts (<1MB), parallel for large datasets
+- **LRU caching** - Avoid redundant encoding of frequently seen text chunks
+
+**Built for production:**
+
+- **Compatible vocabularies** - Supports cl100k_base and o200k_base (OpenAI models), with a familiar API
+- **Streaming decoder** - Real-time LLM output display with proper UTF-8 handling
+- **54 agent tokens** - Built-in support for chat, CoT reasoning, ReAct agents, tool calling, RAG citations
+- **Battle-tested algorithms** - PCRE2 with JIT, Aho-Corasick for special tokens, linked-list BPE
+
+**Cross-platform:**
+
+- Python bindings via PyO3 (Linux, macOS, Windows)
+- Native Rust library for maximum performance
+
+## Performance Deep Dive
+
+All benchmarks performed on Linux (6.16.8-arch3-1) with 24 CPU cores, comparing against tiktoken (reference Python implementation), Hugging Face tokenizers, and TokenDagger.
+
+### Single Text Encoding
+
+For single texts, splintr achieves **3-4x faster** encoding across various text sizes:
+
+![Single Text Encoding Comparison](images/benchmark_single.png)
+
+**Latency by content type:**
+
+![Latency Comparison](images/benchmark_single_latency.png)
+
+Consistent low latency across Python code, JSON, English prose, and Chinese text makes splintr ideal for interactive applications and real-time processing.
+
+### Batch Encoding
+
+The real magic happens with batches. Splintr parallelizes across texts to achieve **10-12x speedup**:
+
+![Batch Speedup vs Tiktoken](images/benchmark_batch_speedup.png)
+
+Higher speedups on larger batches where parallelization overhead is amortized. Perfect for:
+
+- Training data preprocessing
+- Bulk document tokenization
+- API batch processing
+- Data pipeline throughput
+
+### Design Decision: Sequential by Default
+
+Splintr uses **sequential encoding for single texts** and **parallel encoding across batches** based on empirical benchmarking:
+
+![Sequential vs Rayon Internal Parallelization](images/benchmark_splintr.png)
+
+**Key findings:**
+
+- Sequential is faster for texts up to ~1MB (typical LLM prompts and documents)
+- Rayon's parallelization overhead only pays off at ~1MB+ text sizes
+- Most real-world inputs are well under 1MB
+- `encode()` uses sequential processing for optimal single-text performance
+- `encode_batch()` parallelizes across multiple texts for maximum throughput
+- `encode_rayon()` available for the rare cases where you have >1MB single texts
+
+This architecture ensures splintr is optimized for the most common tokenization patterns in LLM applications.
+
+### Running Benchmarks Yourself
+
+```bash
+# Clone and install
+git clone https://github.com/farhan-syah/splintr.git
+cd splintr
+pip install -e .
+pip install tiktoken
+
+# Run the benchmark suite
+cd benchmarks
+python benchmark.py --model cl100k_base --output results/my_benchmark.json
+
+# View results
+cat results/my_benchmark.md
+```
+
+The benchmark suite tests single text encoding, batch encoding, streaming decoder performance, and special token handling across various content types.
+
+## Streaming Decoder
+
+The streaming decoder is essential for real-time LLM applications where tokens arrive one at a time:
+
+```python
+# Create a streaming decoder
+decoder = tokenizer.streaming_decoder()
+
+# Process tokens one at a time (typical LLM streaming scenario)
+for token_id in token_stream:
+    # Returns text only when complete UTF-8 characters are available
+    if text := decoder.add_token(token_id):
+        print(text, end="", flush=True)
+
+# Flush any remaining buffered bytes at the end
+print(decoder.flush())
+```
+
+### Why You Need This
+
+BPE tokens don't align with UTF-8 character boundaries. A multi-byte Unicode character like "世" (3 bytes: `0xE4 0xB8 0x96`) might split across tokens. The streaming decoder:
+
+1. Buffers incomplete byte sequences across token boundaries
+2. Only outputs text when complete UTF-8 characters are available
+3. Prevents display corruption in streaming LLM output
+4. Handles edge cases automatically
+
+### Real-World Example
+
+```python
+import openai
+from splintr import Tokenizer
+
+tokenizer = Tokenizer.from_pretrained("cl100k_base")
+decoder = tokenizer.streaming_decoder()
+
+# Stream tokens from OpenAI API
+response = openai.ChatCompletion.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "Tell me a story"}],
+    stream=True
+)
+
+for chunk in response:
+    if chunk.choices[0].delta.content:
+        # Process each token as it arrives
+        token_ids = get_token_ids(chunk)  # pseudo-code
+        for token_id in token_ids:
+            if text := decoder.add_token(token_id):
+                print(text, end="", flush=True)
+
+# Don't forget to flush at the end
+print(decoder.flush())
+```
+
+### API Methods
+
+**Core operations:**
+
+- `add_token(token_id: int) -> str | None`: Add a token, return complete characters or None if buffering
+- `add_tokens(token_ids: list[int]) -> str | None`: Add multiple tokens at once
+- `flush() -> str`: Flush buffered bytes (incomplete sequences become �)
+- `reset()`: Clear the buffer and start fresh
+
+**Properties:**
+
+- `has_pending: bool`: Whether there are buffered bytes waiting
+- `pending_bytes: int`: Number of bytes currently buffered
 
 ## API Reference
 
@@ -88,13 +238,13 @@ let batch_tokens = tokenizer.encode_batch(&texts);
 
 #### Tokenizer
 
-**Loading a tokenizer:**
+**Loading:**
 
 ```python
-# Load a pretrained model (includes vocabulary and special tokens)
+# Load pretrained model (includes vocabulary and special tokens)
 tokenizer = Tokenizer.from_pretrained("cl100k_base")  # or "o200k_base"
 
-# Load from a custom vocabulary file
+# Load from custom vocabulary file
 tokenizer = Tokenizer(
     vocab_path="path/to/vocab.tiktoken",
     pattern=CL100K_BASE_PATTERN,
@@ -124,40 +274,6 @@ tokenizer = Tokenizer(
 
 - `clear_cache()`: Clear the encoding cache
 
-#### StreamingDecoder
-
-The streaming decoder is essential for real-time LLM applications where you receive tokens one at a time and need to display text incrementally:
-
-```python
-# Create a streaming decoder
-decoder = tokenizer.streaming_decoder()
-
-# Process tokens one at a time (typical LLM streaming scenario)
-for token_id in token_stream:
-    # Returns text only when complete UTF-8 characters are available
-    if text := decoder.add_token(token_id):
-        print(text, end="", flush=True)
-
-# Flush any remaining buffered bytes at the end
-print(decoder.flush())
-```
-
-**Why use streaming decoder?**
-
-BPE tokens don't always align with UTF-8 character boundaries. For example, a multi-byte Unicode character like "世" (3 bytes: `0xE4 0xB8 0x96`) might be split across multiple tokens. The streaming decoder buffers incomplete byte sequences and only outputs text when complete characters are available, preventing display corruption.
-
-**Methods:**
-
-- `add_token(token_id: int) -> str | None`: Add a token and return complete characters, or None if still buffering
-- `add_tokens(token_ids: list[int]) -> str | None`: Add multiple tokens at once
-- `flush() -> str`: Flush remaining buffered bytes (incomplete sequences become �)
-- `reset()`: Clear the buffer and start fresh
-
-**Properties:**
-
-- `has_pending: bool`: Whether there are buffered bytes waiting for completion
-- `pending_bytes: int`: Number of bytes currently buffered
-
 ### Rust API
 
 The Rust API provides similar functionality with strongly-typed interfaces:
@@ -175,122 +291,7 @@ The Rust API provides similar functionality with strongly-typed interfaces:
 - `decode_bytes(&self, tokens: &[u32]) -> Vec<u8>`: Decode to raw bytes
 - `decode_lossy(&self, tokens: &[u32]) -> String`: Decode with replacement for invalid UTF-8
 
-See the [API documentation](https://docs.rs/splintr) for detailed information.
-
-## Streaming Decoder
-
-The streaming decoder is particularly important when working with LLM APIs that stream tokens:
-
-```python
-import openai
-from splintr import Tokenizer
-
-tokenizer = Tokenizer.from_pretrained("cl100k_base")
-decoder = tokenizer.streaming_decoder()
-
-# Example with OpenAI streaming API
-response = openai.ChatCompletion.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Tell me a story"}],
-    stream=True
-)
-
-for chunk in response:
-    if chunk.choices[0].delta.content:
-        # Get token IDs from the API (pseudo-code, actual API may vary)
-        token_ids = get_token_ids(chunk)
-
-        for token_id in token_ids:
-            if text := decoder.add_token(token_id):
-                print(text, end="", flush=True)
-
-# Don't forget to flush at the end
-print(decoder.flush())
-```
-
-This approach ensures that:
-
-1. Users see text as soon as complete characters are available
-2. Multi-byte Unicode characters display correctly
-3. No corruption occurs at token boundaries
-
-## Performance
-
-Benchmarks performed on Linux (6.16.8-arch3-1) with 24 CPU cores, comparing splintr against tiktoken (reference Python implementation), Hugging Face tokenizers, and TokenDagger.
-
-### Single Text Encoding
-
-Splintr achieves **3-4x faster** single-text encoding compared to tiktoken across various text sizes:
-
-![Single Text Encoding Comparison](images/benchmark_single.png)
-
-**Latency by text type:**
-
-![Latency Comparison](images/benchmark_single_latency.png)
-
-Splintr consistently maintains lower latency across different content types (Python code, JSON, English prose, Chinese text), making it ideal for interactive applications and real-time processing.
-
-### Batch Encoding
-
-For batch operations, splintr achieves **10-12x speedup** over tiktoken by parallelizing across texts:
-
-![Batch Encoding Throughput](images/benchmark_batch.png)
-
-| Configuration    | Splintr      | Tiktoken   | Speedup  |
-| ---------------- | ------------ | ---------- | -------- |
-| 1,000 × 100 chars | 111 MB/s    | 9 MB/s     | **12.3x** |
-| 100 × 1,000 chars | 89 MB/s     | 8 MB/s     | **11.1x** |
-| 10 × 10,000 chars | 72 MB/s     | 7 MB/s     | **10.3x** |
-
-![Batch Speedup vs Tiktoken](images/benchmark_batch_speedup.png)
-
-The batch encoding speedup scales effectively across different batch configurations, with higher speedups on larger batches where parallelization overhead is amortized.
-
-### Design Decision: Sequential by Default
-
-Splintr uses **sequential encoding for single texts** and **parallel encoding across batches**. This design choice is based on empirical benchmarking:
-
-![Sequential vs Rayon Internal Parallelization](images/benchmark_splintr.png)
-
-**Key findings:**
-
-- **Sequential is faster** for texts up to ~1MB (typical LLM use case)
-- Rayon's parallelization overhead only pays off at ~1MB+ text sizes
-- Most real-world inputs (prompts, documents, code) are well under 1MB
-- `encode()` uses sequential processing for optimal single-text performance
-- `encode_batch()` parallelizes across multiple texts for maximum throughput
-
-This architecture ensures splintr is optimized for the most common tokenization patterns in LLM applications while still providing excellent batch performance for data processing pipelines.
-
-### Running Benchmarks
-
-To reproduce these benchmarks or test on your own hardware:
-
-```bash
-# Clone the repository
-git clone https://github.com/farhan/splintr.git
-cd splintr
-
-# Install dependencies (requires Python 3.8+)
-pip install -e .
-pip install tiktoken
-
-# Run the benchmark suite
-cd benchmarks
-python benchmark.py --model cl100k_base --output results/my_benchmark.json
-
-# View results
-cat results/my_benchmark.md
-```
-
-The benchmark suite tests:
-
-- Single text encoding across various content types (English, code, multilingual, etc.)
-- Batch encoding with different batch sizes and text lengths
-- Streaming decoder performance
-- Special token handling
-
-You can customize the benchmark by modifying `benchmark.py` or adding your own test data in the `data/` directory.
+See the [API documentation](https://docs.rs/splintr) for complete details.
 
 ## Supported Vocabularies
 
@@ -299,14 +300,12 @@ You can customize the benchmark by modifying `benchmark.py` or adding your own t
 | `cl100k_base` | GPT-4, GPT-3.5-turbo | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN` |
 | `o200k_base`  | GPT-4o               | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`  |
 
-More vocabularies will be added in future releases.
-
 **OpenAI standard tokens:**
 
 - **cl100k_base**: `<|endoftext|>`, `<|fim_prefix|>`, `<|fim_middle|>`, `<|fim_suffix|>`, `<|endofprompt|>`
 - **o200k_base**: `<|endoftext|>`, `<|endofprompt|>`
 
-**Agent tokens (54 per model):**
+### Agent Tokens (54 per model)
 
 Splintr extends both vocabularies with tokens for building agent systems. See [docs/special_tokens.md](docs/special_tokens.md) for complete documentation.
 
@@ -337,16 +336,48 @@ print(CL100K_AGENT_TOKENS.FUNCTION)   # 100292
 | Multimodal   | `image`, `audio`, `video`                           | Non-text content           |
 | Document     | `title`, `section`, `summary`                       | Structured docs            |
 
+## How It Works
+
+Splintr implements several optimizations that make tokenization faster:
+
+- **PCRE2 with JIT compilation**: 2-4x speedup on regex pattern matching
+- **Rayon parallelism**: Leverages multiple CPU cores for batch encoding
+- **Linked-list BPE algorithm**: Avoids O(N²) complexity on pathological inputs
+- **FxHashMap**: Faster lookups than default SipHash for non-adversarial contexts
+- **Aho-Corasick for special tokens**: Fast multi-pattern matching without regex alternation
+- **LRU cache**: Avoids redundant BPE encoding of frequently seen chunks
+
 ## Use Cases
 
-Splintr is designed for:
+**LLM Applications:**
 
-- **LLM applications**: Tokenizing prompts and streaming decoder for real-time output display
-- **Agent systems**: Building ReAct agents, tool-calling systems, and Chain-of-Thought reasoning
-- **Training pipelines**: Fast batch encoding of large datasets for model training
-- **RAG applications**: Structured context injection with citation support
-- **Token counting**: Estimating API costs or enforcing token limits
-- **Text preprocessing**: Converting text to tokens for embedding models or other NLP tasks
+- Tokenizing prompts with 3-4x lower latency
+- Streaming decoder for real-time output display
+- Token counting for API cost estimation
+
+**Agent Systems:**
+
+- Building ReAct agents with structured reasoning tokens
+- Tool-calling systems with function tokens
+- Chain-of-Thought reasoning with thinking tokens
+
+**Training Pipelines:**
+
+- Fast batch encoding of large datasets (10-12x speedup)
+- Preprocessing millions of documents efficiently
+- Parallel tokenization across distributed systems
+
+**RAG Applications:**
+
+- Structured context injection with citation tokens
+- Document chunking with section markers
+- Source tracking through tokenization
+
+**Data Processing:**
+
+- Bulk document tokenization
+- Multi-language text processing
+- Real-time text preprocessing
 
 ## Contributing
 
@@ -363,7 +394,7 @@ Contributions are welcome! Here's how you can help:
 
 ```bash
 # Clone the repository
-git clone https://github.com/farhan/splintr.git
+git clone https://github.com/farhan-syah/splintr.git
 cd splintr
 
 # Install pre-commit hook (recommended)
@@ -385,9 +416,14 @@ cargo fmt --all --check       # Format check
 
 The pre-commit hook automatically runs formatting, clippy, and tests before each commit.
 
-## License
+## Acknowledgments
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+Splintr builds upon concepts from:
+
+- [tiktoken](https://github.com/openai/tiktoken) - OpenAI's reference BPE tokenizer
+- [tokenizers](https://github.com/huggingface/tokenizers) - Hugging Face's tokenization library
+
+The performance optimizations are informed by profiling real-world usage patterns in LLM applications.
 
 ## Citation
 
@@ -401,12 +437,3 @@ If you use Splintr in your research, please cite:
   url = {https://github.com/farhan-syah/splintr}
 }
 ```
-
-## Acknowledgments
-
-Splintr builds upon concepts from:
-
-- [tiktoken](https://github.com/openai/tiktoken) - OpenAI's reference BPE tokenizer
-- [tokenizers](https://github.com/huggingface/tokenizers) - Hugging Face's tokenization library
-
-The performance optimizations are informed by profiling real-world usage patterns in LLM applications.
