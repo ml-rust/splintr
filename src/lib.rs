@@ -4,8 +4,8 @@ mod python;
 use pyo3::prelude::*;
 
 pub use core::{
-    StreamingDecoder, Tokenizer, TokenizerError, CL100K_BASE_PATTERN, LLAMA3_PATTERN,
-    O200K_BASE_PATTERN,
+    ByteLevelStreamingDecoder, StreamingDecoder, Tokenizer, TokenizerError, CL100K_BASE_PATTERN,
+    LLAMA3_PATTERN, O200K_BASE_PATTERN,
 };
 
 /// Splintr - Fast Rust BPE tokenizer with Python bindings
@@ -23,9 +23,11 @@ pub use core::{
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<python::PyTokenizer>()?;
     m.add_class::<python::PyStreamingDecoder>()?;
+    m.add_class::<python::PyByteLevelStreamingDecoder>()?;
     m.add_class::<python::PyCL100KAgentTokens>()?;
     m.add_class::<python::PyO200KAgentTokens>()?;
     m.add_class::<python::PyLlama3AgentTokens>()?;
+    m.add_class::<python::PyDeepSeekV3AgentTokens>()?;
     m.add("CL100K_BASE_PATTERN", CL100K_BASE_PATTERN)?;
     m.add("O200K_BASE_PATTERN", O200K_BASE_PATTERN)?;
     m.add("LLAMA3_PATTERN", LLAMA3_PATTERN)?;

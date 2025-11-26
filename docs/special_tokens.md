@@ -1,6 +1,6 @@
 # Special Tokens Reference
 
-This document describes the special tokens available in Splintr's `cl100k_base`, `o200k_base`, and `llama3` tokenizers, including the extended agent token vocabulary.
+This document describes the special tokens available in Splintr's `cl100k_base`, `o200k_base`, `llama3`, and `deepseek_v3` tokenizers, including the extended agent token vocabulary.
 
 ## Table of Contents
 
@@ -9,6 +9,7 @@ This document describes the special tokens available in Splintr's `cl100k_base`,
 - [Token ID Allocation](#token-id-allocation)
 - [OpenAI Standard Tokens](#openai-standard-tokens)
 - [Meta Llama 3 Standard Tokens](#meta-llama-3-standard-tokens)
+- [DeepSeek V3 Standard Tokens](#deepseek-v3-standard-tokens)
 - [Agent Token Categories](#agent-token-categories)
   - [1. Conversation Structure](#1-conversation-structure)
   - [2. Reasoning / Chain-of-Thought](#2-reasoning--chain-of-thought)
@@ -28,7 +29,7 @@ This document describes the special tokens available in Splintr's `cl100k_base`,
 
 ## Overview
 
-Splintr extends the standard OpenAI tokenizer vocabularies with **54 additional special tokens** designed for building modern AI agent systems. These tokens provide semantic structure for:
+Splintr extends the standard OpenAI/Llama/Deepseek tokenizer vocabularies with **54 additional special tokens** designed for building modern AI agent systems. These tokens provide semantic structure for:
 
 - Multi-turn chat conversations (ChatML format)
 - Chain-of-Thought reasoning (System 2 thinking)
@@ -80,11 +81,12 @@ This convention mirrors XML/HTML for familiarity while using `<|...|>` to avoid 
 
 Token IDs are carefully allocated to avoid conflicts with reserved ranges:
 
-| Model         | Regular Tokens | Reserved Range    | Agent Tokens    | Total   |
-| ------------- | -------------- | ----------------- | --------------- | ------- |
-| `cl100k_base` | 0-100,255      | 100,257-100,276   | 100,277-100,330 | 100,331 |
-| `o200k_base`  | 0-199,997      | 199,999-200,018   | 200,019-200,072 | 200,073 |
-| `llama3`      | 0-127,999      | 128,000-128,261   | 128,300-128,353 | 128,354 |
+| Model         | Regular Tokens | Reserved Range  | Agent Tokens    | Total   |
+| ------------- | -------------- | --------------- | --------------- | ------- |
+| `cl100k_base` | 0-100,255      | 100,257-100,276 | 100,277-100,330 | 100,331 |
+| `o200k_base`  | 0-199,997      | 199,999-200,018 | 200,019-200,072 | 200,073 |
+| `llama3`      | 0-127,999      | 128,000-128,261 | 128,300-128,353 | 128,354 |
+| `deepseek_v3` | 0-127,999      | 128,798-128,814 | 128,900-128,953 | 128,954 |
 
 ### Why These Ranges?
 
@@ -128,28 +130,28 @@ Splintr's `llama3` vocabulary includes the base 128,000 BPE tokens plus all spec
 
 #### Core Tokens (Llama 3.0+)
 
-| Token                    | ID     | Purpose                        |
-| ------------------------ | ------ | ------------------------------ |
-| `<\|begin_of_text\|>`    | 128000 | Beginning of sequence          |
-| `<\|end_of_text\|>`      | 128001 | End of sequence                |
-| `<\|start_header_id\|>`  | 128006 | Start of role header           |
-| `<\|end_header_id\|>`    | 128007 | End of role header             |
-| `<\|eot_id\|>`           | 128009 | End of turn                    |
+| Token                   | ID     | Purpose               |
+| ----------------------- | ------ | --------------------- |
+| `<\|begin_of_text\|>`   | 128000 | Beginning of sequence |
+| `<\|end_of_text\|>`     | 128001 | End of sequence       |
+| `<\|start_header_id\|>` | 128006 | Start of role header  |
+| `<\|end_header_id\|>`   | 128007 | End of role header    |
+| `<\|eot_id\|>`          | 128009 | End of turn           |
 
 #### Added in Llama 3.1
 
-| Token                         | ID     | Purpose                        |
-| ----------------------------- | ------ | ------------------------------ |
-| `<\|finetune_right_pad_id\|>` | 128004 | Padding token for fine-tuning  |
-| `<\|eom_id\|>`                | 128008 | End of message (tool use)      |
-| `<\|python_tag\|>`            | 128010 | Code interpreter marker        |
+| Token                         | ID     | Purpose                       |
+| ----------------------------- | ------ | ----------------------------- |
+| `<\|finetune_right_pad_id\|>` | 128004 | Padding token for fine-tuning |
+| `<\|eom_id\|>`                | 128008 | End of message (tool use)     |
+| `<\|python_tag\|>`            | 128010 | Code interpreter marker       |
 
 #### Added in Llama 3.2-Vision
 
-| Token           | ID     | Purpose                        |
-| --------------- | ------ | ------------------------------ |
-| `<\|step_id\|>` | 128005 | Step identifier for vision     |
-| `<\|image\|>`   | 128256 | Image content placeholder      |
+| Token           | ID     | Purpose                    |
+| --------------- | ------ | -------------------------- |
+| `<\|step_id\|>` | 128005 | Step identifier for vision |
+| `<\|image\|>`   | 128256 | Image content placeholder  |
 
 ### Llama 3 Chat Format
 
@@ -174,19 +176,107 @@ The capital of France is Paris.<|eot_id|>
 
 ---
 
+## DeepSeek V3 Standard Tokens
+
+These tokens are part of the official DeepSeek V3 tokenizer specification.
+
+> **Note**: DeepSeek V3 uses ByteLevel BPE encoding, which differs from standard BPE. See [ByteLevel BPE Encoding](bytelevel_bpe.md) for details on how bytes are mapped to tokens.
+
+### deepseek_v3 (DeepSeek V3)
+
+Splintr's `deepseek_v3` vocabulary includes the base 128,000 BPE tokens plus all native DeepSeek special tokens and Splintr agent tokens.
+
+#### Core Tokens
+
+| Token              | ID     | Purpose                   |
+| ------------------ | ------ | ------------------------- |
+| `<\|begin▁of▁sentence\|>` | 0      | Beginning of sequence (BOS) |
+| `<\|end▁of▁sentence\|>`   | 1      | End of sequence (EOS)       |
+
+**Note**: DeepSeek uses the special underscore character `▁` (U+2581, "LOWER ONE EIGHTH BLOCK") in token names, which differs from the regular underscore `_`.
+
+#### Reasoning Tokens (Native DeepSeek)
+
+| Token              | ID     | Purpose                   |
+| ------------------ | ------ | ------------------------- |
+| `<\|begin▁of▁thought\|>`  | 128798 | Start of thinking block   |
+| `<\|end▁of▁thought\|>`    | 128799 | End of thinking block     |
+
+#### Fill-in-the-Middle (FIM) Tokens
+
+| Token               | ID     | Purpose                        |
+| ------------------- | ------ | ------------------------------ |
+| `<\|fim▁begin\|>`   | 128800 | Start of FIM context           |
+| `<\|fim▁hole\|>`    | 128801 | Placeholder for code to insert |
+| `<\|fim▁end\|>`     | 128802 | End of FIM context             |
+
+#### Chat Tokens
+
+| Token             | ID     | Purpose             |
+| ----------------- | ------ | ------------------- |
+| `<\|User\|>`      | 128803 | User turn marker    |
+| `<\|Assistant\|>` | 128804 | Assistant turn marker |
+| `<\|end▁of▁turn\|>` | 128805 | End of conversation turn |
+
+#### Tool/Function Calling Tokens
+
+| Token                      | ID     | Purpose                    |
+| -------------------------- | ------ | -------------------------- |
+| `<\|tool▁calls▁begin\|>`   | 128806 | Start of tool call block   |
+| `<\|tool▁calls▁end\|>`     | 128807 | End of tool call block     |
+| `<\|tool▁call▁begin\|>`    | 128808 | Start of individual call   |
+| `<\|tool▁call▁end\|>`      | 128809 | End of individual call     |
+| `<\|tool▁outputs▁begin\|>` | 128810 | Start of tool outputs      |
+| `<\|tool▁outputs▁end\|>`   | 128811 | End of tool outputs        |
+| `<\|tool▁output▁begin\|>`  | 128812 | Start of individual output |
+| `<\|tool▁output▁end\|>`    | 128813 | End of individual output   |
+| `<\|tool▁sep\|>`           | 128814 | Tool separator             |
+
+### DeepSeek V3 Chat Format
+
+DeepSeek V3 uses a simpler chat format compared to Llama 3:
+
+```
+<|begin▁of▁sentence|><|User|>Hello, how are you?<|Assistant|>I'm doing well, thank you! How can I help you today?<|end▁of▁turn|>
+```
+
+**Key differences from other formats:**
+
+- Uses `<|User|>` and `<|Assistant|>` role markers (with capital letters)
+- Uses `<|end▁of▁turn|>` to mark conversation turn boundaries
+- Uses special underscore `▁` character in token names
+- No separate header start/end tokens like Llama 3
+
+### DeepSeek V3 Thinking Format
+
+DeepSeek V3 has native support for chain-of-thought reasoning with dedicated tokens:
+
+```
+<|begin▁of▁thought|>
+Let me think about this step by step...
+1. First, I need to understand the question
+2. Then, I'll analyze the options
+3. Finally, I'll formulate my answer
+<|end▁of▁thought|>
+
+Based on my analysis, the answer is 42.
+```
+
+---
+
 ## Agent Token Categories
 
 ### 1. Conversation Structure
 
 **Purpose**: Standard ChatML-style tokens for multi-turn conversations.
 
-| Token             | cl100k ID | o200k ID | llama3 ID | Description                                     |
-| ----------------- | --------- | -------- | --------- | ----------------------------------------------- |
-| `<\|system\|>`    | 100277    | 200019   | 128300    | System instructions defining assistant behavior |
-| `<\|user\|>`      | 100278    | 200020   | 128301    | User input/queries                              |
-| `<\|assistant\|>` | 100279    | 200021   | 128302    | Assistant responses                             |
-| `<\|im_start\|>`  | 100280    | 200022   | 128303    | Generic message start (ChatML)                  |
-| `<\|im_end\|>`    | 100281    | 200023   | 128304    | Generic message end (ChatML)                    |
+| Token             | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description                                     |
+| ----------------- | --------- | -------- | --------- | -------------- | ----------------------------------------------- |
+| `<\|system\|>`    | 100277    | 200019   | 128300    | 128900         | System instructions defining assistant behavior |
+| `<\|user\|>`      | 100278    | 200020   | 128301    | 128901         | User input/queries                              |
+| `<\|assistant\|>` | 100279    | 200021   | 128302    | 128902         | Assistant responses                             |
+| `<\|im_start\|>`  | 100280    | 200022   | 128303    | 128903         | Generic message start (ChatML)                  |
+| `<\|im_end\|>`    | 100281    | 200023   | 128304    | 128904         | Generic message end (ChatML)                    |
 
 **Rationale**: These tokens implement the [ChatML format](https://github.com/openai/openai-python/blob/main/chatml.md) used by OpenAI and adopted widely for chat model training. The `im_start`/`im_end` tokens provide a generic wrapper, while role-specific tokens (`system`, `user`, `assistant`) enable direct role marking.
 
@@ -207,10 +297,10 @@ The capital of France is Paris.<|im_end|>
 
 **Purpose**: Enable System 2 (slow, deliberate) reasoning similar to DeepSeek-R1 or OpenAI o1.
 
-| Token          | cl100k ID | o200k ID | llama3 ID | Description              |
-| -------------- | --------- | -------- | --------- | ------------------------ |
-| `<\|think\|>`  | 100282    | 200024   | 128305    | Start of reasoning block |
-| `<\|/think\|>` | 100283    | 200025   | 128306    | End of reasoning block   |
+| Token          | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description              |
+| -------------- | --------- | -------- | --------- | -------------- | ------------------------ |
+| `<\|think\|>`  | 100282    | 200024   | 128305    | 128905         | Start of reasoning block |
+| `<\|/think\|>` | 100283    | 200025   | 128306    | 128906         | End of reasoning block   |
 
 **Rationale**: Chain-of-Thought (CoT) prompting significantly improves model performance on complex tasks. Dedicated thinking tokens allow:
 
@@ -235,16 +325,16 @@ The capital of France is Paris.
 
 **Purpose**: Implement the ReAct (Reason + Act) paradigm for autonomous agents.
 
-| Token            | cl100k ID | o200k ID | llama3 ID | Description                     |
-| ---------------- | --------- | -------- | --------- | ------------------------------- |
-| `<\|plan\|>`     | 100284    | 200026   | 128307    | High-level strategy formulation |
-| `<\|/plan\|>`    | 100285    | 200027   | 128308    | End of plan                     |
-| `<\|step\|>`     | 100286    | 200028   | 128309    | Individual step within plan     |
-| `<\|/step\|>`    | 100287    | 200029   | 128310    | End of step                     |
-| `<\|act\|>`      | 100288    | 200030   | 128311    | Action intent declaration       |
-| `<\|/act\|>`     | 100289    | 200031   | 128312    | End of action                   |
-| `<\|observe\|>`  | 100290    | 200032   | 128313    | Environment feedback            |
-| `<\|/observe\|>` | 100291    | 200033   | 128314    | End of observation              |
+| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description                     |
+| ---------------- | --------- | -------- | --------- | -------------- | ------------------------------- |
+| `<\|plan\|>`     | 100284    | 200026   | 128307    | 128907         | High-level strategy formulation |
+| `<\|/plan\|>`    | 100285    | 200027   | 128308    | 128908         | End of plan                     |
+| `<\|step\|>`     | 100286    | 200028   | 128309    | 128909         | Individual step within plan     |
+| `<\|/step\|>`    | 100287    | 200029   | 128310    | 128910         | End of step                     |
+| `<\|act\|>`      | 100288    | 200030   | 128311    | 128911         | Action intent declaration       |
+| `<\|/act\|>`     | 100289    | 200031   | 128312    | 128912         | End of action                   |
+| `<\|observe\|>`  | 100290    | 200032   | 128313    | 128913         | Environment feedback            |
+| `<\|/observe\|>` | 100291    | 200033   | 128314    | 128914         | End of observation              |
 
 **Rationale**: The [ReAct paper](https://arxiv.org/abs/2210.03629) demonstrated that interleaving reasoning and acting improves agent performance. These tokens create a structured loop:
 
@@ -276,14 +366,14 @@ The current temperature in London is 18°C with partly cloudy skies.
 
 **Purpose**: Structured tool use with explicit success/error handling.
 
-| Token             | cl100k ID | o200k ID | llama3 ID | Description                 |
-| ----------------- | --------- | -------- | --------- | --------------------------- |
-| `<\|function\|>`  | 100292    | 200034   | 128315    | Function call specification |
-| `<\|/function\|>` | 100293    | 200035   | 128316    | End of function call        |
-| `<\|result\|>`    | 100294    | 200036   | 128317    | Successful return value     |
-| `<\|/result\|>`   | 100295    | 200037   | 128318    | End of result               |
-| `<\|error\|>`     | 100296    | 200038   | 128319    | Execution error             |
-| `<\|/error\|>`    | 100297    | 200039   | 128320    | End of error                |
+| Token             | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description                 |
+| ----------------- | --------- | -------- | --------- | -------------- | --------------------------- |
+| `<\|function\|>`  | 100292    | 200034   | 128315    | 128915         | Function call specification |
+| `<\|/function\|>` | 100293    | 200035   | 128316    | 128916         | End of function call        |
+| `<\|result\|>`    | 100294    | 200036   | 128317    | 128917         | Successful return value     |
+| `<\|/result\|>`   | 100295    | 200037   | 128318    | 128918         | End of result               |
+| `<\|error\|>`     | 100296    | 200038   | 128319    | 128919         | Execution error             |
+| `<\|/error\|>`    | 100297    | 200039   | 128320    | 128920         | End of error                |
 
 **Rationale**: Function calling is fundamental to agent capabilities. Separating `<|act|>` (intent) from `<|function|>` (technical payload) allows:
 
@@ -312,14 +402,14 @@ The `<|error|>` token is critical for robust agents—it signals that the previo
 
 **Purpose**: Jupyter notebook-style code interpreter flow.
 
-| Token           | cl100k ID | o200k ID | llama3 ID | Description           |
-| --------------- | --------- | -------- | --------- | --------------------- |
-| `<\|code\|>`    | 100298    | 200040   | 128321    | Code block to execute |
-| `<\|/code\|>`   | 100299    | 200041   | 128322    | End of code block     |
-| `<\|output\|>`  | 100300    | 200042   | 128323    | Execution output      |
-| `<\|/output\|>` | 100301    | 200043   | 128324    | End of output         |
-| `<\|lang\|>`    | 100302    | 200044   | 128325    | Language identifier   |
-| `<\|/lang\|>`   | 100303    | 200045   | 128326    | End of language tag   |
+| Token           | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description           |
+| --------------- | --------- | -------- | --------- | -------------- | --------------------- |
+| `<\|code\|>`    | 100298    | 200040   | 128321    | 128921         | Code block to execute |
+| `<\|/code\|>`   | 100299    | 200041   | 128322    | 128922         | End of code block     |
+| `<\|output\|>`  | 100300    | 200042   | 128323    | 128923         | Execution output      |
+| `<\|/output\|>` | 100301    | 200043   | 128324    | 128924         | End of output         |
+| `<\|lang\|>`    | 100302    | 200044   | 128325    | 128925         | Language identifier   |
+| `<\|/lang\|>`   | 100303    | 200045   | 128326    | 128926         | End of language tag   |
 
 **Rationale**: Code execution is a powerful agent capability. These tokens model the notebook paradigm:
 
@@ -348,16 +438,16 @@ print(f"Area: {area:.2f}")
 
 **Purpose**: Retrieval-Augmented Generation with source attribution.
 
-| Token            | cl100k ID | o200k ID | llama3 ID | Description             |
-| ---------------- | --------- | -------- | --------- | ----------------------- |
-| `<\|context\|>`  | 100304    | 200046   | 128327    | Retrieved context block |
-| `<\|/context\|>` | 100305    | 200047   | 128328    | End of context          |
-| `<\|quote\|>`    | 100306    | 200048   | 128329    | Direct quotation        |
-| `<\|/quote\|>`   | 100307    | 200049   | 128330    | End of quote            |
-| `<\|cite\|>`     | 100308    | 200050   | 128331    | Citation reference      |
-| `<\|/cite\|>`    | 100309    | 200051   | 128332    | End of citation         |
-| `<\|source\|>`   | 100310    | 200052   | 128333    | Source metadata         |
-| `<\|/source\|>`  | 100311    | 200053   | 128334    | End of source           |
+| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description             |
+| ---------------- | --------- | -------- | --------- | -------------- | ----------------------- |
+| `<\|context\|>`  | 100304    | 200046   | 128327    | 128927         | Retrieved context block |
+| `<\|/context\|>` | 100305    | 200047   | 128328    | 128928         | End of context          |
+| `<\|quote\|>`    | 100306    | 200048   | 128329    | 128929         | Direct quotation        |
+| `<\|/quote\|>`   | 100307    | 200049   | 128330    | 128930         | End of quote            |
+| `<\|cite\|>`     | 100308    | 200050   | 128331    | 128931         | Citation reference      |
+| `<\|/cite\|>`    | 100309    | 200051   | 128332    | 128932         | End of citation         |
+| `<\|source\|>`   | 100310    | 200052   | 128333    | 128933         | Source metadata         |
+| `<\|/source\|>`  | 100311    | 200053   | 128334    | 128934         | End of source           |
 
 **Rationale**: RAG systems retrieve relevant documents to ground model responses. These tokens enable:
 
@@ -387,12 +477,12 @@ population of approximately <|quote|>2,102,650 residents<|/quote|>
 
 **Purpose**: Long-term memory and state persistence across sessions.
 
-| Token           | cl100k ID | o200k ID | llama3 ID | Description         |
-| --------------- | --------- | -------- | --------- | ------------------- |
-| `<\|memory\|>`  | 100312    | 200054   | 128335    | Store information   |
-| `<\|/memory\|>` | 100313    | 200055   | 128336    | End of memory block |
-| `<\|recall\|>`  | 100314    | 200056   | 128337    | Retrieved memory    |
-| `<\|/recall\|>` | 100315    | 200057   | 128338    | End of recall       |
+| Token           | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description         |
+| --------------- | --------- | -------- | --------- | -------------- | ------------------- |
+| `<\|memory\|>`  | 100312    | 200054   | 128335    | 128935         | Store information   |
+| `<\|/memory\|>` | 100313    | 200055   | 128336    | 128936         | End of memory block |
+| `<\|recall\|>`  | 100314    | 200056   | 128337    | 128937         | Retrieved memory    |
+| `<\|/recall\|>` | 100315    | 200057   | 128338    | 128938         | End of recall       |
 
 **Rationale**: Persistent memory enables agents to:
 
@@ -419,11 +509,11 @@ Hello Alice! Here's a brief answer: The capital of France is Paris.
 
 **Purpose**: Sequence control and formatting.
 
-| Token        | cl100k ID | o200k ID | llama3 ID | Description                 |
-| ------------ | --------- | -------- | --------- | --------------------------- |
-| `<\|pad\|>`  | 100316    | 200058   | 128339    | Padding for batch alignment |
-| `<\|stop\|>` | 100317    | 200059   | 128340    | Generation stop signal      |
-| `<\|sep\|>`  | 100318    | 200060   | 128341    | Segment separator           |
+| Token        | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description                 |
+| ------------ | --------- | -------- | --------- | -------------- | --------------------------- |
+| `<\|pad\|>`  | 100316    | 200058   | 128339    | 128939         | Padding for batch alignment |
+| `<\|stop\|>` | 100317    | 200059   | 128340    | 128940         | Generation stop signal      |
+| `<\|sep\|>`  | 100318    | 200060   | 128341    | 128941         | Segment separator           |
 
 **Rationale**: These are utility tokens for training and inference:
 
@@ -437,16 +527,16 @@ Hello Alice! Here's a brief answer: The capital of France is Paris.
 
 **Purpose**: Placeholders for non-text content.
 
-| Token          | cl100k ID | o200k ID | llama3 ID | Description   |
-| -------------- | --------- | -------- | --------- | ------------- |
-| `<\|image\|>`  | 100319    | 200061   | 128256*   | Image content |
-| `<\|/image\|>` | 100320    | 200062   | 128257    | End of image  |
-| `<\|audio\|>`  | 100321    | 200063   | 128258    | Audio content |
-| `<\|/audio\|>` | 100322    | 200064   | 128259    | End of audio  |
-| `<\|video\|>`  | 100323    | 200065   | 128260    | Video content |
-| `<\|/video\|>` | 100324    | 200066   | 128261    | End of video  |
+| Token          | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description   |
+| -------------- | --------- | -------- | --------- | -------------- | ------------- |
+| `<\|image\|>`  | 100319    | 200061   | 128256\*  | 128942         | Image content |
+| `<\|/image\|>` | 100320    | 200062   | 128257    | 128943         | End of image  |
+| `<\|audio\|>`  | 100321    | 200063   | 128258    | 128944         | Audio content |
+| `<\|/audio\|>` | 100322    | 200064   | 128259    | 128945         | End of audio  |
+| `<\|video\|>`  | 100323    | 200065   | 128260    | 128946         | Video content |
+| `<\|/video\|>` | 100324    | 200066   | 128261    | 128947         | End of video  |
 
-*Note: Llama 3's `<|image|>` token (128256) is aligned with the official Meta Llama 3.2-Vision token ID for compatibility.
+\*Note: Llama 3's `<|image|>` token (128256) is aligned with the official Meta Llama 3.2-Vision token ID for compatibility.
 
 **Rationale**: Multimodal models need to mark where non-text embeddings are inserted. These tokens serve as:
 
@@ -469,14 +559,14 @@ The image shows a sunset over the ocean with vibrant orange and purple colors.
 
 **Purpose**: Semantic layout for parsing structured documents.
 
-| Token            | cl100k ID | o200k ID | llama3 ID | Description            |
-| ---------------- | --------- | -------- | --------- | ---------------------- |
-| `<\|title\|>`    | 100325    | 200067   | 128348    | Document/section title |
-| `<\|/title\|>`   | 100326    | 200068   | 128349    | End of title           |
-| `<\|section\|>`  | 100327    | 200069   | 128350    | Semantic section       |
-| `<\|/section\|>` | 100328    | 200070   | 128351    | End of section         |
-| `<\|summary\|>`  | 100329    | 200071   | 128352    | Content summary        |
-| `<\|/summary\|>` | 100330    | 200072   | 128353    | End of summary         |
+| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description            |
+| ---------------- | --------- | -------- | --------- | -------------- | ---------------------- |
+| `<\|title\|>`    | 100325    | 200067   | 128348    | 128948         | Document/section title |
+| `<\|/title\|>`   | 100326    | 200068   | 128349    | 128949         | End of title           |
+| `<\|section\|>`  | 100327    | 200069   | 128350    | 128950         | Semantic section       |
+| `<\|/section\|>` | 100328    | 200070   | 128351    | 128951         | End of section         |
+| `<\|summary\|>`  | 100329    | 200071   | 128352    | 128952         | Content summary        |
+| `<\|/summary\|>` | 100330    | 200072   | 128353    | 128953         | End of summary         |
 
 **Rationale**: When processing structured documents (papers, reports, documentation), these tokens help:
 
@@ -531,6 +621,32 @@ assert decoded == text
 # Access token IDs programmatically
 print(f"THINK token ID: {CL100K_AGENT_TOKENS.THINK}")        # 100282
 print(f"FUNCTION token ID: {CL100K_AGENT_TOKENS.FUNCTION}")  # 100292
+```
+
+### Python (DeepSeek V3 models)
+
+```python
+from splintr import Tokenizer, DEEPSEEK_V3_AGENT_TOKENS
+
+# Load DeepSeek V3 tokenizer (includes ByteLevel BPE encoding)
+tokenizer = Tokenizer.from_pretrained("deepseek_v3")
+
+# Encode text with special tokens
+text = "<|think|>Let me reason about this...<|/think|>The answer is 42."
+tokens = tokenizer.encode_with_special(text)
+
+# Check for specific tokens
+if DEEPSEEK_V3_AGENT_TOKENS.THINK in tokens:
+    print("Contains thinking block")
+
+# Use native DeepSeek tokens
+chat = "<|User|>Hello!<|Assistant|>Hi there!<|end▁of▁turn|>"
+tokens = tokenizer.encode_with_special(chat)
+
+# Access native DeepSeek token IDs
+print(f"Native User token: {DEEPSEEK_V3_AGENT_TOKENS.DEEPSEEK_USER}")        # 128803
+print(f"Native thinking: {DEEPSEEK_V3_AGENT_TOKENS.BEGIN_OF_THOUGHT}")       # 128798
+print(f"Agent think token: {DEEPSEEK_V3_AGENT_TOKENS.THINK}")                # 128905
 ```
 
 ### Python (Llama 3 models)
@@ -667,6 +783,107 @@ CL100K_AGENT_TOKENS.SUMMARY_END     # 100330
 
 Same structure as above, with IDs starting at 200019.
 
+### DEEPSEEK_V3_AGENT_TOKENS
+
+```python
+from splintr import DEEPSEEK_V3_AGENT_TOKENS
+
+# Native DeepSeek tokens
+DEEPSEEK_V3_AGENT_TOKENS.BOS                   # 0 (begin_of_sentence)
+DEEPSEEK_V3_AGENT_TOKENS.EOS                   # 1 (end_of_sentence)
+DEEPSEEK_V3_AGENT_TOKENS.BEGIN_OF_THOUGHT      # 128798
+DEEPSEEK_V3_AGENT_TOKENS.END_OF_THOUGHT        # 128799
+DEEPSEEK_V3_AGENT_TOKENS.FIM_BEGIN             # 128800
+DEEPSEEK_V3_AGENT_TOKENS.FIM_HOLE              # 128801
+DEEPSEEK_V3_AGENT_TOKENS.FIM_END               # 128802
+DEEPSEEK_V3_AGENT_TOKENS.DEEPSEEK_USER         # 128803
+DEEPSEEK_V3_AGENT_TOKENS.DEEPSEEK_ASSISTANT    # 128804
+DEEPSEEK_V3_AGENT_TOKENS.END_OF_TURN           # 128805
+DEEPSEEK_V3_AGENT_TOKENS.TOOL_CALLS_BEGIN      # 128806
+DEEPSEEK_V3_AGENT_TOKENS.TOOL_CALLS_END        # 128807
+DEEPSEEK_V3_AGENT_TOKENS.TOOL_CALL_BEGIN       # 128808
+DEEPSEEK_V3_AGENT_TOKENS.TOOL_CALL_END         # 128809
+DEEPSEEK_V3_AGENT_TOKENS.TOOL_OUTPUTS_BEGIN    # 128810
+DEEPSEEK_V3_AGENT_TOKENS.TOOL_OUTPUTS_END      # 128811
+DEEPSEEK_V3_AGENT_TOKENS.TOOL_OUTPUT_BEGIN     # 128812
+DEEPSEEK_V3_AGENT_TOKENS.TOOL_OUTPUT_END       # 128813
+DEEPSEEK_V3_AGENT_TOKENS.TOOL_SEP              # 128814
+
+# Conversation
+DEEPSEEK_V3_AGENT_TOKENS.SYSTEM                # 128900
+DEEPSEEK_V3_AGENT_TOKENS.USER                  # 128901
+DEEPSEEK_V3_AGENT_TOKENS.ASSISTANT             # 128902
+DEEPSEEK_V3_AGENT_TOKENS.IM_START              # 128903
+DEEPSEEK_V3_AGENT_TOKENS.IM_END                # 128904
+
+# Thinking
+DEEPSEEK_V3_AGENT_TOKENS.THINK                 # 128905
+DEEPSEEK_V3_AGENT_TOKENS.THINK_END             # 128906
+
+# ReAct
+DEEPSEEK_V3_AGENT_TOKENS.PLAN                  # 128907
+DEEPSEEK_V3_AGENT_TOKENS.PLAN_END              # 128908
+DEEPSEEK_V3_AGENT_TOKENS.STEP                  # 128909
+DEEPSEEK_V3_AGENT_TOKENS.STEP_END              # 128910
+DEEPSEEK_V3_AGENT_TOKENS.ACT                   # 128911
+DEEPSEEK_V3_AGENT_TOKENS.ACT_END               # 128912
+DEEPSEEK_V3_AGENT_TOKENS.OBSERVE               # 128913
+DEEPSEEK_V3_AGENT_TOKENS.OBSERVE_END           # 128914
+
+# Tool/Function
+DEEPSEEK_V3_AGENT_TOKENS.FUNCTION              # 128915
+DEEPSEEK_V3_AGENT_TOKENS.FUNCTION_END          # 128916
+DEEPSEEK_V3_AGENT_TOKENS.RESULT                # 128917
+DEEPSEEK_V3_AGENT_TOKENS.RESULT_END            # 128918
+DEEPSEEK_V3_AGENT_TOKENS.ERROR                 # 128919
+DEEPSEEK_V3_AGENT_TOKENS.ERROR_END             # 128920
+
+# Code
+DEEPSEEK_V3_AGENT_TOKENS.CODE                  # 128921
+DEEPSEEK_V3_AGENT_TOKENS.CODE_END              # 128922
+DEEPSEEK_V3_AGENT_TOKENS.OUTPUT                # 128923
+DEEPSEEK_V3_AGENT_TOKENS.OUTPUT_END            # 128924
+DEEPSEEK_V3_AGENT_TOKENS.LANG                  # 128925
+DEEPSEEK_V3_AGENT_TOKENS.LANG_END              # 128926
+
+# RAG
+DEEPSEEK_V3_AGENT_TOKENS.CONTEXT               # 128927
+DEEPSEEK_V3_AGENT_TOKENS.CONTEXT_END           # 128928
+DEEPSEEK_V3_AGENT_TOKENS.QUOTE                 # 128929
+DEEPSEEK_V3_AGENT_TOKENS.QUOTE_END             # 128930
+DEEPSEEK_V3_AGENT_TOKENS.CITE                  # 128931
+DEEPSEEK_V3_AGENT_TOKENS.CITE_END              # 128932
+DEEPSEEK_V3_AGENT_TOKENS.SOURCE                # 128933
+DEEPSEEK_V3_AGENT_TOKENS.SOURCE_END            # 128934
+
+# Memory
+DEEPSEEK_V3_AGENT_TOKENS.MEMORY                # 128935
+DEEPSEEK_V3_AGENT_TOKENS.MEMORY_END            # 128936
+DEEPSEEK_V3_AGENT_TOKENS.RECALL                # 128937
+DEEPSEEK_V3_AGENT_TOKENS.RECALL_END            # 128938
+
+# Control
+DEEPSEEK_V3_AGENT_TOKENS.PAD                   # 128939
+DEEPSEEK_V3_AGENT_TOKENS.STOP                  # 128940
+DEEPSEEK_V3_AGENT_TOKENS.SEP                   # 128941
+
+# Multimodal
+DEEPSEEK_V3_AGENT_TOKENS.IMAGE                 # 128942
+DEEPSEEK_V3_AGENT_TOKENS.IMAGE_END             # 128943
+DEEPSEEK_V3_AGENT_TOKENS.AUDIO                 # 128944
+DEEPSEEK_V3_AGENT_TOKENS.AUDIO_END             # 128945
+DEEPSEEK_V3_AGENT_TOKENS.VIDEO                 # 128946
+DEEPSEEK_V3_AGENT_TOKENS.VIDEO_END             # 128947
+
+# Document
+DEEPSEEK_V3_AGENT_TOKENS.TITLE                 # 128948
+DEEPSEEK_V3_AGENT_TOKENS.TITLE_END             # 128949
+DEEPSEEK_V3_AGENT_TOKENS.SECTION               # 128950
+DEEPSEEK_V3_AGENT_TOKENS.SECTION_END           # 128951
+DEEPSEEK_V3_AGENT_TOKENS.SUMMARY               # 128952
+DEEPSEEK_V3_AGENT_TOKENS.SUMMARY_END           # 128953
+```
+
 ### LLAMA3_AGENT_TOKENS
 
 ```python
@@ -784,10 +1001,35 @@ o200k_agent_tokens::THINK            // 200024
 // ... etc
 ```
 
+### deepseek_v3_agent_tokens module
+
+```rust
+use splintr::deepseek_v3_agent_tokens;
+
+// Native DeepSeek tokens
+deepseek_v3_agent_tokens::BOS                  // 0
+deepseek_v3_agent_tokens::EOS                  // 1
+deepseek_v3_agent_tokens::BEGIN_OF_THOUGHT     // 128798
+deepseek_v3_agent_tokens::END_OF_THOUGHT       // 128799
+deepseek_v3_agent_tokens::FIM_BEGIN            // 128800
+deepseek_v3_agent_tokens::FIM_HOLE             // 128801
+deepseek_v3_agent_tokens::FIM_END              // 128802
+deepseek_v3_agent_tokens::DEEPSEEK_USER        // 128803
+deepseek_v3_agent_tokens::DEEPSEEK_ASSISTANT   // 128804
+deepseek_v3_agent_tokens::END_OF_TURN          // 128805
+
+// Agent tokens
+deepseek_v3_agent_tokens::SYSTEM               // 128900
+deepseek_v3_agent_tokens::THINK                // 128905
+deepseek_v3_agent_tokens::FUNCTION             // 128915
+// ... etc
+```
+
 ---
 
 ## See Also
 
 - [README.md](../README.md) - Project overview and quick start
+- [ByteLevel BPE Encoding](bytelevel_bpe.md) - How DeepSeek V3 encodes bytes to tokens
 - [ReAct Paper](https://arxiv.org/abs/2210.03629) - ReAct: Synergizing Reasoning and Acting in Language Models
 - [ChatML Specification](https://github.com/openai/openai-python/blob/main/chatml.md) - Chat Markup Language

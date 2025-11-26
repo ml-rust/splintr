@@ -35,50 +35,38 @@ pip install splintr-rs
 ```python
 from splintr import Tokenizer
 
-# Load a pretrained vocabulary (OpenAI)
-tokenizer = Tokenizer.from_pretrained("cl100k_base")
+# Load a pretrained vocabulary
+tokenizer = Tokenizer.from_pretrained("cl100k_base")  # OpenAI GPT-4/3.5
+# tokenizer = Tokenizer.from_pretrained("llama3")      # Meta Llama 3 family
+# tokenizer = Tokenizer.from_pretrained("deepseek_v3") # DeepSeek V3/R1
 
-# Or load Llama 3 tokenizer (Meta) - supports all versions up to Llama 3.3
-# tokenizer = Tokenizer.from_pretrained("llama3")
-
-# Encode text to token IDs
+# Encode and decode
 tokens = tokenizer.encode("Hello, world!")
-print(tokens)  # [9906, 11, 1917, 0]
-
-# Decode token IDs back to text
 text = tokenizer.decode(tokens)
-print(text)  # "Hello, world!"
 
-# Batch encode multiple texts in parallel (this is where it shines)
+# Batch encode (10-12x faster)
 texts = ["Hello, world!", "How are you?", "Machine learning is fun!"]
 batch_tokens = tokenizer.encode_batch(texts)
-print(batch_tokens)  # [[9906, 11, 1917, 0], [4438, 527, 499, 30], ...]
 ```
+
+See the [API Guide](docs/api_guide.md) for complete documentation and examples.
 
 ### Rust
 
 ```toml
 [dependencies]
-splintr = "0.4.0"
+splintr = "0.6.0"
 ```
 
 ```rust
 use splintr::{Tokenizer, CL100K_BASE_PATTERN};
-use rustc_hash::FxHashMap;
 
-// Load vocabulary and create tokenizer
-let encoder = load_tiktoken_bpe_file("cl100k_base.tiktoken")?;
-let special_tokens = FxHashMap::default();
 let tokenizer = Tokenizer::new(encoder, special_tokens, CL100K_BASE_PATTERN)?;
-
-// Encode text
 let tokens = tokenizer.encode("Hello, world!");
-println!("{:?}", tokens);
-
-// Batch encode
-let texts = vec!["Hello".to_string(), "World".to_string()];
 let batch_tokens = tokenizer.encode_batch(&texts);
 ```
+
+See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) for complete Rust documentation.
 
 ## Key Features
 
@@ -91,9 +79,9 @@ let batch_tokens = tokenizer.encode_batch(&texts);
 
 **Built for production:**
 
-- **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), and Llama 3 family (Meta), with a familiar API
-- **Streaming decoder** - Real-time LLM output display with proper UTF-8 handling
-- **54 agent tokens** - Built-in support for chat, CoT reasoning, ReAct agents, tool calling, RAG citations
+- **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), Llama 3 family (Meta), and DeepSeek V3 (DeepSeek)
+- **Streaming decoders** - Real-time LLM output display with proper UTF-8 handling ([guide](docs/api_guide.md#streaming-decoder))
+- **54 agent tokens** - Built-in support for chat, CoT reasoning, ReAct agents, tool calling, RAG citations ([docs](docs/special_tokens.md))
 - **Battle-tested algorithms** - PCRE2 with JIT, Aho-Corasick for special tokens, linked-list BPE
 
 **Cross-platform:**
@@ -166,143 +154,36 @@ cat results/my_benchmark.md
 
 The benchmark suite tests single text encoding, batch encoding, streaming decoder performance, and special token handling across various content types.
 
-## Streaming Decoder
+## Streaming Decoders
 
-The streaming decoder is essential for real-time LLM applications where tokens arrive one at a time:
+For real-time LLM applications where tokens arrive one at a time, Splintr provides streaming decoders that handle UTF-8 boundary alignment:
 
 ```python
-# Create a streaming decoder
+# Regular streaming decoder (cl100k_base, o200k_base, llama3)
 decoder = tokenizer.streaming_decoder()
 
-# Process tokens one at a time (typical LLM streaming scenario)
+# ByteLevel streaming decoder (deepseek_v3, GPT-2)
+decoder = tokenizer.byte_level_streaming_decoder()
+
+# Process tokens as they arrive
 for token_id in token_stream:
-    # Returns text only when complete UTF-8 characters are available
     if text := decoder.add_token(token_id):
         print(text, end="", flush=True)
-
-# Flush any remaining buffered bytes at the end
 print(decoder.flush())
 ```
 
-### Why You Need This
+**Why streaming decoders?** BPE tokens don't align with UTF-8 character boundaries. A multi-byte character like "世" might split across tokens. The streaming decoder buffers incomplete sequences and only outputs complete characters.
 
-BPE tokens don't align with UTF-8 character boundaries. A multi-byte Unicode character like "世" (3 bytes: `0xE4 0xB8 0x96`) might split across tokens. The streaming decoder:
-
-1. Buffers incomplete byte sequences across token boundaries
-2. Only outputs text when complete UTF-8 characters are available
-3. Prevents display corruption in streaming LLM output
-4. Handles edge cases automatically
-
-### Real-World Example
-
-```python
-import openai
-from splintr import Tokenizer
-
-tokenizer = Tokenizer.from_pretrained("cl100k_base")
-decoder = tokenizer.streaming_decoder()
-
-# Stream tokens from OpenAI API
-response = openai.ChatCompletion.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Tell me a story"}],
-    stream=True
-)
-
-for chunk in response:
-    if chunk.choices[0].delta.content:
-        # Process each token as it arrives
-        token_ids = get_token_ids(chunk)  # pseudo-code
-        for token_id in token_ids:
-            if text := decoder.add_token(token_id):
-                print(text, end="", flush=True)
-
-# Don't forget to flush at the end
-print(decoder.flush())
-```
-
-### API Methods
-
-**Core operations:**
-
-- `add_token(token_id: int) -> str | None`: Add a token, return complete characters or None if buffering
-- `add_tokens(token_ids: list[int]) -> str | None`: Add multiple tokens at once
-- `flush() -> str`: Flush buffered bytes (incomplete sequences become �)
-- `reset()`: Clear the buffer and start fresh
-
-**Properties:**
-
-- `has_pending: bool`: Whether there are buffered bytes waiting
-- `pending_bytes: int`: Number of bytes currently buffered
-
-## API Reference
-
-### Python API
-
-#### Tokenizer
-
-**Loading:**
-
-```python
-# Load pretrained model (includes vocabulary and special tokens)
-tokenizer = Tokenizer.from_pretrained("cl100k_base")  # or "o200k_base", "llama3"
-
-# Load from custom vocabulary file
-tokenizer = Tokenizer(
-    vocab_path="path/to/vocab.tiktoken",
-    pattern=CL100K_BASE_PATTERN,
-    special_tokens={"<|endoftext|>": 100257}
-)
-```
-
-**Encoding:**
-
-- `encode(text: str) -> list[int]`: Encode text to token IDs (sequential, optimal for most use cases)
-- `encode_with_special(text: str) -> list[int]`: Encode text, recognizing special tokens in the input
-- `encode_batch(texts: list[str]) -> list[list[int]]`: Encode multiple texts in parallel (uses Rayon)
-- `encode_rayon(text: str) -> list[int]`: Encode using Rayon parallelization (only beneficial for texts >1MB)
-
-**Decoding:**
-
-- `decode(tokens: list[int]) -> str`: Decode token IDs to text (raises error on invalid UTF-8)
-- `decode_bytes(tokens: list[int]) -> bytes`: Decode token IDs to raw bytes
-- `decode_lossy(tokens: list[int]) -> str`: Decode token IDs, replacing invalid UTF-8 with �
-
-**Properties:**
-
-- `vocab_size: int`: Total vocabulary size including special tokens
-- `cache_len: int`: Number of entries in the LRU cache
-
-**Cache management:**
-
-- `clear_cache()`: Clear the encoding cache
-
-### Rust API
-
-The Rust API provides similar functionality with strongly-typed interfaces:
-
-**Encoding:**
-
-- `encode(&self, text: &str) -> Vec<u32>`: Sequential encoding (optimal for texts <1MB)
-- `encode_with_special(&self, text: &str) -> Vec<u32>`: Encode with special token recognition
-- `encode_batch(&self, texts: &[String]) -> Vec<Vec<u32>>`: Parallel encoding across texts
-- `encode_rayon(&self, text: &str) -> Vec<u32>`: Parallel encoding within text (for texts >1MB)
-
-**Decoding:**
-
-- `decode(&self, tokens: &[u32]) -> Result<String, TokenizerError>`: Decode to UTF-8 string
-- `decode_bytes(&self, tokens: &[u32]) -> Vec<u8>`: Decode to raw bytes
-- `decode_lossy(&self, tokens: &[u32]) -> String`: Decode with replacement for invalid UTF-8
-
-See the [API documentation](https://docs.rs/splintr) for complete details.
+See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, examples, and best practices.
 
 ## Supported Vocabularies
 
-| Vocabulary    | Used By                       | Vocabulary Size | Special Tokens | Import Constant       |
-| ------------- | ----------------------------- | --------------- | -------------- | --------------------- |
-| `cl100k_base` | GPT-4, GPT-3.5-turbo          | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN` |
-| `o200k_base`  | GPT-4o                        | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`  |
-| `llama3`      | Llama 3, 3.1, 3.2, 3.3 (Meta) | ~128,000        | 11 + 54 agent  | `LLAMA3_PATTERN`      |
+| Vocabulary     | Used By                       | Vocabulary Size | Special Tokens | Import Constant       |
+| -------------- | ----------------------------- | --------------- | -------------- | --------------------- |
+| `cl100k_base`  | GPT-4, GPT-3.5-turbo          | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN` |
+| `o200k_base`   | GPT-4o                        | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`  |
+| `llama3`       | Llama 3, 3.1, 3.2, 3.3 (Meta) | ~128,000        | 11 + 54 agent  | `LLAMA3_PATTERN`      |
+| `deepseek_v3`  | DeepSeek V3, DeepSeek R1      | ~128,000        | 17 + 54 agent  | `LLAMA3_PATTERN`      |
 
 **OpenAI standard tokens:**
 
@@ -313,41 +194,33 @@ See the [API documentation](https://docs.rs/splintr) for complete details.
 
 - **llama3**: `<|begin_of_text|>`, `<|end_of_text|>`, `<|start_header_id|>`, `<|end_header_id|>`, `<|eot_id|>`, `<|eom_id|>` (3.1+), `<|python_tag|>` (3.1+), `<|step_id|>` (3.2-Vision), `<|image|>` (3.2-Vision)
 
+**DeepSeek V3 standard tokens:**
+
+- **deepseek_v3**: `<｜begin▁of▁sentence｜>`, `<｜end▁of▁sentence｜>`, `<think>`, `</think>`, `<｜User｜>`, `<｜Assistant｜>`, `<|EOT|>`, FIM tokens (`<｜fim▁hole｜>`, `<｜fim▁begin｜>`, `<｜fim▁end｜>`), tool calling tokens (`<｜tool▁calls▁begin｜>`, `<｜tool▁call▁begin｜>`, etc.)
+
 ### Agent Tokens (54 per model)
 
-Splintr extends all vocabularies with tokens for building agent systems. See [docs/special_tokens.md](docs/special_tokens.md) for complete documentation.
+Splintr extends all vocabularies with 54 specialized tokens for building agent systems:
 
 ```python
-from splintr import Tokenizer, CL100K_AGENT_TOKENS, LLAMA3_AGENT_TOKENS
+from splintr import Tokenizer, CL100K_AGENT_TOKENS
 
-# OpenAI models
 tokenizer = Tokenizer.from_pretrained("cl100k_base")
 text = "<|think|>Let me reason...<|/think|>The answer is 42."
 tokens = tokenizer.encode_with_special(text)
 print(CL100K_AGENT_TOKENS.THINK)      # 100282
 print(CL100K_AGENT_TOKENS.FUNCTION)   # 100292
-
-# Llama 3 models (vocabulary includes all special tokens up to Llama 3.3)
-tokenizer = Tokenizer.from_pretrained("llama3")
-tokens = tokenizer.encode_with_special(text)
-print(LLAMA3_AGENT_TOKENS.THINK)           # 128305
-print(LLAMA3_AGENT_TOKENS.FUNCTION)        # 128315
-print(LLAMA3_AGENT_TOKENS.BEGIN_OF_TEXT)   # 128000 (official Meta token)
-print(LLAMA3_AGENT_TOKENS.IMAGE)           # 128256 (official Meta 3.2-Vision token)
 ```
 
-| Category     | Tokens                                              | Purpose                    |
+| Category     | Example Tokens                                      | Purpose                    |
 | ------------ | --------------------------------------------------- | -------------------------- |
 | Conversation | `system`, `user`, `assistant`, `im_start`, `im_end` | ChatML format              |
 | Thinking     | `think`                                             | Chain-of-Thought reasoning |
 | ReAct        | `plan`, `step`, `act`, `observe`                    | Agent action loops         |
 | Tools        | `function`, `result`, `error`                       | Function calling           |
-| Code         | `code`, `output`, `lang`                            | Code execution             |
 | RAG          | `context`, `quote`, `cite`, `source`                | Citations                  |
-| Memory       | `memory`, `recall`                                  | State persistence          |
-| Control      | `pad`, `stop`, `sep`                                | Sequence control           |
-| Multimodal   | `image`, `audio`, `video`                           | Non-text content           |
-| Document     | `title`, `section`, `summary`                       | Structured docs            |
+
+See [docs/special_tokens.md](docs/special_tokens.md) for the complete list and [API Guide](docs/api_guide.md#agent-tokens-usage) for usage examples.
 
 ## How It Works
 

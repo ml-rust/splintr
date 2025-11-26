@@ -15,6 +15,7 @@
 //! - [`bpe`]: Low-level byte-pair encoding algorithm using linked-list approach
 //! - [`vocab`]: Vocabulary loading utilities for tiktoken format
 //! - [`StreamingDecoder`]: UTF-8 safe streaming decoder for token-by-token LLM output
+//! - [`ByteLevelStreamingDecoder`]: Streaming decoder for ByteLevel tokenizers (DeepSeek, GPT-2)
 //!
 //! # Performance Optimizations
 //!
@@ -25,12 +26,14 @@
 //! - **LRU Cache**: Avoids redundant BPE computation for repeated chunks
 
 mod bpe;
+pub mod byte_level;
 mod streaming;
 mod tokenizer;
 mod vocab;
 
 pub use bpe::byte_pair_encode;
-pub use streaming::StreamingDecoder;
+pub use byte_level::{byte_level_decode, byte_level_decode_bytes, byte_level_encode};
+pub use streaming::{ByteLevelStreamingDecoder, StreamingDecoder};
 pub use tokenizer::{
     cl100k_agent_tokens, o200k_agent_tokens, Tokenizer, TokenizerError, CL100K_BASE_PATTERN,
     LLAMA3_PATTERN, O200K_BASE_PATTERN,

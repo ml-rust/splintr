@@ -9,6 +9,40 @@ import pytest
 from splintr import Tokenizer, O200K_AGENT_TOKENS, O200K_BASE_PATTERN
 
 
+class TestO200kExactTokens:
+    """Exact token ID verification tests.
+
+    These tests verify specific token IDs to catch any regression in
+    encoding or vocabulary changes.
+    """
+
+    @pytest.fixture
+    def tokenizer(self):
+        return Tokenizer.from_pretrained("o200k_base")
+
+    def test_hello_world_tokens(self, tokenizer):
+        """Verify exact token IDs for 'Hello world'."""
+        tokens = tokenizer.encode("Hello world")
+        assert tokens == [13225, 2375], f"Expected [13225, 2375], got {tokens}"
+
+    def test_hello_world_punctuation_tokens(self, tokenizer):
+        """Verify exact token IDs for 'Hello, world!'."""
+        tokens = tokenizer.encode("Hello, world!")
+        assert tokens == [13225, 11, 2375, 0], f"Expected [13225, 11, 2375, 0], got {tokens}"
+
+    def test_chinese_tokens(self, tokenizer):
+        """Verify exact token IDs for '你好世界'."""
+        tokens = tokenizer.encode("你好世界")
+        assert tokens == [177519, 28428], f"Expected [177519, 28428], got {tokens}"
+
+    def test_emoji_tokens(self, tokenizer):
+        """Verify exact token IDs for 'Hello 🌍 World!'."""
+        tokens = tokenizer.encode("Hello 🌍 World!")
+        assert tokens == [13225, 130321, 235, 5922, 0], (
+            f"Expected [13225, 130321, 235, 5922, 0], got {tokens}"
+        )
+
+
 class TestO200kTokenizer:
     """Test suite for o200k_base tokenizer."""
 

@@ -9,6 +9,42 @@ import pytest
 from splintr import Tokenizer, CL100K_AGENT_TOKENS, CL100K_BASE_PATTERN
 
 
+class TestCl100kExactTokens:
+    """Exact token ID verification tests.
+
+    These tests verify specific token IDs to catch any regression in
+    encoding or vocabulary changes.
+    """
+
+    @pytest.fixture
+    def tokenizer(self):
+        return Tokenizer.from_pretrained("cl100k_base")
+
+    def test_hello_world_tokens(self, tokenizer):
+        """Verify exact token IDs for 'Hello world'."""
+        tokens = tokenizer.encode("Hello world")
+        assert tokens == [9906, 1917], f"Expected [9906, 1917], got {tokens}"
+
+    def test_hello_world_punctuation_tokens(self, tokenizer):
+        """Verify exact token IDs for 'Hello, world!'."""
+        tokens = tokenizer.encode("Hello, world!")
+        assert tokens == [9906, 11, 1917, 0], f"Expected [9906, 11, 1917, 0], got {tokens}"
+
+    def test_chinese_tokens(self, tokenizer):
+        """Verify exact token IDs for '你好世界'."""
+        tokens = tokenizer.encode("你好世界")
+        assert tokens == [57668, 53901, 3574, 244, 98220], (
+            f"Expected [57668, 53901, 3574, 244, 98220], got {tokens}"
+        )
+
+    def test_emoji_tokens(self, tokenizer):
+        """Verify exact token IDs for 'Hello 🌍 World!'."""
+        tokens = tokenizer.encode("Hello 🌍 World!")
+        assert tokens == [9906, 11410, 234, 235, 4435, 0], (
+            f"Expected [9906, 11410, 234, 235, 4435, 0], got {tokens}"
+        )
+
+
 class TestCl100kTokenizer:
     """Test suite for cl100k_base tokenizer."""
 
