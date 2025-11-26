@@ -30,6 +30,9 @@ pub const CL100K_BASE_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}
 /// Default regex pattern for o200k_base (GPT-4o)
 pub const O200K_BASE_PATTERN: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+/// Default regex pattern for Llama 3/3.1/3.2/3.3 (same as o200k_base)
+pub const LLAMA3_PATTERN: &str = O200K_BASE_PATTERN;
+
 // =============================================================================
 // Agent Token Constants (cl100k_base: 100277+, o200k_base: 200019+)
 // =============================================================================
