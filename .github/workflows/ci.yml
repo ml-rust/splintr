@@ -8,8 +8,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Lint and format check (single job)
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install PCRE2
+        run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # Rust tests on multiple platforms
   test:
-    name: Test on ${{ matrix.os }}
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -31,9 +53,21 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
 
+      - name: Configure Python for PyO3 (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: echo "PYO3_PYTHON=$(which python3)" >> $GITHUB_ENV
+
       - name: Install PCRE2 (macOS)
         if: matrix.os == 'macos-latest'
         run: brew install pcre2
+
+      - name: Configure Python for PyO3 (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          echo "PYO3_PYTHON=$(which python3)" >> $GITHUB_ENV
+          # Get Python framework path for linking
+          PYTHON_PATH=$(python3 -c "import sys; print(sys.prefix)")
+          echo "LIBRARY_PATH=${PYTHON_PATH}/lib:${LIBRARY_PATH:-}" >> $GITHUB_ENV
 
       - name: Install PCRE2 (Windows)
         if: matrix.os == 'windows-latest'
@@ -41,27 +75,17 @@ jobs:
           vcpkg install pcre2:x64-windows
           echo "PCRE2_SYS_STATIC=1" >> $env:GITHUB_ENV
 
+      - name: Configure Python for PyO3 (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          $pythonPath = (Get-Command python).Source
+          echo "PYO3_PYTHON=$pythonPath" >> $env:GITHUB_ENV
+
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test
 
-      - name: Run clippy
-        run: cargo clippy -- -D warnings
-
-  fmt:
-    name: Format check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Check formatting
-        run: cargo fmt --check
-
-  python-test:
+  # Python bindings tests
+  python:
     name: Python tests
     runs-on: ubuntu-latest
     steps:
