@@ -1,0 +1,60 @@
+#!/bin/bash
+#
+# Pre-commit hook for splintr
+#
+# Install by copying to .git/hooks/:
+#   cp hooks/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+#
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo "Running pre-commit checks..."
+echo ""
+
+FAILED=0
+
+# 1. Rust formatting
+echo -n "Checking formatting... "
+if ! cargo fmt --all --check > /dev/null 2>&1; then
+    echo -e "${RED}FAILED${NC}"
+    echo -e "${YELLOW}Fix with:${NC} cargo fmt --all"
+    FAILED=1
+else
+    echo -e "${GREEN}OK${NC}"
+fi
+
+# 2. Clippy
+echo -n "Running clippy... "
+if ! cargo clippy --all-targets -- -D warnings > /dev/null 2>&1; then
+    echo -e "${RED}FAILED${NC}"
+    echo -e "${YELLOW}Run:${NC} cargo clippy --all-targets"
+    FAILED=1
+else
+    echo -e "${GREEN}OK${NC}"
+fi
+
+# 3. Tests
+echo -n "Running tests... "
+if ! cargo test --quiet > /dev/null 2>&1; then
+    echo -e "${RED}FAILED${NC}"
+    echo -e "${YELLOW}Run:${NC} cargo test"
+    FAILED=1
+else
+    echo -e "${GREEN}OK${NC}"
+fi
+
+echo ""
+
+if [ $FAILED -ne 0 ]; then
+    echo -e "${RED}Pre-commit checks failed.${NC}"
+    echo "Bypass with: git commit --no-verify"
+    exit 1
+fi
+
+echo -e "${GREEN}All checks passed!${NC}"

@@ -3,7 +3,9 @@ mod python;
 
 use pyo3::prelude::*;
 
-pub use core::{Tokenizer, TokenizerError, CL100K_BASE_PATTERN, O200K_BASE_PATTERN, StreamingDecoder};
+pub use core::{
+    StreamingDecoder, Tokenizer, TokenizerError, CL100K_BASE_PATTERN, O200K_BASE_PATTERN,
+};
 
 /// splintr - Fast Rust BPE tokenizer with Python bindings
 ///
