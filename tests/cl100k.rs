@@ -5,6 +5,62 @@
 
 use splintr::{Tokenizer, CL100K_BASE_PATTERN};
 
+// =============================================================================
+// Exact Token ID Tests
+// =============================================================================
+
+/// Verify exact token IDs for "Hello world".
+#[test]
+fn test_cl100k_hello_world_tokens() {
+    let tokenizer = create_cl100k_tokenizer();
+    let tokens = tokenizer.encode("Hello world");
+    assert_eq!(
+        tokens,
+        vec![9906, 1917],
+        "Token IDs for 'Hello world' changed"
+    );
+}
+
+/// Verify exact token IDs for "Hello, world!".
+#[test]
+fn test_cl100k_hello_world_punctuation_tokens() {
+    let tokenizer = create_cl100k_tokenizer();
+    let tokens = tokenizer.encode("Hello, world!");
+    assert_eq!(
+        tokens,
+        vec![9906, 11, 1917, 0],
+        "Token IDs for 'Hello, world!' changed"
+    );
+}
+
+/// Verify exact token IDs for "你好世界".
+#[test]
+fn test_cl100k_chinese_tokens() {
+    let tokenizer = create_cl100k_tokenizer();
+    let tokens = tokenizer.encode("你好世界");
+    assert_eq!(
+        tokens,
+        vec![57668, 53901, 3574, 244, 98220],
+        "Token IDs for '你好世界' changed"
+    );
+}
+
+/// Verify exact token IDs for "Hello 🌍 World!".
+#[test]
+fn test_cl100k_emoji_tokens() {
+    let tokenizer = create_cl100k_tokenizer();
+    let tokens = tokenizer.encode("Hello 🌍 World!");
+    assert_eq!(
+        tokens,
+        vec![9906, 11410, 234, 235, 4435, 0],
+        "Token IDs for emoji text changed"
+    );
+}
+
+// =============================================================================
+// General Roundtrip Tests
+// =============================================================================
+
 /// Test basic encoding and decoding roundtrip.
 #[test]
 fn test_cl100k_encode_decode_roundtrip() {

@@ -41,6 +41,9 @@ tokenizer = Tokenizer.from_pretrained("cl100k_base")
 # Or load Llama 3 tokenizer (Meta) - supports all versions up to Llama 3.3
 # tokenizer = Tokenizer.from_pretrained("llama3")
 
+# Or load DeepSeek V3 tokenizer (DeepSeek) - with ByteLevel BPE encoding
+# tokenizer = Tokenizer.from_pretrained("deepseek_v3")
+
 # Encode text to token IDs
 tokens = tokenizer.encode("Hello, world!")
 print(tokens)  # [9906, 11, 1917, 0]
@@ -91,7 +94,7 @@ let batch_tokens = tokenizer.encode_batch(&texts);
 
 **Built for production:**
 
-- **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), and Llama 3 family (Meta), with a familiar API
+- **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), Llama 3 family (Meta), and DeepSeek V3 (DeepSeek), with a familiar API
 - **Streaming decoder** - Real-time LLM output display with proper UTF-8 handling
 - **54 agent tokens** - Built-in support for chat, CoT reasoning, ReAct agents, tool calling, RAG citations
 - **Battle-tested algorithms** - PCRE2 with JIT, Aho-Corasick for special tokens, linked-list BPE
@@ -245,7 +248,7 @@ print(decoder.flush())
 
 ```python
 # Load pretrained model (includes vocabulary and special tokens)
-tokenizer = Tokenizer.from_pretrained("cl100k_base")  # or "o200k_base", "llama3"
+tokenizer = Tokenizer.from_pretrained("cl100k_base")  # or "o200k_base", "llama3", "deepseek_v3"
 
 # Load from custom vocabulary file
 tokenizer = Tokenizer(
@@ -298,11 +301,12 @@ See the [API documentation](https://docs.rs/splintr) for complete details.
 
 ## Supported Vocabularies
 
-| Vocabulary    | Used By                       | Vocabulary Size | Special Tokens | Import Constant       |
-| ------------- | ----------------------------- | --------------- | -------------- | --------------------- |
-| `cl100k_base` | GPT-4, GPT-3.5-turbo          | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN` |
-| `o200k_base`  | GPT-4o                        | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`  |
-| `llama3`      | Llama 3, 3.1, 3.2, 3.3 (Meta) | ~128,000        | 11 + 54 agent  | `LLAMA3_PATTERN`      |
+| Vocabulary     | Used By                       | Vocabulary Size | Special Tokens | Import Constant       |
+| -------------- | ----------------------------- | --------------- | -------------- | --------------------- |
+| `cl100k_base`  | GPT-4, GPT-3.5-turbo          | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN` |
+| `o200k_base`   | GPT-4o                        | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`  |
+| `llama3`       | Llama 3, 3.1, 3.2, 3.3 (Meta) | ~128,000        | 11 + 54 agent  | `LLAMA3_PATTERN`      |
+| `deepseek_v3`  | DeepSeek V3, DeepSeek R1      | ~128,000        | 17 + 54 agent  | `LLAMA3_PATTERN`      |
 
 **OpenAI standard tokens:**
 
@@ -313,12 +317,16 @@ See the [API documentation](https://docs.rs/splintr) for complete details.
 
 - **llama3**: `<|begin_of_text|>`, `<|end_of_text|>`, `<|start_header_id|>`, `<|end_header_id|>`, `<|eot_id|>`, `<|eom_id|>` (3.1+), `<|python_tag|>` (3.1+), `<|step_id|>` (3.2-Vision), `<|image|>` (3.2-Vision)
 
+**DeepSeek V3 standard tokens:**
+
+- **deepseek_v3**: `<｜begin▁of▁sentence｜>`, `<｜end▁of▁sentence｜>`, `<think>`, `</think>`, `<｜User｜>`, `<｜Assistant｜>`, `<|EOT|>`, FIM tokens (`<｜fim▁hole｜>`, `<｜fim▁begin｜>`, `<｜fim▁end｜>`), tool calling tokens (`<｜tool▁calls▁begin｜>`, `<｜tool▁call▁begin｜>`, etc.)
+
 ### Agent Tokens (54 per model)
 
 Splintr extends all vocabularies with tokens for building agent systems. See [docs/special_tokens.md](docs/special_tokens.md) for complete documentation.
 
 ```python
-from splintr import Tokenizer, CL100K_AGENT_TOKENS, LLAMA3_AGENT_TOKENS
+from splintr import Tokenizer, CL100K_AGENT_TOKENS, LLAMA3_AGENT_TOKENS, DEEPSEEK_V3_AGENT_TOKENS
 
 # OpenAI models
 tokenizer = Tokenizer.from_pretrained("cl100k_base")
@@ -334,6 +342,14 @@ print(LLAMA3_AGENT_TOKENS.THINK)           # 128305
 print(LLAMA3_AGENT_TOKENS.FUNCTION)        # 128315
 print(LLAMA3_AGENT_TOKENS.BEGIN_OF_TEXT)   # 128000 (official Meta token)
 print(LLAMA3_AGENT_TOKENS.IMAGE)           # 128256 (official Meta 3.2-Vision token)
+
+# DeepSeek V3 models (includes native thinking tokens for R1-style reasoning)
+tokenizer = Tokenizer.from_pretrained("deepseek_v3")
+text = "<think>Let me reason...</think>The answer is 42."
+tokens = tokenizer.encode_with_special(text)
+print(DEEPSEEK_V3_AGENT_TOKENS.THINK_NATIVE)      # 128798 (native DeepSeek token)
+print(DEEPSEEK_V3_AGENT_TOKENS.USER_NATIVE)       # 128803
+print(DEEPSEEK_V3_AGENT_TOKENS.ASSISTANT_NATIVE)  # 128804
 ```
 
 | Category     | Tokens                                              | Purpose                    |

@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use thiserror::Error;
 
 use super::bpe::byte_pair_encode;
+use super::byte_level::{byte_level_decode_bytes, byte_level_encode};
 use super::vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, VocabError};
 
 #[derive(Error, Debug)]
@@ -558,6 +559,7 @@ const DEFAULT_CACHE_SIZE: usize = 4096;
 /// - FxHashMap for fast lookups
 /// - Aho-Corasick for fast multi-pattern special token matching
 /// - LRU cache for frequently encoded chunks
+/// - Optional ByteLevel encoding for GPT-2/Llama/DeepSeek style tokenizers
 pub struct Tokenizer {
     encoder: FxHashMap<Vec<u8>, u32>,
     decoder: FxHashMap<u32, Vec<u8>>,
@@ -567,6 +569,8 @@ pub struct Tokenizer {
     regex: Regex,
     special_matcher: Option<AhoCorasick>,
     chunk_cache: Mutex<LruCache<u64, Vec<u32>>>,
+    /// Whether to use ByteLevel encoding (for GPT-2/Llama/DeepSeek style tokenizers)
+    use_byte_level: bool,
 }
 
 impl Tokenizer {
@@ -581,7 +585,24 @@ impl Tokenizer {
         special_tokens: FxHashMap<String, u32>,
         pattern: &str,
     ) -> Result<Self, TokenizerError> {
-        Self::with_cache_size(encoder, special_tokens, pattern, DEFAULT_CACHE_SIZE)
+        Self::with_options(encoder, special_tokens, pattern, DEFAULT_CACHE_SIZE, false)
+    }
+
+    /// Create a new tokenizer with ByteLevel encoding enabled.
+    ///
+    /// ByteLevel encoding is required for GPT-2, Llama, DeepSeek, and similar tokenizers
+    /// that use a byte-to-unicode mapping for handling arbitrary byte sequences.
+    ///
+    /// # Arguments
+    /// * `encoder` - Map of byte sequences to token IDs
+    /// * `special_tokens` - Map of special token strings to token IDs
+    /// * `pattern` - PCRE2 regex pattern for tokenization
+    pub fn new_byte_level(
+        encoder: FxHashMap<Vec<u8>, u32>,
+        special_tokens: FxHashMap<String, u32>,
+        pattern: &str,
+    ) -> Result<Self, TokenizerError> {
+        Self::with_options(encoder, special_tokens, pattern, DEFAULT_CACHE_SIZE, true)
     }
 
     /// Create a new tokenizer with custom cache size.
@@ -590,6 +611,24 @@ impl Tokenizer {
         special_tokens: FxHashMap<String, u32>,
         pattern: &str,
         cache_size: usize,
+    ) -> Result<Self, TokenizerError> {
+        Self::with_options(encoder, special_tokens, pattern, cache_size, false)
+    }
+
+    /// Create a new tokenizer with full configuration options.
+    ///
+    /// # Arguments
+    /// * `encoder` - Map of byte sequences to token IDs
+    /// * `special_tokens` - Map of special token strings to token IDs
+    /// * `pattern` - PCRE2 regex pattern for tokenization
+    /// * `cache_size` - Size of the LRU cache for encoded chunks
+    /// * `use_byte_level` - Enable ByteLevel encoding for GPT-2/Llama/DeepSeek style tokenizers
+    pub fn with_options(
+        encoder: FxHashMap<Vec<u8>, u32>,
+        special_tokens: FxHashMap<String, u32>,
+        pattern: &str,
+        cache_size: usize,
+        use_byte_level: bool,
     ) -> Result<Self, TokenizerError> {
         // Build decoder maps
         let decoder = build_decoder(&encoder);
@@ -626,6 +665,7 @@ impl Tokenizer {
             regex,
             special_matcher,
             chunk_cache,
+            use_byte_level,
         })
     }
 
@@ -649,6 +689,19 @@ impl Tokenizer {
         Self::new(encoder, special_tokens, pattern)
     }
 
+    /// Create a tokenizer from raw vocabulary bytes with ByteLevel encoding.
+    ///
+    /// Use this for GPT-2, Llama, DeepSeek, and similar tokenizers that use
+    /// ByteLevel preprocessing.
+    pub fn from_bytes_byte_level(
+        vocab_data: &[u8],
+        pattern: &str,
+        special_tokens: FxHashMap<String, u32>,
+    ) -> Result<Self, TokenizerError> {
+        let encoder = load_tiktoken_bpe(vocab_data)?;
+        Self::new_byte_level(encoder, special_tokens, pattern)
+    }
+
     /// Compute a fast hash for a byte slice to use as an LRU cache key.
     ///
     /// Uses FxHasher which is significantly faster than the default SipHash
@@ -664,30 +717,40 @@ impl Tokenizer {
     /// Encode a single text chunk with LRU caching.
     ///
     /// This method implements a multi-tier encoding strategy:
-    /// 1. **Direct lookup**: Check if the entire chunk is a known token (O(1))
-    /// 2. **Cache hit**: Return cached BPE result if available (O(1))
-    /// 3. **BPE encode**: Perform full BPE encoding and cache the result
+    /// 1. **ByteLevel preprocessing** (if enabled): Convert bytes to ByteLevel representation
+    /// 2. **Direct lookup**: Check if the entire chunk is a known token (O(1))
+    /// 3. **Cache hit**: Return cached BPE result if available (O(1))
+    /// 4. **BPE encode**: Perform full BPE encoding and cache the result
     ///
     /// The cache dramatically improves performance for:
     /// - Repeated encoding of the same text
     /// - Common substrings across different inputs
     /// - Text with repetitive patterns (e.g., log files, structured data)
     fn encode_chunk(&self, slice: &[u8]) -> Vec<u32> {
+        // Apply ByteLevel preprocessing if enabled
+        let bytes_to_encode: std::borrow::Cow<[u8]> = if self.use_byte_level {
+            // Convert raw bytes to ByteLevel representation
+            let byte_level_str = byte_level_encode(slice);
+            std::borrow::Cow::Owned(byte_level_str.into_bytes())
+        } else {
+            std::borrow::Cow::Borrowed(slice)
+        };
+
         // Fast path: check if entire chunk is a known token
-        if let Some(&rank) = self.encoder.get(slice) {
+        if let Some(&rank) = self.encoder.get(bytes_to_encode.as_ref()) {
             return vec![rank];
         }
 
-        // Check cache
-        let hash = Self::hash_slice(slice);
+        // Check cache (using hash of the ByteLevel-encoded bytes)
+        let hash = Self::hash_slice(bytes_to_encode.as_ref());
         if let Ok(mut cache) = self.chunk_cache.lock() {
             if let Some(cached) = cache.get(&hash) {
                 return cached.clone();
             }
         }
 
-        // Perform BPE encoding
-        let result = byte_pair_encode(slice, &self.encoder);
+        // Perform BPE encoding on (possibly ByteLevel-encoded) bytes
+        let result = byte_pair_encode(bytes_to_encode.as_ref(), &self.encoder);
 
         // Store in cache
         if let Ok(mut cache) = self.chunk_cache.lock() {
@@ -836,13 +899,27 @@ impl Tokenizer {
     }
 
     /// Decode token IDs back to bytes.
+    ///
+    /// If ByteLevel encoding was used, this returns the raw bytes after reversing
+    /// the ByteLevel transformation.
     pub fn decode_bytes(&self, tokens: &[u32]) -> Vec<u8> {
         let mut result = Vec::with_capacity(tokens.len() * 4);
 
         for &token in tokens {
             if let Some(bytes) = self.decoder.get(&token) {
-                result.extend_from_slice(bytes);
+                if self.use_byte_level {
+                    // Regular tokens are ByteLevel-encoded, decode them
+                    if let Some(decoded) = byte_level_decode_bytes(bytes) {
+                        result.extend_from_slice(&decoded);
+                    } else {
+                        // Fallback if ByteLevel decode fails
+                        result.extend_from_slice(bytes);
+                    }
+                } else {
+                    result.extend_from_slice(bytes);
+                }
             } else if let Some(special) = self.special_tokens_decoder.get(&token) {
+                // Special tokens are NOT ByteLevel-encoded, emit them directly
                 result.extend_from_slice(special.as_bytes());
             }
         }

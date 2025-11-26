@@ -9,6 +9,40 @@ import pytest
 from splintr import Tokenizer, LLAMA3_AGENT_TOKENS, LLAMA3_PATTERN
 
 
+class TestLlama3ExactTokens:
+    """Exact token ID verification tests.
+
+    These tests verify specific token IDs to catch any regression in
+    encoding or vocabulary changes.
+    """
+
+    @pytest.fixture
+    def tokenizer(self):
+        return Tokenizer.from_pretrained("llama3")
+
+    def test_hello_world_tokens(self, tokenizer):
+        """Verify exact token IDs for 'Hello world'."""
+        tokens = tokenizer.encode("Hello world")
+        assert tokens == [9906, 1917], f"Expected [9906, 1917], got {tokens}"
+
+    def test_hello_world_punctuation_tokens(self, tokenizer):
+        """Verify exact token IDs for 'Hello, world!'."""
+        tokens = tokenizer.encode("Hello, world!")
+        assert tokens == [9906, 11, 1917, 0], f"Expected [9906, 11, 1917, 0], got {tokens}"
+
+    def test_chinese_tokens(self, tokenizer):
+        """Verify exact token IDs for '你好世界'."""
+        tokens = tokenizer.encode("你好世界")
+        assert tokens == [57668, 53901, 102616], f"Expected [57668, 53901, 102616], got {tokens}"
+
+    def test_emoji_tokens(self, tokenizer):
+        """Verify exact token IDs for 'Hello 🌍 World!'."""
+        tokens = tokenizer.encode("Hello 🌍 World!")
+        assert tokens == [9906, 11410, 234, 235, 4435, 0], (
+            f"Expected [9906, 11410, 234, 235, 4435, 0], got {tokens}"
+        )
+
+
 class TestLlama3Tokenizer:
     """Test suite for Llama 3 tokenizer."""
 

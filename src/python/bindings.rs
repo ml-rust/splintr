@@ -50,6 +50,9 @@ const O200K_BASE_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/o200
 /// Bundled Llama 3 vocabulary (Llama 3/3.1/3.2/3.3)
 const LLAMA3_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/llama3.tiktoken");
 
+/// Bundled DeepSeek V3 vocabulary
+const DEEPSEEK_V3_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/deepseek_v3.tiktoken");
+
 // =============================================================================
 // Special Token Definitions
 // =============================================================================
@@ -511,6 +514,136 @@ fn llama3_special_tokens() -> FxHashMap<String, u32> {
     special
 }
 
+/// Get the standard special tokens for DeepSeek V3 encoding.
+///
+/// Returns a map of special token strings to their token IDs for DeepSeek V3 models.
+///
+/// ## DeepSeek Native Tokens (0-2, 128798-128814)
+/// - `<｜begin▁of▁sentence｜>`: BOS token (0)
+/// - `<｜end▁of▁sentence｜>`: EOS token (1)
+/// - `<｜▁pad▁｜>`: PAD token (2)
+/// - `<think>` / `</think>`: Thinking tokens (128798-128799)
+/// - `<｜fim▁hole｜>` / `<｜fim▁begin｜>` / `<｜fim▁end｜>`: FIM tokens (128800-128802)
+/// - `<｜User｜>`: User message marker (128803)
+/// - `<｜Assistant｜>`: Assistant message marker (128804)
+/// - `<|EOT|>`: End of turn (128805)
+/// - Tool calling tokens (128806-128814)
+///
+/// ## Agent Tokens (128900-128953)
+/// Extended vocabulary for chat and agent applications. See module docs above.
+fn deepseek_v3_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    // DeepSeek native special tokens (0-2)
+    special.insert("<｜begin▁of▁sentence｜>".to_string(), 0);
+    special.insert("<｜end▁of▁sentence｜>".to_string(), 1);
+    special.insert("<｜▁pad▁｜>".to_string(), 2);
+
+    // Thinking tokens (128798-128799)
+    special.insert("<think>".to_string(), 128798);
+    special.insert("</think>".to_string(), 128799);
+
+    // FIM (Fill-in-the-Middle) tokens (128800-128802)
+    special.insert("<｜fim▁hole｜>".to_string(), 128800);
+    special.insert("<｜fim▁begin｜>".to_string(), 128801);
+    special.insert("<｜fim▁end｜>".to_string(), 128802);
+
+    // Chat tokens (128803-128805)
+    special.insert("<｜User｜>".to_string(), 128803);
+    special.insert("<｜Assistant｜>".to_string(), 128804);
+    special.insert("<|EOT|>".to_string(), 128805);
+
+    // Tool calling tokens (128806-128814)
+    special.insert("<｜tool▁calls▁begin｜>".to_string(), 128806);
+    special.insert("<｜tool▁calls▁end｜>".to_string(), 128807);
+    special.insert("<｜tool▁call▁begin｜>".to_string(), 128808);
+    special.insert("<｜tool▁call▁end｜>".to_string(), 128809);
+    special.insert("<｜tool▁outputs▁begin｜>".to_string(), 128810);
+    special.insert("<｜tool▁outputs▁end｜>".to_string(), 128811);
+    special.insert("<｜tool▁output▁begin｜>".to_string(), 128812);
+    special.insert("<｜tool▁output▁end｜>".to_string(), 128813);
+    special.insert("<｜tool▁sep｜>".to_string(), 128814);
+
+    // Agent tokens (128900+) - These extend the vocabulary without conflicting
+    // with DeepSeek's reserved range (128000-128814)
+
+    // Core conversation structure
+    special.insert("<|system|>".to_string(), 128900);
+    special.insert("<|user|>".to_string(), 128901);
+    special.insert("<|assistant|>".to_string(), 128902);
+    special.insert("<|im_start|>".to_string(), 128903);
+    special.insert("<|im_end|>".to_string(), 128904);
+
+    // Reasoning/thinking tokens (System 2 / Chain-of-Thought)
+    special.insert("<|think|>".to_string(), 128905);
+    special.insert("<|/think|>".to_string(), 128906);
+
+    // ReAct agent loop tokens
+    special.insert("<|plan|>".to_string(), 128907);
+    special.insert("<|/plan|>".to_string(), 128908);
+    special.insert("<|step|>".to_string(), 128909);
+    special.insert("<|/step|>".to_string(), 128910);
+    special.insert("<|act|>".to_string(), 128911);
+    special.insert("<|/act|>".to_string(), 128912);
+    special.insert("<|observe|>".to_string(), 128913);
+    special.insert("<|/observe|>".to_string(), 128914);
+
+    // Tool/function calling
+    special.insert("<|function|>".to_string(), 128915);
+    special.insert("<|/function|>".to_string(), 128916);
+    special.insert("<|result|>".to_string(), 128917);
+    special.insert("<|/result|>".to_string(), 128918);
+    special.insert("<|error|>".to_string(), 128919);
+    special.insert("<|/error|>".to_string(), 128920);
+
+    // Code execution
+    special.insert("<|code|>".to_string(), 128921);
+    special.insert("<|/code|>".to_string(), 128922);
+    special.insert("<|output|>".to_string(), 128923);
+    special.insert("<|/output|>".to_string(), 128924);
+    special.insert("<|lang|>".to_string(), 128925);
+    special.insert("<|/lang|>".to_string(), 128926);
+
+    // RAG/context injection
+    special.insert("<|context|>".to_string(), 128927);
+    special.insert("<|/context|>".to_string(), 128928);
+    special.insert("<|quote|>".to_string(), 128929);
+    special.insert("<|/quote|>".to_string(), 128930);
+    special.insert("<|cite|>".to_string(), 128931);
+    special.insert("<|/cite|>".to_string(), 128932);
+    special.insert("<|source|>".to_string(), 128933);
+    special.insert("<|/source|>".to_string(), 128934);
+
+    // Memory/state management
+    special.insert("<|memory|>".to_string(), 128935);
+    special.insert("<|/memory|>".to_string(), 128936);
+    special.insert("<|recall|>".to_string(), 128937);
+    special.insert("<|/recall|>".to_string(), 128938);
+
+    // Control tokens
+    special.insert("<|pad|>".to_string(), 128939);
+    special.insert("<|stop|>".to_string(), 128940);
+    special.insert("<|sep|>".to_string(), 128941);
+
+    // Multimodal placeholders
+    special.insert("<|image|>".to_string(), 128942);
+    special.insert("<|/image|>".to_string(), 128943);
+    special.insert("<|audio|>".to_string(), 128944);
+    special.insert("<|/audio|>".to_string(), 128945);
+    special.insert("<|video|>".to_string(), 128946);
+    special.insert("<|/video|>".to_string(), 128947);
+
+    // Document structure (semantic layout for parsing structured data)
+    special.insert("<|title|>".to_string(), 128948);
+    special.insert("<|/title|>".to_string(), 128949);
+    special.insert("<|section|>".to_string(), 128950);
+    special.insert("<|/section|>".to_string(), 128951);
+    special.insert("<|summary|>".to_string(), 128952);
+    special.insert("<|/summary|>".to_string(), 128953);
+
+    special
+}
+
 /// Python wrapper for the Rust Tokenizer.
 #[pyclass(name = "Tokenizer")]
 pub struct PyTokenizer {
@@ -546,9 +679,10 @@ impl PyTokenizer {
     /// - "cl100k_base" (GPT-4, GPT-3.5-turbo)
     /// - "o200k_base" (GPT-4o)
     /// - "llama3" / "llama3.1" / "llama3.2" / "llama3.3" (Meta Llama 3 family)
+    /// - "deepseek_v3" / "deepseek-v3" (DeepSeek V3)
     ///
     /// Args:
-    ///     name: Model name (e.g., "cl100k_base", "o200k_base", "llama3")
+    ///     name: Model name (e.g., "cl100k_base", "o200k_base", "llama3", "deepseek_v3")
     ///
     /// Returns:
     ///     Tokenizer instance
@@ -573,8 +707,16 @@ impl PyTokenizer {
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self { inner })
             }
+            "deepseek_v3" | "deepseek-v3" => {
+                let special = deepseek_v3_special_tokens();
+                // DeepSeek uses ByteLevel BPE encoding
+                let inner =
+                    Tokenizer::from_bytes_byte_level(DEEPSEEK_V3_VOCAB, LLAMA3_PATTERN, special)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                Ok(Self { inner })
+            }
             _ => Err(PyValueError::new_err(format!(
-                "Unknown pretrained model: {}. Supported: cl100k_base, o200k_base, llama3, llama3.1, llama3.2, llama3.3",
+                "Unknown pretrained model: {}. Supported: cl100k_base, o200k_base, llama3, llama3.1, llama3.2, llama3.3, deepseek_v3",
                 name
             ))),
         }
@@ -1737,4 +1879,332 @@ impl PyLlama3AgentTokens {
     /// End of summary (128353)
     #[classattr]
     const SUMMARY_END: u32 = 128353;
+}
+
+/// Agent token IDs for DeepSeek V3.
+///
+/// Provides constant token IDs for building chat models, reasoning systems,
+/// and autonomous agents. Includes both official DeepSeek tokens (0-2, 128798-128814)
+/// and splintr agent tokens (128900+).
+///
+/// # Python Example
+///
+/// ```python
+/// from splintr import DEEPSEEK_V3_AGENT_TOKENS
+///
+/// # Official DeepSeek tokens
+/// bos = DEEPSEEK_V3_AGENT_TOKENS.BEGIN_OF_SENTENCE   # 0
+/// eos = DEEPSEEK_V3_AGENT_TOKENS.END_OF_SENTENCE     # 1
+/// user = DEEPSEEK_V3_AGENT_TOKENS.USER_NATIVE        # 128803
+///
+/// # Splintr agent tokens
+/// system_id = DEEPSEEK_V3_AGENT_TOKENS.SYSTEM        # 128900
+/// think_id = DEEPSEEK_V3_AGENT_TOKENS.THINK          # 128905
+///
+/// # Use with tokenizer
+/// tokenizer = Tokenizer.from_pretrained("deepseek_v3")
+/// tokens = tokenizer.encode_with_special("<think>reasoning</think>")
+/// assert DEEPSEEK_V3_AGENT_TOKENS.THINK_NATIVE in tokens
+/// ```
+#[pyclass(name = "DEEPSEEK_V3_AGENT_TOKENS", frozen)]
+pub struct PyDeepSeekV3AgentTokens;
+
+#[pymethods]
+impl PyDeepSeekV3AgentTokens {
+    // =========================================================================
+    // Official DeepSeek Native Tokens (0-2)
+    // =========================================================================
+
+    /// Begin of sentence token (0)
+    #[classattr]
+    const BEGIN_OF_SENTENCE: u32 = 0;
+    /// End of sentence token (1)
+    #[classattr]
+    const END_OF_SENTENCE: u32 = 1;
+    /// Padding token (2)
+    #[classattr]
+    const PAD_NATIVE: u32 = 2;
+
+    // =========================================================================
+    // DeepSeek Thinking Tokens (128798-128799)
+    // =========================================================================
+
+    /// Native thinking start token (128798)
+    #[classattr]
+    const THINK_NATIVE: u32 = 128798;
+    /// Native thinking end token (128799)
+    #[classattr]
+    const THINK_END_NATIVE: u32 = 128799;
+
+    // =========================================================================
+    // DeepSeek FIM Tokens (128800-128802)
+    // =========================================================================
+
+    /// Fill-in-the-middle hole marker (128800)
+    #[classattr]
+    const FIM_HOLE: u32 = 128800;
+    /// Fill-in-the-middle begin marker (128801)
+    #[classattr]
+    const FIM_BEGIN: u32 = 128801;
+    /// Fill-in-the-middle end marker (128802)
+    #[classattr]
+    const FIM_END: u32 = 128802;
+
+    // =========================================================================
+    // DeepSeek Chat Tokens (128803-128805)
+    // =========================================================================
+
+    /// Native user message marker (128803)
+    #[classattr]
+    const USER_NATIVE: u32 = 128803;
+    /// Native assistant message marker (128804)
+    #[classattr]
+    const ASSISTANT_NATIVE: u32 = 128804;
+    /// End of turn marker (128805)
+    #[classattr]
+    const EOT: u32 = 128805;
+
+    // =========================================================================
+    // DeepSeek Tool Calling Tokens (128806-128814)
+    // =========================================================================
+
+    /// Tool calls begin marker (128806)
+    #[classattr]
+    const TOOL_CALLS_BEGIN: u32 = 128806;
+    /// Tool calls end marker (128807)
+    #[classattr]
+    const TOOL_CALLS_END: u32 = 128807;
+    /// Tool call begin marker (128808)
+    #[classattr]
+    const TOOL_CALL_BEGIN: u32 = 128808;
+    /// Tool call end marker (128809)
+    #[classattr]
+    const TOOL_CALL_END: u32 = 128809;
+    /// Tool outputs begin marker (128810)
+    #[classattr]
+    const TOOL_OUTPUTS_BEGIN: u32 = 128810;
+    /// Tool outputs end marker (128811)
+    #[classattr]
+    const TOOL_OUTPUTS_END: u32 = 128811;
+    /// Tool output begin marker (128812)
+    #[classattr]
+    const TOOL_OUTPUT_BEGIN: u32 = 128812;
+    /// Tool output end marker (128813)
+    #[classattr]
+    const TOOL_OUTPUT_END: u32 = 128813;
+    /// Tool separator (128814)
+    #[classattr]
+    const TOOL_SEP: u32 = 128814;
+
+    // =========================================================================
+    // Conversation Structure (128900-128904)
+    // =========================================================================
+
+    /// System message marker - defines assistant behavior (128900)
+    #[classattr]
+    const SYSTEM: u32 = 128900;
+    /// User message marker - human input (128901)
+    #[classattr]
+    const USER: u32 = 128901;
+    /// Assistant message marker - AI responses (128902)
+    #[classattr]
+    const ASSISTANT: u32 = 128902;
+    /// ChatML message start delimiter (128903)
+    #[classattr]
+    const IM_START: u32 = 128903;
+    /// ChatML message end delimiter (128904)
+    #[classattr]
+    const IM_END: u32 = 128904;
+
+    // =========================================================================
+    // Reasoning/Thinking (128905-128906)
+    // =========================================================================
+
+    /// Start of thinking block - Chain-of-Thought reasoning (128905)
+    #[classattr]
+    const THINK: u32 = 128905;
+    /// End of thinking block (128906)
+    #[classattr]
+    const THINK_END: u32 = 128906;
+
+    // =========================================================================
+    // ReAct Agent Loop (128907-128914)
+    // =========================================================================
+
+    /// Start of planning phase (128907)
+    #[classattr]
+    const PLAN: u32 = 128907;
+    /// End of planning phase (128908)
+    #[classattr]
+    const PLAN_END: u32 = 128908;
+    /// Start of step (128909)
+    #[classattr]
+    const STEP: u32 = 128909;
+    /// End of step (128910)
+    #[classattr]
+    const STEP_END: u32 = 128910;
+    /// Start of action (128911)
+    #[classattr]
+    const ACT: u32 = 128911;
+    /// End of action (128912)
+    #[classattr]
+    const ACT_END: u32 = 128912;
+    /// Start of observation (128913)
+    #[classattr]
+    const OBSERVE: u32 = 128913;
+    /// End of observation (128914)
+    #[classattr]
+    const OBSERVE_END: u32 = 128914;
+
+    // =========================================================================
+    // Tool/Function Calling (128915-128920)
+    // =========================================================================
+
+    /// Start of function call (128915)
+    #[classattr]
+    const FUNCTION: u32 = 128915;
+    /// End of function call (128916)
+    #[classattr]
+    const FUNCTION_END: u32 = 128916;
+    /// Start of function result (128917)
+    #[classattr]
+    const RESULT: u32 = 128917;
+    /// End of function result (128918)
+    #[classattr]
+    const RESULT_END: u32 = 128918;
+    /// Start of error block (128919)
+    #[classattr]
+    const ERROR: u32 = 128919;
+    /// End of error block (128920)
+    #[classattr]
+    const ERROR_END: u32 = 128920;
+
+    // =========================================================================
+    // Code Execution (128921-128926)
+    // =========================================================================
+
+    /// Start of code block (128921)
+    #[classattr]
+    const CODE: u32 = 128921;
+    /// End of code block (128922)
+    #[classattr]
+    const CODE_END: u32 = 128922;
+    /// Start of output (128923)
+    #[classattr]
+    const OUTPUT: u32 = 128923;
+    /// End of output (128924)
+    #[classattr]
+    const OUTPUT_END: u32 = 128924;
+    /// Start of language tag (128925)
+    #[classattr]
+    const LANG: u32 = 128925;
+    /// End of language tag (128926)
+    #[classattr]
+    const LANG_END: u32 = 128926;
+
+    // =========================================================================
+    // RAG/Citations (128927-128934)
+    // =========================================================================
+
+    /// Start of context block (128927)
+    #[classattr]
+    const CONTEXT: u32 = 128927;
+    /// End of context block (128928)
+    #[classattr]
+    const CONTEXT_END: u32 = 128928;
+    /// Start of quote (128929)
+    #[classattr]
+    const QUOTE: u32 = 128929;
+    /// End of quote (128930)
+    #[classattr]
+    const QUOTE_END: u32 = 128930;
+    /// Start of citation (128931)
+    #[classattr]
+    const CITE: u32 = 128931;
+    /// End of citation (128932)
+    #[classattr]
+    const CITE_END: u32 = 128932;
+    /// Start of source (128933)
+    #[classattr]
+    const SOURCE: u32 = 128933;
+    /// End of source (128934)
+    #[classattr]
+    const SOURCE_END: u32 = 128934;
+
+    // =========================================================================
+    // Memory/State (128935-128938)
+    // =========================================================================
+
+    /// Start of memory block (128935)
+    #[classattr]
+    const MEMORY: u32 = 128935;
+    /// End of memory block (128936)
+    #[classattr]
+    const MEMORY_END: u32 = 128936;
+    /// Start of recall block (128937)
+    #[classattr]
+    const RECALL: u32 = 128937;
+    /// End of recall block (128938)
+    #[classattr]
+    const RECALL_END: u32 = 128938;
+
+    // =========================================================================
+    // Control Tokens (128939-128941)
+    // =========================================================================
+
+    /// Padding token (128939)
+    #[classattr]
+    const PAD: u32 = 128939;
+    /// Stop token (128940)
+    #[classattr]
+    const STOP: u32 = 128940;
+    /// Separator token (128941)
+    #[classattr]
+    const SEP: u32 = 128941;
+
+    // =========================================================================
+    // Multimodal (128942-128947)
+    // =========================================================================
+
+    /// Start of image (128942)
+    #[classattr]
+    const IMAGE: u32 = 128942;
+    /// End of image (128943)
+    #[classattr]
+    const IMAGE_END: u32 = 128943;
+    /// Start of audio (128944)
+    #[classattr]
+    const AUDIO: u32 = 128944;
+    /// End of audio (128945)
+    #[classattr]
+    const AUDIO_END: u32 = 128945;
+    /// Start of video (128946)
+    #[classattr]
+    const VIDEO: u32 = 128946;
+    /// End of video (128947)
+    #[classattr]
+    const VIDEO_END: u32 = 128947;
+
+    // =========================================================================
+    // Document Structure (128948-128953)
+    // =========================================================================
+
+    /// Start of title - document/section title (128948)
+    #[classattr]
+    const TITLE: u32 = 128948;
+    /// End of title (128949)
+    #[classattr]
+    const TITLE_END: u32 = 128949;
+    /// Start of section - semantic document section (128950)
+    #[classattr]
+    const SECTION: u32 = 128950;
+    /// End of section (128951)
+    #[classattr]
+    const SECTION_END: u32 = 128951;
+    /// Start of summary - condensed content summary (128952)
+    #[classattr]
+    const SUMMARY: u32 = 128952;
+    /// End of summary (128953)
+    #[classattr]
+    const SUMMARY_END: u32 = 128953;
 }
