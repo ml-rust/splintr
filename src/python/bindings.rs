@@ -39,13 +39,16 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rustc_hash::FxHashMap;
 
-use crate::core::{Tokenizer, CL100K_BASE_PATTERN, O200K_BASE_PATTERN};
+use crate::core::{Tokenizer, CL100K_BASE_PATTERN, LLAMA3_PATTERN, O200K_BASE_PATTERN};
 
 /// Bundled cl100k_base vocabulary (GPT-4, GPT-3.5-turbo)
 const CL100K_BASE_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/cl100k_base.tiktoken");
 
 /// Bundled o200k_base vocabulary (GPT-4o)
 const O200K_BASE_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/o200k_base.tiktoken");
+
+/// Bundled Llama 3 vocabulary (Llama 3/3.1/3.2/3.3)
+const LLAMA3_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/llama3.tiktoken");
 
 // =============================================================================
 // Special Token Definitions
@@ -392,6 +395,122 @@ fn o200k_base_special_tokens() -> FxHashMap<String, u32> {
     special
 }
 
+/// Get the standard special tokens for Llama 3/3.1/3.2/3.3 encoding.
+///
+/// Returns a map of special token strings to their token IDs for Meta's
+/// Llama 3 family of models.
+///
+/// ## Meta Standard Tokens (128000-128010, 128256)
+/// - `<|begin_of_text|>`: Start of text marker (128000)
+/// - `<|end_of_text|>`: End of text marker (128001)
+/// - `<|finetune_right_pad_id|>`: Padding token for fine-tuning (128004)
+/// - `<|step_id|>`: Step marker for reasoning (128005, added in 3.2-Vision)
+/// - `<|start_header_id|>`: Header start marker (128006)
+/// - `<|end_header_id|>`: Header end marker (128007)
+/// - `<|eom_id|>`: End of message marker for tool use (128008, added in 3.1)
+/// - `<|eot_id|>`: End of turn marker (128009)
+/// - `<|python_tag|>`: Python code interpreter marker (128010, added in 3.1)
+/// - `<|image|>`: Image placeholder for vision models (128256, added in 3.2-Vision)
+///
+/// ## Agent Tokens (128300-128353)
+/// Extended vocabulary for chat and agent applications. See module docs above.
+fn llama3_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    // Meta standard special tokens (128000-128010)
+    // Based on official Llama 3.3 and 3.2-Vision tokenizer_config.json
+    special.insert("<|begin_of_text|>".to_string(), 128000);
+    special.insert("<|end_of_text|>".to_string(), 128001);
+    special.insert("<|reserved_special_token_0|>".to_string(), 128002);
+    special.insert("<|reserved_special_token_1|>".to_string(), 128003);
+    special.insert("<|finetune_right_pad_id|>".to_string(), 128004); // Added in Llama 3.1
+    special.insert("<|step_id|>".to_string(), 128005); // Added in Llama 3.2-Vision (was reserved_special_token_2)
+    special.insert("<|start_header_id|>".to_string(), 128006);
+    special.insert("<|end_header_id|>".to_string(), 128007);
+    special.insert("<|eom_id|>".to_string(), 128008); // Added in Llama 3.1 - End of Message
+    special.insert("<|eot_id|>".to_string(), 128009);
+    special.insert("<|python_tag|>".to_string(), 128010); // Added in Llama 3.1 - Code interpreter
+
+    // Agent tokens (128300+) - These extend the vocabulary without conflicting
+    // with Meta's reserved range
+
+    // Core conversation structure
+    special.insert("<|system|>".to_string(), 128300);
+    special.insert("<|user|>".to_string(), 128301);
+    special.insert("<|assistant|>".to_string(), 128302);
+    special.insert("<|im_start|>".to_string(), 128303);
+    special.insert("<|im_end|>".to_string(), 128304);
+
+    // Reasoning/thinking tokens (System 2 / Chain-of-Thought)
+    special.insert("<|think|>".to_string(), 128305);
+    special.insert("<|/think|>".to_string(), 128306);
+
+    // ReAct agent loop tokens
+    special.insert("<|plan|>".to_string(), 128307);
+    special.insert("<|/plan|>".to_string(), 128308);
+    special.insert("<|step|>".to_string(), 128309);
+    special.insert("<|/step|>".to_string(), 128310);
+    special.insert("<|act|>".to_string(), 128311);
+    special.insert("<|/act|>".to_string(), 128312);
+    special.insert("<|observe|>".to_string(), 128313);
+    special.insert("<|/observe|>".to_string(), 128314);
+
+    // Tool/function calling
+    special.insert("<|function|>".to_string(), 128315);
+    special.insert("<|/function|>".to_string(), 128316);
+    special.insert("<|result|>".to_string(), 128317);
+    special.insert("<|/result|>".to_string(), 128318);
+    special.insert("<|error|>".to_string(), 128319);
+    special.insert("<|/error|>".to_string(), 128320);
+
+    // Code execution
+    special.insert("<|code|>".to_string(), 128321);
+    special.insert("<|/code|>".to_string(), 128322);
+    special.insert("<|output|>".to_string(), 128323);
+    special.insert("<|/output|>".to_string(), 128324);
+    special.insert("<|lang|>".to_string(), 128325);
+    special.insert("<|/lang|>".to_string(), 128326);
+
+    // RAG/context injection
+    special.insert("<|context|>".to_string(), 128327);
+    special.insert("<|/context|>".to_string(), 128328);
+    special.insert("<|quote|>".to_string(), 128329);
+    special.insert("<|/quote|>".to_string(), 128330);
+    special.insert("<|cite|>".to_string(), 128331);
+    special.insert("<|/cite|>".to_string(), 128332);
+    special.insert("<|source|>".to_string(), 128333);
+    special.insert("<|/source|>".to_string(), 128334);
+
+    // Memory/state management
+    special.insert("<|memory|>".to_string(), 128335);
+    special.insert("<|/memory|>".to_string(), 128336);
+    special.insert("<|recall|>".to_string(), 128337);
+    special.insert("<|/recall|>".to_string(), 128338);
+
+    // Control tokens
+    special.insert("<|pad|>".to_string(), 128339);
+    special.insert("<|stop|>".to_string(), 128340);
+    special.insert("<|sep|>".to_string(), 128341);
+
+    // Multimodal placeholders - aligned with official Meta <|image|> token (128256)
+    special.insert("<|image|>".to_string(), 128256); // Official Meta token from Llama 3.2-Vision
+    special.insert("<|/image|>".to_string(), 128257);
+    special.insert("<|audio|>".to_string(), 128258);
+    special.insert("<|/audio|>".to_string(), 128259);
+    special.insert("<|video|>".to_string(), 128260);
+    special.insert("<|/video|>".to_string(), 128261);
+
+    // Document structure (semantic layout for parsing structured data)
+    special.insert("<|title|>".to_string(), 128348);
+    special.insert("<|/title|>".to_string(), 128349);
+    special.insert("<|section|>".to_string(), 128350);
+    special.insert("<|/section|>".to_string(), 128351);
+    special.insert("<|summary|>".to_string(), 128352);
+    special.insert("<|/summary|>".to_string(), 128353);
+
+    special
+}
+
 /// Python wrapper for the Rust Tokenizer.
 #[pyclass(name = "Tokenizer")]
 pub struct PyTokenizer {
@@ -426,9 +545,10 @@ impl PyTokenizer {
     /// Currently supported:
     /// - "cl100k_base" (GPT-4, GPT-3.5-turbo)
     /// - "o200k_base" (GPT-4o)
+    /// - "llama3" / "llama3.1" / "llama3.2" / "llama3.3" (Meta Llama 3 family)
     ///
     /// Args:
-    ///     name: Model name (e.g., "cl100k_base", "o200k_base")
+    ///     name: Model name (e.g., "cl100k_base", "o200k_base", "llama3")
     ///
     /// Returns:
     ///     Tokenizer instance
@@ -447,8 +567,14 @@ impl PyTokenizer {
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self { inner })
             }
+            "llama3" | "llama3.1" | "llama3.2" | "llama3.3" => {
+                let special = llama3_special_tokens();
+                let inner = Tokenizer::from_bytes(LLAMA3_VOCAB, LLAMA3_PATTERN, special)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                Ok(Self { inner })
+            }
             _ => Err(PyValueError::new_err(format!(
-                "Unknown pretrained model: {}. Supported: cl100k_base, o200k_base",
+                "Unknown pretrained model: {}. Supported: cl100k_base, o200k_base, llama3, llama3.1, llama3.2, llama3.3",
                 name
             ))),
         }
@@ -1300,4 +1426,286 @@ impl PyO200KAgentTokens {
     /// End of summary (200072)
     #[classattr]
     const SUMMARY_END: u32 = 200072;
+}
+
+/// Agent token IDs for Llama 3/3.1/3.2/3.3.
+///
+/// Provides constant token IDs for building chat models, reasoning systems,
+/// and autonomous agents. Includes both official Meta tokens (128000-128010)
+/// and splintr agent tokens (128300+).
+///
+/// # Python Example
+///
+/// ```python
+/// from splintr import LLAMA3_AGENT_TOKENS
+///
+/// # Official Meta tokens
+/// bos = LLAMA3_AGENT_TOKENS.BEGIN_OF_TEXT     # 128000
+/// eot = LLAMA3_AGENT_TOKENS.EOT_ID            # 128009
+/// python = LLAMA3_AGENT_TOKENS.PYTHON_TAG     # 128010
+///
+/// # Splintr agent tokens
+/// system_id = LLAMA3_AGENT_TOKENS.SYSTEM      # 128300
+/// think_id = LLAMA3_AGENT_TOKENS.THINK        # 128305
+///
+/// # Use with tokenizer
+/// tokenizer = Tokenizer.from_pretrained("llama3")
+/// tokens = tokenizer.encode_with_special("<|think|>reasoning<|/think|>")
+/// assert LLAMA3_AGENT_TOKENS.THINK in tokens
+/// ```
+#[pyclass(name = "LLAMA3_AGENT_TOKENS", frozen)]
+pub struct PyLlama3AgentTokens;
+
+#[pymethods]
+impl PyLlama3AgentTokens {
+    // =========================================================================
+    // Official Meta Special Tokens (128000-128010)
+    // Based on Llama 3.3 tokenizer_config.json
+    // =========================================================================
+
+    /// Start of text marker (128000)
+    #[classattr]
+    const BEGIN_OF_TEXT: u32 = 128000;
+    /// End of text marker (128001)
+    #[classattr]
+    const END_OF_TEXT: u32 = 128001;
+    /// Padding token for fine-tuning - added in Llama 3.1 (128004)
+    #[classattr]
+    const FINETUNE_RIGHT_PAD_ID: u32 = 128004;
+    /// Start of header marker (128006)
+    #[classattr]
+    const START_HEADER_ID: u32 = 128006;
+    /// End of header marker (128007)
+    #[classattr]
+    const END_HEADER_ID: u32 = 128007;
+    /// End of message marker for tool use - added in Llama 3.1 (128008)
+    #[classattr]
+    const EOM_ID: u32 = 128008;
+    /// End of turn marker (128009)
+    #[classattr]
+    const EOT_ID: u32 = 128009;
+    /// Python code interpreter marker - added in Llama 3.1 (128010)
+    #[classattr]
+    const PYTHON_TAG: u32 = 128010;
+
+    // =========================================================================
+    // Llama 3.2-Vision Tokens (128005)
+    // =========================================================================
+
+    /// Step marker for reasoning - added in Llama 3.2-Vision (128005)
+    #[classattr]
+    const STEP_ID: u32 = 128005;
+
+    // =========================================================================
+    // Conversation Structure (128300-128304)
+    // =========================================================================
+
+    /// System message marker - defines assistant behavior (128300)
+    #[classattr]
+    const SYSTEM: u32 = 128300;
+    /// User message marker - human input (128301)
+    #[classattr]
+    const USER: u32 = 128301;
+    /// Assistant message marker - AI responses (128302)
+    #[classattr]
+    const ASSISTANT: u32 = 128302;
+    /// ChatML message start delimiter (128303)
+    #[classattr]
+    const IM_START: u32 = 128303;
+    /// ChatML message end delimiter (128304)
+    #[classattr]
+    const IM_END: u32 = 128304;
+
+    // =========================================================================
+    // Reasoning/Thinking (128305-128306)
+    // =========================================================================
+
+    /// Start of thinking block - Chain-of-Thought reasoning (128305)
+    #[classattr]
+    const THINK: u32 = 128305;
+    /// End of thinking block (128306)
+    #[classattr]
+    const THINK_END: u32 = 128306;
+
+    // =========================================================================
+    // ReAct Agent Loop (128307-128314)
+    // =========================================================================
+
+    /// Start of planning phase (128307)
+    #[classattr]
+    const PLAN: u32 = 128307;
+    /// End of planning phase (128308)
+    #[classattr]
+    const PLAN_END: u32 = 128308;
+    /// Start of step (128309)
+    #[classattr]
+    const STEP: u32 = 128309;
+    /// End of step (128310)
+    #[classattr]
+    const STEP_END: u32 = 128310;
+    /// Start of action (128311)
+    #[classattr]
+    const ACT: u32 = 128311;
+    /// End of action (128312)
+    #[classattr]
+    const ACT_END: u32 = 128312;
+    /// Start of observation (128313)
+    #[classattr]
+    const OBSERVE: u32 = 128313;
+    /// End of observation (128314)
+    #[classattr]
+    const OBSERVE_END: u32 = 128314;
+
+    // =========================================================================
+    // Tool/Function Calling (128315-128320)
+    // =========================================================================
+
+    /// Start of function call (128315)
+    #[classattr]
+    const FUNCTION: u32 = 128315;
+    /// End of function call (128316)
+    #[classattr]
+    const FUNCTION_END: u32 = 128316;
+    /// Start of function result (128317)
+    #[classattr]
+    const RESULT: u32 = 128317;
+    /// End of function result (128318)
+    #[classattr]
+    const RESULT_END: u32 = 128318;
+    /// Start of error block (128319)
+    #[classattr]
+    const ERROR: u32 = 128319;
+    /// End of error block (128320)
+    #[classattr]
+    const ERROR_END: u32 = 128320;
+
+    // =========================================================================
+    // Code Execution (128321-128326)
+    // =========================================================================
+
+    /// Start of code block (128321)
+    #[classattr]
+    const CODE: u32 = 128321;
+    /// End of code block (128322)
+    #[classattr]
+    const CODE_END: u32 = 128322;
+    /// Start of output (128323)
+    #[classattr]
+    const OUTPUT: u32 = 128323;
+    /// End of output (128324)
+    #[classattr]
+    const OUTPUT_END: u32 = 128324;
+    /// Start of language tag (128325)
+    #[classattr]
+    const LANG: u32 = 128325;
+    /// End of language tag (128326)
+    #[classattr]
+    const LANG_END: u32 = 128326;
+
+    // =========================================================================
+    // RAG/Citations (128327-128334)
+    // =========================================================================
+
+    /// Start of context block (128327)
+    #[classattr]
+    const CONTEXT: u32 = 128327;
+    /// End of context block (128328)
+    #[classattr]
+    const CONTEXT_END: u32 = 128328;
+    /// Start of quote (128329)
+    #[classattr]
+    const QUOTE: u32 = 128329;
+    /// End of quote (128330)
+    #[classattr]
+    const QUOTE_END: u32 = 128330;
+    /// Start of citation (128331)
+    #[classattr]
+    const CITE: u32 = 128331;
+    /// End of citation (128332)
+    #[classattr]
+    const CITE_END: u32 = 128332;
+    /// Start of source (128333)
+    #[classattr]
+    const SOURCE: u32 = 128333;
+    /// End of source (128334)
+    #[classattr]
+    const SOURCE_END: u32 = 128334;
+
+    // =========================================================================
+    // Memory/State (128335-128338)
+    // =========================================================================
+
+    /// Start of memory block (128335)
+    #[classattr]
+    const MEMORY: u32 = 128335;
+    /// End of memory block (128336)
+    #[classattr]
+    const MEMORY_END: u32 = 128336;
+    /// Start of recall block (128337)
+    #[classattr]
+    const RECALL: u32 = 128337;
+    /// End of recall block (128338)
+    #[classattr]
+    const RECALL_END: u32 = 128338;
+
+    // =========================================================================
+    // Control Tokens (128339-128341)
+    // =========================================================================
+
+    /// Padding token (128339)
+    #[classattr]
+    const PAD: u32 = 128339;
+    /// Stop token (128340)
+    #[classattr]
+    const STOP: u32 = 128340;
+    /// Separator token (128341)
+    #[classattr]
+    const SEP: u32 = 128341;
+
+    // =========================================================================
+    // Multimodal (128256-128261)
+    // Uses official Meta <|image|> token ID from Llama 3.2-Vision
+    // =========================================================================
+
+    /// Image placeholder - official Meta token from Llama 3.2-Vision (128256)
+    #[classattr]
+    const IMAGE: u32 = 128256;
+    /// End of image (128257)
+    #[classattr]
+    const IMAGE_END: u32 = 128257;
+    /// Start of audio (128258)
+    #[classattr]
+    const AUDIO: u32 = 128258;
+    /// End of audio (128259)
+    #[classattr]
+    const AUDIO_END: u32 = 128259;
+    /// Start of video (128260)
+    #[classattr]
+    const VIDEO: u32 = 128260;
+    /// End of video (128261)
+    #[classattr]
+    const VIDEO_END: u32 = 128261;
+
+    // =========================================================================
+    // Document Structure (128348-128353)
+    // =========================================================================
+
+    /// Start of title - document/section title (128348)
+    #[classattr]
+    const TITLE: u32 = 128348;
+    /// End of title (128349)
+    #[classattr]
+    const TITLE_END: u32 = 128349;
+    /// Start of section - semantic document section (128350)
+    #[classattr]
+    const SECTION: u32 = 128350;
+    /// End of section (128351)
+    #[classattr]
+    const SECTION_END: u32 = 128351;
+    /// Start of summary - condensed content summary (128352)
+    #[classattr]
+    const SUMMARY: u32 = 128352;
+    /// End of summary (128353)
+    #[classattr]
+    const SUMMARY_END: u32 = 128353;
 }

@@ -11,11 +11,17 @@ A high-performance tokenizer featuring:
 - UTF-8 streaming decoder for LLM output
 - Agent tokens for chat/reasoning/tool-use applications
 
+Supported tokenizers:
+- cl100k_base: GPT-4, GPT-3.5-turbo
+- o200k_base: GPT-4o
+- llama3/llama3.1/llama3.2/llama3.3: Meta Llama 3 family
+
 Usage:
     from splintr import Tokenizer
 
-    # Load pretrained model (cl100k_base for GPT-4, o200k_base for GPT-4o)
-    tokenizer = Tokenizer.from_pretrained("cl100k_base")
+    # Load pretrained model
+    tokenizer = Tokenizer.from_pretrained("cl100k_base")  # GPT-4
+    tokenizer = Tokenizer.from_pretrained("llama3")       # Llama 3
 
     # Encode text
     tokens = tokenizer.encode("Hello, world!")
@@ -36,7 +42,7 @@ Usage:
     print(decoder.flush())
 
 Agent Tokens:
-    from splintr import Tokenizer, CL100K_AGENT_TOKENS
+    from splintr import Tokenizer, CL100K_AGENT_TOKENS, LLAMA3_AGENT_TOKENS
 
     tokenizer = Tokenizer.from_pretrained("cl100k_base")
 
@@ -44,9 +50,13 @@ Agent Tokens:
     print(CL100K_AGENT_TOKENS.THINK)      # 100282
     print(CL100K_AGENT_TOKENS.FUNCTION)   # 100292
 
+    # For Llama 3
+    tokenizer = Tokenizer.from_pretrained("llama3")
+    print(LLAMA3_AGENT_TOKENS.THINK)      # 128305
+
     # Encode with special tokens
     tokens = tokenizer.encode_with_special("<|think|>reasoning<|/think|>")
-    assert CL100K_AGENT_TOKENS.THINK in tokens
+    assert LLAMA3_AGENT_TOKENS.THINK in tokens
 
     # Token categories:
     # - Conversation: SYSTEM, USER, ASSISTANT, IM_START, IM_END
@@ -66,8 +76,10 @@ from ._core import (
     StreamingDecoder,
     CL100K_BASE_PATTERN,
     O200K_BASE_PATTERN,
+    LLAMA3_PATTERN,
     CL100K_AGENT_TOKENS,
     O200K_AGENT_TOKENS,
+    LLAMA3_AGENT_TOKENS,
 )
 
 __all__ = [
@@ -75,7 +87,9 @@ __all__ = [
     "StreamingDecoder",
     "CL100K_BASE_PATTERN",
     "O200K_BASE_PATTERN",
+    "LLAMA3_PATTERN",
     "CL100K_AGENT_TOKENS",
     "O200K_AGENT_TOKENS",
+    "LLAMA3_AGENT_TOKENS",
 ]
-__version__ = "0.3.0"
+__version__ = "0.4.0"

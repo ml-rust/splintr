@@ -33,6 +33,6 @@ pub use bpe::byte_pair_encode;
 pub use streaming::StreamingDecoder;
 pub use tokenizer::{
     cl100k_agent_tokens, o200k_agent_tokens, Tokenizer, TokenizerError, CL100K_BASE_PATTERN,
-    O200K_BASE_PATTERN,
+    LLAMA3_PATTERN, O200K_BASE_PATTERN,
 };
 pub use vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, VocabError};
