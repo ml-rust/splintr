@@ -456,10 +456,10 @@ impl PyStreamingDecoder {
                 continue;
             }
 
-            if std::str::from_utf8(&bytes[..check_len]).is_ok() {
-                if Self::could_be_incomplete_sequence(&bytes[check_len..]) {
-                    return check_len;
-                }
+            if std::str::from_utf8(&bytes[..check_len]).is_ok()
+                && Self::could_be_incomplete_sequence(&bytes[check_len..])
+            {
+                return check_len;
             }
         }
 

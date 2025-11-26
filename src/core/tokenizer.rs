@@ -332,10 +332,7 @@ impl Tokenizer {
 
     /// Get cache statistics (hits would require additional tracking).
     pub fn cache_len(&self) -> usize {
-        self.chunk_cache
-            .lock()
-            .map(|c| c.len())
-            .unwrap_or(0)
+        self.chunk_cache.lock().map(|c| c.len()).unwrap_or(0)
     }
 }
 

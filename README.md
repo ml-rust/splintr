@@ -296,6 +296,10 @@ Contributions are welcome! Here's how you can help:
 git clone https://github.com/farhan/splintr.git
 cd splintr
 
+# Install pre-commit hook (recommended)
+cp hooks/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+
 # Build the Rust library
 cargo build --release
 
@@ -305,8 +309,11 @@ maturin develop --release
 
 # Run tests
 cargo test                    # Rust tests
-pytest python/tests/          # Python tests (if available)
+cargo clippy --all-targets    # Linting
+cargo fmt --all --check       # Format check
 ```
+
+The pre-commit hook automatically runs formatting, clippy, and tests before each commit.
 
 ## License
 

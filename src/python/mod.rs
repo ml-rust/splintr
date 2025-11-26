@@ -1,3 +1,3 @@
 mod bindings;
 
-pub use bindings::{PyTokenizer, PyStreamingDecoder};
+pub use bindings::{PyStreamingDecoder, PyTokenizer};

@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -10,8 +8,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Lint and format check (single job)
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install PCRE2
+        run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # Rust tests on multiple platforms
   test:
-    name: Test on ${{ matrix.os }}
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -21,16 +41,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install PCRE2 (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
 
+      - name: Configure Python for PyO3 (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: echo "PYO3_PYTHON=$(which python3)" >> $GITHUB_ENV
+
       - name: Install PCRE2 (macOS)
         if: matrix.os == 'macos-latest'
         run: brew install pcre2
+
+      - name: Configure Python for PyO3 (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          echo "PYO3_PYTHON=$(which python3)" >> $GITHUB_ENV
+          # Get Python library directory and set for linker
+          PYTHON_PREFIX=$(python3 -c "import sys; print(sys.prefix)")
+          echo "LIBRARY_PATH=${PYTHON_PREFIX}/lib" >> $GITHUB_ENV
+          echo "DYLD_LIBRARY_PATH=${PYTHON_PREFIX}/lib" >> $GITHUB_ENV
+          # Tell Cargo to link the Python framework
+          echo "CARGO_BUILD_RUSTFLAGS=-C link-arg=-undefined -C link-arg=dynamic_lookup" >> $GITHUB_ENV
 
       - name: Install PCRE2 (Windows)
         if: matrix.os == 'windows-latest'
@@ -38,27 +78,17 @@ jobs:
           vcpkg install pcre2:x64-windows
           echo "PCRE2_SYS_STATIC=1" >> $env:GITHUB_ENV
 
+      - name: Configure Python for PyO3 (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          $pythonPath = (Get-Command python).Source
+          echo "PYO3_PYTHON=$pythonPath" >> $env:GITHUB_ENV
+
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test
 
-      - name: Run clippy
-        run: cargo clippy -- -D warnings
-
-  fmt:
-    name: Format check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-action@stable
-        with:
-          components: rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --check
-
-  python-test:
+  # Python bindings tests
+  python:
     name: Python tests
     runs-on: ubuntu-latest
     steps:
@@ -72,17 +102,17 @@ jobs:
       - name: Install PCRE2
         run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
 
-      - name: Install dependencies
+      - name: Install dependencies and build
         run: |
+          python -m venv .venv
+          . .venv/bin/activate
           python -m pip install --upgrade pip
           pip install maturin tiktoken
-
-      - name: Build and install
-        run: maturin develop --release
+          maturin develop --release
 
       - name: Test Python bindings
         run: |
-          python -c "
+          .venv/bin/python -c "
           import splintr
           import tiktoken
 
