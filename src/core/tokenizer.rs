@@ -288,6 +288,8 @@ pub struct Tokenizer {
     chunk_cache: Mutex<LruCache<u64, Vec<u32>>>,
     use_byte_level: bool,
     cache_size: usize,
+    use_jit: bool,
+    use_pcre2: bool,
 }
 
 impl Tokenizer {
@@ -378,6 +380,8 @@ impl Tokenizer {
             chunk_cache,
             use_byte_level,
             cache_size,
+            use_jit: true,
+            use_pcre2: false,
         })
     }
 
@@ -395,13 +399,20 @@ impl Tokenizer {
     /// Returns an error if `pcre2` feature is not enabled or regex compilation fails.
     #[cfg(feature = "pcre2")]
     pub fn pcre2(mut self, use_pcre2: bool) -> Result<Self, TokenizerError> {
+        self.use_pcre2 = use_pcre2;
         if use_pcre2 {
             let mut regex_builder = pcre2::bytes::RegexBuilder::new();
-            regex_builder.jit_if_available(true);
+            if self.use_jit {
+                regex_builder.jit_if_available(true);
+            }
             regex_builder.utf(true);
             regex_builder.ucp(true);
             let regex = regex_builder.build(&self.pattern)?;
             self.regex = RegexBackend::Pcre2(regex);
+        } else {
+            // Switch back to regexr backend
+            let regex = RegexBuilder::new(&self.pattern).jit(self.use_jit).build()?;
+            self.regex = RegexBackend::Regexr(Box::new(regex));
         }
         Ok(self)
     }
@@ -414,6 +425,47 @@ impl Tokenizer {
         } else {
             Ok(self)
         }
+    }
+
+    /// Enable or disable JIT compilation for the regex backend.
+    ///
+    /// JIT (Just-In-Time) compilation can significantly improve regex matching
+    /// performance. JIT availability depends on platform support (e.g., x86-64)
+    /// and crate feature flags. When enabled, JIT will be used if available.
+    ///
+    /// # Arguments
+    /// * `use_jit` - Whether to try using JIT compilation
+    ///
+    /// # Example
+    /// ```ignore
+    /// let tokenizer = Tokenizer::from_pretrained("cl100k_base")?.jit(false)?;
+    /// ```
+    #[cfg(feature = "pcre2")]
+    pub fn jit(mut self, use_jit: bool) -> Result<Self, TokenizerError> {
+        self.use_jit = use_jit;
+        if self.use_pcre2 {
+            let mut regex_builder = pcre2::bytes::RegexBuilder::new();
+            if use_jit {
+                regex_builder.jit_if_available(true);
+            }
+            regex_builder.utf(true);
+            regex_builder.ucp(true);
+            let regex = regex_builder.build(&self.pattern)?;
+            self.regex = RegexBackend::Pcre2(regex);
+        } else {
+            let regex = RegexBuilder::new(&self.pattern).jit(use_jit).build()?;
+            self.regex = RegexBackend::Regexr(Box::new(regex));
+        }
+        Ok(self)
+    }
+
+    /// Enable or disable JIT compilation (non-pcre2 version).
+    #[cfg(not(feature = "pcre2"))]
+    pub fn jit(mut self, use_jit: bool) -> Result<Self, TokenizerError> {
+        self.use_jit = use_jit;
+        let regex = RegexBuilder::new(&self.pattern).jit(use_jit).build()?;
+        self.regex = RegexBackend::Regexr(Box::new(regex));
+        Ok(self)
     }
 
     /// Create a tokenizer from a tiktoken vocabulary file.
@@ -673,16 +725,21 @@ impl Tokenizer {
 
 impl Clone for Tokenizer {
     fn clone(&self) -> Self {
-        // Clone the regex backend
+        // Clone the regex backend with the same JIT setting
         let regex = match &self.regex {
             RegexBackend::Regexr(_) => {
-                let regex = RegexBuilder::new(&self.pattern).jit(true).build().unwrap();
+                let regex = RegexBuilder::new(&self.pattern)
+                    .jit(self.use_jit)
+                    .build()
+                    .unwrap();
                 RegexBackend::Regexr(Box::new(regex))
             }
             #[cfg(feature = "pcre2")]
             RegexBackend::Pcre2(_) => {
                 let mut regex_builder = pcre2::bytes::RegexBuilder::new();
-                regex_builder.jit_if_available(true);
+                if self.use_jit {
+                    regex_builder.jit_if_available(true);
+                }
                 regex_builder.utf(true);
                 regex_builder.ucp(true);
                 let regex = regex_builder.build(&self.pattern).unwrap();
@@ -713,6 +770,8 @@ impl Clone for Tokenizer {
             chunk_cache,
             use_byte_level: self.use_byte_level,
             cache_size: self.cache_size,
+            use_jit: self.use_jit,
+            use_pcre2: self.use_pcre2,
         }
     }
 }
@@ -803,6 +862,53 @@ mod tests {
         let tokenizer = make_test_tokenizer();
         let result = tokenizer.pcre2(true);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_jit_disable() {
+        let tokenizer = make_test_tokenizer().jit(false).unwrap();
+        let text = "Hello World";
+        let tokens = tokenizer.encode(text);
+        let decoded = tokenizer.decode(&tokens).unwrap();
+        assert_eq!(decoded, text);
+    }
+
+    #[test]
+    fn test_jit_enable() {
+        let tokenizer = make_test_tokenizer().jit(true).unwrap();
+        let text = "Hello World";
+        let tokens = tokenizer.encode(text);
+        let decoded = tokenizer.decode(&tokens).unwrap();
+        assert_eq!(decoded, text);
+    }
+
+    #[cfg(feature = "pcre2")]
+    #[test]
+    fn test_pcre2_switch_back_to_regexr() {
+        // Start with regexr, switch to pcre2, then back to regexr
+        let tokenizer = make_test_tokenizer()
+            .pcre2(true)
+            .unwrap()
+            .pcre2(false)
+            .unwrap();
+        let text = "Hello World";
+        let tokens = tokenizer.encode(text);
+        let decoded = tokenizer.decode(&tokens).unwrap();
+        assert_eq!(decoded, text);
+    }
+
+    #[cfg(feature = "pcre2")]
+    #[test]
+    fn test_pcre2_with_jit_disabled() {
+        let tokenizer = make_test_tokenizer()
+            .jit(false)
+            .unwrap()
+            .pcre2(true)
+            .unwrap();
+        let text = "Hello World";
+        let tokens = tokenizer.encode(text);
+        let decoded = tokenizer.decode(&tokens).unwrap();
+        assert_eq!(decoded, text);
     }
 
     const _: () = {

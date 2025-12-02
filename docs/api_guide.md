@@ -280,7 +280,7 @@ Add Splintr to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-splintr = "0.6.0"
+splintr = "0.7.0"
 ```
 
 ### Basic Usage

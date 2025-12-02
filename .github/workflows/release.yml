@@ -100,6 +100,9 @@ jobs:
 
       - name: Publish to crates.io
         run: cargo publish --allow-dirty --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        env:
+          # Enable PCRE2 JIT compilation
+          PCRE2_SYS_JIT: '1'
 
   # Build Python wheels for multiple platforms
   build-wheels:
@@ -145,13 +148,19 @@ jobs:
         run: |
           vcpkg install pcre2:x64-windows
           echo "PCRE2_SYS_STATIC=1" >> $env:GITHUB_ENV
+          echo "PCRE2_SYS_JIT=1" >> $env:GITHUB_ENV
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          args: --release --out dist
+          # Build with all features: pcre2 (default), regexr jit+simd
+          # Note: regexr's SIMD uses runtime detection, JIT is compiled at build time
+          args: --release --out dist --features pcre2
           sccache: 'true'
           manylinux: auto
+        env:
+          # Enable PCRE2 JIT compilation
+          PCRE2_SYS_JIT: '1'
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
