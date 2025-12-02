@@ -23,10 +23,11 @@ Machine learning models require tokenization to process text efficiently.
 Tokenizers convert text into numerical representations that models can understand."""
 
 TOKENIZER_COLORS = {
-    "splintr": "#2ecc71",      # Green
-    "tiktoken": "#3498db",     # Blue
-    "huggingface": "#e74c3c",  # Red
-    "tokendagger": "#9b59b6",  # Purple
+    "splintr": "#2ecc71",          # Green (default, pure Rust)
+    "splintr-pcre2": "#27ae60",    # Dark Green (optional)
+    "tiktoken": "#3498db",         # Blue
+    "huggingface": "#e74c3c",      # Red
+    "tokendagger": "#9b59b6",      # Purple
 }
 
 
@@ -86,14 +87,15 @@ def load_tokenizers():
     """Load all available tokenizers with batch functions.
 
     All tokenizers use their native batch encoding methods:
-    - splintr: encode_batch (Rayon parallel)
+    - splintr: encode_batch (Rayon parallel, pure Rust regex with JIT)
+    - splintr-pcre2: encode_batch (Rayon parallel, PCRE2 with JIT)
     - tiktoken: encode_ordinary_batch (native batch)
     - huggingface: encode_batch (native batch)
     - tokendagger: encode_batch (native batch)
     """
     tokenizers = {}
 
-    # splintr - native batch via Rayon
+    # splintr - default backend (pure Rust with JIT)
     try:
         import splintr
         enc = splintr.Tokenizer.from_pretrained("cl100k_base")
@@ -101,6 +103,15 @@ def load_tokenizers():
         print("Loaded: splintr (native encode_batch)")
     except ImportError:
         print("splintr not available")
+
+    # splintr-pcre2 - optional backend (requires --features pcre2)
+    try:
+        import splintr
+        enc_pcre2 = splintr.Tokenizer.from_pretrained("cl100k_base").pcre2(True)
+        tokenizers["splintr-pcre2"] = enc_pcre2.encode_batch
+        print("Loaded: splintr-pcre2 (native encode_batch)")
+    except (ImportError, ValueError) as e:
+        print(f"splintr-pcre2 not available: {e}")
 
     # tiktoken - native batch
     try:

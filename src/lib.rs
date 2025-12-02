@@ -11,7 +11,8 @@ pub use core::{
 /// Splintr - Fast Rust BPE tokenizer with Python bindings
 ///
 /// A high-performance tokenizer featuring:
-/// - PCRE2 with JIT compilation (2-4x faster than fancy-regex)
+/// - Regexr with JIT and SIMD (default, pure Rust)
+/// - Optional PCRE2 with JIT (requires `pcre2` feature)
 /// - Rayon parallelism for multi-core encoding
 /// - Linked-list BPE algorithm (avoids O(N²) on pathological inputs)
 /// - FxHashMap for fast lookups

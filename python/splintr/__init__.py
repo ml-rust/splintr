@@ -2,7 +2,8 @@
 Splintr - Fast Rust BPE tokenizer with Python bindings
 
 A high-performance tokenizer featuring:
-- PCRE2 with JIT compilation (2-4x faster than fancy-regex)
+- Regexr with JIT and SIMD (default, pure Rust)
+- Optional PCRE2 with JIT (requires pcre2 feature)
 - Rayon parallelism for multi-core encoding
 - Linked-list BPE algorithm (avoids O(N^2) on pathological inputs)
 - FxHashMap for fast lookups
@@ -20,10 +21,13 @@ Supported tokenizers:
 Usage:
     from splintr import Tokenizer
 
-    # Load pretrained model
+    # Load pretrained model (uses regexr by default)
     tokenizer = Tokenizer.from_pretrained("cl100k_base")  # GPT-4
     tokenizer = Tokenizer.from_pretrained("llama3")       # Llama 3
     tokenizer = Tokenizer.from_pretrained("deepseek_v3")  # DeepSeek V3
+
+    # Use PCRE2 backend (requires pcre2 feature)
+    # tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
 
     # Encode text
     tokens = tokenizer.encode("Hello, world!")

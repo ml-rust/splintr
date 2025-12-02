@@ -14,9 +14,13 @@ categories = ["text-processing", "encoding"]
 name = "splintr"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+pcre2 = ["dep:pcre2"]
+
 [dependencies]
-# PCRE2 regex with JIT support (2-4x faster than fancy-regex)
-pcre2 = "0.2"
+# PCRE2 regex with JIT support (optional, for benchmarking)
+pcre2 = { version = "0.2", optional = true }
 # Rayon for internal parallelism
 rayon = "1.10"
 # Fast hashing (FxHashMap)
@@ -31,6 +35,12 @@ base64 = "0.22"
 aho-corasick = "1.1"
 # LRU cache for frequent token sequences
 lru = "0.12"
+# regexr regex engine (default backend)
+regexr = { version = "0.1.0-beta.4", features = ["jit", "simd"] }
+
+[dev-dependencies]
+# PCRE2 for benchmarking comparisons
+pcre2 = "0.2"
 
 [profile.release]
 opt-level = 3

@@ -11,7 +11,8 @@
 //! The core is organized into four main components:
 //!
 //! - [`Tokenizer`]: Main tokenizer struct with encoding/decoding API, LRU cache,
-//!   and Aho-Corasick special token matching
+//!   and Aho-Corasick special token matching. Uses regexr backend by default,
+//!   with optional PCRE2 backend via `.pcre2(true)` (requires `pcre2` feature).
 //! - [`bpe`]: Low-level byte-pair encoding algorithm using linked-list approach
 //! - [`vocab`]: Vocabulary loading utilities for tiktoken format
 //! - [`StreamingDecoder`]: UTF-8 safe streaming decoder for token-by-token LLM output
@@ -19,7 +20,8 @@
 //!
 //! # Performance Optimizations
 //!
-//! - **PCRE2 with JIT**: 2-4x faster than fancy-regex for pattern matching
+//! - **Regexr with JIT**: Pure Rust regex engine with SIMD acceleration (default)
+//! - **Optional PCRE2 with JIT**: requires `pcre2` feature
 //! - **Rayon parallelism**: Multi-core encoding for batch operations
 //! - **FxHashMap**: Faster hashing than standard HashMap for string keys
 //! - **Aho-Corasick**: O(N) multi-pattern matching for special tokens

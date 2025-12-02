@@ -4,6 +4,10 @@
 //! handles special tokens, and produces consistent results.
 
 use splintr::{Tokenizer, CL100K_BASE_PATTERN};
+use std::sync::LazyLock;
+
+/// Shared tokenizer instance to avoid expensive re-initialization per test.
+static TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(create_cl100k_tokenizer_impl);
 
 // =============================================================================
 // Exact Token ID Tests
@@ -277,8 +281,13 @@ fn test_cl100k_fim_format() {
     assert_eq!(decoded, fim);
 }
 
-// Helper function to create a cl100k tokenizer for testing
-fn create_cl100k_tokenizer() -> Tokenizer {
+/// Get the shared tokenizer instance
+fn create_cl100k_tokenizer() -> &'static Tokenizer {
+    &TOKENIZER
+}
+
+/// Implementation that actually constructs the tokenizer
+fn create_cl100k_tokenizer_impl() -> Tokenizer {
     // Load the embedded vocab
     let vocab_bytes = include_bytes!("../python/splintr/vocabs/cl100k_base.tiktoken");
 

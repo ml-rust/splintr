@@ -4,6 +4,10 @@
 //! handles special tokens, and produces consistent results.
 
 use splintr::{Tokenizer, LLAMA3_PATTERN};
+use std::sync::LazyLock;
+
+/// Shared tokenizer instance to avoid expensive re-initialization per test.
+static TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(create_llama3_tokenizer_impl);
 
 // =============================================================================
 // Exact Token ID Tests
@@ -309,12 +313,18 @@ fn test_llama3_from_pretrained_variants() {
     );
 }
 
-// Helper function to create a Llama 3 tokenizer for testing
-fn create_llama3_tokenizer() -> Tokenizer {
-    create_llama3_tokenizer_by_name("llama3")
+/// Get the shared tokenizer instance
+fn create_llama3_tokenizer() -> &'static Tokenizer {
+    &TOKENIZER
 }
 
-fn create_llama3_tokenizer_by_name(name: &str) -> Tokenizer {
+/// Create a fresh tokenizer by name (for variant tests only)
+fn create_llama3_tokenizer_by_name(_name: &str) -> Tokenizer {
+    create_llama3_tokenizer_impl()
+}
+
+/// Implementation that actually constructs the tokenizer
+fn create_llama3_tokenizer_impl() -> Tokenizer {
     // Load the embedded vocab
     let vocab_bytes = include_bytes!("../python/splintr/vocabs/llama3.tiktoken");
 
@@ -363,9 +373,6 @@ fn create_llama3_tokenizer_by_name(name: &str) -> Tokenizer {
     special.insert("<|/code|>".to_string(), 128322);
     special.insert("<|output|>".to_string(), 128323);
     special.insert("<|/output|>".to_string(), 128324);
-
-    // Use the same pattern as the Python bindings
-    let _ = name; // Acknowledge variant name (all use same vocab)
 
     Tokenizer::from_bytes(vocab_bytes, LLAMA3_PATTERN, special).unwrap()
 }

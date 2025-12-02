@@ -82,7 +82,7 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 - **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), Llama 3 family (Meta), and DeepSeek V3 (DeepSeek)
 - **Streaming decoders** - Real-time LLM output display with proper UTF-8 handling ([guide](docs/api_guide.md#streaming-decoder))
 - **54 agent tokens** - Built-in support for chat, CoT reasoning, ReAct agents, tool calling, RAG citations ([docs](docs/special_tokens.md))
-- **Battle-tested algorithms** - PCRE2 with JIT, Aho-Corasick for special tokens, linked-list BPE
+- **Battle-tested algorithms** - Regexr with JIT (pure Rust), Aho-Corasick for special tokens, linked-list BPE
 
 **Cross-platform:**
 
@@ -153,6 +153,43 @@ cat results/my_benchmark.md
 ```
 
 The benchmark suite tests single text encoding, batch encoding, streaming decoder performance, and special token handling across various content types.
+
+### Regex Backends
+
+Splintr uses a pure-Rust regex engine ([`regexr`](https://crates.io/crates/regexr)) by default, with optional PCRE2 support for compatibility.
+
+**Default Backend (regexr):**
+- Pure Rust implementation (no C dependencies)
+- JIT compilation and SIMD acceleration
+- Native UTF-8 and Unicode property support
+
+**Optional PCRE2 Backend:**
+
+```python
+from splintr import Tokenizer
+
+# Default: regexr backend (pure Rust)
+tokenizer = Tokenizer.from_pretrained("cl100k_base")
+
+# Optional: switch to PCRE2 (requires --features pcre2)
+tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
+```
+
+To enable PCRE2, build with the feature flag:
+
+```bash
+maturin develop --release --features pcre2
+```
+
+**Benchmarking:**
+
+```bash
+# Compare backends (requires PCRE2 feature)
+python benchmarks/benchmark_regexr_comparison.py --model cl100k_base
+
+# Visual comparison with charts
+python benchmarks/benchmark_regexr_viz.py --model cl100k_base
+```
 
 ## Streaming Decoders
 
@@ -226,7 +263,7 @@ See [docs/special_tokens.md](docs/special_tokens.md) for the complete list and [
 
 Splintr implements several optimizations that make tokenization faster:
 
-- **PCRE2 with JIT compilation**: 2-4x speedup on regex pattern matching
+- **Regexr with JIT compilation**: Pure Rust regex engine with SIMD acceleration
 - **Rayon parallelism**: Leverages multiple CPU cores for batch encoding
 - **Linked-list BPE algorithm**: Avoids O(N²) complexity on pathological inputs
 - **FxHashMap**: Faster lookups than default SipHash for non-adversarial contexts

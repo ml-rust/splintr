@@ -61,3 +61,6 @@ coverage.xml
 
 /research
 .python-version
+
+# Local cargo config (dev overrides)
+.cargo/

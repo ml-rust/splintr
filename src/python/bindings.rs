@@ -745,6 +745,33 @@ impl PyTokenizer {
         Ok(Self { inner })
     }
 
+    /// Switch to PCRE2 regex backend.
+    ///
+    /// PCRE2 is an alternative regex backend. Requires the `pcre2` feature
+    /// to be enabled at compile time.
+    ///
+    /// Args:
+    ///     use_pcre2: Whether to use PCRE2 backend (default: True)
+    ///
+    /// Returns:
+    ///     New Tokenizer instance with PCRE2 backend
+    ///
+    /// Raises:
+    ///     ValueError: If pcre2 feature is not enabled
+    ///
+    /// Example:
+    ///     tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
+    #[pyo3(signature = (use_pcre2=true))]
+    fn pcre2(&self, use_pcre2: bool) -> PyResult<Self> {
+        // We need to create a new tokenizer since pcre2() consumes self
+        // For simplicity, we'll get the error message if pcre2 is not enabled
+        let new_inner = self.inner.clone();
+        let result = new_inner
+            .pcre2(use_pcre2)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner: result })
+    }
+
     /// Encode text to token IDs.
     ///
     /// Special tokens in the input are treated as regular text.

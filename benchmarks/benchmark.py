@@ -32,8 +32,16 @@ from typing import Callable, Optional
 try:
     from splintr import Tokenizer as SplintrTokenizer
     HAS_SPLINTR = True
+    # Test if PCRE2 is available
+    try:
+        test_tok = SplintrTokenizer.from_pretrained("cl100k_base").pcre2(True)
+        HAS_PCRE2 = True
+        del test_tok
+    except ValueError:
+        HAS_PCRE2 = False
 except ImportError:
     HAS_SPLINTR = False
+    HAS_PCRE2 = False
     print("Warning: splintr not installed. Run: pip install -e . or maturin develop")
 
 try:
@@ -671,6 +679,13 @@ def main():
         action="store_true",
         help="Skip cache benchmarks"
     )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="regexr",
+        choices=["regexr", "pcre2"],
+        help="Regex backend to use: regexr (default, pure Rust) or pcre2 (requires feature flag)"
+    )
     args = parser.parse_args()
 
     if not HAS_SPLINTR:
@@ -689,9 +704,19 @@ def main():
     print("=" * 70)
 
     # Load tokenizers
-    print(f"\nLoading tokenizers (model: {args.model})...")
-    splintr_enc = SplintrTokenizer.from_pretrained(args.model)
-    print(f"  Splintr: {splintr_enc}")
+    backend_str = "PCRE2" if args.backend == "pcre2" else "Regexr"
+    print(f"\nLoading tokenizers (model: {args.model}, backend: {backend_str})...")
+
+    if args.backend == "pcre2":
+        if not HAS_PCRE2:
+            print("Error: PCRE2 backend requested but not available.")
+            print("       Build with: maturin develop --release --features pcre2")
+            return 1
+        splintr_enc = SplintrTokenizer.from_pretrained(args.model).pcre2(True)
+    else:  # regexr (default)
+        splintr_enc = SplintrTokenizer.from_pretrained(args.model)
+
+    print(f"  Splintr ({backend_str}): {splintr_enc}")
 
     tiktoken_enc = None
     if args.compare or args.correctness_only:

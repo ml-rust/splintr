@@ -4,6 +4,10 @@
 //! handles ByteLevel BPE encoding, special tokens, and produces consistent results.
 
 use splintr::{Tokenizer, LLAMA3_PATTERN};
+use std::sync::LazyLock;
+
+/// Shared tokenizer instance to avoid expensive re-initialization per test.
+static TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(create_deepseek_v3_tokenizer_impl);
 
 // =============================================================================
 // Exact Token ID Tests
@@ -445,12 +449,18 @@ fn test_deepseek_v3_mixed_special_tokens() {
     assert_eq!(decoded, chat);
 }
 
-// Helper function to create a DeepSeek V3 tokenizer for testing
-fn create_deepseek_v3_tokenizer() -> Tokenizer {
-    create_deepseek_v3_tokenizer_by_name("deepseek_v3")
+/// Get the shared tokenizer instance
+fn create_deepseek_v3_tokenizer() -> &'static Tokenizer {
+    &TOKENIZER
 }
 
-fn create_deepseek_v3_tokenizer_by_name(name: &str) -> Tokenizer {
+/// Create a fresh tokenizer by name (for variant tests only)
+fn create_deepseek_v3_tokenizer_by_name(_name: &str) -> Tokenizer {
+    create_deepseek_v3_tokenizer_impl()
+}
+
+/// Implementation that actually constructs the tokenizer
+fn create_deepseek_v3_tokenizer_impl() -> Tokenizer {
     // Load the embedded vocab
     let vocab_bytes = include_bytes!("../python/splintr/vocabs/deepseek_v3.tiktoken");
 
@@ -512,8 +522,6 @@ fn create_deepseek_v3_tokenizer_by_name(name: &str) -> Tokenizer {
     special.insert("<|/code|>".to_string(), 128922);
     special.insert("<|output|>".to_string(), 128923);
     special.insert("<|/output|>".to_string(), 128924);
-
-    let _ = name; // Acknowledge variant name (all use same vocab)
 
     // DeepSeek uses ByteLevel BPE encoding
     Tokenizer::from_bytes_byte_level(vocab_bytes, LLAMA3_PATTERN, special).unwrap()
