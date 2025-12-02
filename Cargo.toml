@@ -20,7 +20,7 @@ pcre2 = ["dep:pcre2"]
 
 [dependencies]
 # Regexr - Rust-based regex with SIMD, lookaround support (default backend)
-regexr = { path = "../regexr", features = ["jit", "simd"] }
+regexr = { version = "0.1.0-beta.2", features = ["jit", "simd"] }
 # PCRE2 regex with JIT support (optional, for benchmarking)
 pcre2 = { version = "0.2", optional = true }
 # Rayon for internal parallelism
