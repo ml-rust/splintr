@@ -213,7 +213,7 @@ const DEFAULT_CACHE_SIZE: usize = 4096;
 
 /// Regex backend enum for switching between regexr (default) and PCRE2 (optional)
 enum RegexBackend {
-    Regexr(RegexrRegex),
+    Regexr(Box<RegexrRegex>),
     #[cfg(feature = "pcre2")]
     Pcre2(Pcre2Regex),
 }
@@ -372,7 +372,7 @@ impl Tokenizer {
             special_tokens,
             special_tokens_decoder,
             special_token_strings,
-            regex: RegexBackend::Regexr(regex),
+            regex: RegexBackend::Regexr(Box::new(regex)),
             pattern: pattern.to_string(),
             special_matcher,
             chunk_cache,
@@ -677,7 +677,7 @@ impl Clone for Tokenizer {
         let regex = match &self.regex {
             RegexBackend::Regexr(_) => {
                 let regex = RegexBuilder::new(&self.pattern).jit(true).build().unwrap();
-                RegexBackend::Regexr(regex)
+                RegexBackend::Regexr(Box::new(regex))
             }
             #[cfg(feature = "pcre2")]
             RegexBackend::Pcre2(_) => {
