@@ -55,7 +55,7 @@ See the [API Guide](docs/api_guide.md) for complete documentation and examples.
 
 ```toml
 [dependencies]
-splintr = "0.6.0"
+splintr = "0.7.0"
 ```
 
 ```rust
@@ -159,6 +159,7 @@ The benchmark suite tests single text encoding, batch encoding, streaming decode
 Splintr uses a pure-Rust regex engine ([`regexr`](https://crates.io/crates/regexr)) by default, with optional PCRE2 support for compatibility.
 
 **Default Backend (regexr):**
+
 - Pure Rust implementation (no C dependencies)
 - JIT compilation and SIMD acceleration
 - Native UTF-8 and Unicode property support
@@ -215,12 +216,12 @@ See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, exa
 
 ## Supported Vocabularies
 
-| Vocabulary     | Used By                       | Vocabulary Size | Special Tokens | Import Constant       |
-| -------------- | ----------------------------- | --------------- | -------------- | --------------------- |
-| `cl100k_base`  | GPT-4, GPT-3.5-turbo          | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN` |
-| `o200k_base`   | GPT-4o                        | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`  |
-| `llama3`       | Llama 3, 3.1, 3.2, 3.3 (Meta) | ~128,000        | 11 + 54 agent  | `LLAMA3_PATTERN`      |
-| `deepseek_v3`  | DeepSeek V3, DeepSeek R1      | ~128,000        | 17 + 54 agent  | `LLAMA3_PATTERN`      |
+| Vocabulary    | Used By                       | Vocabulary Size | Special Tokens | Import Constant       |
+| ------------- | ----------------------------- | --------------- | -------------- | --------------------- |
+| `cl100k_base` | GPT-4, GPT-3.5-turbo          | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN` |
+| `o200k_base`  | GPT-4o                        | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`  |
+| `llama3`      | Llama 3, 3.1, 3.2, 3.3 (Meta) | ~128,000        | 11 + 54 agent  | `LLAMA3_PATTERN`      |
+| `deepseek_v3` | DeepSeek V3, DeepSeek R1      | ~128,000        | 17 + 54 agent  | `LLAMA3_PATTERN`      |
 
 **OpenAI standard tokens:**
 

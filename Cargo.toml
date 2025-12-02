@@ -15,7 +15,7 @@ name = "splintr"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["pcre2"]
 pcre2 = ["dep:pcre2"]
 
 [dependencies]

@@ -745,29 +745,57 @@ impl PyTokenizer {
         Ok(Self { inner })
     }
 
-    /// Switch to PCRE2 regex backend.
+    /// Switch between regex backends.
     ///
-    /// PCRE2 is an alternative regex backend. Requires the `pcre2` feature
-    /// to be enabled at compile time.
+    /// The tokenizer supports two regex backends:
+    /// - regexr (default): Custom pure-Rust regex engine with JIT and SIMD
+    /// - PCRE2: Industry-standard regex library (requires `pcre2` feature)
     ///
     /// Args:
-    ///     use_pcre2: Whether to use PCRE2 backend (default: True)
+    ///     use_pcre2: If True, switch to PCRE2 backend. If False, switch to regexr (default: True)
     ///
     /// Returns:
-    ///     New Tokenizer instance with PCRE2 backend
+    ///     New Tokenizer instance with the specified backend
     ///
     /// Raises:
-    ///     ValueError: If pcre2 feature is not enabled
+    ///     ValueError: If use_pcre2=True and pcre2 feature is not enabled
     ///
     /// Example:
     ///     tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
+    ///     tokenizer = tokenizer.pcre2(False)
     #[pyo3(signature = (use_pcre2=true))]
     fn pcre2(&self, use_pcre2: bool) -> PyResult<Self> {
-        // We need to create a new tokenizer since pcre2() consumes self
-        // For simplicity, we'll get the error message if pcre2 is not enabled
         let new_inner = self.inner.clone();
         let result = new_inner
             .pcre2(use_pcre2)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner: result })
+    }
+
+    /// Enable or disable JIT compilation for the regex backend.
+    ///
+    /// JIT (Just-In-Time) compilation can significantly improve regex matching
+    /// performance. JIT availability depends on:
+    /// - Platform support (e.g., x86-64)
+    /// - Crate feature flags (regexr jit, pcre2 jit)
+    ///
+    /// When enabled, JIT will be used if available on the current platform.
+    /// JIT is enabled by default.
+    ///
+    /// Args:
+    ///     use_jit: Whether to try using JIT compilation (default: True)
+    ///
+    /// Returns:
+    ///     New Tokenizer instance with the specified JIT preference
+    ///
+    /// Example:
+    ///     tokenizer = Tokenizer.from_pretrained("cl100k_base").jit(False)
+    ///     tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True).jit(True)
+    #[pyo3(signature = (use_jit=true))]
+    fn jit(&self, use_jit: bool) -> PyResult<Self> {
+        let new_inner = self.inner.clone();
+        let result = new_inner
+            .jit(use_jit)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self { inner: result })
     }

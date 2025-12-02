@@ -360,3 +360,95 @@ class TestCl100kStreamingDecoder:
         result += decoder.flush()
 
         assert result == text
+
+
+class TestCl100kBackendOptions:
+    """Test regex backend options (pcre2, jit)."""
+
+    def test_default_backend(self):
+        """Test default backend (regexr with JIT)."""
+        tokenizer = Tokenizer.from_pretrained("cl100k_base")
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        decoded = tokenizer.decode(tokens)
+        assert decoded == text
+
+    def test_pcre2_backend(self):
+        """Test switching to PCRE2 backend."""
+        tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        decoded = tokenizer.decode(tokens)
+        assert decoded == text
+
+    def test_pcre2_switch_back_to_regexr(self):
+        """Test switching from PCRE2 back to regexr."""
+        tokenizer = (
+            Tokenizer.from_pretrained("cl100k_base")
+            .pcre2(True)
+            .pcre2(False)
+        )
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        decoded = tokenizer.decode(tokens)
+        assert decoded == text
+
+    def test_jit_disabled(self):
+        """Test with JIT disabled."""
+        tokenizer = Tokenizer.from_pretrained("cl100k_base").jit(False)
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        decoded = tokenizer.decode(tokens)
+        assert decoded == text
+
+    def test_jit_enabled(self):
+        """Test with JIT explicitly enabled."""
+        tokenizer = Tokenizer.from_pretrained("cl100k_base").jit(True)
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        decoded = tokenizer.decode(tokens)
+        assert decoded == text
+
+    def test_pcre2_with_jit_disabled(self):
+        """Test PCRE2 backend with JIT disabled."""
+        tokenizer = (
+            Tokenizer.from_pretrained("cl100k_base")
+            .pcre2(True)
+            .jit(False)
+        )
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        decoded = tokenizer.decode(tokens)
+        assert decoded == text
+
+    def test_pcre2_with_jit_enabled(self):
+        """Test PCRE2 backend with JIT enabled."""
+        tokenizer = (
+            Tokenizer.from_pretrained("cl100k_base")
+            .pcre2(True)
+            .jit(True)
+        )
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        decoded = tokenizer.decode(tokens)
+        assert decoded == text
+
+    def test_backend_consistency(self):
+        """Test that different backends produce same tokens."""
+        text = "The quick brown fox jumps over the lazy dog. 你好世界 🦀"
+
+        # Default (regexr + JIT)
+        tok_default = Tokenizer.from_pretrained("cl100k_base")
+        tokens_default = tok_default.encode(text)
+
+        # PCRE2 + JIT
+        tok_pcre2 = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
+        tokens_pcre2 = tok_pcre2.encode(text)
+
+        # regexr without JIT
+        tok_no_jit = Tokenizer.from_pretrained("cl100k_base").jit(False)
+        tokens_no_jit = tok_no_jit.encode(text)
+
+        # All backends should produce identical tokens
+        assert tokens_default == tokens_pcre2, "PCRE2 should produce same tokens"
+        assert tokens_default == tokens_no_jit, "Non-JIT should produce same tokens"
