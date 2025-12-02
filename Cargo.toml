@@ -37,7 +37,7 @@ aho-corasick = "1.1"
 # LRU cache for frequent token sequences
 lru = "0.16"
 # regexr regex engine (default backend)
-regexr = { version = "0.1.0-beta.4", features = ["jit", "simd"] }
+regexr = { version = "0.1.0-beta.5", features = ["jit", "simd"] }
 
 [dev-dependencies]
 # PCRE2 for benchmarking comparisons
