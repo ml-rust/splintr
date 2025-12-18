@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
+python = ["dep:pyo3"]
 pcre2 = ["dep:pcre2"]
 
 [dependencies]
@@ -28,13 +29,13 @@ rustc-hash = "2.0"
 # Error handling
 thiserror = "2.0"
 # Python bindings
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
 # Base64 decoding for tiktoken vocab files
 base64 = "0.22"
 # Aho-Corasick for fast multi-pattern special token matching
 aho-corasick = "1.1"
 # LRU cache for frequent token sequences
-lru = "0.12"
+lru = "0.16"
 # regexr regex engine (default backend)
 regexr = { version = "0.1.0-beta.4", features = ["jit", "simd"] }
 

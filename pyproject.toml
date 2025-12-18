@@ -7,12 +7,10 @@ name = "splintr-rs"
 version = "0.6.0"
 description = "Fast Rust BPE tokenizer with Python bindings"
 readme = "README.md"
-license = {text = "MIT"}
+license = { text = "MIT" }
 requires-python = ">=3.8"
 keywords = ["tokenizer", "bpe", "tiktoken", "gpt", "llm"]
-authors = [
-    {name = "Farhan"}
-]
+authors = [{ name = "Farhan" }]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -38,4 +36,4 @@ Documentation = "https://github.com/farhan/splintr#readme"
 python-source = "python"
 module-name = "splintr._core"
 bindings = "pyo3"
-features = ["pyo3/extension-module"]
+features = ["python"]
