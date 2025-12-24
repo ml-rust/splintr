@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "splintr-rs"
-version = "0.6.0"
+version = "0.8.0"
 description = "Fast Rust BPE tokenizer with Python bindings"
 readme = "README.md"
 license = { text = "MIT" }
@@ -28,9 +28,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/farhan/splintr"
-Repository = "https://github.com/farhan/splintr"
-Documentation = "https://github.com/farhan/splintr#readme"
+Homepage = "https://github.com/ml-rust/splintr"
+Repository = "https://github.com/ml-rust/splintr"
+Documentation = "https://github.com/ml-rust/splintr#readme"
 
 [tool.maturin]
 python-source = "python"

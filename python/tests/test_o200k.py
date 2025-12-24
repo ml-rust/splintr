@@ -392,3 +392,117 @@ class TestO200kStreamingDecoder:
         result += decoder.flush()
 
         assert result == text
+
+
+class TestO200kUtf8Boundaries:
+    """Test UTF-8 boundary handling with multi-byte characters.
+
+    These tests catch bugs where regex match positions fall inside
+    multi-byte UTF-8 characters (em-dashes, curly quotes, etc.).
+    This is especially important for o200k_base which uses a complex pattern.
+    """
+
+    @pytest.fixture
+    def tokenizer(self):
+        return Tokenizer.from_pretrained("o200k_base")
+
+    @pytest.fixture
+    def tokenizer_pcre2(self):
+        return Tokenizer.from_pretrained("o200k_base").pcre2(True)
+
+    def test_em_dash(self, tokenizer):
+        """Test encoding text with em-dash (3-byte UTF-8 character)."""
+        text = "I'm sorry you're hurting—breakups suck, but you'll get through it."
+        tokens = tokenizer.encode(text)
+        decoded = tokenizer.decode(tokens)
+        assert decoded == text
+
+    def test_curly_quotes(self, tokenizer):
+        """Test encoding text with curly quotes (3-byte UTF-8 characters)."""
+        text = 'He said, \u2018Hello\u2019 and she replied, \u201cGoodbye\u201d.'
+        tokens = tokenizer.encode(text)
+        decoded = tokenizer.decode(tokens)
+        assert decoded == text
+
+    def test_mixed_multibyte(self, tokenizer):
+        """Test encoding text with mixed multi-byte characters."""
+        text = "Check if you're using valid credentials—API key, token—in headers."
+        tokens = tokenizer.encode(text)
+        decoded = tokenizer.decode(tokens)
+        assert decoded == text
+
+    def test_em_dash_at_boundaries(self, tokenizer):
+        """Test em-dash at various positions that may cause boundary issues."""
+        texts = [
+            "word—word",
+            "a—b",
+            "test—",
+            "—start",
+            "one—two—three",
+            "Check your brake pads or rotors—they might be worn out.",
+        ]
+        for text in texts:
+            tokens = tokenizer.encode(text)
+            decoded = tokenizer.decode(tokens)
+            assert decoded == text, f"Failed for: {text!r}"
+
+    def test_batch_encode_multibyte(self, tokenizer):
+        """Test batch encoding with multi-byte characters."""
+        texts = [
+            "I'm sorry you're hurting—breakups suck.",
+            "Check if you're using valid credentials.",
+            "That weird noise could hint at a few things!",
+            "Grinding while braking? Check your brake pads—they might be worn.",
+        ]
+        all_tokens = tokenizer.encode_batch(texts)
+        for i, (text, tokens) in enumerate(zip(texts, all_tokens)):
+            decoded = tokenizer.decode(tokens)
+            assert decoded == text, f"Failed for text {i}: {text!r}"
+
+    def test_batch_encode_with_special_multibyte(self, tokenizer):
+        """Test batch encoding with special tokens and multi-byte characters."""
+        texts = [
+            "<|user|>I'm hurting—help me<|assistant|>Here's how—step by step:",
+            "<|system|>You're a helpful assistant<|user|>What's this—a bug?",
+        ]
+        all_tokens = tokenizer.encode_batch_with_special(texts)
+        for i, (text, tokens) in enumerate(zip(texts, all_tokens)):
+            decoded = tokenizer.decode(tokens)
+            assert decoded == text, f"Failed for text {i}: {text!r}"
+
+    def test_backend_consistency_multibyte(self, tokenizer, tokenizer_pcre2):
+        """Test that regexr and PCRE2 produce same results for multi-byte text."""
+        texts = [
+            "word—word",
+            "I'm sorry you're hurting—breakups suck.",
+            'He said, \u2018Hello\u2019 and she replied, \u201cGoodbye\u201d.',
+            "Check credentials—API key—in headers.",
+        ]
+        for text in texts:
+            tokens_regexr = tokenizer.encode(text)
+            tokens_pcre2 = tokenizer_pcre2.encode(text)
+            assert tokens_regexr == tokens_pcre2, f"Backend mismatch for: {text!r}"
+
+    def test_large_batch_multibyte_parallel(self, tokenizer):
+        """Test large batch encoding with multi-byte chars to trigger parallel execution.
+
+        This test catches UTF-8 boundary bugs that only manifest in parallel
+        batch processing (rayon threads).
+        """
+        base_texts = [
+            "I'm sorry you're hurting—breakups suck, but you'll get through it.",
+            "Check if you're using valid credentials—API key, token—in headers.",
+            "That weird noise could hint at a few things—grinding, rattling, knocking.",
+            "Grinding while braking? Check your brake pads or rotors—they might be worn out.",
+            'He said, \u2018Hello\u2019 and she replied, \u201cGoodbye\u201d.',
+            "word—word—word—word—word",
+            "A 403 Forbidden error means your API request is authenticated but lacks permission.",
+        ]
+        texts = base_texts * 100  # 700 texts
+
+        all_tokens = tokenizer.encode_batch(texts)
+        assert len(all_tokens) == len(texts)
+
+        for i in range(0, len(texts), 50):
+            decoded = tokenizer.decode(all_tokens[i])
+            assert decoded == texts[i], f"Failed roundtrip for text {i}"

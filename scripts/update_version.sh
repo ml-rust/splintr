@@ -148,8 +148,28 @@ else
     echo "  Warning: $PYPROJECT_TOML not found"
 fi
 
+# Update python/splintr/__init__.py - update __version__ variable
+PYTHON_INIT="$PROJECT_ROOT/python/splintr/__init__.py"
+if [[ -f "$PYTHON_INIT" ]]; then
+    # Use sed to update __version__ = "X.Y.Z" line
+    sed -i "s/^__version__ = \".*\"/__version__ = \"$PYPI_VERSION\"/" "$PYTHON_INIT"
+
+    # Verify the update worked
+    UPDATED_VERSION=$(grep '^__version__ = "' "$PYTHON_INIT" | sed 's/.*"\(.*\)".*/\1/')
+    if [[ "$UPDATED_VERSION" != "$PYPI_VERSION" ]]; then
+        echo "Error: Failed to update version in $PYTHON_INIT"
+        echo "  Expected: $PYPI_VERSION"
+        echo "  Got: $UPDATED_VERSION"
+        exit 1
+    fi
+    echo "  Updated $PYTHON_INIT -> $PYPI_VERSION"
+else
+    echo "  Warning: $PYTHON_INIT not found"
+fi
+
 echo ""
 echo "Version update complete!"
-echo "  Base version: $BASE_VERSION"
-echo "  Cargo.toml:   $CARGO_VERSION"
-echo "  pyproject.toml: $PYPI_VERSION"
+echo "  Base version:    $BASE_VERSION"
+echo "  Cargo.toml:      $CARGO_VERSION"
+echo "  pyproject.toml:  $PYPI_VERSION"
+echo "  __init__.py:     $PYPI_VERSION"

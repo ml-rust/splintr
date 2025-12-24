@@ -1,11 +1,11 @@
 [package]
 name = "splintr"
-version = "0.6.0"
+version = "0.8.0"
 edition = "2021"
 description = "Fast Rust BPE tokenizer with Python bindings"
 license = "MIT"
-repository = "https://github.com/farhan/splintr"
-homepage = "https://github.com/farhan/splintr"
+repository = "https://github.com/ml-rust/splintr"
+homepage = "https://github.com/ml-rust/splintr"
 readme = "README.md"
 keywords = ["tokenizer", "bpe", "tiktoken", "gpt", "llm"]
 categories = ["text-processing", "encoding"]
@@ -15,7 +15,7 @@ name = "splintr"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["pcre2"]
 python = ["dep:pyo3"]
 pcre2 = ["dep:pcre2"]
 
@@ -37,7 +37,7 @@ aho-corasick = "1.1"
 # LRU cache for frequent token sequences
 lru = "0.16"
 # regexr regex engine (default backend)
-regexr = { version = "0.1.0-beta.4", features = ["jit", "simd"] }
+regexr = { version = "0.1.0-beta.5", features = ["jit", "simd"] }
 
 [dev-dependencies]
 # PCRE2 for benchmarking comparisons

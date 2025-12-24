@@ -38,6 +38,9 @@ tokenizer = Tokenizer.from_pretrained("cl100k_base")  # OpenAI GPT-4/3.5
 tokenizer = Tokenizer.from_pretrained("o200k_base")   # OpenAI GPT-4o
 tokenizer = Tokenizer.from_pretrained("llama3")       # Meta Llama 3 family
 tokenizer = Tokenizer.from_pretrained("deepseek_v3")  # DeepSeek V3/R1
+tokenizer = Tokenizer.from_pretrained("mistral_v1")   # Mistral 7B v0.1/v0.2, Mixtral 8x7B
+tokenizer = Tokenizer.from_pretrained("mistral_v2")   # Mistral 7B v0.3, Codestral, Mixtral 8x22B
+tokenizer = Tokenizer.from_pretrained("mistral_v3")   # Mistral NeMo, Large 2, Pixtral
 ```
 
 **Load from custom vocabulary file:**
@@ -280,7 +283,7 @@ Add Splintr to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-splintr = "0.6.0"
+splintr = "*"  # or pin to a specific version
 ```
 
 ### Basic Usage
@@ -609,4 +612,4 @@ print("\nDone!")
 - [Special Tokens Documentation](special_tokens.md) - Complete agent tokens reference
 - [ByteLevel BPE Documentation](bytelevel_bpe.md) - ByteLevel encoding details
 - [API Documentation (Rust)](https://docs.rs/splintr) - Complete Rust API reference
-- [GitHub Repository](https://github.com/farhan-syah/splintr) - Source code and examples
+- [GitHub Repository](https://github.com/ml-rust/splintr) - Source code and examples

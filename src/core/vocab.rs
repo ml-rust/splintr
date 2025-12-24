@@ -36,6 +36,9 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use rustc_hash::FxHashMap;
 use thiserror::Error;
 
+/// Type alias for encoder/decoder pair returned by `load_tiktoken_bpe_with_decoder`.
+pub type EncoderDecoderPair = (FxHashMap<Vec<u8>, u32>, FxHashMap<u32, Vec<u8>>);
+
 /// Errors that can occur when loading vocabulary files.
 #[derive(Error, Debug)]
 pub enum VocabError {
@@ -89,6 +92,50 @@ pub fn load_tiktoken_bpe(data: &[u8]) -> Result<FxHashMap<Vec<u8>, u32>, VocabEr
 pub fn load_tiktoken_bpe_file(path: &str) -> Result<FxHashMap<Vec<u8>, u32>, VocabError> {
     let data = std::fs::read(path)?;
     load_tiktoken_bpe(&data)
+}
+
+/// Load a tiktoken BPE vocabulary and build both encoder and decoder.
+///
+/// This function preserves all token IDs in the decoder, even if multiple IDs map to the same
+/// byte sequence. The encoder will only keep the FIRST occurrence of each byte sequence (lowest ID).
+pub fn load_tiktoken_bpe_with_decoder(data: &[u8]) -> Result<EncoderDecoderPair, VocabError> {
+    let mut encoder = FxHashMap::default();
+    let mut decoder = FxHashMap::default();
+
+    for line in data.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+
+        // Find the space separator
+        let space_pos = line
+            .iter()
+            .rposition(|&b| b == b' ')
+            .ok_or_else(|| VocabError::ParseError("Missing space separator".to_string()))?;
+
+        let token_b64 = &line[..space_pos];
+        let rank_str = &line[space_pos + 1..];
+
+        // Decode base64 token
+        let token = STANDARD.decode(token_b64)?;
+
+        // Parse rank
+        let rank_str = std::str::from_utf8(rank_str)
+            .map_err(|_| VocabError::ParseError("Invalid UTF-8 in rank".to_string()))?;
+        let rank: u32 = rank_str
+            .trim()
+            .parse()
+            .map_err(|_| VocabError::ParseError(format!("Invalid rank: {}", rank_str)))?;
+
+        // Always add to decoder (preserves all token IDs)
+        decoder.insert(rank, token.clone());
+
+        // Only add to encoder if this byte sequence isn't already mapped
+        // This keeps the FIRST (lowest ID) occurrence
+        encoder.entry(token).or_insert(rank);
+    }
+
+    Ok((encoder, decoder))
 }
 
 /// Build a decoder map (token ID → bytes) from an encoder map (bytes → token ID).
