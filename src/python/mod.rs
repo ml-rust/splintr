@@ -2,8 +2,7 @@ mod bindings;
 
 use crate::core::{CL100K_BASE_PATTERN, LLAMA3_PATTERN, O200K_BASE_PATTERN};
 pub use bindings::{
-    PyByteLevelStreamingDecoder, PyCL100KAgentTokens, PyDeepSeekV3AgentTokens, PyLlama3AgentTokens,
-    PyO200KAgentTokens, PyStreamingDecoder, PyTokenizer,
+    register_agent_tokens, PyByteLevelStreamingDecoder, PyStreamingDecoder, PyTokenizer,
 };
 
 use pyo3::prelude::*;

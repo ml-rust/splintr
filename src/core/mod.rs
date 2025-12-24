@@ -29,12 +29,19 @@
 
 mod bpe;
 pub mod byte_level;
+pub mod pretrained;
 mod streaming;
 mod tokenizer;
 mod vocab;
 
 pub use bpe::byte_pair_encode;
 pub use byte_level::{byte_level_decode, byte_level_decode_bytes, byte_level_encode};
+pub use pretrained::{
+    bos_token_id, cl100k_base_special_tokens, deepseek_v3_special_tokens, eos_token_id,
+    eos_token_id_by_name, from_pretrained, from_vocab, llama3_special_tokens,
+    o200k_base_special_tokens, pad_token_id, pattern, special_tokens, uses_byte_level,
+    PretrainedVocab,
+};
 pub use streaming::{ByteLevelStreamingDecoder, StreamingDecoder};
 pub use tokenizer::{
     cl100k_agent_tokens, o200k_agent_tokens, Tokenizer, TokenizerError, CL100K_BASE_PATTERN,
