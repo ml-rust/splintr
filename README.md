@@ -227,7 +227,7 @@ See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, exa
 | `deepseek_v3` | DeepSeek V3, DeepSeek R1            | ~128,000        | 17 + 54 agent   | `LLAMA3_PATTERN`           |
 | `mistral_v1`  | Mistral 7B v0.1/v0.2, Mixtral 8x7B  | ~32,000         | 3 + 54 agent    | `SENTENCEPIECE_PATTERN`    |
 | `mistral_v2`  | Mistral 7B v0.3, Codestral, 8x22B   | ~32,768         | 10 + 54 agent   | `SENTENCEPIECE_PATTERN`    |
-| `mistral_v3`  | Mistral NeMo, Large 2, Pixtral      | ~131,000        | 10 + 54 agent   | `O200K_BASE_PATTERN`       |
+| `mistral_v3`  | Mistral NeMo, Large 2, Pixtral      | ~131,000        | 10 + 54 agent   | `MISTRAL_V3_PATTERN`       |
 
 **OpenAI standard tokens:**
 

@@ -19,7 +19,8 @@
 use rustc_hash::FxHashMap;
 
 use super::tokenizer::{
-    Tokenizer, TokenizerError, CL100K_BASE_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+    Tokenizer, TokenizerError, CL100K_BASE_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN,
+    SENTENCEPIECE_PATTERN,
 };
 
 // Embed vocabulary files at compile time
@@ -149,8 +150,8 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<Tokenizer, TokenizerError> {
             Tokenizer::from_bytes_sentencepiece_with_decoder(MISTRAL_V2_VOCAB, pat, special)
         }
         PretrainedVocab::MistralV3 => {
-            // V3 uses Tiktoken (NOT SentencePiece) - standard tiktoken encoding
-            Tokenizer::from_bytes(MISTRAL_V3_VOCAB, pat, special)
+            // V3 uses ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
+            Tokenizer::from_bytes_byte_level(MISTRAL_V3_VOCAB, pat, special)
         }
     }
 }
@@ -163,7 +164,7 @@ pub fn pattern(vocab: PretrainedVocab) -> &'static str {
         PretrainedVocab::Llama3 => O200K_BASE_PATTERN, // Llama3 uses same pattern as O200K
         PretrainedVocab::DeepseekV3 => O200K_BASE_PATTERN, // DeepSeek uses same pattern
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => SENTENCEPIECE_PATTERN, // SentencePiece-style
-        PretrainedVocab::MistralV3 => O200K_BASE_PATTERN, // Tekken uses similar pattern to O200K
+        PretrainedVocab::MistralV3 => MISTRAL_V3_PATTERN, // Tekken has its own pattern (no contractions, single-digit numbers)
     }
 }
 
@@ -371,6 +372,11 @@ pub fn mistral_v2_special_tokens() -> FxHashMap<String, u32> {
 /// Get the standard special tokens for Mistral V3/Tekken encoding.
 pub fn mistral_v3_special_tokens() -> FxHashMap<String, u32> {
     let mut special = FxHashMap::default();
+
+    // Native special tokens (same as V1/V2)
+    special.insert("<unk>".to_string(), 0);
+    special.insert("<s>".to_string(), 1);
+    special.insert("</s>".to_string(), 2);
 
     // V3 control tokens (for Aho-Corasick matching)
     special.insert("[INST]".to_string(), 3);

@@ -41,13 +41,13 @@ use rustc_hash::FxHashMap;
 
 use crate::core::pretrained::{
     cl100k_base_special_tokens, deepseek_v3_special_tokens, llama3_special_tokens,
-    mistral_v1_special_tokens, mistral_v2_special_tokens, o200k_base_special_tokens,
-    CL100K_BASE_VOCAB, DEEPSEEK_V3_VOCAB, LLAMA3_VOCAB, MISTRAL_V2_VOCAB, MISTRAL_VOCAB,
-    O200K_BASE_VOCAB,
+    mistral_v1_special_tokens, mistral_v2_special_tokens, mistral_v3_special_tokens,
+    o200k_base_special_tokens, CL100K_BASE_VOCAB, DEEPSEEK_V3_VOCAB, LLAMA3_VOCAB,
+    MISTRAL_V2_VOCAB, MISTRAL_V3_VOCAB, MISTRAL_VOCAB, O200K_BASE_VOCAB,
 };
 use crate::core::{
-    byte_level_decode_bytes, Tokenizer, CL100K_BASE_PATTERN, LLAMA3_PATTERN, O200K_BASE_PATTERN,
-    SENTENCEPIECE_PATTERN,
+    byte_level_decode_bytes, Tokenizer, CL100K_BASE_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN,
+    O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
 
 // Special tokens are defined in crate::core::pretrained module.
@@ -89,12 +89,12 @@ impl PyTokenizer {
     /// - "o200k_base" (GPT-4o)
     /// - "llama3" / "llama3.1" / "llama3.2" / "llama3.3" (Meta Llama 3 family)
     /// - "deepseek_v3" / "deepseek-v3" (DeepSeek V3)
-    /// - "mistral_v1" / "mistral" / "mistral-7b" (Mistral V1: 32k SentencePiece)
-    /// - "mistral_v2" / "mistral-7b-v0.3" / "codestral" (Mistral V2: 32k + control tokens)
-    /// - "mistral_v3" / "mistral-nemo" / "mistral-large" (Mistral V3: Tekken 131k)
+    /// - "mistral" / "mistral_v1" (Mistral V1: 32k SentencePiece)
+    /// - "mistral_v2" (Mistral V2: 32k + control tokens)
+    /// - "mistral_v3" (Mistral V3/Tekken: 131k)
     ///
     /// Args:
-    ///     name: Model name (e.g., "cl100k_base", "o200k_base", "llama3", "mistral_v2")
+    ///     name: Model name (e.g., "cl100k_base", "o200k_base", "llama3", "mistral_v3")
     ///
     /// Returns:
     ///     Tokenizer instance
@@ -149,11 +149,15 @@ impl PyTokenizer {
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self { inner })
             }
-            // Mistral V3: Tekken vocabulary (will be added in Phase 3)
-            "mistral_v3" => Err(PyValueError::new_err(format!(
-                "Mistral V3/Tekken support (model: {}) is not yet implemented. Coming in Phase 3!",
-                name
-            ))),
+            // Mistral V3: ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
+            // Uses its own pattern (no contractions, single-digit numbers)
+            "mistral_v3" => {
+                let special = mistral_v3_special_tokens();
+                let inner =
+                    Tokenizer::from_bytes_byte_level(MISTRAL_V3_VOCAB, MISTRAL_V3_PATTERN, special)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                Ok(Self { inner })
+            }
             _ => Err(PyValueError::new_err(format!(
                 "Unknown pretrained model: {}. See from_pretrained docstring for supported models.",
                 name

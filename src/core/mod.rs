@@ -45,6 +45,6 @@ pub use pretrained::{
 pub use streaming::{ByteLevelStreamingDecoder, StreamingDecoder};
 pub use tokenizer::{
     cl100k_agent_tokens, o200k_agent_tokens, Tokenizer, TokenizerError, CL100K_BASE_PATTERN,
-    LLAMA3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+    LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
 pub use vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, VocabError};

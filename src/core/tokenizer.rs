@@ -55,6 +55,14 @@ pub const LLAMA3_PATTERN: &str = O200K_BASE_PATTERN;
 /// vocabulary itself to handle these cases during encoding.
 pub const SENTENCEPIECE_PATTERN: &str = r"[^\s]+|\s+";
 
+/// Regex pattern for Mistral V3/Tekken tokenizer.
+///
+/// This pattern is specifically from the Mistral NeMo tokenizer and differs from O200K:
+/// - No English contraction handling (`'s`, `'t`, `'re`, etc.)
+/// - Single digit numbers `\p{N}` instead of `\p{N}{1,3}`
+/// - Otherwise similar Unicode category handling
+pub const MISTRAL_V3_PATTERN: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
 // =============================================================================
 // Agent Token Constants (cl100k_base: 100277+, o200k_base: 200019+)
 // =============================================================================
