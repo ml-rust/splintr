@@ -28,9 +28,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/farhan/splintr"
-Repository = "https://github.com/farhan/splintr"
-Documentation = "https://github.com/farhan/splintr#readme"
+Homepage = "https://github.com/ml-rust/splintr"
+Repository = "https://github.com/ml-rust/splintr"
+Documentation = "https://github.com/ml-rust/splintr#readme"
 
 [tool.maturin]
 python-source = "python"
