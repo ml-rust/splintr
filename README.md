@@ -39,6 +39,9 @@ from splintr import Tokenizer
 tokenizer = Tokenizer.from_pretrained("cl100k_base")  # OpenAI GPT-4/3.5
 # tokenizer = Tokenizer.from_pretrained("llama3")      # Meta Llama 3 family
 # tokenizer = Tokenizer.from_pretrained("deepseek_v3") # DeepSeek V3/R1
+# tokenizer = Tokenizer.from_pretrained("mistral_v1")  # Mistral 7B v0.1/v0.2
+# tokenizer = Tokenizer.from_pretrained("mistral_v2")  # Mistral 7B v0.3, Codestral
+# tokenizer = Tokenizer.from_pretrained("mistral_v3")  # Mistral NeMo, Large 2
 
 # Encode and decode
 tokens = tokenizer.encode("Hello, world!")
@@ -79,7 +82,7 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 **Built for production:**
 
-- **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), Llama 3 family (Meta), and DeepSeek V3 (DeepSeek)
+- **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), Llama 3 family (Meta), DeepSeek V3 (DeepSeek), and Mistral V1/V2/V3 (Mistral AI)
 - **Streaming decoders** - Real-time LLM output display with proper UTF-8 handling ([guide](docs/api_guide.md#streaming-decoder))
 - **54 agent tokens** - Built-in support for chat, CoT reasoning, ReAct agents, tool calling, RAG citations ([docs](docs/special_tokens.md))
 - **Battle-tested algorithms** - Regexr with JIT (pure Rust), Aho-Corasick for special tokens, linked-list BPE
@@ -139,7 +142,7 @@ This architecture ensures splintr is optimized for the most common tokenization 
 
 ```bash
 # Clone and install
-git clone https://github.com/farhan-syah/splintr.git
+git clone https://github.com/ml-rust/splintr.git
 cd splintr
 pip install -e .
 pip install tiktoken
@@ -216,12 +219,15 @@ See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, exa
 
 ## Supported Vocabularies
 
-| Vocabulary    | Used By                       | Vocabulary Size | Special Tokens | Import Constant       |
-| ------------- | ----------------------------- | --------------- | -------------- | --------------------- |
-| `cl100k_base` | GPT-4, GPT-3.5-turbo          | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN` |
-| `o200k_base`  | GPT-4o                        | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`  |
-| `llama3`      | Llama 3, 3.1, 3.2, 3.3 (Meta) | ~128,000        | 11 + 54 agent  | `LLAMA3_PATTERN`      |
-| `deepseek_v3` | DeepSeek V3, DeepSeek R1      | ~128,000        | 17 + 54 agent  | `LLAMA3_PATTERN`      |
+| Vocabulary    | Used By                             | Vocabulary Size | Special Tokens  | Import Constant            |
+| ------------- | ----------------------------------- | --------------- | --------------- | -------------------------- |
+| `cl100k_base` | GPT-4, GPT-3.5-turbo                | ~100,000        | 5 + 54 agent    | `CL100K_BASE_PATTERN`      |
+| `o200k_base`  | GPT-4o                              | ~200,000        | 2 + 54 agent    | `O200K_BASE_PATTERN`       |
+| `llama3`      | Llama 3, 3.1, 3.2, 3.3 (Meta)       | ~128,000        | 11 + 54 agent   | `LLAMA3_PATTERN`           |
+| `deepseek_v3` | DeepSeek V3, DeepSeek R1            | ~128,000        | 17 + 54 agent   | `LLAMA3_PATTERN`           |
+| `mistral_v1`  | Mistral 7B v0.1/v0.2, Mixtral 8x7B  | ~32,000         | 3 + 54 agent    | `SENTENCEPIECE_PATTERN`    |
+| `mistral_v2`  | Mistral 7B v0.3, Codestral, 8x22B   | ~32,768         | 10 + 54 agent   | `SENTENCEPIECE_PATTERN`    |
+| `mistral_v3`  | Mistral NeMo, Large 2, Pixtral      | ~131,000        | 10 + 54 agent   | `O200K_BASE_PATTERN`       |
 
 **OpenAI standard tokens:**
 
@@ -235,6 +241,12 @@ See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, exa
 **DeepSeek V3 standard tokens:**
 
 - **deepseek_v3**: `<｜begin▁of▁sentence｜>`, `<｜end▁of▁sentence｜>`, `<think>`, `</think>`, `<｜User｜>`, `<｜Assistant｜>`, `<|EOT|>`, FIM tokens (`<｜fim▁hole｜>`, `<｜fim▁begin｜>`, `<｜fim▁end｜>`), tool calling tokens (`<｜tool▁calls▁begin｜>`, `<｜tool▁call▁begin｜>`, etc.)
+
+**Mistral standard tokens:**
+
+- **mistral_v1**: `<unk>`, `<s>`, `</s>` (SentencePiece native)
+- **mistral_v2**: Same as V1 + control tokens: `[INST]`, `[/INST]`, `[TOOL_CALLS]`, `[AVAILABLE_TOOLS]`, `[/AVAILABLE_TOOLS]`, `[TOOL_RESULTS]`, `[/TOOL_RESULTS]`
+- **mistral_v3**: `<unk>`, `<s>`, `</s>` + control tokens (Tekken/Tiktoken-based, NOT SentencePiece)
 
 ### Agent Tokens (54 per model)
 
@@ -318,7 +330,7 @@ Contributions are welcome! Here's how you can help:
 
 ```bash
 # Clone the repository
-git clone https://github.com/farhan-syah/splintr.git
+git clone https://github.com/ml-rust/splintr.git
 cd splintr
 
 # Install pre-commit hook (recommended)
@@ -358,6 +370,6 @@ If you use Splintr in your research, please cite:
   author = {Farhan Syah},
   title = {Splintr: High-Performance BPE Tokenizer},
   year = {2025},
-  url = {https://github.com/farhan-syah/splintr}
+  url = {https://github.com/ml-rust/splintr}
 }
 ```

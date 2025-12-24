@@ -1,6 +1,6 @@
 # Special Tokens Reference
 
-This document describes the special tokens available in Splintr's `cl100k_base`, `o200k_base`, `llama3`, and `deepseek_v3` tokenizers, including the extended agent token vocabulary.
+This document describes the special tokens available in Splintr's `cl100k_base`, `o200k_base`, `llama3`, `deepseek_v3`, and `mistral_v1`/`mistral_v2`/`mistral_v3` tokenizers, including the extended agent token vocabulary.
 
 ## Table of Contents
 
@@ -10,6 +10,7 @@ This document describes the special tokens available in Splintr's `cl100k_base`,
 - [OpenAI Standard Tokens](#openai-standard-tokens)
 - [Meta Llama 3 Standard Tokens](#meta-llama-3-standard-tokens)
 - [DeepSeek V3 Standard Tokens](#deepseek-v3-standard-tokens)
+- [Mistral Standard Tokens](#mistral-standard-tokens)
 - [Agent Token Categories](#agent-token-categories)
   - [1. Conversation Structure](#1-conversation-structure)
   - [2. Reasoning / Chain-of-Thought](#2-reasoning--chain-of-thought)
@@ -81,12 +82,15 @@ This convention mirrors XML/HTML for familiarity while using `<|...|>` to avoid 
 
 Token IDs are carefully allocated to avoid conflicts with reserved ranges:
 
-| Model         | Regular Tokens | Reserved Range  | Agent Tokens    | Total   |
-| ------------- | -------------- | --------------- | --------------- | ------- |
-| `cl100k_base` | 0-100,255      | 100,257-100,276 | 100,277-100,330 | 100,331 |
-| `o200k_base`  | 0-199,997      | 199,999-200,018 | 200,019-200,072 | 200,073 |
-| `llama3`      | 0-127,999      | 128,000-128,261 | 128,300-128,353 | 128,354 |
-| `deepseek_v3` | 0-127,999      | 128,798-128,814 | 128,900-128,953 | 128,954 |
+| Model         | Regular Tokens | Reserved Range  | Agent Tokens      | Total     |
+| ------------- | -------------- | --------------- | ----------------- | --------- |
+| `cl100k_base` | 0-100,255      | 100,257-100,276 | 100,277-100,330   | 100,331   |
+| `o200k_base`  | 0-199,997      | 199,999-200,018 | 200,019-200,072   | 200,073   |
+| `llama3`      | 0-127,999      | 128,000-128,261 | 128,300-128,353   | 128,354   |
+| `deepseek_v3` | 0-127,999      | 128,798-128,814 | 128,900-128,953   | 128,954   |
+| `mistral_v1`  | 0-31,999       | 0-2             | 32,000-32,053     | 32,054    |
+| `mistral_v2`  | 0-32,767       | 0-9             | 32,768-32,821     | 32,822    |
+| `mistral_v3`  | 0-131,071      | 0-9             | 131,072-131,125   | 131,126   |
 
 ### Why These Ranges?
 
@@ -264,19 +268,119 @@ Based on my analysis, the answer is 42.
 
 ---
 
+## Mistral Standard Tokens
+
+Mistral AI has released multiple tokenizer versions with different vocabulary sizes and capabilities:
+
+- **V1** (~32k tokens): Mistral 7B v0.1/v0.2, Mixtral 8x7B - Basic SentencePiece
+- **V2** (~32,768 tokens): Mistral 7B v0.3, Codestral, Mixtral 8x22B - SentencePiece + Control Tokens
+- **V3/Tekken** (~131k tokens): Mistral NeMo, Large 2, Pixtral - Tiktoken-based (NOT SentencePiece)
+
+> **Note**: V1 and V2 use SentencePiece-style tokenization. V3/Tekken uses Tiktoken (similar to GPT-4o).
+
+### mistral_v1 (Mistral 7B v0.1/v0.2, Mixtral 8x7B)
+
+Splintr's `mistral_v1` vocabulary includes ~32,000 BPE tokens plus 54 agent tokens.
+
+#### Core SentencePiece Tokens
+
+| Token   | ID | Purpose                      |
+| ------- | -- | ---------------------------- |
+| `<unk>` | 0  | Unknown token                |
+| `<s>`   | 1  | Beginning of sequence (BOS)  |
+| `</s>`  | 2  | End of sequence (EOS)        |
+
+### mistral_v2 (Mistral 7B v0.3, Codestral, Mixtral 8x22B)
+
+V2 extends V1 with 768 control tokens for tool calling and instruction formatting.
+
+#### Core SentencePiece Tokens (same as V1)
+
+| Token   | ID | Purpose                      |
+| ------- | -- | ---------------------------- |
+| `<unk>` | 0  | Unknown token                |
+| `<s>`   | 1  | Beginning of sequence (BOS)  |
+| `</s>`  | 2  | End of sequence (EOS)        |
+
+#### V2 Control Tokens
+
+| Token                | ID | Purpose                    |
+| -------------------- | -- | -------------------------- |
+| `[INST]`             | 3  | Start of user instruction  |
+| `[/INST]`            | 4  | End of user instruction    |
+| `[TOOL_CALLS]`       | 5  | Tool calling block         |
+| `[AVAILABLE_TOOLS]`  | 6  | Available tools definition |
+| `[/AVAILABLE_TOOLS]` | 7  | End of tools definition    |
+| `[TOOL_RESULTS]`     | 8  | Tool results block         |
+| `[/TOOL_RESULTS]`    | 9  | End of tool results        |
+
+### mistral_v3 (Mistral NeMo, Large 2, Pixtral)
+
+V3 uses a completely different tokenizer architecture: **Tekken** (Tiktoken-based), with a much larger vocabulary (~131k tokens).
+
+#### Core Tokens
+
+| Token   | ID | Purpose                      |
+| ------- | -- | ---------------------------- |
+| `<unk>` | 0  | Unknown token                |
+| `<s>`   | 1  | Beginning of sequence (BOS)  |
+| `</s>`  | 2  | End of sequence (EOS)        |
+
+V3 includes the same control tokens as V2 (`[INST]`, `[/INST]`, etc.) but uses Tiktoken encoding instead of SentencePiece.
+
+### Mistral Chat Format
+
+All Mistral versions use a similar instruction-based chat format:
+
+```
+<s>[INST] You are a helpful assistant. [/INST]</s>
+<s>[INST] What is the capital of France? [/INST] The capital of France is Paris.</s>
+```
+
+**Key differences from other formats:**
+
+- Uses `<s>` BOS and `</s>` EOS markers around each turn
+- Uses `[INST]` and `[/INST]` markers for instructions
+- V2+ treats `[INST]`, `[/INST]` as special tokens (single token IDs)
+- V1 encodes them as regular text (multiple token IDs)
+
+### SentencePiece Encoding (V1 and V2 only)
+
+V1 and V2 use SentencePiece encoding:
+
+```python
+# Input: "Hello world"
+# Encoding process:
+#   1. Split by whitespace pattern
+#   2. Prepend ▁ (U+2581) to word start: ["▁Hello", "▁world"]
+#   3. Apply BPE merges to each chunk
+# Decoding process:
+#   1. Decode tokens to bytes
+#   2. Replace ▁ with space: " Hello world"
+```
+
+V3 does NOT use SentencePiece - it uses Tiktoken (similar to o200k_base).
+
+---
+
 ## Agent Token Categories
+
+> **Mistral Agent Token IDs**: The tables below show `mistral_v1 ID`. For V2 and V3:
+> - **V1**: Agent tokens start at 32,000
+> - **V2**: Agent tokens start at 32,768 (add 768 to V1 IDs)
+> - **V3**: Agent tokens start at 131,072
 
 ### 1. Conversation Structure
 
 **Purpose**: Standard ChatML-style tokens for multi-turn conversations.
 
-| Token             | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description                                     |
-| ----------------- | --------- | -------- | --------- | -------------- | ----------------------------------------------- |
-| `<\|system\|>`    | 100277    | 200019   | 128300    | 128900         | System instructions defining assistant behavior |
-| `<\|user\|>`      | 100278    | 200020   | 128301    | 128901         | User input/queries                              |
-| `<\|assistant\|>` | 100279    | 200021   | 128302    | 128902         | Assistant responses                             |
-| `<\|im_start\|>`  | 100280    | 200022   | 128303    | 128903         | Generic message start (ChatML)                  |
-| `<\|im_end\|>`    | 100281    | 200023   | 128304    | 128904         | Generic message end (ChatML)                    |
+| Token             | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description                                     |
+| ----------------- | --------- | -------- | --------- | -------------- | ------------- | ----------------------------------------------- |
+| `<\|system\|>`    | 100277    | 200019   | 128300    | 128900         | 32000         | System instructions defining assistant behavior |
+| `<\|user\|>`      | 100278    | 200020   | 128301    | 128901         | 32001         | User input/queries                              |
+| `<\|assistant\|>` | 100279    | 200021   | 128302    | 128902         | 32002         | Assistant responses                             |
+| `<\|im_start\|>`  | 100280    | 200022   | 128303    | 128903         | 32003         | Generic message start (ChatML)                  |
+| `<\|im_end\|>`    | 100281    | 200023   | 128304    | 128904         | 32004         | Generic message end (ChatML)                    |
 
 **Rationale**: These tokens implement the [ChatML format](https://github.com/openai/openai-python/blob/main/chatml.md) used by OpenAI and adopted widely for chat model training. The `im_start`/`im_end` tokens provide a generic wrapper, while role-specific tokens (`system`, `user`, `assistant`) enable direct role marking.
 
@@ -297,10 +401,10 @@ The capital of France is Paris.<|im_end|>
 
 **Purpose**: Enable System 2 (slow, deliberate) reasoning similar to DeepSeek-R1 or OpenAI o1.
 
-| Token          | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description              |
-| -------------- | --------- | -------- | --------- | -------------- | ------------------------ |
-| `<\|think\|>`  | 100282    | 200024   | 128305    | 128905         | Start of reasoning block |
-| `<\|/think\|>` | 100283    | 200025   | 128306    | 128906         | End of reasoning block   |
+| Token          | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description              |
+| -------------- | --------- | -------- | --------- | -------------- | ---------- | ------------------------ |
+| `<\|think\|>`  | 100282    | 200024   | 128305    | 128905         | 32005      | Start of reasoning block |
+| `<\|/think\|>` | 100283    | 200025   | 128306    | 128906         | 32006      | End of reasoning block   |
 
 **Rationale**: Chain-of-Thought (CoT) prompting significantly improves model performance on complex tasks. Dedicated thinking tokens allow:
 
@@ -325,16 +429,16 @@ The capital of France is Paris.
 
 **Purpose**: Implement the ReAct (Reason + Act) paradigm for autonomous agents.
 
-| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description                     |
+| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description                     |
 | ---------------- | --------- | -------- | --------- | -------------- | ------------------------------- |
-| `<\|plan\|>`     | 100284    | 200026   | 128307    | 128907         | High-level strategy formulation |
-| `<\|/plan\|>`    | 100285    | 200027   | 128308    | 128908         | End of plan                     |
-| `<\|step\|>`     | 100286    | 200028   | 128309    | 128909         | Individual step within plan     |
-| `<\|/step\|>`    | 100287    | 200029   | 128310    | 128910         | End of step                     |
-| `<\|act\|>`      | 100288    | 200030   | 128311    | 128911         | Action intent declaration       |
-| `<\|/act\|>`     | 100289    | 200031   | 128312    | 128912         | End of action                   |
-| `<\|observe\|>`  | 100290    | 200032   | 128313    | 128913         | Environment feedback            |
-| `<\|/observe\|>` | 100291    | 200033   | 128314    | 128914         | End of observation              |
+| `<\|plan\|>`     | 100284    | 200026   | 128307    | 128907         | 32007      | High-level strategy formulation |
+| `<\|/plan\|>`    | 100285    | 200027   | 128308    | 128908         | 32008      | End of plan                     |
+| `<\|step\|>`     | 100286    | 200028   | 128309    | 128909         | 32009      | Individual step within plan     |
+| `<\|/step\|>`    | 100287    | 200029   | 128310    | 128910         | 32010      | End of step                     |
+| `<\|act\|>`      | 100288    | 200030   | 128311    | 128911         | 32011      | Action intent declaration       |
+| `<\|/act\|>`     | 100289    | 200031   | 128312    | 128912         | 32012      | End of action                   |
+| `<\|observe\|>`  | 100290    | 200032   | 128313    | 128913         | 32013      | Environment feedback            |
+| `<\|/observe\|>` | 100291    | 200033   | 128314    | 128914         | 32014      | End of observation              |
 
 **Rationale**: The [ReAct paper](https://arxiv.org/abs/2210.03629) demonstrated that interleaving reasoning and acting improves agent performance. These tokens create a structured loop:
 
@@ -366,14 +470,14 @@ The current temperature in London is 18°C with partly cloudy skies.
 
 **Purpose**: Structured tool use with explicit success/error handling.
 
-| Token             | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description                 |
+| Token             | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description                 |
 | ----------------- | --------- | -------- | --------- | -------------- | --------------------------- |
-| `<\|function\|>`  | 100292    | 200034   | 128315    | 128915         | Function call specification |
-| `<\|/function\|>` | 100293    | 200035   | 128316    | 128916         | End of function call        |
-| `<\|result\|>`    | 100294    | 200036   | 128317    | 128917         | Successful return value     |
-| `<\|/result\|>`   | 100295    | 200037   | 128318    | 128918         | End of result               |
-| `<\|error\|>`     | 100296    | 200038   | 128319    | 128919         | Execution error             |
-| `<\|/error\|>`    | 100297    | 200039   | 128320    | 128920         | End of error                |
+| `<\|function\|>`  | 100292    | 200034   | 128315    | 128915         | 32015      | Function call specification |
+| `<\|/function\|>` | 100293    | 200035   | 128316    | 128916         | 32016      | End of function call        |
+| `<\|result\|>`    | 100294    | 200036   | 128317    | 128917         | 32017      | Successful return value     |
+| `<\|/result\|>`   | 100295    | 200037   | 128318    | 128918         | 32018      | End of result               |
+| `<\|error\|>`     | 100296    | 200038   | 128319    | 128919         | 32019      | Execution error             |
+| `<\|/error\|>`    | 100297    | 200039   | 128320    | 128920         | 32020      | End of error                |
 
 **Rationale**: Function calling is fundamental to agent capabilities. Separating `<|act|>` (intent) from `<|function|>` (technical payload) allows:
 
@@ -402,14 +506,14 @@ The `<|error|>` token is critical for robust agents—it signals that the previo
 
 **Purpose**: Jupyter notebook-style code interpreter flow.
 
-| Token           | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description           |
+| Token           | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description           |
 | --------------- | --------- | -------- | --------- | -------------- | --------------------- |
-| `<\|code\|>`    | 100298    | 200040   | 128321    | 128921         | Code block to execute |
-| `<\|/code\|>`   | 100299    | 200041   | 128322    | 128922         | End of code block     |
-| `<\|output\|>`  | 100300    | 200042   | 128323    | 128923         | Execution output      |
-| `<\|/output\|>` | 100301    | 200043   | 128324    | 128924         | End of output         |
-| `<\|lang\|>`    | 100302    | 200044   | 128325    | 128925         | Language identifier   |
-| `<\|/lang\|>`   | 100303    | 200045   | 128326    | 128926         | End of language tag   |
+| `<\|code\|>`    | 100298    | 200040   | 128321    | 128921         | 32021      | Code block to execute |
+| `<\|/code\|>`   | 100299    | 200041   | 128322    | 128922         | 32022      | End of code block     |
+| `<\|output\|>`  | 100300    | 200042   | 128323    | 128923         | 32023      | Execution output      |
+| `<\|/output\|>` | 100301    | 200043   | 128324    | 128924         | 32024      | End of output         |
+| `<\|lang\|>`    | 100302    | 200044   | 128325    | 128925         | 32025      | Language identifier   |
+| `<\|/lang\|>`   | 100303    | 200045   | 128326    | 128926         | 32026      | End of language tag   |
 
 **Rationale**: Code execution is a powerful agent capability. These tokens model the notebook paradigm:
 
@@ -438,16 +542,16 @@ print(f"Area: {area:.2f}")
 
 **Purpose**: Retrieval-Augmented Generation with source attribution.
 
-| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description             |
+| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description             |
 | ---------------- | --------- | -------- | --------- | -------------- | ----------------------- |
-| `<\|context\|>`  | 100304    | 200046   | 128327    | 128927         | Retrieved context block |
-| `<\|/context\|>` | 100305    | 200047   | 128328    | 128928         | End of context          |
-| `<\|quote\|>`    | 100306    | 200048   | 128329    | 128929         | Direct quotation        |
-| `<\|/quote\|>`   | 100307    | 200049   | 128330    | 128930         | End of quote            |
-| `<\|cite\|>`     | 100308    | 200050   | 128331    | 128931         | Citation reference      |
-| `<\|/cite\|>`    | 100309    | 200051   | 128332    | 128932         | End of citation         |
-| `<\|source\|>`   | 100310    | 200052   | 128333    | 128933         | Source metadata         |
-| `<\|/source\|>`  | 100311    | 200053   | 128334    | 128934         | End of source           |
+| `<\|context\|>`  | 100304    | 200046   | 128327    | 128927         | 32027      | Retrieved context block |
+| `<\|/context\|>` | 100305    | 200047   | 128328    | 128928         | 32028      | End of context          |
+| `<\|quote\|>`    | 100306    | 200048   | 128329    | 128929         | 32029      | Direct quotation        |
+| `<\|/quote\|>`   | 100307    | 200049   | 128330    | 128930         | 32030      | End of quote            |
+| `<\|cite\|>`     | 100308    | 200050   | 128331    | 128931         | 32031      | Citation reference      |
+| `<\|/cite\|>`    | 100309    | 200051   | 128332    | 128932         | 32032      | End of citation         |
+| `<\|source\|>`   | 100310    | 200052   | 128333    | 128933         | 32033      | Source metadata         |
+| `<\|/source\|>`  | 100311    | 200053   | 128334    | 128934         | 32034      | End of source           |
 
 **Rationale**: RAG systems retrieve relevant documents to ground model responses. These tokens enable:
 
@@ -477,12 +581,12 @@ population of approximately <|quote|>2,102,650 residents<|/quote|>
 
 **Purpose**: Long-term memory and state persistence across sessions.
 
-| Token           | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description         |
+| Token           | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description         |
 | --------------- | --------- | -------- | --------- | -------------- | ------------------- |
-| `<\|memory\|>`  | 100312    | 200054   | 128335    | 128935         | Store information   |
-| `<\|/memory\|>` | 100313    | 200055   | 128336    | 128936         | End of memory block |
-| `<\|recall\|>`  | 100314    | 200056   | 128337    | 128937         | Retrieved memory    |
-| `<\|/recall\|>` | 100315    | 200057   | 128338    | 128938         | End of recall       |
+| `<\|memory\|>`  | 100312    | 200054   | 128335    | 128935         | 32035      | Store information   |
+| `<\|/memory\|>` | 100313    | 200055   | 128336    | 128936         | 32036      | End of memory block |
+| `<\|recall\|>`  | 100314    | 200056   | 128337    | 128937         | 32037      | Retrieved memory    |
+| `<\|/recall\|>` | 100315    | 200057   | 128338    | 128938         | 32038      | End of recall       |
 
 **Rationale**: Persistent memory enables agents to:
 
@@ -509,11 +613,11 @@ Hello Alice! Here's a brief answer: The capital of France is Paris.
 
 **Purpose**: Sequence control and formatting.
 
-| Token        | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description                 |
+| Token        | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description                 |
 | ------------ | --------- | -------- | --------- | -------------- | --------------------------- |
-| `<\|pad\|>`  | 100316    | 200058   | 128339    | 128939         | Padding for batch alignment |
-| `<\|stop\|>` | 100317    | 200059   | 128340    | 128940         | Generation stop signal      |
-| `<\|sep\|>`  | 100318    | 200060   | 128341    | 128941         | Segment separator           |
+| `<\|pad\|>`  | 100316    | 200058   | 128339    | 128939         | 32039      | Padding for batch alignment |
+| `<\|stop\|>` | 100317    | 200059   | 128340    | 128940         | 32040      | Generation stop signal      |
+| `<\|sep\|>`  | 100318    | 200060   | 128341    | 128941         | 32041      | Segment separator           |
 
 **Rationale**: These are utility tokens for training and inference:
 
@@ -527,14 +631,14 @@ Hello Alice! Here's a brief answer: The capital of France is Paris.
 
 **Purpose**: Placeholders for non-text content.
 
-| Token          | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description   |
+| Token          | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description   |
 | -------------- | --------- | -------- | --------- | -------------- | ------------- |
-| `<\|image\|>`  | 100319    | 200061   | 128256\*  | 128942         | Image content |
-| `<\|/image\|>` | 100320    | 200062   | 128257    | 128943         | End of image  |
-| `<\|audio\|>`  | 100321    | 200063   | 128258    | 128944         | Audio content |
-| `<\|/audio\|>` | 100322    | 200064   | 128259    | 128945         | End of audio  |
-| `<\|video\|>`  | 100323    | 200065   | 128260    | 128946         | Video content |
-| `<\|/video\|>` | 100324    | 200066   | 128261    | 128947         | End of video  |
+| `<\|image\|>`  | 100319    | 200061   | 128256\*  | 128942         | 32042      | Image content |
+| `<\|/image\|>` | 100320    | 200062   | 128257    | 128943         | 32043      | End of image  |
+| `<\|audio\|>`  | 100321    | 200063   | 128258    | 128944         | 32044      | Audio content |
+| `<\|/audio\|>` | 100322    | 200064   | 128259    | 128945         | 32045      | End of audio  |
+| `<\|video\|>`  | 100323    | 200065   | 128260    | 128946         | 32046      | Video content |
+| `<\|/video\|>` | 100324    | 200066   | 128261    | 128947         | 32047      | End of video  |
 
 \*Note: Llama 3's `<|image|>` token (128256) is aligned with the official Meta Llama 3.2-Vision token ID for compatibility.
 
@@ -559,14 +663,14 @@ The image shows a sunset over the ocean with vibrant orange and purple colors.
 
 **Purpose**: Semantic layout for parsing structured documents.
 
-| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | Description            |
+| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description            |
 | ---------------- | --------- | -------- | --------- | -------------- | ---------------------- |
-| `<\|title\|>`    | 100325    | 200067   | 128348    | 128948         | Document/section title |
-| `<\|/title\|>`   | 100326    | 200068   | 128349    | 128949         | End of title           |
-| `<\|section\|>`  | 100327    | 200069   | 128350    | 128950         | Semantic section       |
-| `<\|/section\|>` | 100328    | 200070   | 128351    | 128951         | End of section         |
-| `<\|summary\|>`  | 100329    | 200071   | 128352    | 128952         | Content summary        |
-| `<\|/summary\|>` | 100330    | 200072   | 128353    | 128953         | End of summary         |
+| `<\|title\|>`    | 100325    | 200067   | 128348    | 128948         | 32048      | Document/section title |
+| `<\|/title\|>`   | 100326    | 200068   | 128349    | 128949         | 32049      | End of title           |
+| `<\|section\|>`  | 100327    | 200069   | 128350    | 128950         | 32050      | Semantic section       |
+| `<\|/section\|>` | 100328    | 200070   | 128351    | 128951         | 32051      | End of section         |
+| `<\|summary\|>`  | 100329    | 200071   | 128352    | 128952         | 32052      | Content summary        |
+| `<\|/summary\|>` | 100330    | 200072   | 128353    | 128953         | 32053      | End of summary         |
 
 **Rationale**: When processing structured documents (papers, reports, documentation), these tokens help:
 
@@ -975,6 +1079,72 @@ LLAMA3_AGENT_TOKENS.SUMMARY             # 128352
 LLAMA3_AGENT_TOKENS.SUMMARY_END         # 128353
 ```
 
+### MISTRAL_V1_AGENT_TOKENS
+
+Mistral V1 tokenizers (7B v0.1/v0.2, Mixtral 8x7B) use SentencePiece encoding with agent tokens starting at ID 32000.
+
+```python
+from splintr import MISTRAL_V1_AGENT_TOKENS
+
+# Conversation
+MISTRAL_V1_AGENT_TOKENS.SYSTEM          # 32000
+MISTRAL_V1_AGENT_TOKENS.USER            # 32001
+MISTRAL_V1_AGENT_TOKENS.ASSISTANT       # 32002
+MISTRAL_V1_AGENT_TOKENS.IM_START        # 32003
+MISTRAL_V1_AGENT_TOKENS.IM_END          # 32004
+
+# Thinking
+MISTRAL_V1_AGENT_TOKENS.THINK           # 32005
+MISTRAL_V1_AGENT_TOKENS.THINK_END       # 32006
+
+# Function/Tools
+MISTRAL_V1_AGENT_TOKENS.FUNCTION        # 32015
+MISTRAL_V1_AGENT_TOKENS.FUNCTION_END    # 32016
+
+# ... and 48 more tokens up to 32053
+```
+
+### MISTRAL_V2_AGENT_TOKENS
+
+Mistral V2 tokenizers (7B v0.3, Mixtral 8x22B, Codestral) use SentencePiece with control tokens and agent tokens starting at ID 32768.
+
+**Note:** V2 includes native control tokens at IDs 3-9 (e.g., [INST], [/INST]), so agent token base is shifted to 32768 instead of 32000.
+
+```python
+from splintr import MISTRAL_V2_AGENT_TOKENS
+
+# Control tokens (native, IDs 3-9)
+# [INST] (3), [/INST] (4), [TOOL_CALLS] (5), [AVAILABLE_TOOLS] (6), [TOOL_RESULTS] (7-9)
+
+# Agent tokens start at 32768
+MISTRAL_V2_AGENT_TOKENS.SYSTEM          # 32768
+MISTRAL_V2_AGENT_TOKENS.USER            # 32769
+MISTRAL_V2_AGENT_TOKENS.THINK           # 32773
+
+# ... and 51 more tokens up to 32821
+```
+
+### MISTRAL_V3_AGENT_TOKENS
+
+Mistral V3/Tekken tokenizers (NeMo, Large 2, Pixtral) use Tiktoken-based encoding (not SentencePiece) with control tokens and agent tokens starting at ID 131072.
+
+**Note:** V3 includes 7 native control tokens at IDs 3-9 (Tekken-specific), so agent token base is shifted to 131072.
+
+```python
+from splintr import MISTRAL_V3_AGENT_TOKENS
+
+# Control tokens (native, IDs 3-9)
+# [INST] (3), [/INST] (4), [AVAILABLE_TOOLS] (5), [/AVAILABLE_TOOLS] (6),
+# [TOOL_RESULTS] (7), [/TOOL_RESULTS] (8), [TOOL_CALLS] (9)
+
+# Agent tokens start at 131072
+MISTRAL_V3_AGENT_TOKENS.SYSTEM          # 131072
+MISTRAL_V3_AGENT_TOKENS.USER            # 131073
+MISTRAL_V3_AGENT_TOKENS.THINK           # 131077
+
+# ... and 51 more tokens up to 131125
+```
+
 ---
 
 ## Rust API Reference
@@ -1022,6 +1192,45 @@ deepseek_v3_agent_tokens::END_OF_TURN          // 128805
 deepseek_v3_agent_tokens::SYSTEM               // 128900
 deepseek_v3_agent_tokens::THINK                // 128905
 deepseek_v3_agent_tokens::FUNCTION             // 128915
+// ... etc
+```
+
+### mistral_v1_agent_tokens module
+
+```rust
+use splintr::mistral_v1_agent_tokens;
+
+// Mistral V1 agent tokens starting at ID 32000
+mistral_v1_agent_tokens::SYSTEM                // 32000
+mistral_v1_agent_tokens::USER                  // 32001
+mistral_v1_agent_tokens::THINK                 // 32005
+mistral_v1_agent_tokens::FUNCTION              // 32015
+// ... etc
+```
+
+### mistral_v2_agent_tokens module
+
+```rust
+use splintr::mistral_v2_agent_tokens;
+
+// Mistral V2 agent tokens starting at ID 32768 (after control tokens at 3-9)
+mistral_v2_agent_tokens::SYSTEM                // 32768
+mistral_v2_agent_tokens::USER                  // 32769
+mistral_v2_agent_tokens::THINK                 // 32773
+mistral_v2_agent_tokens::FUNCTION              // 32783
+// ... etc
+```
+
+### mistral_v3_agent_tokens module
+
+```rust
+use splintr::mistral_v3_agent_tokens;
+
+// Mistral V3/Tekken agent tokens starting at ID 131072 (after control tokens at 3-9)
+mistral_v3_agent_tokens::SYSTEM                // 131072
+mistral_v3_agent_tokens::USER                  // 131073
+mistral_v3_agent_tokens::THINK                 // 131077
+mistral_v3_agent_tokens::FUNCTION              // 131087
 // ... etc
 ```
 
