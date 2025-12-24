@@ -283,7 +283,7 @@ Add Splintr to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-splintr = "0.7.0"
+splintr = "*"  # or pin to a specific version
 ```
 
 ### Basic Usage

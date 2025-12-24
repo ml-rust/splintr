@@ -58,7 +58,7 @@ See the [API Guide](docs/api_guide.md) for complete documentation and examples.
 
 ```toml
 [dependencies]
-splintr = "0.7.0"
+splintr = "*"  # or pin to a specific version
 ```
 
 ```rust
