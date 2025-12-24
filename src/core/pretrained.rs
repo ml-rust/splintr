@@ -18,7 +18,9 @@
 
 use rustc_hash::FxHashMap;
 
-use super::tokenizer::{Tokenizer, TokenizerError, CL100K_BASE_PATTERN, O200K_BASE_PATTERN};
+use super::tokenizer::{
+    Tokenizer, TokenizerError, CL100K_BASE_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+};
 
 // Embed vocabulary files at compile time
 pub const CL100K_BASE_VOCAB: &[u8] =
@@ -152,11 +154,6 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<Tokenizer, TokenizerError> {
         }
     }
 }
-
-/// Regex pattern for SentencePiece-style tokenizers (Mistral, Llama 2, etc.)
-/// SentencePiece doesn't use pre-tokenization regex, but we need some pattern
-/// for the BPE algorithm. This pattern matches individual characters or character sequences.
-pub const SENTENCEPIECE_PATTERN: &str = r"[^\s]+|\s+";
 
 /// Get the regex pattern for a vocabulary.
 pub fn pattern(vocab: PretrainedVocab) -> &'static str {

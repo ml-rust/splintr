@@ -43,10 +43,11 @@ use crate::core::pretrained::{
     cl100k_base_special_tokens, deepseek_v3_special_tokens, llama3_special_tokens,
     mistral_v1_special_tokens, mistral_v2_special_tokens, o200k_base_special_tokens,
     CL100K_BASE_VOCAB, DEEPSEEK_V3_VOCAB, LLAMA3_VOCAB, MISTRAL_V2_VOCAB, MISTRAL_VOCAB,
-    O200K_BASE_VOCAB, SENTENCEPIECE_PATTERN,
+    O200K_BASE_VOCAB,
 };
 use crate::core::{
     byte_level_decode_bytes, Tokenizer, CL100K_BASE_PATTERN, LLAMA3_PATTERN, O200K_BASE_PATTERN,
+    SENTENCEPIECE_PATTERN,
 };
 
 // Special tokens are defined in crate::core::pretrained module.

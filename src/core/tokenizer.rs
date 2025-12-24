@@ -44,6 +44,17 @@ pub const O200K_BASE_PATTERN: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{L
 /// Default regex pattern for Llama 3/3.1/3.2/3.3 (same as o200k_base)
 pub const LLAMA3_PATTERN: &str = O200K_BASE_PATTERN;
 
+/// Regex pattern for SentencePiece-based tokenizers (Mistral V1/V2, Llama 2, Gemma).
+///
+/// SentencePiece tokenizers use a simple word boundary approach:
+/// - `[^\s]+` = Match one or more non-whitespace characters (words)
+/// - `|\s+` = OR match one or more whitespace characters
+///
+/// This differs from GPT-style tokenizers which use complex patterns for contractions,
+/// unicode categories, and punctuation handling. SentencePiece relies on the BPE
+/// vocabulary itself to handle these cases during encoding.
+pub const SENTENCEPIECE_PATTERN: &str = r"[^\s]+|\s+";
+
 // =============================================================================
 // Agent Token Constants (cl100k_base: 100277+, o200k_base: 200019+)
 // =============================================================================
