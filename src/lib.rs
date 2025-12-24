@@ -4,7 +4,7 @@ mod python;
 
 pub use core::{
     ByteLevelStreamingDecoder, StreamingDecoder, Tokenizer, TokenizerError, CL100K_BASE_PATTERN,
-    LLAMA3_PATTERN, O200K_BASE_PATTERN,
+    LLAMA3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
 
 // Re-export pretrained tokenizer API
@@ -28,6 +28,10 @@ pub use core::{
 /// - LRU cache for frequently encoded chunks
 /// - UTF-8 streaming decoder for LLM output
 /// - Agent tokens for chat/reasoning/tool-use applications
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
+
+#[cfg(feature = "python")]
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<python::PyTokenizer>()?;
