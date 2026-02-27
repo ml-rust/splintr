@@ -1,13 +1,13 @@
 [package]
 name = "splintr"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
-description = "Fast Rust BPE tokenizer with Python bindings"
+description = "Fast Rust tokenizer (BPE + SentencePiece) with Python bindings"
 license = "MIT"
 repository = "https://github.com/ml-rust/splintr"
 homepage = "https://github.com/ml-rust/splintr"
 readme = "README.md"
-keywords = ["tokenizer", "bpe", "tiktoken", "gpt", "llm"]
+keywords = ["tokenizer", "bpe", "sentencepiece", "tiktoken", "llm"]
 categories = ["text-processing", "encoding"]
 
 [lib]
