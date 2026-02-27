@@ -39,6 +39,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rustc_hash::FxHashMap;
 
+use crate::core::SentencePieceTokenizer;
+
 use crate::core::pretrained::{
     cl100k_base_special_tokens, deepseek_v3_special_tokens, llama3_special_tokens,
     mistral_v1_special_tokens, mistral_v2_special_tokens, mistral_v3_special_tokens,
@@ -442,6 +444,111 @@ impl PyTokenizer {
     /// String representation.
     fn __repr__(&self) -> String {
         format!("Tokenizer(vocab_size={})", self.inner.vocab_size())
+    }
+}
+
+/// Python wrapper for the SentencePiece unigram tokenizer.
+///
+/// For models using SentencePiece unigram tokenization (e.g., loaded from GGUF).
+/// Uses greedy longest-match encoding with score-based tie-breaking.
+#[pyclass(name = "SentencePieceTokenizer")]
+pub struct PySentencePieceTokenizer {
+    inner: SentencePieceTokenizer,
+}
+
+#[pymethods]
+impl PySentencePieceTokenizer {
+    /// Create a new SentencePiece unigram tokenizer.
+    ///
+    /// Args:
+    ///     tokens: List of token strings, indexed by token ID
+    ///     scores: Scores per token for tie-breaking (empty list defaults to all zeros)
+    ///     bos_token_id: Optional beginning-of-sequence token ID
+    ///     eos_token_id: End-of-sequence token ID
+    #[new]
+    #[pyo3(signature = (tokens, scores, eos_token_id, bos_token_id=None))]
+    fn new(
+        tokens: Vec<String>,
+        scores: Vec<f32>,
+        eos_token_id: u32,
+        bos_token_id: Option<u32>,
+    ) -> PyResult<Self> {
+        let inner = SentencePieceTokenizer::new(tokens, scores, bos_token_id, eos_token_id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Encode text to token IDs using greedy longest-match.
+    ///
+    /// Prepends BOS token if configured. Replaces spaces with ▁ (U+2581)
+    /// following the SentencePiece convention.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode(&self, text: &str) -> Vec<u32> {
+        self.inner.encode(text)
+    }
+
+    /// Decode token IDs to text.
+    ///
+    /// Skips BOS/EOS tokens and converts ▁ back to spaces.
+    ///
+    /// Args:
+    ///     ids: List of token IDs
+    ///
+    /// Returns:
+    ///     Decoded string
+    ///
+    /// Raises:
+    ///     ValueError: If a token ID is out of range
+    fn decode(&self, ids: Vec<u32>) -> PyResult<String> {
+        self.inner
+            .decode(&ids)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Decode token IDs to text, skipping invalid IDs.
+    ///
+    /// Args:
+    ///     ids: List of token IDs
+    ///
+    /// Returns:
+    ///     Decoded string (invalid token IDs are silently skipped)
+    fn decode_lossy(&self, ids: Vec<u32>) -> String {
+        self.inner.decode_lossy(&ids)
+    }
+
+    /// Get vocabulary size.
+    #[getter]
+    fn vocab_size(&self) -> usize {
+        self.inner.vocab_size()
+    }
+
+    /// Check if a token is the EOS token.
+    fn is_eos(&self, token_id: u32) -> bool {
+        self.inner.is_eos(token_id)
+    }
+
+    /// Get the EOS token ID.
+    #[getter]
+    fn eos_token_id(&self) -> u32 {
+        self.inner.eos_token_id()
+    }
+
+    /// Get the BOS token ID (if configured).
+    #[getter]
+    fn bos_token_id(&self) -> Option<u32> {
+        self.inner.bos_token_id()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SentencePieceTokenizer(vocab_size={})",
+            self.inner.vocab_size()
+        )
     }
 }
 

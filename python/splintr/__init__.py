@@ -1,11 +1,12 @@
 """
-Splintr - Fast Rust BPE tokenizer with Python bindings
+Splintr - Fast Rust tokenizer (BPE + SentencePiece) with Python bindings
 
 A high-performance tokenizer featuring:
 - Regexr with JIT and SIMD (default, pure Rust)
 - Optional PCRE2 with JIT (requires pcre2 feature)
 - Rayon parallelism for multi-core encoding
 - Linked-list BPE algorithm (avoids O(N^2) on pathological inputs)
+- SentencePiece unigram with greedy longest-match and score-based tie-breaking
 - FxHashMap for fast lookups
 - Aho-Corasick for fast special token matching
 - LRU cache for frequently encoded chunks
@@ -61,6 +62,18 @@ Usage:
             print(text, end="", flush=True)
     print(decoder.flush())
 
+SentencePiece Unigram (for GGUF models):
+    from splintr import SentencePieceTokenizer
+
+    tokenizer = SentencePieceTokenizer(
+        tokens=["<unk>", "<s>", "</s>", "▁Hello", "▁world"],
+        scores=[0.0, 0.0, 0.0, -1.2, -1.5],
+        eos_token_id=2,
+        bos_token_id=1,
+    )
+    ids = tokenizer.encode("Hello world")
+    text = tokenizer.decode(ids)
+
 Agent Tokens:
     from splintr import (
         Tokenizer,
@@ -109,6 +122,7 @@ Agent Tokens:
 
 from ._core import (
     Tokenizer,
+    SentencePieceTokenizer,
     StreamingDecoder,
     ByteLevelStreamingDecoder,
     CL100K_BASE_PATTERN,
@@ -125,6 +139,7 @@ from ._core import (
 
 __all__ = [
     "Tokenizer",
+    "SentencePieceTokenizer",
     "StreamingDecoder",
     "ByteLevelStreamingDecoder",
     "CL100K_BASE_PATTERN",
@@ -138,4 +153,4 @@ __all__ = [
     "MISTRAL_V2_AGENT_TOKENS",
     "MISTRAL_V3_AGENT_TOKENS",
 ]
-__version__ = "0.8.0"
+__version__ = "0.9.0"

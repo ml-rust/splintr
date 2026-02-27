@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/splintr.svg)](https://crates.io/crates/splintr) [![PyPI](https://img.shields.io/pypi/v/splintr-rs.svg)](https://pypi.org/project/splintr-rs/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-**A high-performance BPE tokenizer built with Rust with Python bindings, focused on speed, safety, and resource optimization.**
+**A high-performance tokenizer (BPE + SentencePiece) built with Rust with Python bindings, focused on speed, safety, and resource optimization.**
 
 ## The Problem
 
@@ -85,7 +85,7 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 - **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), Llama 3 family (Meta), DeepSeek V3 (DeepSeek), and Mistral V1/V2/V3 (Mistral AI)
 - **Streaming decoders** - Real-time LLM output display with proper UTF-8 handling ([guide](docs/api_guide.md#streaming-decoder))
 - **54 agent tokens** - Built-in support for chat, CoT reasoning, ReAct agents, tool calling, RAG citations ([docs](docs/special_tokens.md))
-- **Battle-tested algorithms** - Regexr with JIT (pure Rust), Aho-Corasick for special tokens, linked-list BPE
+- **Battle-tested algorithms** - Regexr with JIT (pure Rust), Aho-Corasick for special tokens, linked-list BPE, SentencePiece unigram
 
 **Cross-platform:**
 
@@ -219,15 +219,15 @@ See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, exa
 
 ## Supported Vocabularies
 
-| Vocabulary    | Used By                             | Vocabulary Size | Special Tokens  | Import Constant            |
-| ------------- | ----------------------------------- | --------------- | --------------- | -------------------------- |
-| `cl100k_base` | GPT-4, GPT-3.5-turbo                | ~100,000        | 5 + 54 agent    | `CL100K_BASE_PATTERN`      |
-| `o200k_base`  | GPT-4o                              | ~200,000        | 2 + 54 agent    | `O200K_BASE_PATTERN`       |
-| `llama3`      | Llama 3, 3.1, 3.2, 3.3 (Meta)       | ~128,000        | 11 + 54 agent   | `LLAMA3_PATTERN`           |
-| `deepseek_v3` | DeepSeek V3, DeepSeek R1            | ~128,000        | 17 + 54 agent   | `LLAMA3_PATTERN`           |
-| `mistral_v1`  | Mistral 7B v0.1/v0.2, Mixtral 8x7B  | ~32,000         | 3 + 54 agent    | `SENTENCEPIECE_PATTERN`    |
-| `mistral_v2`  | Mistral 7B v0.3, Codestral, 8x22B   | ~32,768         | 10 + 54 agent   | `SENTENCEPIECE_PATTERN`    |
-| `mistral_v3`  | Mistral NeMo, Large 2, Pixtral      | ~131,000        | 10 + 54 agent   | `MISTRAL_V3_PATTERN`       |
+| Vocabulary    | Used By                            | Vocabulary Size | Special Tokens | Import Constant         |
+| ------------- | ---------------------------------- | --------------- | -------------- | ----------------------- |
+| `cl100k_base` | GPT-4, GPT-3.5-turbo               | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN`   |
+| `o200k_base`  | GPT-4o                             | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`    |
+| `llama3`      | Llama 3, 3.1, 3.2, 3.3 (Meta)      | ~128,000        | 11 + 54 agent  | `LLAMA3_PATTERN`        |
+| `deepseek_v3` | DeepSeek V3, DeepSeek R1           | ~128,000        | 17 + 54 agent  | `LLAMA3_PATTERN`        |
+| `mistral_v1`  | Mistral 7B v0.1/v0.2, Mixtral 8x7B | ~32,000         | 3 + 54 agent   | `SENTENCEPIECE_PATTERN` |
+| `mistral_v2`  | Mistral 7B v0.3, Codestral, 8x22B  | ~32,768         | 10 + 54 agent  | `SENTENCEPIECE_PATTERN` |
+| `mistral_v3`  | Mistral NeMo, Large 2, Pixtral     | ~131,000        | 10 + 54 agent  | `MISTRAL_V3_PATTERN`    |
 
 **OpenAI standard tokens:**
 
@@ -279,6 +279,7 @@ Splintr implements several optimizations that make tokenization faster:
 - **Regexr with JIT compilation**: Pure Rust regex engine with SIMD acceleration
 - **Rayon parallelism**: Leverages multiple CPU cores for batch encoding
 - **Linked-list BPE algorithm**: Avoids O(N²) complexity on pathological inputs
+- **SentencePiece unigram**: Greedy longest-match with score-based tie-breaking for Mistral/Llama-style models
 - **FxHashMap**: Faster lookups than default SipHash for non-adversarial contexts
 - **Aho-Corasick for special tokens**: Fast multi-pattern matching without regex alternation
 - **LRU cache**: Avoids redundant BPE encoding of frequently seen chunks
@@ -357,6 +358,7 @@ The pre-commit hook automatically runs formatting, clippy, and tests before each
 Splintr builds upon concepts from:
 
 - [tiktoken](https://github.com/openai/tiktoken) - OpenAI's reference BPE tokenizer
+- [SentencePiece](https://github.com/google/sentencepiece) - Google's unsupervised text tokenizer
 - [tokenizers](https://github.com/huggingface/tokenizers) - Hugging Face's tokenization library
 
 The performance optimizations are informed by profiling real-world usage patterns in LLM applications.
@@ -368,7 +370,7 @@ If you use Splintr in your research, please cite:
 ```bibtex
 @software{splintr,
   author = {Farhan Syah},
-  title = {Splintr: High-Performance BPE Tokenizer},
+  title = {Splintr: High-Performance Tokenizer (BPE + SentencePiece)},
   year = {2025},
   url = {https://github.com/ml-rust/splintr}
 }

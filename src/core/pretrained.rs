@@ -204,6 +204,11 @@ pub fn bos_token_id(vocab: PretrainedVocab) -> Option<u32> {
     }
 }
 
+/// Get the BOS token ID by vocabulary name string.
+pub fn bos_token_id_by_name(name: &str) -> Option<u32> {
+    PretrainedVocab::from_name(name).and_then(bos_token_id)
+}
+
 /// Get the PAD token ID for a vocabulary.
 pub fn pad_token_id(vocab: PretrainedVocab) -> Option<u32> {
     match vocab {
