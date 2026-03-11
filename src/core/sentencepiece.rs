@@ -167,7 +167,7 @@ impl SentencePieceTokenizer {
     ///
     /// Skips BOS/EOS tokens and converts ▁ back to spaces.
     pub fn decode(&self, ids: &[u32]) -> Result<String, SentencePieceError> {
-        let mut result = String::new();
+        let mut bytes = Vec::new();
 
         for &id in ids {
             let token = self
@@ -178,34 +178,52 @@ impl SentencePieceTokenizer {
             if Some(id) == self.bos_token_id || id == self.eos_token_id {
                 continue;
             }
-            result.push_str(&token.replace('▁', " "));
+
+            if let Some(byte_val) = parse_byte_fallback(token) {
+                bytes.push(byte_val);
+            } else {
+                let decoded = token.replace('▁', " ");
+                bytes.extend_from_slice(decoded.as_bytes());
+            }
         }
 
-        // Remove leading space (artifact of SentencePiece encoding)
-        if result.starts_with(' ') {
-            result.remove(0);
-        }
+        let result = String::from_utf8_lossy(&bytes).into_owned();
 
+        // Remove leading space only when decoding a full sequence (the leading ▁
+        // is a SentencePiece artifact). For single-token decode (streaming), the
+        // leading space is meaningful word separation — don't strip it.
+        if ids.len() > 1 {
+            if let Some(stripped) = result.strip_prefix(' ') {
+                return Ok(stripped.to_string());
+            }
+        }
         Ok(result)
     }
 
     /// Decode token IDs to text, skipping invalid IDs.
     pub fn decode_lossy(&self, ids: &[u32]) -> String {
-        let mut result = String::new();
+        let mut bytes = Vec::new();
 
         for &id in ids {
             if let Some(token) = self.id_to_token.get(id as usize) {
                 if Some(id) == self.bos_token_id || id == self.eos_token_id {
                     continue;
                 }
-                result.push_str(&token.replace('▁', " "));
+                if let Some(byte_val) = parse_byte_fallback(token) {
+                    bytes.push(byte_val);
+                } else {
+                    let decoded = token.replace('▁', " ");
+                    bytes.extend_from_slice(decoded.as_bytes());
+                }
             }
         }
 
-        if result.starts_with(' ') {
-            result.remove(0);
+        let result = String::from_utf8_lossy(&bytes).into_owned();
+        if ids.len() > 1 {
+            if let Some(stripped) = result.strip_prefix(' ') {
+                return stripped.to_string();
+            }
         }
-
         result
     }
 
@@ -227,6 +245,16 @@ impl SentencePieceTokenizer {
     /// Get BOS token ID.
     pub fn bos_token_id(&self) -> Option<u32> {
         self.bos_token_id
+    }
+}
+
+/// Parse a byte-fallback token like `<0x0A>` into its byte value.
+fn parse_byte_fallback(token: &str) -> Option<u8> {
+    let inner = token.strip_prefix("<0x")?.strip_suffix('>')?;
+    if inner.len() == 2 {
+        u8::from_str_radix(inner, 16).ok()
+    } else {
+        None
     }
 }
 
@@ -351,5 +379,48 @@ mod tests {
         let tok = make_tokenizer();
         let result = tok.decode(&[1, 999]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_byte_fallback_valid() {
+        assert_eq!(parse_byte_fallback("<0x0A>"), Some(0x0A));
+        assert_eq!(parse_byte_fallback("<0xFF>"), Some(0xFF));
+        assert_eq!(parse_byte_fallback("<0x00>"), Some(0x00));
+        assert_eq!(parse_byte_fallback("<0x7F>"), Some(0x7F));
+        // Lowercase hex
+        assert_eq!(parse_byte_fallback("<0xab>"), Some(0xAB));
+    }
+
+    #[test]
+    fn test_parse_byte_fallback_invalid() {
+        assert_eq!(parse_byte_fallback("<0xZZ>"), None);
+        assert_eq!(parse_byte_fallback("<0x1>"), None); // single hex digit
+        assert_eq!(parse_byte_fallback("<0x123>"), None); // three hex digits
+        assert_eq!(parse_byte_fallback("0x0A"), None); // missing angle brackets
+        assert_eq!(parse_byte_fallback("<0x0A"), None); // missing closing bracket
+        assert_eq!(parse_byte_fallback("0x0A>"), None); // missing opening prefix
+        assert_eq!(parse_byte_fallback(""), None);
+        assert_eq!(parse_byte_fallback("hello"), None);
+        assert_eq!(parse_byte_fallback("<>"), None);
+    }
+
+    #[test]
+    fn test_decode_byte_fallback_tokens() {
+        // Vocab with byte-fallback tokens for UTF-8 encoding of 'é' (0xC3 0xA9)
+        let tokens = vec![
+            "<unk>".to_string(),  // 0
+            "<s>".to_string(),    // 1
+            "</s>".to_string(),   // 2
+            "<0xC3>".to_string(), // 3
+            "<0xA9>".to_string(), // 4
+            "▁hi".to_string(),    // 5
+        ];
+        let scores = vec![0.0; tokens.len()];
+        let tok = SentencePieceTokenizer::new(tokens, scores, Some(1), 2).unwrap();
+
+        // Decode: BOS + "▁hi" + byte(0xC3) + byte(0xA9) = "hié"
+        // Leading space from ▁ is stripped (multi-token sequence)
+        let text = tok.decode(&[1, 5, 3, 4]).unwrap();
+        assert_eq!(text, "hié");
     }
 }
