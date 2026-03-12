@@ -4,12 +4,12 @@ build-backend = "maturin"
 
 [project]
 name = "splintr-rs"
-version = "0.8.0"
-description = "Fast Rust BPE tokenizer with Python bindings"
+version = "0.9.0"
+description = "Fast Rust tokenizer (BPE + SentencePiece) with Python bindings"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.8"
-keywords = ["tokenizer", "bpe", "tiktoken", "gpt", "llm"]
+keywords = ["tokenizer", "bpe", "sentencepiece", "tiktoken", "llm"]
 authors = [{ name = "Farhan" }]
 classifiers = [
     "Development Status :: 4 - Beta",

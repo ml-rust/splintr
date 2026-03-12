@@ -1,5 +1,6 @@
 use aho_corasick::AhoCorasick;
 use lru::LruCache;
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use regexr::{Regex as RegexrRegex, RegexBuilder};
 use rustc_hash::FxHashMap;
@@ -825,8 +826,18 @@ impl Tokenizer {
             return vec![];
         }
 
+        #[cfg(feature = "rayon")]
         let results: Vec<Vec<u32>> = chunks
             .par_iter()
+            .map(|&(start, end)| {
+                let slice = &text_bytes[start..end];
+                self.encode_chunk_with_position(slice, start)
+            })
+            .collect();
+
+        #[cfg(not(feature = "rayon"))]
+        let results: Vec<Vec<u32>> = chunks
+            .iter()
             .map(|&(start, end)| {
                 let slice = &text_bytes[start..end];
                 self.encode_chunk_with_position(slice, start)
@@ -928,33 +939,70 @@ impl Tokenizer {
         }
     }
 
-    /// Batch encode multiple texts in parallel.
+    /// Batch encode multiple texts (parallel when rayon is enabled).
     pub fn encode_batch(&self, texts: &[String]) -> Vec<Vec<u32>> {
-        texts.par_iter().map(|text| self.encode(text)).collect()
+        #[cfg(feature = "rayon")]
+        {
+            texts.par_iter().map(|text| self.encode(text)).collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            texts.iter().map(|text| self.encode(text)).collect()
+        }
     }
 
     /// Batch encode multiple texts with special token handling.
     pub fn encode_batch_with_special(&self, texts: &[String]) -> Vec<Vec<u32>> {
-        texts
-            .par_iter()
-            .map(|text| self.encode_with_special(text))
-            .collect()
+        #[cfg(feature = "rayon")]
+        {
+            texts
+                .par_iter()
+                .map(|text| self.encode_with_special(text))
+                .collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            texts
+                .iter()
+                .map(|text| self.encode_with_special(text))
+                .collect()
+        }
     }
 
-    /// Batch decode multiple token lists in parallel.
+    /// Batch decode multiple token lists.
     pub fn decode_batch(&self, token_lists: &[Vec<u32>]) -> Result<Vec<String>, TokenizerError> {
-        token_lists
-            .par_iter()
-            .map(|tokens| self.decode(tokens))
-            .collect()
+        #[cfg(feature = "rayon")]
+        {
+            token_lists
+                .par_iter()
+                .map(|tokens| self.decode(tokens))
+                .collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            token_lists
+                .iter()
+                .map(|tokens| self.decode(tokens))
+                .collect()
+        }
     }
 
-    /// Batch decode multiple token lists in parallel, replacing invalid UTF-8.
+    /// Batch decode multiple token lists, replacing invalid UTF-8.
     pub fn decode_batch_lossy(&self, token_lists: &[Vec<u32>]) -> Vec<String> {
-        token_lists
-            .par_iter()
-            .map(|tokens| self.decode_lossy(tokens))
-            .collect()
+        #[cfg(feature = "rayon")]
+        {
+            token_lists
+                .par_iter()
+                .map(|tokens| self.decode_lossy(tokens))
+                .collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            token_lists
+                .iter()
+                .map(|tokens| self.decode_lossy(tokens))
+                .collect()
+        }
     }
 
     /// Get the vocabulary size (number of tokens).

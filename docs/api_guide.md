@@ -5,14 +5,17 @@ This guide provides comprehensive documentation for using Splintr's Python and R
 ## Table of Contents
 
 - [Python API Reference](#python-api-reference)
-  - [Tokenizer Class](#tokenizer-class)
+  - [Tokenizer Class](#tokenizer-class) (BPE)
   - [Encoding Methods](#encoding-methods)
   - [Decoding Methods](#decoding-methods)
   - [Cache Management](#cache-management)
+  - [SentencePiece Tokenizer Class](#sentencepiece-tokenizer-class) (Unigram)
 - [Streaming Decoder](#streaming-decoder)
   - [Regular Streaming Decoder](#regular-streaming-decoder)
   - [ByteLevel Streaming Decoder](#bytelevel-streaming-decoder)
 - [Rust API Reference](#rust-api-reference)
+  - [BPE Tokenizer](#bpe-tokenizer)
+  - [SentencePiece Tokenizer](#sentencepiece-tokenizer)
 - [Detailed Usage Examples](#detailed-usage-examples)
   - [Basic Encoding and Decoding](#basic-encoding-and-decoding)
   - [Batch Processing](#batch-processing)
@@ -156,6 +159,61 @@ Clear the LRU encoding cache. Useful if memory pressure is a concern.
 tokenizer.clear_cache()
 ```
 
+### SentencePiece Tokenizer Class
+
+The `SentencePieceTokenizer` class provides unigram tokenization for models using SentencePiece (e.g., loaded from GGUF files).
+
+#### Creating
+
+```python
+from splintr import SentencePieceTokenizer
+
+# Create from raw vocabulary data
+tokenizer = SentencePieceTokenizer(
+    tokens=["<unk>", "<s>", "</s>", "▁Hello", "▁world"],
+    scores=[0.0, 0.0, 0.0, -1.2, -1.5],
+    eos_token_id=2,
+    bos_token_id=1,  # optional
+)
+```
+
+#### `encode(text: str) -> list[int]`
+
+Encode text using greedy longest-match with score-based tie-breaking. Prepends BOS if configured.
+
+```python
+ids = tokenizer.encode("Hello world")
+# [1, 3, 4]  (BOS + ▁Hello + ▁world)
+```
+
+#### `decode(ids: list[int]) -> str`
+
+Decode token IDs to text. Skips BOS/EOS tokens, converts ▁ back to spaces.
+
+```python
+text = tokenizer.decode([1, 3, 4])
+# "Hello world"
+```
+
+#### `decode_lossy(ids: list[int]) -> str`
+
+Decode token IDs, silently skipping any invalid (out-of-range) IDs.
+
+```python
+text = tokenizer.decode_lossy([1, 3, 999, 4])
+# "Hello world"  (999 is skipped)
+```
+
+#### Properties
+
+- `vocab_size: int` — Total vocabulary size
+- `eos_token_id: int` — End-of-sequence token ID
+- `bos_token_id: int | None` — Beginning-of-sequence token ID (if configured)
+
+#### Methods
+
+- `is_eos(token_id: int) -> bool` — Check if a token is the EOS token
+
 ## Streaming Decoder
 
 Streaming decoders are essential for real-time LLM applications where tokens arrive one at a time. They handle the critical problem of BPE tokens not aligning with UTF-8 character boundaries.
@@ -286,7 +344,7 @@ Add Splintr to your `Cargo.toml`:
 splintr = "*"  # or pin to a specific version
 ```
 
-### Basic Usage
+### BPE Tokenizer
 
 ```rust
 use splintr::{Tokenizer, CL100K_BASE_PATTERN};
@@ -306,18 +364,53 @@ let texts = vec!["Hello".to_string(), "World".to_string()];
 let batch_tokens = tokenizer.encode_batch(&texts);
 ```
 
-### Encoding Methods
+#### Encoding Methods
 
 - `encode(&self, text: &str) -> Vec<u32>`: Sequential encoding (optimal for texts <1MB)
 - `encode_with_special(&self, text: &str) -> Vec<u32>`: Encode with special token recognition
 - `encode_batch(&self, texts: &[String]) -> Vec<Vec<u32>>`: Parallel encoding across texts
 - `encode_rayon(&self, text: &str) -> Vec<u32>`: Parallel encoding within text (for texts >1MB)
 
-### Decoding Methods
+#### Decoding Methods
 
 - `decode(&self, tokens: &[u32]) -> Result<String, TokenizerError>`: Decode to UTF-8 string
 - `decode_bytes(&self, tokens: &[u32]) -> Vec<u8>`: Decode to raw bytes
 - `decode_lossy(&self, tokens: &[u32]) -> String`: Decode with replacement for invalid UTF-8
+
+### SentencePiece Tokenizer
+
+For models using SentencePiece unigram tokenization (e.g., Mistral V1/V2):
+
+```rust
+use splintr::SentencePieceTokenizer;
+
+// Create from raw vocabulary data
+let tokenizer = SentencePieceTokenizer::new(
+    tokens,       // Vec<String> — token strings indexed by ID
+    scores,       // Vec<f32> — scores for tie-breaking (empty for uniform)
+    Some(1),      // Optional BOS token ID
+    2,            // EOS token ID
+)?;
+
+// Encode (prepends BOS if configured, uses ▁ word boundaries)
+let ids = tokenizer.encode("Hello world");
+
+// Decode (skips BOS/EOS, converts ▁ back to spaces)
+let text = tokenizer.decode(&ids)?;
+
+// Lossy decode (skips invalid token IDs instead of erroring)
+let text = tokenizer.decode_lossy(&ids);
+```
+
+#### Methods
+
+- `encode(&self, text: &str) -> Vec<u32>`: Greedy longest-match encoding with score-based tie-breaking
+- `decode(&self, ids: &[u32]) -> Result<String, SentencePieceError>`: Decode to UTF-8 string
+- `decode_lossy(&self, ids: &[u32]) -> String`: Decode, skipping invalid token IDs
+- `vocab_size(&self) -> usize`: Vocabulary size
+- `is_eos(&self, token_id: u32) -> bool`: Check if token is EOS
+- `eos_token_id(&self) -> u32`: Get EOS token ID
+- `bos_token_id(&self) -> Option<u32>`: Get BOS token ID
 
 ### Error Handling
 
