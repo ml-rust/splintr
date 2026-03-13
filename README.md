@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/splintr.svg)](https://crates.io/crates/splintr) [![PyPI](https://img.shields.io/pypi/v/splintr-rs.svg)](https://pypi.org/project/splintr-rs/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-**A high-performance tokenizer (BPE + SentencePiece) built with Rust with Python bindings, focused on speed, safety, and resource optimization.**
+**A high-performance tokenizer (BPE + SentencePiece + WordPiece) built with Rust with Python bindings, focused on speed, safety, and resource optimization.**
 
 ## The Problem
 
@@ -85,7 +85,7 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 - **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), Llama 3 family (Meta), DeepSeek V3 (DeepSeek), and Mistral V1/V2/V3 (Mistral AI)
 - **Streaming decoders** - Real-time LLM output display with proper UTF-8 handling ([guide](docs/api_guide.md#streaming-decoder))
 - **54 agent tokens** - Built-in support for chat, CoT reasoning, ReAct agents, tool calling, RAG citations ([docs](docs/special_tokens.md))
-- **Battle-tested algorithms** - Regexr with JIT (pure Rust), Aho-Corasick for special tokens, linked-list BPE, SentencePiece unigram
+- **Battle-tested algorithms** - Regexr with JIT (pure Rust), Aho-Corasick for special tokens, linked-list BPE, SentencePiece unigram, WordPiece for BERT-family models
 
 **Cross-platform:**
 
@@ -280,6 +280,7 @@ Splintr implements several optimizations that make tokenization faster:
 - **Rayon parallelism**: Leverages multiple CPU cores for batch encoding
 - **Linked-list BPE algorithm**: Avoids O(N²) complexity on pathological inputs
 - **SentencePiece unigram**: Greedy longest-match with score-based tie-breaking for Mistral/Llama-style models
+- **WordPiece tokenizer**: BERT-compatible subword tokenization with `##` continuation prefix, BasicTokenizer preprocessing (lowercase, accent stripping, punctuation splitting)
 - **FxHashMap**: Faster lookups than default SipHash for non-adversarial contexts
 - **Aho-Corasick for special tokens**: Fast multi-pattern matching without regex alternation
 - **LRU cache**: Avoids redundant BPE encoding of frequently seen chunks
@@ -370,7 +371,7 @@ If you use Splintr in your research, please cite:
 ```bibtex
 @software{splintr,
   author = {Farhan Syah},
-  title = {Splintr: High-Performance Tokenizer (BPE + SentencePiece)},
+  title = {Splintr: High-Performance Tokenizer (BPE + SentencePiece + WordPiece)},
   year = {2025},
   url = {https://github.com/ml-rust/splintr}
 }
