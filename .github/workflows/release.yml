@@ -1,9 +1,10 @@
 name: Release
+run-name: Release ${{ github.ref_name }}
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: read
@@ -18,7 +19,7 @@ jobs:
       pypi_version: ${{ steps.version.outputs.pypi_version }}
       base_version: ${{ steps.version.outputs.base_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Validate and extract version
         id: version
@@ -78,7 +79,7 @@ jobs:
     needs: validate-version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -102,7 +103,7 @@ jobs:
         run: cargo publish --allow-dirty --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         env:
           # Enable PCRE2 JIT compilation
-          PCRE2_SYS_JIT: '1'
+          PCRE2_SYS_JIT: "1"
 
   # Build Python wheels for multiple platforms
   build-wheels:
@@ -115,12 +116,12 @@ jobs:
         os: [ubuntu-latest, macos-15-intel, macos-14, windows-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Update version in pyproject.toml
         shell: bash
@@ -156,11 +157,11 @@ jobs:
           # Build with python feature (PyO3 bindings) + pcre2 (PCRE2 backend with JIT)
           # Note: regexr's SIMD uses runtime detection, JIT is compiled at build time
           args: --release --out dist --features python,pcre2
-          sccache: 'true'
+          sccache: "true"
           manylinux: auto
         env:
           # Enable PCRE2 JIT compilation
-          PCRE2_SYS_JIT: '1'
+          PCRE2_SYS_JIT: "1"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -174,7 +175,7 @@ jobs:
     needs: validate-version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Update version in pyproject.toml
         run: |
