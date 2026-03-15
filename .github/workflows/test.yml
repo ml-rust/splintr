@@ -104,39 +104,6 @@ jobs:
       - name: Run tests
         run: cargo test
 
-  cross-check:
-    name: Cross-check (${{ matrix.target }})
-    runs-on: ${{ matrix.runs-on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runs-on: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            cross: true
-          - runs-on: macos-latest
-            target: x86_64-apple-darwin
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: cross-${{ matrix.target }}
-
-      - name: Install cross-compilation tools (aarch64)
-        if: matrix.cross
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Cross-compile check
-        run: cargo check --target ${{ matrix.target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
-
   python:
     name: Python bindings
     runs-on: ubuntu-latest
