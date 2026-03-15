@@ -1,13 +1,13 @@
 [package]
 name = "splintr"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
-description = "Fast Rust tokenizer (BPE + SentencePiece) with Python bindings"
+description = "Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings"
 license = "MIT"
 repository = "https://github.com/ml-rust/splintr"
 homepage = "https://github.com/ml-rust/splintr"
 readme = "README.md"
-keywords = ["tokenizer", "bpe", "sentencepiece", "tiktoken", "llm"]
+keywords = ["tokenizer", "bpe", "sentencepiece", "wordpiece", "llm"]
 categories = ["text-processing", "encoding"]
 
 [lib]
@@ -20,7 +20,7 @@ python = ["dep:pyo3"]
 pcre2 = ["dep:pcre2"]
 rayon = ["dep:rayon"]
 regexr-jit = ["regexr/jit", "regexr/simd"]
-wasm = []  # disables rayon, uses scalar regex — use with --no-default-features
+wasm = []                                  # disables rayon, uses scalar regex — use with --no-default-features
 
 [dependencies]
 # PCRE2 regex with JIT support (optional, for benchmarking)
@@ -40,7 +40,11 @@ aho-corasick = "1.1"
 # LRU cache for frequent token sequences
 lru = "0.16"
 # regexr regex engine (default backend)
-regexr = { version = "0.1.0-beta.5", default-features = false }
+regexr = { version = "0.1", default-features = false }
+# Unicode normalization for WordPiece accent stripping
+unicode-normalization = "0.1"
+# Unicode general category for punctuation detection
+unicode-general-category = "1.0"
 
 [dev-dependencies]
 # PCRE2 for benchmarking comparisons

@@ -248,6 +248,21 @@ impl SentencePieceTokenizer {
     }
 }
 
+impl super::tokenize::Tokenize for SentencePieceTokenizer {
+    fn encode(&self, text: &str) -> Vec<u32> {
+        self.encode(text)
+    }
+
+    fn decode(&self, ids: &[u32]) -> Result<String, super::tokenize::TokenizeError> {
+        self.decode(ids)
+            .map_err(|e| super::tokenize::TokenizeError::Other(e.to_string()))
+    }
+
+    fn vocab_size(&self) -> usize {
+        self.vocab_size()
+    }
+}
+
 /// Parse a byte-fallback token like `<0x0A>` into its byte value.
 fn parse_byte_fallback(token: &str) -> Option<u8> {
     let inner = token.strip_prefix("<0x")?.strip_suffix('>')?;

@@ -4,8 +4,8 @@ mod python;
 
 pub use core::{
     ByteLevelStreamingDecoder, SentencePieceError, SentencePieceTokenizer, StreamingDecoder,
-    Tokenizer, TokenizerError, CL100K_BASE_PATTERN, LLAMA3_PATTERN, O200K_BASE_PATTERN,
-    SENTENCEPIECE_PATTERN,
+    Tokenize, TokenizeError, Tokenizer, TokenizerError, WordPieceTokenizer, CL100K_BASE_PATTERN,
+    LLAMA3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
 
 // Re-export pretrained tokenizer API
@@ -17,7 +17,7 @@ pub use core::{
     PretrainedVocab,
 };
 
-/// Splintr - Fast Rust tokenizer (BPE + SentencePiece) with Python bindings
+/// Splintr - Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings
 ///
 /// A high-performance tokenizer featuring:
 /// - Regexr with JIT and SIMD (default, pure Rust)
@@ -25,6 +25,7 @@ pub use core::{
 /// - Rayon parallelism for multi-core encoding
 /// - Linked-list BPE algorithm (avoids O(N²) on pathological inputs)
 /// - SentencePiece unigram with greedy longest-match and score-based tie-breaking
+/// - WordPiece tokenizer for BERT-family models with `##` continuation prefix
 /// - FxHashMap for fast lookups
 /// - Aho-Corasick for fast special token matching
 /// - LRU cache for frequently encoded chunks

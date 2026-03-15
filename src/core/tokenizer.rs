@@ -264,15 +264,15 @@ impl RegexBackend {
 ///
 /// This tokenizer is optimized for high throughput across different workloads:
 ///
-/// - **Single text encoding**: Uses sequential processing via [`encode`].
+/// - **Single text encoding**: Uses sequential processing via [`Tokenizer::encode`].
 ///   Benchmarks show sequential is faster for texts up to ~1MB due to Rayon
 ///   thread pool overhead. Sequential achieves ~50 MB/s consistently.
 ///
-/// - **Batch encoding**: Uses Rayon parallelism via [`encode_batch`].
+/// - **Batch encoding**: Uses Rayon parallelism via [`Tokenizer::encode_batch`].
 ///   Parallelizes across texts (not within a single text), achieving ~110 MB/s
 ///   on batch workloads - approximately 10-12x faster than tiktoken.
 ///
-/// - **Very large single texts (>1MB)**: Use [`encode_rayon`] for texts larger
+/// - **Very large single texts (>1MB)**: Use [`Tokenizer::encode_rayon`] for texts larger
 ///   than ~1MB where Rayon parallelization within the text becomes beneficial.
 ///
 /// # Regex Backend
@@ -1103,6 +1103,23 @@ impl Clone for Tokenizer {
             use_jit: self.use_jit,
             use_pcre2: self.use_pcre2,
         }
+    }
+}
+
+impl super::tokenize::Tokenize for Tokenizer {
+    fn encode(&self, text: &str) -> Vec<u32> {
+        self.encode(text)
+    }
+
+    fn decode(&self, ids: &[u32]) -> Result<String, super::tokenize::TokenizeError> {
+        self.decode(ids).map_err(|e| match e {
+            TokenizerError::Utf8Error => super::tokenize::TokenizeError::Utf8Error,
+            other => super::tokenize::TokenizeError::Other(other.to_string()),
+        })
+    }
+
+    fn vocab_size(&self) -> usize {
+        self.vocab_size()
     }
 }
 

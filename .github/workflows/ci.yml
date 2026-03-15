@@ -1,143 +1,23 @@
+# CI — thin wrapper that calls the reusable test workflow.
+
 name: CI
 
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+  workflow_call:
 
-env:
-  CARGO_TERM_COLOR: always
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  # Lint and format check (single job)
-  lint:
-    name: Lint & Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Install PCRE2
-        run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
-
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-  # Rust tests on multiple platforms
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install PCRE2 (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
-
-      - name: Configure Python for PyO3 (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: echo "PYO3_PYTHON=$(which python3)" >> $GITHUB_ENV
-
-      - name: Install PCRE2 (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install pcre2
-
-      - name: Configure Python for PyO3 (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          echo "PYO3_PYTHON=$(which python3)" >> $GITHUB_ENV
-          # Get Python library directory and set for linker
-          PYTHON_PREFIX=$(python3 -c "import sys; print(sys.prefix)")
-          echo "LIBRARY_PATH=${PYTHON_PREFIX}/lib" >> $GITHUB_ENV
-          echo "DYLD_LIBRARY_PATH=${PYTHON_PREFIX}/lib" >> $GITHUB_ENV
-          # Tell Cargo to link the Python framework
-          echo "CARGO_BUILD_RUSTFLAGS=-C link-arg=-undefined -C link-arg=dynamic_lookup" >> $GITHUB_ENV
-
-      - name: Install PCRE2 (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          vcpkg install pcre2:x64-windows
-          echo "PCRE2_SYS_STATIC=1" >> $env:GITHUB_ENV
-
-      - name: Configure Python for PyO3 (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          $pythonPath = (Get-Command python).Source
-          echo "PYO3_PYTHON=$pythonPath" >> $env:GITHUB_ENV
-
-      - name: Run tests
-        run: cargo test
-
-  # Python bindings tests
-  python:
-    name: Python tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install PCRE2
-        run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
-
-      - name: Install dependencies and build
-        run: |
-          python -m venv .venv
-          . .venv/bin/activate
-          python -m pip install --upgrade pip
-          pip install maturin tiktoken
-          maturin develop --release
-
-      - name: Test Python bindings
-        run: |
-          .venv/bin/python -c "
-          import splintr
-          import tiktoken
-
-          # Test cl100k_base
-          tok = splintr.Tokenizer.from_pretrained('cl100k_base')
-          tik = tiktoken.get_encoding('cl100k_base')
-
-          text = 'Hello, world!'
-          assert tok.encode(text) == list(tik.encode(text)), 'cl100k_base mismatch'
-
-          # Test o200k_base
-          tok2 = splintr.Tokenizer.from_pretrained('o200k_base')
-          tik2 = tiktoken.get_encoding('o200k_base')
-          assert tok2.encode(text) == list(tik2.encode(text)), 'o200k_base mismatch'
-
-          # Test streaming decoder
-          decoder = tok.streaming_decoder()
-          tokens = tok.encode('Hello')
-          result = []
-          for t in tokens:
-              chunk = decoder.add_token(t)
-              if chunk:
-                  result.append(chunk)
-          result.append(decoder.flush())
-          assert ''.join(result) == 'Hello', 'Streaming decoder failed'
-
-          print('All Python tests passed!')
-          "
+    if: github.event.pull_request.draft == false
+    name: Test Suite
+    uses: ./.github/workflows/test.yml

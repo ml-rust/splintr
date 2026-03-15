@@ -14,8 +14,10 @@ This guide provides comprehensive documentation for using Splintr's Python and R
   - [Regular Streaming Decoder](#regular-streaming-decoder)
   - [ByteLevel Streaming Decoder](#bytelevel-streaming-decoder)
 - [Rust API Reference](#rust-api-reference)
+  - [Tokenize Trait](#tokenize-trait)
   - [BPE Tokenizer](#bpe-tokenizer)
   - [SentencePiece Tokenizer](#sentencepiece-tokenizer)
+  - [WordPiece Tokenizer](#wordpiece-tokenizer)
 - [Detailed Usage Examples](#detailed-usage-examples)
   - [Basic Encoding and Decoding](#basic-encoding-and-decoding)
   - [Batch Processing](#batch-processing)
@@ -344,6 +346,26 @@ Add Splintr to your `Cargo.toml`:
 splintr = "*"  # or pin to a specific version
 ```
 
+### Tokenize Trait
+
+All tokenizer backends implement the `Tokenize` trait, enabling generic code:
+
+```rust
+use splintr::Tokenize;
+
+fn count_tokens(tokenizer: &dyn Tokenize, text: &str) -> usize {
+    tokenizer.encode(text).len()
+}
+```
+
+**Methods:**
+
+- `encode(&self, text: &str) -> Vec<u32>`: Encode text to token IDs
+- `decode(&self, ids: &[u32]) -> Result<String, TokenizeError>`: Decode token IDs to text
+- `vocab_size(&self) -> usize`: Vocabulary size
+
+Implemented by `Tokenizer` (BPE), `SentencePieceTokenizer` (unigram), and `WordPieceTokenizer` (WordPiece).
+
 ### BPE Tokenizer
 
 ```rust
@@ -411,6 +433,43 @@ let text = tokenizer.decode_lossy(&ids);
 - `is_eos(&self, token_id: u32) -> bool`: Check if token is EOS
 - `eos_token_id(&self) -> u32`: Get EOS token ID
 - `bos_token_id(&self) -> Option<u32>`: Get BOS token ID
+
+### WordPiece Tokenizer
+
+For BERT-family models using WordPiece subword tokenization:
+
+```rust
+use splintr::{WordPieceTokenizer, Tokenize};
+
+// Create from a flat vocabulary (index = token ID)
+let vocab = vec![
+    "[PAD]", "[UNK]", "[CLS]", "[SEP]",
+    "hello", "world", "##ing", "##s",
+].into_iter().map(String::from).collect();
+
+let tokenizer = WordPieceTokenizer::new(
+    vocab,    // Vec<String> — token strings indexed by ID
+    1,        // UNK token ID
+    200,      // Max word length before mapping to UNK
+    true,     // Lowercase and strip accents (for uncased models)
+);
+
+// Encode (BasicTokenizer + WordPiece greedy longest-match)
+let ids = tokenizer.encode("Hello world");
+
+// Decode (reconstructs text, skips [CLS]/[SEP]/[PAD] special tokens)
+let text = tokenizer.decode(&ids)?;
+```
+
+#### Methods
+
+- `encode(&self, text: &str) -> Vec<u32>`: BasicTokenizer + WordPiece subword tokenization
+- `decode(&self, ids: &[u32]) -> Result<String, TokenizeError>`: Decode, joining subwords and removing `##` prefixes
+- `vocab_size(&self) -> usize`: Vocabulary size
+- `cls_token_id(&self) -> Option<u32>`: `[CLS]` token ID
+- `sep_token_id(&self) -> Option<u32>`: `[SEP]` token ID
+- `pad_token_id(&self) -> Option<u32>`: `[PAD]` token ID
+- `unk_token_id(&self) -> u32`: `[UNK]` token ID
 
 ### Error Handling
 
