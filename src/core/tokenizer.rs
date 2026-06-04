@@ -64,6 +64,13 @@ pub const SENTENCEPIECE_PATTERN: &str = r"[^\s]+|\s+";
 /// - Otherwise similar Unicode category handling
 pub const MISTRAL_V3_PATTERN: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+/// GPT-2 style pre-tokenizer pattern used by Whisper.
+///
+/// Whisper's `tokenizer.json` declares a `ByteLevel` pre-tokenizer which applies
+/// this regex to split text before BPE merging.
+pub const GPT2_PATTERN: &str =
+    r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
+
 // =============================================================================
 // Agent Token Constants (cl100k_base: 100277+, o200k_base: 200019+)
 // =============================================================================
@@ -647,23 +654,6 @@ impl Tokenizer {
         hasher.finish()
     }
 
-    /// Encode a single text chunk with LRU caching.
-    ///
-    /// For SentencePiece mode, `add_prefix` controls whether to prepend ▁.
-    #[allow(dead_code)]
-    fn encode_chunk_sentencepiece(&self, slice: &[u8], add_prefix: bool) -> Vec<u32> {
-        let bytes_to_encode: std::borrow::Cow<[u8]> = if add_prefix {
-            let mut with_prefix = Vec::with_capacity(slice.len() + 3);
-            with_prefix.extend_from_slice("▁".as_bytes()); // U+2581 is 3 bytes in UTF-8
-            with_prefix.extend_from_slice(slice);
-            std::borrow::Cow::Owned(with_prefix)
-        } else {
-            std::borrow::Cow::Borrowed(slice)
-        };
-
-        self.encode_bytes_with_cache(bytes_to_encode.as_ref())
-    }
-
     /// Encode bytes with BPE and caching.
     fn encode_bytes_with_cache(&self, bytes: &[u8]) -> Vec<u32> {
         // Fast path: check if entire chunk is a known token
@@ -690,8 +680,8 @@ impl Tokenizer {
         result
     }
 
-    /// Encode a single text chunk with LRU caching and position tracking.
-    fn encode_chunk_with_position(&self, slice: &[u8], _position: usize) -> Vec<u32> {
+    /// Encode a single text chunk with LRU caching.
+    fn encode_chunk(&self, slice: &[u8]) -> Vec<u32> {
         // Apply ByteLevel preprocessing if enabled
         let bytes_to_encode: std::borrow::Cow<[u8]> = if self.use_byte_level {
             let byte_level_str = byte_level_encode(slice);
@@ -800,7 +790,7 @@ impl Tokenizer {
                 .iter()
                 .map(|&(start, end)| {
                     let slice = &text_bytes[start..end];
-                    self.encode_chunk_with_position(slice, start)
+                    self.encode_chunk(slice)
                 })
                 .collect();
 
@@ -831,7 +821,7 @@ impl Tokenizer {
             .par_iter()
             .map(|&(start, end)| {
                 let slice = &text_bytes[start..end];
-                self.encode_chunk_with_position(slice, start)
+                self.encode_chunk(slice)
             })
             .collect();
 
@@ -840,7 +830,7 @@ impl Tokenizer {
             .iter()
             .map(|&(start, end)| {
                 let slice = &text_bytes[start..end];
-                self.encode_chunk_with_position(slice, start)
+                self.encode_chunk(slice)
             })
             .collect();
 
