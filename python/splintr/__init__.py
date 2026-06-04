@@ -21,6 +21,7 @@ Supported tokenizers:
 - mistral_v1: Mistral 7B v0.1/v0.2, Mixtral 8x7B
 - mistral_v2: Mistral 7B v0.3, Mixtral 8x22B, Codestral
 - mistral_v3: Mistral NeMo, Large 2, Pixtral (Tekken)
+- whisper: OpenAI Whisper (v1/v2/v3, English-only) via HuggingFace tokenizer.json
 
 Usage:
     from splintr import Tokenizer
@@ -32,6 +33,9 @@ Usage:
     tokenizer = Tokenizer.from_pretrained("mistral_v1")   # Mistral 7B v0.1/v0.2
     tokenizer = Tokenizer.from_pretrained("mistral_v2")   # Mistral 7B v0.3
     tokenizer = Tokenizer.from_pretrained("mistral_v3")   # Mistral NeMo (Tekken)
+
+    # Whisper (loaded from a HuggingFace tokenizer.json)
+    tokenizer = Tokenizer.from_whisper("tokenizer.json", "whisper-v3")
 
     # Use PCRE2 backend (requires pcre2 feature)
     # tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)

@@ -5,16 +5,23 @@ mod python;
 pub use core::{
     ByteLevelStreamingDecoder, SentencePieceError, SentencePieceTokenizer, StreamingDecoder,
     Tokenize, TokenizeError, Tokenizer, TokenizerError, WordPieceTokenizer, CL100K_BASE_PATTERN,
-    LLAMA3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+    GPT2_PATTERN, LLAMA3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
 
 // Re-export pretrained tokenizer API
 pub use core::pretrained;
+// Re-export Whisper tokenizer API
+pub use core::whisper;
 pub use core::{
     bos_token_id, bos_token_id_by_name, cl100k_base_special_tokens, deepseek_v3_special_tokens,
     eos_token_id, eos_token_id_by_name, from_pretrained, from_vocab, llama3_special_tokens,
     o200k_base_special_tokens, pad_token_id, pattern, special_tokens, uses_byte_level,
     PretrainedVocab,
+};
+pub use core::{
+    whisper_from_tokenizer_json as whisper_tokenizer_from_path,
+    whisper_from_tokenizer_json_bytes as whisper_tokenizer_from_bytes, whisper_special_tokens,
+    WhisperTokenizerError, WhisperVariant,
 };
 
 /// Splintr - Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings

@@ -47,6 +47,10 @@ use crate::core::pretrained::{
     o200k_base_special_tokens, CL100K_BASE_VOCAB, DEEPSEEK_V3_VOCAB, LLAMA3_VOCAB,
     MISTRAL_V2_VOCAB, MISTRAL_V3_VOCAB, MISTRAL_VOCAB, O200K_BASE_VOCAB,
 };
+use crate::core::whisper::{
+    from_tokenizer_json_bytes as whisper_from_tokenizer_json_bytes,
+    from_tokenizer_json_path as whisper_from_tokenizer_json_path, WhisperVariant,
+};
 use crate::core::{
     byte_level_decode_bytes, Tokenizer, CL100K_BASE_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN,
     O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
@@ -185,6 +189,52 @@ impl PyTokenizer {
         let inner = Tokenizer::from_bytes(vocab_data, pattern, special)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
+        Ok(Self { inner })
+    }
+
+    /// Create a Whisper tokenizer from a HuggingFace `tokenizer.json` file.
+    ///
+    /// Loads the GPT-2 byte-level BPE vocabulary from the file and installs the
+    /// programmatically-generated Whisper special token set for the chosen variant.
+    ///
+    /// Args:
+    ///     path: Path to a Whisper `tokenizer.json` file
+    ///     variant: Whisper variant name. Accepts aliases such as "whisper-v1",
+    ///         "whisper-v2" (default), "whisper-v3"/"whisper-large-v3", and
+    ///         "whisper.en"/"whisper-en".
+    ///
+    /// Returns:
+    ///     Tokenizer instance
+    ///
+    /// Raises:
+    ///     ValueError: If the variant name is unknown or the file is invalid
+    ///     IOError: If the file cannot be read
+    #[staticmethod]
+    #[pyo3(signature = (path, variant="whisper-v2"))]
+    fn from_whisper(path: &str, variant: &str) -> PyResult<Self> {
+        let variant = parse_whisper_variant(variant)?;
+        let inner = whisper_from_tokenizer_json_path(path, variant)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Create a Whisper tokenizer from `tokenizer.json` bytes.
+    ///
+    /// Args:
+    ///     data: Raw bytes of a Whisper `tokenizer.json` file
+    ///     variant: Whisper variant name (see `from_whisper`; default "whisper-v2")
+    ///
+    /// Returns:
+    ///     Tokenizer instance
+    ///
+    /// Raises:
+    ///     ValueError: If the variant name is unknown or the data is invalid
+    #[staticmethod]
+    #[pyo3(signature = (data, variant="whisper-v2"))]
+    fn from_whisper_bytes(data: &[u8], variant: &str) -> PyResult<Self> {
+        let variant = parse_whisper_variant(variant)?;
+        let inner = whisper_from_tokenizer_json_bytes(data, variant)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self { inner })
     }
 
@@ -550,6 +600,16 @@ impl PySentencePieceTokenizer {
             self.inner.vocab_size()
         )
     }
+}
+
+/// Parse a Whisper variant name, mapping unknown names to a ValueError.
+fn parse_whisper_variant(name: &str) -> PyResult<WhisperVariant> {
+    WhisperVariant::from_name(name).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "Unknown Whisper variant: {}. Use one of: whisper-v1, whisper-v2, whisper-v3, whisper.en.",
+            name
+        ))
+    })
 }
 
 /// Parse special tokens from Python dict to FxHashMap.

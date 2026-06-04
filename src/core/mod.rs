@@ -38,6 +38,7 @@ mod streaming;
 pub mod tokenize;
 mod tokenizer;
 mod vocab;
+pub mod whisper;
 pub mod wordpiece;
 
 pub use bpe::byte_pair_encode;
@@ -53,7 +54,12 @@ pub use streaming::{ByteLevelStreamingDecoder, StreamingDecoder};
 pub use tokenize::{Tokenize, TokenizeError};
 pub use tokenizer::{
     cl100k_agent_tokens, o200k_agent_tokens, Tokenizer, TokenizerError, CL100K_BASE_PATTERN,
-    LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+    GPT2_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
 pub use vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, VocabError};
+pub use whisper::{
+    from_tokenizer_json_bytes as whisper_from_tokenizer_json_bytes,
+    from_tokenizer_json_path as whisper_from_tokenizer_json, whisper_special_tokens,
+    WhisperTokenizerError, WhisperVariant, WHISPER_LANGUAGES_V1V2, WHISPER_LANGUAGES_V3,
+};
 pub use wordpiece::WordPieceTokenizer;
