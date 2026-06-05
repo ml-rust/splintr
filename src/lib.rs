@@ -18,10 +18,10 @@ pub use core::{
     o200k_base_special_tokens, pad_token_id, pattern, special_tokens, uses_byte_level,
     PretrainedVocab,
 };
+pub use core::{whisper_special_tokens, WhisperVariant};
+// Re-export the generic HuggingFace tokenizer.json loader
 pub use core::{
-    whisper_from_tokenizer_json as whisper_tokenizer_from_path,
-    whisper_from_tokenizer_json_bytes as whisper_tokenizer_from_bytes, whisper_special_tokens,
-    WhisperTokenizerError, WhisperVariant,
+    from_json_bytes, from_json_path, AnyTokenizer, Backend, HfJsonError, PostProcessor,
 };
 
 /// Splintr - Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings
@@ -46,8 +46,11 @@ use pyo3::prelude::*;
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<python::PyTokenizer>()?;
     m.add_class::<python::PySentencePieceTokenizer>()?;
+    m.add_class::<python::PyWordPieceTokenizer>()?;
     m.add_class::<python::PyStreamingDecoder>()?;
     m.add_class::<python::PyByteLevelStreamingDecoder>()?;
+    m.add_function(wrap_pyfunction!(python::from_json, m)?)?;
+    m.add_function(wrap_pyfunction!(python::from_json_bytes, m)?)?;
     // Register all agent token classes (auto-generated from scripts/generate_agent_tokens.py)
     python::register_agent_tokens(m)?;
     m.add("CL100K_BASE_PATTERN", CL100K_BASE_PATTERN)?;

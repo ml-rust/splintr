@@ -30,8 +30,14 @@
 //! - **Aho-Corasick**: O(N) multi-pattern matching for special tokens
 //! - **LRU Cache**: Avoids redundant BPE computation for repeated chunks
 
+mod added;
 mod bpe;
 pub mod byte_level;
+mod decoder;
+pub mod hf_json;
+mod normalizer;
+mod precompiled;
+mod pretokenizer;
 pub mod pretrained;
 pub mod sentencepiece;
 mod streaming;
@@ -43,6 +49,9 @@ pub mod wordpiece;
 
 pub use bpe::byte_pair_encode;
 pub use byte_level::{byte_level_decode, byte_level_decode_bytes, byte_level_encode};
+pub use hf_json::{
+    from_json_bytes, from_json_path, AnyTokenizer, Backend, HfJsonError, PostProcessor,
+};
 pub use pretrained::{
     bos_token_id, bos_token_id_by_name, cl100k_base_special_tokens, deepseek_v3_special_tokens,
     eos_token_id, eos_token_id_by_name, from_pretrained, from_vocab, llama3_special_tokens,
@@ -58,8 +67,6 @@ pub use tokenizer::{
 };
 pub use vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, VocabError};
 pub use whisper::{
-    from_tokenizer_json_bytes as whisper_from_tokenizer_json_bytes,
-    from_tokenizer_json_path as whisper_from_tokenizer_json, whisper_special_tokens,
-    WhisperTokenizerError, WhisperVariant, WHISPER_LANGUAGES_V1V2, WHISPER_LANGUAGES_V3,
+    whisper_special_tokens, WhisperVariant, WHISPER_LANGUAGES_V1V2, WHISPER_LANGUAGES_V3,
 };
 pub use wordpiece::WordPieceTokenizer;

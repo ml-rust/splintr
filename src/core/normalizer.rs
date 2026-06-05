@@ -1,0 +1,250 @@
+//! Ordered normalizer pipeline mirroring HuggingFace's `normalizer` graph.
+//!
+//! HuggingFace applies normalizers as an ordered sequence (e.g. albert:
+//! `Replace → Replace → NFKD → StripAccents → Lowercase → Precompiled`). A flat
+//! set of flags can't reproduce that — order matters (Replace before NFKD, the
+//! charsmap last, …). [`NormOp`] models each step; [`Normalizer`] applies them in
+//! order so nothing is silently dropped or reordered.
+
+use regexr::RegexBuilder;
+use unicode_general_category::{get_general_category, GeneralCategory};
+use unicode_normalization::UnicodeNormalization;
+
+use super::precompiled::Precompiled;
+
+/// A single normalization step, matching one HuggingFace normalizer type.
+pub enum NormOp {
+    Nfc,
+    Nfd,
+    Nfkc,
+    Nfkd,
+    Lowercase,
+    StripAccents,
+    /// Literal string replacement.
+    ReplaceStr {
+        from: String,
+        to: String,
+    },
+    /// Regex replacement (compiled).
+    ReplaceRegex {
+        re: Box<regexr::Regex>,
+        to: String,
+    },
+    Prepend(String),
+    Strip {
+        left: bool,
+        right: bool,
+    },
+    /// SentencePiece NMT normalization (control-char cleanup).
+    Nmt,
+    /// SentencePiece precompiled charsmap.
+    Precompiled(Precompiled),
+}
+
+impl NormOp {
+    fn apply(&self, s: String) -> String {
+        match self {
+            NormOp::Nfc => s.nfc().collect(),
+            NormOp::Nfd => s.nfd().collect(),
+            NormOp::Nfkc => s.nfkc().collect(),
+            NormOp::Nfkd => s.nfkd().collect(),
+            NormOp::Lowercase => s.to_lowercase(),
+            // Matches HuggingFace's `StripAccents`: drop only Nonspacing_Mark (Mn)
+            // characters. Decomposition (NFD/NFKD) is a separate, preceding op in
+            // the sequence. Filtering all combining marks would corrupt spacing
+            // marks (Mc) used by scripts like Devanagari/Thai.
+            NormOp::StripAccents => s
+                .chars()
+                .filter(|c| get_general_category(*c) != GeneralCategory::NonspacingMark)
+                .collect(),
+            NormOp::ReplaceStr { from, to } => {
+                if from.is_empty() {
+                    s
+                } else {
+                    s.replace(from.as_str(), to)
+                }
+            }
+            NormOp::ReplaceRegex { re, to } => re.replace_all(&s, to).into_owned(),
+            NormOp::Prepend(p) => {
+                let mut out = p.clone();
+                out.push_str(&s);
+                out
+            }
+            NormOp::Strip { left, right } => {
+                let mut t = s.as_str();
+                if *left {
+                    t = t.trim_start();
+                }
+                if *right {
+                    t = t.trim_end();
+                }
+                t.to_string()
+            }
+            NormOp::Nmt => nmt(&s),
+            NormOp::Precompiled(pc) => pc.normalize(&s),
+        }
+    }
+
+    /// Compile a regex `Replace` step. Returns `None` if the pattern fails to
+    /// build — the caller must surface that as an error rather than substitute a
+    /// different (literal) operation, which would silently mis-normalize.
+    pub fn replace_regex(pattern: &str, to: String) -> Option<Self> {
+        RegexBuilder::new(pattern)
+            .build()
+            .ok()
+            .map(|re| NormOp::ReplaceRegex {
+                re: Box::new(re),
+                to,
+            })
+    }
+}
+
+/// An ordered list of normalization steps.
+#[derive(Default)]
+pub struct Normalizer {
+    ops: Vec<NormOp>,
+}
+
+impl Normalizer {
+    pub fn new(ops: Vec<NormOp>) -> Self {
+        Self { ops }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+
+    /// Apply every step in order.
+    pub fn normalize(&self, text: &str) -> String {
+        let mut s = text.to_string();
+        for op in &self.ops {
+            s = op.apply(s);
+        }
+        s
+    }
+}
+
+/// SentencePiece NMT normalization: drop a set of control characters and map
+/// several whitespace/format characters to a plain space.
+fn nmt(s: &str) -> String {
+    s.chars()
+        .filter_map(|c| match c as u32 {
+            // Removed entirely.
+            0x0001..=0x0008 | 0x000B | 0x000E..=0x001F | 0x007F | 0x008F | 0x009F => None,
+            // Normalized to space.
+            0x0009
+            | 0x000A
+            | 0x000C
+            | 0x000D
+            | 0x1680
+            | 0x200B..=0x200F
+            | 0x2028
+            | 0x2029
+            | 0x205F
+            | 0x3000 => Some(' '),
+            _ => Some(c),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nfc_and_nfd_roundtrip() {
+        // "é" as base 'e' + combining acute (U+0301).
+        let decomposed = "e\u{0301}";
+        assert_eq!(NormOp::Nfc.apply(decomposed.to_string()), "é");
+        assert_eq!(NormOp::Nfd.apply("é".to_string()), decomposed);
+    }
+
+    #[test]
+    fn nfkc_folds_compatibility_chars() {
+        // U+FB01 LATIN SMALL LIGATURE FI -> "fi".
+        assert_eq!(NormOp::Nfkc.apply("\u{FB01}".to_string()), "fi");
+    }
+
+    #[test]
+    fn lowercase_lowercases() {
+        assert_eq!(NormOp::Lowercase.apply("HeLLo".to_string()), "hello");
+    }
+
+    #[test]
+    fn strip_accents_drops_nonspacing_marks() {
+        // 'a' + combining macron (U+0304, Mn) -> the mark is removed.
+        assert_eq!(NormOp::StripAccents.apply("a\u{0304}".to_string()), "a");
+    }
+
+    #[test]
+    fn strip_accents_preserves_spacing_marks() {
+        // Devanagari "की": KA (U+0915) + vowel sign II (U+0940, a spacing Mc mark)
+        // must be preserved, unlike a blanket combining-mark filter.
+        let s = "\u{0915}\u{0940}";
+        assert_eq!(NormOp::StripAccents.apply(s.to_string()), s);
+    }
+
+    #[test]
+    fn replace_str_is_literal_and_handles_empty() {
+        let op = NormOp::ReplaceStr {
+            from: " ".to_string(),
+            to: "_".to_string(),
+        };
+        assert_eq!(op.apply("a b c".to_string()), "a_b_c");
+        // Empty `from` is a no-op (avoids infinite/unexpected expansion).
+        let empty = NormOp::ReplaceStr {
+            from: String::new(),
+            to: "x".to_string(),
+        };
+        assert_eq!(empty.apply("ab".to_string()), "ab");
+    }
+
+    #[test]
+    fn replace_regex_compiles_and_applies() {
+        let op = NormOp::replace_regex(r"\s+", "_".to_string()).expect("regex builds");
+        assert_eq!(op.apply("a   b".to_string()), "a_b");
+    }
+
+    #[test]
+    fn prepend_prefixes() {
+        assert_eq!(
+            NormOp::Prepend("▁".to_string()).apply("hi".to_string()),
+            "▁hi"
+        );
+    }
+
+    #[test]
+    fn strip_respects_sides() {
+        let both = NormOp::Strip {
+            left: true,
+            right: true,
+        };
+        assert_eq!(both.apply("  hi  ".to_string()), "hi");
+        let left_only = NormOp::Strip {
+            left: true,
+            right: false,
+        };
+        assert_eq!(left_only.apply("  hi  ".to_string()), "hi  ");
+    }
+
+    #[test]
+    fn nmt_removes_controls_and_maps_whitespace() {
+        // U+0008 is removed; tab (U+0009) becomes a space.
+        assert_eq!(nmt("a\u{0008}b\tc"), "ab c");
+    }
+
+    #[test]
+    fn pipeline_applies_in_order() {
+        // NFKD must run before StripAccents so accents decompose into removable
+        // Mn marks; running them out of order would leave precomposed accents.
+        let norm = Normalizer::new(vec![NormOp::Nfkd, NormOp::StripAccents, NormOp::Lowercase]);
+        assert_eq!(norm.normalize("ÀÉÎ"), "aei");
+    }
+
+    #[test]
+    fn empty_normalizer_is_identity() {
+        let norm = Normalizer::default();
+        assert!(norm.is_empty());
+        assert_eq!(norm.normalize("unchanged"), "unchanged");
+    }
+}
