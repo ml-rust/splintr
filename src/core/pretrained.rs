@@ -6,6 +6,7 @@
 //! - `llama3` - Meta Llama 3 family (~128k tokens)
 //! - `deepseek_v3` - DeepSeek V3/R1 (~128k tokens)
 //! - `mistral` - Mistral 7B family (~32k tokens)
+//! - `whisper` - OpenAI Whisper multilingual v1/v2/v3 (~51k tokens)
 //!
 //! # Example
 //!
@@ -19,9 +20,10 @@
 use rustc_hash::FxHashMap;
 
 use super::tokenizer::{
-    Tokenizer, TokenizerError, CL100K_BASE_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN,
-    SENTENCEPIECE_PATTERN,
+    Tokenizer, TokenizerError, CL100K_BASE_PATTERN, GPT2_PATTERN, MISTRAL_V3_PATTERN,
+    O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
+use super::whisper::{whisper_special_tokens, WhisperVariant};
 
 // Embed vocabulary files at compile time
 pub const CL100K_BASE_VOCAB: &[u8] =
@@ -38,6 +40,14 @@ pub const MISTRAL_V2_VOCAB: &[u8] =
 /// Mistral V3/Tekken vocabulary file (Tiktoken-based, ~131k tokens).
 pub const MISTRAL_V3_VOCAB: &[u8] =
     include_bytes!("../../python/splintr/vocabs/mistral_v3_tekken.tiktoken");
+
+/// Whisper base BPE vocabulary (GPT-2 byte-level, 50,257 tokens).
+///
+/// Shared by every multilingual variant (v1/v2/v3) — they differ only in the
+/// programmatically-generated special tokens. The English-only checkpoints use
+/// a different base BPE and are not bundled; load those via
+/// [`crate::from_json_path`].
+pub const WHISPER_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/whisper.tiktoken");
 
 /// Supported pretrained vocabulary types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -56,9 +66,25 @@ pub enum PretrainedVocab {
     MistralV2,
     /// Mistral V3/Tekken (NeMo, Large 2, Pixtral) - 131k Tiktoken-based
     MistralV3,
+    /// Whisper v1 multilingual (tiny..large, `<|nocaptions|>`, 99 languages)
+    WhisperV1,
+    /// Whisper v2 multilingual (large-v2, `<|nospeech|>`, 99 languages)
+    WhisperV2,
+    /// Whisper v3 multilingual (large-v3, adds Cantonese, 100 languages)
+    WhisperV3,
 }
 
 impl PretrainedVocab {
+    /// Map a Whisper pretrained vocab to its [`WhisperVariant`], if it is one.
+    fn whisper_variant(self) -> Option<WhisperVariant> {
+        match self {
+            Self::WhisperV1 => Some(WhisperVariant::V1Multilingual),
+            Self::WhisperV2 => Some(WhisperVariant::V2Multilingual),
+            Self::WhisperV3 => Some(WhisperVariant::V3Multilingual),
+            _ => None,
+        }
+    }
+
     /// Parse vocabulary name from string.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
@@ -75,6 +101,13 @@ impl PretrainedVocab {
 
             // Mistral V3: Tekken-based high-efficiency vocabulary
             "mistral_v3" => Some(Self::MistralV3),
+
+            // Whisper multilingual. Default "whisper" → v2 (most common).
+            "whisper_v1" | "whisper-v1" | "whisper-multilingual-v1" => Some(Self::WhisperV1),
+            "whisper" | "whisper_v2" | "whisper-v2" | "whisper-multilingual" => {
+                Some(Self::WhisperV2)
+            }
+            "whisper_v3" | "whisper-v3" | "whisper-large-v3" => Some(Self::WhisperV3),
 
             _ => None,
         }
@@ -96,6 +129,11 @@ impl PretrainedVocab {
             "mistral_v1",
             "mistral_v2",
             "mistral_v3",
+            // Whisper (multilingual)
+            "whisper",
+            "whisper_v1",
+            "whisper_v2",
+            "whisper_v3",
         ]
     }
 }
@@ -108,6 +146,9 @@ impl PretrainedVocab {
 /// - `llama3`, `llama3.1`, `llama3.2`, `llama3.3` - Meta Llama 3 family
 /// - `deepseek_v3`, `deepseek-v3` - DeepSeek V3/R1
 /// - `mistral`, `mistral-7b` - Mistral 7B family
+/// - `whisper`, `whisper_v1`, `whisper_v2`, `whisper_v3` - OpenAI Whisper multilingual
+///   (bare `whisper` → v2). English-only checkpoints use a different base BPE and are
+///   not bundled — load those via [`crate::from_json_path`].
 ///
 /// # Example
 /// ```rust
@@ -153,6 +194,10 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<Tokenizer, TokenizerError> {
             // V3 uses ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
             Tokenizer::from_bytes_byte_level(MISTRAL_V3_VOCAB, pat, special)
         }
+        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
+            // Whisper uses GPT-2 ByteLevel BPE; specials are generated per variant
+            Tokenizer::from_bytes_byte_level(WHISPER_VOCAB, pat, special)
+        }
     }
 }
 
@@ -165,12 +210,21 @@ pub fn pattern(vocab: PretrainedVocab) -> &'static str {
         PretrainedVocab::DeepseekV3 => O200K_BASE_PATTERN, // DeepSeek uses same pattern
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => SENTENCEPIECE_PATTERN, // SentencePiece-style
         PretrainedVocab::MistralV3 => MISTRAL_V3_PATTERN, // Tekken has its own pattern (no contractions, single-digit numbers)
+        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
+            GPT2_PATTERN
+        }
     }
 }
 
 /// Check if a vocabulary uses ByteLevel encoding.
 pub fn uses_byte_level(vocab: PretrainedVocab) -> bool {
-    matches!(vocab, PretrainedVocab::DeepseekV3)
+    matches!(
+        vocab,
+        PretrainedVocab::DeepseekV3
+            | PretrainedVocab::WhisperV1
+            | PretrainedVocab::WhisperV2
+            | PretrainedVocab::WhisperV3
+    )
 }
 
 /// Get the EOS (end of sequence) token ID for a vocabulary.
@@ -181,6 +235,10 @@ pub fn eos_token_id(vocab: PretrainedVocab) -> u32 {
         PretrainedVocab::Llama3 => 128001,     // <|end_of_text|>
         PretrainedVocab::DeepseekV3 => 1,      // <｜end▁of▁sentence｜>
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 | PretrainedVocab::MistralV3 => 2, // </s>
+        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
+            // <|endoftext|>, derived per variant
+            vocab.whisper_variant().unwrap().eos_token_id()
+        }
     }
 }
 
@@ -201,6 +259,10 @@ pub fn bos_token_id(vocab: PretrainedVocab) -> Option<u32> {
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 | PretrainedVocab::MistralV3 => {
             Some(1)
         } // <s>
+        // Whisper has no BOS; <|startoftranscript|> is a decoding prompt, not a BOS.
+        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
+            None
+        }
     }
 }
 
@@ -219,6 +281,10 @@ pub fn pad_token_id(vocab: PretrainedVocab) -> Option<u32> {
         PretrainedVocab::MistralV1 => Some(32039),   // <|pad|> (agent token)
         PretrainedVocab::MistralV2 => Some(32807),   // <|pad|> (agent token, after control tokens)
         PretrainedVocab::MistralV3 => Some(131111),  // <|pad|> (agent token)
+        // Whisper carries no agent/pad token.
+        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
+            None
+        }
     }
 }
 
@@ -232,6 +298,9 @@ pub fn special_tokens(vocab: PretrainedVocab) -> FxHashMap<String, u32> {
         PretrainedVocab::MistralV1 => mistral_v1_special_tokens(),
         PretrainedVocab::MistralV2 => mistral_v2_special_tokens(),
         PretrainedVocab::MistralV3 => mistral_v3_special_tokens(),
+        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
+            whisper_special_tokens(vocab.whisper_variant().unwrap())
+        }
     }
 }
 
@@ -565,6 +634,57 @@ mod tests {
     fn test_from_pretrained_cl100k() {
         let tokenizer = from_pretrained("cl100k_base").unwrap();
         assert!(tokenizer.vocab_size() > 90000);
+    }
+
+    #[test]
+    fn test_from_pretrained_whisper_variants() {
+        // Base BPE is the bundled 50,257-entry GPT-2 vocab for every variant.
+        for (name, variant) in [
+            ("whisper_v1", WhisperVariant::V1Multilingual),
+            ("whisper", WhisperVariant::V2Multilingual), // bare name → v2
+            ("whisper_v2", WhisperVariant::V2Multilingual),
+            ("whisper-v3", WhisperVariant::V3Multilingual),
+        ] {
+            let tok = from_pretrained(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(tok.encoder().len(), 50257, "{name} base vocab size");
+            // vocab_size == max special id + 1, which equals the variant's size.
+            assert_eq!(tok.vocab_size(), variant.vocab_size(), "{name} vocab_size");
+        }
+    }
+
+    #[test]
+    fn test_whisper_special_tokens_wired() {
+        // Specials must be emitted as single ids at the variant-correct offsets,
+        // proving the bundled base aligns with the generated special block.
+        let tok = from_pretrained("whisper_v3").unwrap();
+        assert_eq!(tok.encode_with_special("<|en|>"), vec![50259]);
+        assert_eq!(
+            tok.encode_with_special("<|transcribe|>"),
+            vec![WhisperVariant::V3Multilingual.transcribe_token_id()]
+        );
+        // <|yue|> only exists on v3.
+        assert_eq!(tok.encode_with_special("<|yue|>"), vec![50259 + 99]);
+    }
+
+    #[test]
+    fn test_whisper_roundtrip() {
+        let tok = from_pretrained("whisper").unwrap();
+        let text = "Hello, world! 123 héllo";
+        assert_eq!(tok.decode(&tok.encode(text)).unwrap(), text);
+    }
+
+    #[test]
+    fn test_whisper_name_mapping() {
+        assert_eq!(
+            PretrainedVocab::from_name("whisper"),
+            Some(PretrainedVocab::WhisperV2)
+        );
+        assert_eq!(
+            PretrainedVocab::from_name("whisper-large-v3"),
+            Some(PretrainedVocab::WhisperV3)
+        );
+        // English-only is intentionally not bundled (different base BPE).
+        assert_eq!(PretrainedVocab::from_name("whisper.en"), None);
     }
 
     #[test]

@@ -11,15 +11,13 @@
 //! - `<|notimestamps|>`
 //! - 1501 timestamp tokens `<|0.00|>`..`<|30.00|>` in 0.02s increments
 //!
-//! The base BPE vocabulary is loaded from an HF-style `tokenizer.json` because
-//! the GPT-2 BPE is too large to pleasantly embed and it's already the standard
-//! Whisper checkpoint artefact on HuggingFace.
+//! The multilingual base BPE (v1/v2/v3) is bundled and reachable zero-config via
+//! [`crate::pretrained::from_pretrained`] (`"whisper"`, `"whisper_v3"`, …). The
+//! loaders here additionally accept any HF-style `tokenizer.json` at runtime —
+//! used for the English-only checkpoints (a different base BPE that is *not*
+//! bundled) or for a custom/updated vocab.
 
 use rustc_hash::FxHashMap;
-use thiserror::Error;
-
-use super::byte_level::byte_level_decode;
-use super::tokenizer::{Tokenizer, TokenizerError, GPT2_PATTERN};
 
 /// Which Whisper vocabulary generation to emit special tokens for.
 ///
@@ -185,71 +183,10 @@ pub fn whisper_special_tokens(variant: WhisperVariant) -> FxHashMap<String, u32>
     m
 }
 
-/// Errors returned by [`from_tokenizer_json_path`] and [`from_tokenizer_json_bytes`].
-#[derive(Debug, Error)]
-pub enum WhisperTokenizerError {
-    #[error("failed to parse tokenizer.json: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("tokenizer.json missing field: {0}")]
-    MissingField(&'static str),
-    #[error("tokenizer.json vocab entry `{0}` is not byte-level decodable")]
-    InvalidByteLevel(String),
-    #[error(transparent)]
-    Tokenizer(#[from] TokenizerError),
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-/// Build a Whisper [`Tokenizer`] from an HF-style `tokenizer.json` file.
-///
-/// Loads `model.vocab` (byte-level-encoded keys → ids), decodes each key back
-/// to raw bytes, then installs the programmatically-generated Whisper special
-/// token set for the chosen variant.
-pub fn from_tokenizer_json_path<P: AsRef<std::path::Path>>(
-    path: P,
-    variant: WhisperVariant,
-) -> Result<Tokenizer, WhisperTokenizerError> {
-    let bytes = std::fs::read(path)?;
-    from_tokenizer_json_bytes(&bytes, variant)
-}
-
-/// Build a Whisper [`Tokenizer`] from tokenizer.json bytes.
-pub fn from_tokenizer_json_bytes(
-    data: &[u8],
-    variant: WhisperVariant,
-) -> Result<Tokenizer, WhisperTokenizerError> {
-    let root: serde_json::Value = serde_json::from_slice(data)?;
-
-    let vocab = root
-        .get("model")
-        .and_then(|m| m.get("vocab"))
-        .and_then(|v| v.as_object())
-        .ok_or(WhisperTokenizerError::MissingField("model.vocab"))?;
-
-    let mut encoder: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
-    encoder.reserve(vocab.len());
-
-    for (bl_token, id_val) in vocab {
-        let id = id_val
-            .as_u64()
-            .ok_or(WhisperTokenizerError::MissingField("model.vocab[*] = u32"))?;
-        // The vocab keys are byte-level-encoded strings (e.g. "Ġa"). The encoder
-        // keys must stay in that encoded form: `encode` byte-level-encodes input
-        // before lookup, and `decode` reverses it. We only validate that the key
-        // is a well-formed byte-level string here, then store its raw UTF-8 bytes.
-        if byte_level_decode(bl_token).is_none() {
-            return Err(WhisperTokenizerError::InvalidByteLevel(bl_token.clone()));
-        }
-        encoder.insert(bl_token.as_bytes().to_vec(), id as u32);
-    }
-
-    // Whisper's special tokens are authoritative and deterministic per variant —
-    // we generate them rather than trust `added_tokens` (which sometimes omits
-    // timestamp tokens depending on the checkpoint).
-    let specials = whisper_special_tokens(variant);
-
-    Ok(Tokenizer::new_byte_level(encoder, specials, GPT2_PATTERN)?)
-}
+// To load a Whisper tokenizer from an HF `tokenizer.json` (e.g. the English-only
+// checkpoints, which are not bundled), use [`crate::hf_json::from_json_path`].
+// The bundled multilingual variants are available zero-config via
+// [`crate::pretrained::from_pretrained`].
 
 // ── language tables ─────────────────────────────────────────────────────────
 //
@@ -425,35 +362,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_minimal_tokenizer_json() {
-        // A tiny synthetic BPE: one token "a" at id 0, " a" (Ġa) at id 1.
-        let json = r#"{
-            "model": {
-                "type": "BPE",
-                "vocab": {
-                    "a": 0,
-                    "Ġa": 1
-                },
-                "merges": []
-            }
-        }"#;
-        let _tok = from_tokenizer_json_bytes(json.as_bytes(), WhisperVariant::V2Multilingual)
-            .expect("parse ok");
-        // Successful construction with the byte-level encoder is the contract;
-        // special-token rendering is covered by `special_tokens_v2_coverage`.
-    }
-
-    #[test]
-    fn rejects_non_byte_level_keys() {
-        let json = r#"{"model": {"vocab": {"你好": 0}, "merges": []}}"#;
-        let err = from_tokenizer_json_bytes(json.as_bytes(), WhisperVariant::V2Multilingual);
-        assert!(matches!(
-            err,
-            Err(WhisperTokenizerError::InvalidByteLevel(_))
-        ));
-    }
-
-    #[test]
     fn from_name_parses_aliases() {
         assert_eq!(
             WhisperVariant::from_name("whisper-v1"),
@@ -481,28 +389,5 @@ mod tests {
             Some(WhisperVariant::EnglishOnly)
         );
         assert_eq!(WhisperVariant::from_name("not-a-model"), None);
-    }
-
-    #[test]
-    fn parses_tokenizer_json_from_path() {
-        let json = r#"{
-            "model": {
-                "type": "BPE",
-                "vocab": {
-                    "a": 0,
-                    "Ġa": 1
-                },
-                "merges": []
-            }
-        }"#;
-        let dir = std::env::temp_dir();
-        let path = dir.join("splintr_whisper_test_tokenizer.json");
-        std::fs::write(&path, json).expect("write temp tokenizer.json");
-
-        let result = from_tokenizer_json_path(&path, WhisperVariant::V2Multilingual);
-
-        // Clean up before asserting so a failure doesn't leak the temp file.
-        let _ = std::fs::remove_file(&path);
-        result.expect("parse from path ok");
     }
 }
