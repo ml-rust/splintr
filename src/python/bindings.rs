@@ -41,19 +41,20 @@ use rustc_hash::FxHashMap;
 
 use crate::core::SentencePieceTokenizer;
 
+use crate::core::hf_json::{
+    from_json_bytes as core_from_json_bytes, from_json_path as core_from_json_path, AnyTokenizer,
+    Backend, PostProcessor,
+};
 use crate::core::pretrained::{
     cl100k_base_special_tokens, deepseek_v3_special_tokens, llama3_special_tokens,
     mistral_v1_special_tokens, mistral_v2_special_tokens, mistral_v3_special_tokens,
     o200k_base_special_tokens, CL100K_BASE_VOCAB, DEEPSEEK_V3_VOCAB, LLAMA3_VOCAB,
     MISTRAL_V2_VOCAB, MISTRAL_V3_VOCAB, MISTRAL_VOCAB, O200K_BASE_VOCAB,
 };
-use crate::core::whisper::{
-    from_tokenizer_json_bytes as whisper_from_tokenizer_json_bytes,
-    from_tokenizer_json_path as whisper_from_tokenizer_json_path, WhisperVariant,
-};
+use crate::core::wordpiece::WordPieceTokenizer;
 use crate::core::{
-    byte_level_decode_bytes, Tokenizer, CL100K_BASE_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN,
-    O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+    byte_level_decode_bytes, Tokenize, Tokenizer, CL100K_BASE_PATTERN, LLAMA3_PATTERN,
+    MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
 
 // Special tokens are defined in crate::core::pretrained module.
@@ -63,6 +64,7 @@ use crate::core::{
 #[pyclass(name = "Tokenizer")]
 pub struct PyTokenizer {
     inner: Tokenizer,
+    post: PostProcessor,
 }
 
 #[pymethods]
@@ -85,7 +87,10 @@ impl PyTokenizer {
         let inner = Tokenizer::from_file(vocab_path, pattern, special)
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
 
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            post: PostProcessor::default(),
+        })
     }
 
     /// Create a tokenizer from a pretrained model name.
@@ -98,6 +103,12 @@ impl PyTokenizer {
     /// - "mistral" / "mistral_v1" (Mistral V1: 32k SentencePiece)
     /// - "mistral_v2" (Mistral V2: 32k + control tokens)
     /// - "mistral_v3" (Mistral V3/Tekken: 131k)
+    /// - "whisper" / "whisper_v1" / "whisper_v2" / "whisper_v3" (OpenAI Whisper
+    ///   multilingual, ~51k; bare "whisper" → v2). English-only checkpoints use a
+    ///   different base BPE and are not bundled — load those with `splintr.from_json`.
+    ///
+    /// For any model not bundled here, load its HuggingFace `tokenizer.json`
+    /// directly with the module-level `splintr.from_json(path)`.
     ///
     /// Args:
     ///     name: Model name (e.g., "cl100k_base", "o200k_base", "llama3", "mistral_v3")
@@ -111,19 +122,28 @@ impl PyTokenizer {
                 let special = cl100k_base_special_tokens();
                 let inner = Tokenizer::from_bytes(CL100K_BASE_VOCAB, CL100K_BASE_PATTERN, special)
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self { inner })
+                Ok(Self {
+                    inner,
+                    post: PostProcessor::default(),
+                })
             }
             "o200k_base" => {
                 let special = o200k_base_special_tokens();
                 let inner = Tokenizer::from_bytes(O200K_BASE_VOCAB, O200K_BASE_PATTERN, special)
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self { inner })
+                Ok(Self {
+                    inner,
+                    post: PostProcessor::default(),
+                })
             }
             "llama3" | "llama3.1" | "llama3.2" | "llama3.3" => {
                 let special = llama3_special_tokens();
                 let inner = Tokenizer::from_bytes(LLAMA3_VOCAB, LLAMA3_PATTERN, special)
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self { inner })
+                Ok(Self {
+                    inner,
+                    post: PostProcessor::default(),
+                })
             }
             "deepseek_v3" | "deepseek-v3" => {
                 let special = deepseek_v3_special_tokens();
@@ -131,7 +151,10 @@ impl PyTokenizer {
                 let inner =
                     Tokenizer::from_bytes_byte_level(DEEPSEEK_V3_VOCAB, LLAMA3_PATTERN, special)
                         .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self { inner })
+                Ok(Self {
+                    inner,
+                    post: PostProcessor::default(),
+                })
             }
             // Mistral V1: Default "mistral" → V1
             "mistral" | "mistral_v1" => {
@@ -142,7 +165,10 @@ impl PyTokenizer {
                     special,
                 )
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self { inner })
+                Ok(Self {
+                    inner,
+                    post: PostProcessor::default(),
+                })
             }
             // Mistral V2: All 32,768 tokens in vocab file, only agent tokens are special
             "mistral_v2" => {
@@ -153,7 +179,10 @@ impl PyTokenizer {
                     special,
                 )
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self { inner })
+                Ok(Self {
+                    inner,
+                    post: PostProcessor::default(),
+                })
             }
             // Mistral V3: ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
             // Uses its own pattern (no contractions, single-digit numbers)
@@ -162,7 +191,20 @@ impl PyTokenizer {
                 let inner =
                     Tokenizer::from_bytes_byte_level(MISTRAL_V3_VOCAB, MISTRAL_V3_PATTERN, special)
                         .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self { inner })
+                Ok(Self {
+                    inner,
+                    post: PostProcessor::default(),
+                })
+            }
+            // Whisper multilingual (v1/v2/v3). Base BPE is bundled; specials are
+            // generated per variant. Delegates to the core name→variant mapping.
+            name if name.starts_with("whisper") => {
+                let inner = crate::core::pretrained::from_pretrained(name)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                Ok(Self {
+                    inner,
+                    post: PostProcessor::default(),
+                })
             }
             _ => Err(PyValueError::new_err(format!(
                 "Unknown pretrained model: {}. See from_pretrained docstring for supported models.",
@@ -189,53 +231,10 @@ impl PyTokenizer {
         let inner = Tokenizer::from_bytes(vocab_data, pattern, special)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        Ok(Self { inner })
-    }
-
-    /// Create a Whisper tokenizer from a HuggingFace `tokenizer.json` file.
-    ///
-    /// Loads the GPT-2 byte-level BPE vocabulary from the file and installs the
-    /// programmatically-generated Whisper special token set for the chosen variant.
-    ///
-    /// Args:
-    ///     path: Path to a Whisper `tokenizer.json` file
-    ///     variant: Whisper variant name. Accepts aliases such as "whisper-v1",
-    ///         "whisper-v2" (default), "whisper-v3"/"whisper-large-v3", and
-    ///         "whisper.en"/"whisper-en".
-    ///
-    /// Returns:
-    ///     Tokenizer instance
-    ///
-    /// Raises:
-    ///     ValueError: If the variant name is unknown or the file is invalid
-    ///     IOError: If the file cannot be read
-    #[staticmethod]
-    #[pyo3(signature = (path, variant="whisper-v2"))]
-    fn from_whisper(path: &str, variant: &str) -> PyResult<Self> {
-        let variant = parse_whisper_variant(variant)?;
-        let inner = whisper_from_tokenizer_json_path(path, variant)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner })
-    }
-
-    /// Create a Whisper tokenizer from `tokenizer.json` bytes.
-    ///
-    /// Args:
-    ///     data: Raw bytes of a Whisper `tokenizer.json` file
-    ///     variant: Whisper variant name (see `from_whisper`; default "whisper-v2")
-    ///
-    /// Returns:
-    ///     Tokenizer instance
-    ///
-    /// Raises:
-    ///     ValueError: If the variant name is unknown or the data is invalid
-    #[staticmethod]
-    #[pyo3(signature = (data, variant="whisper-v2"))]
-    fn from_whisper_bytes(data: &[u8], variant: &str) -> PyResult<Self> {
-        let variant = parse_whisper_variant(variant)?;
-        let inner = whisper_from_tokenizer_json_bytes(data, variant)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            post: PostProcessor::default(),
+        })
     }
 
     /// Switch between regex backends.
@@ -262,7 +261,10 @@ impl PyTokenizer {
         let result = new_inner
             .pcre2(use_pcre2)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner: result })
+        Ok(Self {
+            inner: result,
+            post: self.post.clone(),
+        })
     }
 
     /// Enable or disable JIT compilation for the regex backend.
@@ -290,7 +292,10 @@ impl PyTokenizer {
         let result = new_inner
             .jit(use_jit)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner: result })
+        Ok(Self {
+            inner: result,
+            post: self.post.clone(),
+        })
     }
 
     /// Encode text to token IDs.
@@ -305,6 +310,15 @@ impl PyTokenizer {
     ///     List of token IDs
     fn encode(&self, text: &str) -> Vec<u32> {
         self.inner.encode(text)
+    }
+
+    /// Encode and apply the model's `post_processor` template (e.g. `[CLS]…[SEP]`,
+    /// `<s>…</s>`), matching HuggingFace's default `encode` (add_special_tokens=True).
+    /// Equals `encode` for models without a post-processor (e.g. `from_pretrained`).
+    /// Distinct from `encode_with_special` (which recognizes special-token *strings*
+    /// embedded in the input text).
+    fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
+        self.post.apply(self.inner.encode(text))
     }
 
     /// Encode text to token IDs using Rayon parallel processing.
@@ -504,6 +518,7 @@ impl PyTokenizer {
 #[pyclass(name = "SentencePieceTokenizer")]
 pub struct PySentencePieceTokenizer {
     inner: SentencePieceTokenizer,
+    post: PostProcessor,
 }
 
 #[pymethods]
@@ -525,7 +540,10 @@ impl PySentencePieceTokenizer {
     ) -> PyResult<Self> {
         let inner = SentencePieceTokenizer::new(tokens, scores, bos_token_id, eos_token_id)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            post: PostProcessor::default(),
+        })
     }
 
     /// Encode text to token IDs using greedy longest-match.
@@ -540,6 +558,12 @@ impl PySentencePieceTokenizer {
     ///     List of token IDs
     fn encode(&self, text: &str) -> Vec<u32> {
         self.inner.encode(text)
+    }
+
+    /// Encode and apply the model's `post_processor` template, matching
+    /// HuggingFace's default `encode`. Equals `encode` when there is none.
+    fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
+        self.post.apply(self.inner.encode(text))
     }
 
     /// Decode token IDs to text.
@@ -602,14 +626,108 @@ impl PySentencePieceTokenizer {
     }
 }
 
-/// Parse a Whisper variant name, mapping unknown names to a ValueError.
-fn parse_whisper_variant(name: &str) -> PyResult<WhisperVariant> {
-    WhisperVariant::from_name(name).ok_or_else(|| {
-        PyValueError::new_err(format!(
-            "Unknown Whisper variant: {}. Use one of: whisper-v1, whisper-v2, whisper-v3, whisper.en.",
-            name
-        ))
+/// WordPiece tokenizer (BERT family). Construct via [`from_json`] or directly.
+#[pyclass(name = "WordPieceTokenizer")]
+pub struct PyWordPieceTokenizer {
+    inner: WordPieceTokenizer,
+    post: PostProcessor,
+}
+
+#[pymethods]
+impl PyWordPieceTokenizer {
+    /// Create a WordPiece tokenizer.
+    ///
+    /// Args:
+    ///     vocab: List of token strings, indexed by token ID (`##` marks continuations)
+    ///     unk_token_id: ID of the unknown token (e.g. `[UNK]`)
+    ///     max_word_len: Max characters per word before it maps to unk (default 100)
+    ///     do_lower_case: Lowercase input before tokenizing (BERT-uncased style)
+    #[new]
+    #[pyo3(signature = (vocab, unk_token_id, max_word_len=100, do_lower_case=false))]
+    fn new(
+        vocab: Vec<String>,
+        unk_token_id: u32,
+        max_word_len: usize,
+        do_lower_case: bool,
+    ) -> Self {
+        Self {
+            inner: WordPieceTokenizer::new(vocab, unk_token_id, max_word_len, do_lower_case),
+            post: PostProcessor::default(),
+        }
+    }
+
+    /// Encode text to token IDs.
+    fn encode(&self, text: &str) -> Vec<u32> {
+        Tokenize::encode(&self.inner, text)
+    }
+
+    /// Encode and apply the model's `post_processor` template (e.g. `[CLS]…[SEP]`),
+    /// matching HuggingFace's default `encode`. Equals `encode` when there is no
+    /// post-processor.
+    fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
+        self.post.apply(Tokenize::encode(&self.inner, text))
+    }
+
+    /// Decode token IDs to text.
+    fn decode(&self, ids: Vec<u32>) -> PyResult<String> {
+        Tokenize::decode(&self.inner, &ids).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Vocabulary size.
+    fn vocab_size(&self) -> usize {
+        Tokenize::vocab_size(&self.inner)
+    }
+
+    #[getter]
+    fn unk_token_id(&self) -> u32 {
+        self.inner.unk_token_id()
+    }
+    #[getter]
+    fn cls_token_id(&self) -> Option<u32> {
+        self.inner.cls_token_id()
+    }
+    #[getter]
+    fn sep_token_id(&self) -> Option<u32> {
+        self.inner.sep_token_id()
+    }
+    #[getter]
+    fn pad_token_id(&self) -> Option<u32> {
+        self.inner.pad_token_id()
+    }
+}
+
+/// Wrap a loaded [`AnyTokenizer`] in the matching Python class, carrying its
+/// post-processor template.
+fn any_tokenizer_to_py(py: Python<'_>, any: AnyTokenizer) -> PyResult<Py<PyAny>> {
+    let post = any.post_processor().clone();
+    Ok(match any.into_backend() {
+        Backend::Bpe(t) => Py::new(py, PyTokenizer { inner: t, post })?.into_any(),
+        Backend::Unigram(t) => Py::new(py, PySentencePieceTokenizer { inner: t, post })?.into_any(),
+        Backend::WordPiece(t) => Py::new(py, PyWordPieceTokenizer { inner: t, post })?.into_any(),
     })
+}
+
+/// Load any HuggingFace `tokenizer.json` from a file path.
+///
+/// Dispatches on the model family and returns the matching tokenizer object:
+/// `Tokenizer` (BPE), `SentencePieceTokenizer` (Unigram), or `WordPieceTokenizer`.
+///
+/// Args:
+///     path: Path to a `tokenizer.json` file
+///
+/// Returns:
+///     A Tokenizer / SentencePieceTokenizer / WordPieceTokenizer instance
+#[pyfunction]
+pub fn from_json(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
+    let any = core_from_json_path(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    any_tokenizer_to_py(py, any)
+}
+
+/// Load any HuggingFace `tokenizer.json` from raw bytes. See [`from_json`].
+#[pyfunction]
+pub fn from_json_bytes(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
+    let any = core_from_json_bytes(data).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    any_tokenizer_to_py(py, any)
 }
 
 /// Parse special tokens from Python dict to FxHashMap.

@@ -21,7 +21,13 @@ Supported tokenizers:
 - mistral_v1: Mistral 7B v0.1/v0.2, Mixtral 8x7B
 - mistral_v2: Mistral 7B v0.3, Mixtral 8x22B, Codestral
 - mistral_v3: Mistral NeMo, Large 2, Pixtral (Tekken)
-- whisper: OpenAI Whisper (v1/v2/v3, English-only) via HuggingFace tokenizer.json
+- whisper/whisper_v1/whisper_v2/whisper_v3: OpenAI Whisper multilingual (bundled;
+  bare "whisper" -> v2).
+
+Any other model: load its HuggingFace tokenizer.json with splintr.from_json(path).
+Dispatches on model type to a Tokenizer (BPE), SentencePieceTokenizer (Unigram),
+or WordPieceTokenizer. Use this for Whisper English-only checkpoints, BERT, T5,
+Gemma, Qwen, etc.
 
 Usage:
     from splintr import Tokenizer
@@ -33,9 +39,11 @@ Usage:
     tokenizer = Tokenizer.from_pretrained("mistral_v1")   # Mistral 7B v0.1/v0.2
     tokenizer = Tokenizer.from_pretrained("mistral_v2")   # Mistral 7B v0.3
     tokenizer = Tokenizer.from_pretrained("mistral_v3")   # Mistral NeMo (Tekken)
+    tokenizer = Tokenizer.from_pretrained("whisper_v3")   # Whisper large-v3 (multilingual)
 
-    # Whisper (loaded from a HuggingFace tokenizer.json)
-    tokenizer = Tokenizer.from_whisper("tokenizer.json", "whisper-v3")
+    # Any other model: load its HuggingFace tokenizer.json directly
+    from splintr import from_json
+    tokenizer = from_json("path/to/tokenizer.json")  # BERT, T5, Gemma, Whisper.en, ...
 
     # Use PCRE2 backend (requires pcre2 feature)
     # tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
@@ -127,6 +135,9 @@ Agent Tokens:
 from ._core import (
     Tokenizer,
     SentencePieceTokenizer,
+    WordPieceTokenizer,
+    from_json,
+    from_json_bytes,
     StreamingDecoder,
     ByteLevelStreamingDecoder,
     CL100K_BASE_PATTERN,
@@ -144,6 +155,9 @@ from ._core import (
 __all__ = [
     "Tokenizer",
     "SentencePieceTokenizer",
+    "WordPieceTokenizer",
+    "from_json",
+    "from_json_bytes",
     "StreamingDecoder",
     "ByteLevelStreamingDecoder",
     "CL100K_BASE_PATTERN",
@@ -157,4 +171,4 @@ __all__ = [
     "MISTRAL_V2_AGENT_TOKENS",
     "MISTRAL_V3_AGENT_TOKENS",
 ]
-__version__ = "0.9.1"
+__version__ = "0.10.0"

@@ -1,6 +1,6 @@
 mod bindings;
 
 pub use bindings::{
-    register_agent_tokens, PyByteLevelStreamingDecoder, PySentencePieceTokenizer,
-    PyStreamingDecoder, PyTokenizer,
+    from_json, from_json_bytes, register_agent_tokens, PyByteLevelStreamingDecoder,
+    PySentencePieceTokenizer, PyStreamingDecoder, PyTokenizer, PyWordPieceTokenizer,
 };
