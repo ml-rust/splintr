@@ -372,6 +372,19 @@ fn unknown_pretokenizer_without_recognized_split_errors() {
 }
 
 #[test]
+fn engine_handled_pretokenizer_without_bytelevel_still_loads() {
+    // A `Digits` pre-tokenizer is handled by the multi-stage engine even though
+    // the simple distiller doesn't "anchor" it (no ByteLevel/Metaspace/Split).
+    // The guess guard must NOT reject it (it would be a false rejection).
+    let json = r#"{
+        "pre_tokenizer": {"type": "Digits", "individual_digits": true},
+        "model": {"type": "BPE", "vocab": {"a": 0, "1": 1}, "merges": []}
+    }"#;
+    let tok = from_json_bytes(json.as_bytes()).expect("digits pre-tokenizer loads");
+    assert_eq!(tok.family(), "BPE");
+}
+
+#[test]
 fn unknown_pretokenizer_is_ok_when_split_is_anchored() {
     // The same unknown type alongside a ByteLevel (which fixes the split) is
     // harmless and must still load.

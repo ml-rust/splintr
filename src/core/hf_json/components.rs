@@ -20,6 +20,13 @@ pub(super) struct PreTokenization {
     /// Prepend a space to the input (ByteLevel/Metaspace `add_prefix_space`, or
     /// Metaspace `prepend_scheme` != "never").
     pub add_prefix_space: bool,
+    /// Whether a concrete splitter was recognized (ByteLevel/Metaspace/Split). If
+    /// false, `pattern` is the GPT-2 default — only a sound choice when no
+    /// pre-tokenizer was declared (see the caller's guess guard).
+    pub anchored: bool,
+    /// Pre-tokenizer `type`s present in the json that this distiller does not
+    /// itself model (they may still be handled by the multi-stage engine).
+    pub unknown: Vec<String>,
 }
 
 /// Walk a `pre_tokenizer` value (possibly a `Sequence`) and distill it to a
@@ -30,7 +37,7 @@ pub(super) struct PreTokenization {
 /// - `Split { pattern: Regex|String }` ⇒ use that regex.
 /// - `Metaspace` (SentencePiece-style) ⇒ [`SENTENCEPIECE_PATTERN`].
 /// - Anything else / absent ⇒ non-byte-level, [`GPT2_PATTERN`] fallback.
-pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> Result<PreTokenization, HfJsonError> {
+pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
     let mut byte_level = false;
     let mut split_regex: Option<String> = None;
     let mut metaspace = false;
@@ -113,21 +120,15 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> Result<PreTokenization
         (None, false) => GPT2_PATTERN.to_string(),
     };
 
-    // If nothing recognizable determined the split (no byte-level, no metaspace,
-    // no explicit Split regex) yet the json DID declare pre-tokenizer steps we
-    // don't understand, the GPT-2 default would be a silent guess at the split —
-    // which changes the tokens. Refuse rather than guess.
-    if !byte_level && !metaspace && split_regex.is_none() && !unknown.is_empty() {
-        return Err(HfJsonError::UnsupportedPreTokenizer(unknown.join(", ")));
-    }
-
-    Ok(PreTokenization {
+    PreTokenization {
         byte_level,
         pattern,
         // ByteLevel/Metaspace default `add_prefix_space` to true in HF when the
         // field is absent; real configs set it explicitly.
         add_prefix_space: add_prefix_space.unwrap_or(metaspace || byte_level),
-    })
+        anchored: byte_level || metaspace || split_regex.is_some(),
+        unknown,
+    }
 }
 
 /// BERT-family normalizer flags consumed by the WordPiece backend.

@@ -343,7 +343,7 @@ fn model_family(model: &Value) -> Result<&'static str, HfJsonError> {
 }
 
 fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
-    let pre = parse_pre_tokenizer(root.get("pre_tokenizer"))?;
+    let pre = parse_pre_tokenizer(root.get("pre_tokenizer"));
     let specials = parse_special_tokens(root);
 
     let vocab = model
@@ -374,6 +374,20 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     // (Digits/Punctuation/Sequence/Split/…). It emits already byte-level-encoded
     // pieces, so the tokenizer itself must not re-encode (plain `new`).
     let engine = super::pretokenizer::parse(root.get("pre_tokenizer"));
+
+    // Guess guard: a pre_tokenizer was declared, but neither the multi-stage
+    // engine recognized a stage nor the distiller anchored a splitter
+    // (ByteLevel/Metaspace/Split). Falling back to the GPT-2 default pattern would
+    // silently guess the split and change the tokens, so refuse instead. (Types
+    // the engine DOES handle — Digits/Punctuation/Whitespace/… — make `engine`
+    // `Some` and never reach here, so this never rejects a supported pipeline.)
+    if engine.is_none()
+        && !pre.anchored
+        && root.get("pre_tokenizer").is_some_and(|v| !v.is_null())
+        && !pre.unknown.is_empty()
+    {
+        return Err(HfJsonError::UnsupportedPreTokenizer(pre.unknown.join(", ")));
+    }
 
     let tok = match engine {
         Some(pt) => {
@@ -520,7 +534,9 @@ fn build_unigram(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
         .unwrap_or(0);
 
     let ops = parse_norm_ops(root.get("normalizer"))?;
-    let pre = parse_pre_tokenizer(root.get("pre_tokenizer"))?;
+    // SentencePiece whitespace-splits internally, so `pre` is consulted only for
+    // `add_prefix_space` — there is no GPT-2 default to silently guess here.
+    let pre = parse_pre_tokenizer(root.get("pre_tokenizer"));
     let tok = SentencePieceTokenizer::new(tokens, scores, None, eos)?
         .with_normalizer(Normalizer::new(ops))
         .with_prefix_space(pre.add_prefix_space)
