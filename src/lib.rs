@@ -31,7 +31,7 @@ pub use core::{
 /// - Optional PCRE2 with JIT (requires `pcre2` feature)
 /// - Rayon parallelism for multi-core encoding
 /// - Linked-list BPE algorithm (avoids O(N²) on pathological inputs)
-/// - SentencePiece unigram with greedy longest-match and score-based tie-breaking
+/// - SentencePiece unigram with Viterbi maximum-score segmentation (true Unigram) and byte fallback
 /// - WordPiece tokenizer for BERT-family models with `##` continuation prefix
 /// - FxHashMap for fast lookups
 /// - Aho-Corasick for fast special token matching

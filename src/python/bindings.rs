@@ -514,7 +514,8 @@ impl PyTokenizer {
 /// Python wrapper for the SentencePiece unigram tokenizer.
 ///
 /// For models using SentencePiece unigram tokenization (e.g., loaded from GGUF).
-/// Uses greedy longest-match encoding with score-based tie-breaking.
+/// Uses Viterbi maximum-score segmentation (true SentencePiece Unigram, not
+/// greedy) with byte fallback.
 #[pyclass(name = "SentencePieceTokenizer")]
 pub struct PySentencePieceTokenizer {
     inner: SentencePieceTokenizer,
@@ -527,7 +528,7 @@ impl PySentencePieceTokenizer {
     ///
     /// Args:
     ///     tokens: List of token strings, indexed by token ID
-    ///     scores: Scores per token for tie-breaking (empty list defaults to all zeros)
+    ///     scores: Per-token Unigram scores (log-probs) that Viterbi maximizes (empty list defaults to all zeros / uniform)
     ///     bos_token_id: Optional beginning-of-sequence token ID
     ///     eos_token_id: End-of-sequence token ID
     #[new]
@@ -546,7 +547,7 @@ impl PySentencePieceTokenizer {
         })
     }
 
-    /// Encode text to token IDs using greedy longest-match.
+    /// Encode text to token IDs using Viterbi maximum-score Unigram segmentation.
     ///
     /// Prepends BOS token if configured. Replaces spaces with ▁ (U+2581)
     /// following the SentencePiece convention.

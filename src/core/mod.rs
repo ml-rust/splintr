@@ -2,7 +2,7 @@
 //!
 //! This module contains multi-backend tokenizer implementations:
 //! - Byte-pair encoding using a linked-list algorithm (O(N) merges vs O(N²) for vectors)
-//! - SentencePiece unigram tokenizer with score-based tie-breaking
+//! - SentencePiece unigram tokenizer (Viterbi maximum-score segmentation) with byte fallback
 //! - WordPiece tokenizer for BERT-family models with `##` continuation prefix
 //! - Vocabulary loading from tiktoken format
 //! - UTF-8 safe streaming decoder for LLM output

@@ -21,8 +21,8 @@ pub enum SentencePieceError {
 /// SentencePiece-compatible unigram tokenizer.
 ///
 /// Accepts a raw vocabulary (token strings, scores, special token IDs) and
-/// performs greedy longest-match encoding with SentencePiece word boundary
-/// markers (▁ U+2581).
+/// performs Viterbi maximum-score segmentation (true SentencePiece Unigram, not
+/// greedy) with SentencePiece word boundary markers (▁ U+2581) and byte fallback.
 ///
 /// # Example
 ///
@@ -38,7 +38,8 @@ pub struct SentencePieceTokenizer {
     token_to_id: HashMap<String, u32>,
     /// ID -> Token string mapping
     id_to_token: Vec<String>,
-    /// Scores for each token (used for tie-breaking)
+    /// Per-token Unigram scores (log-probs); Viterbi maximizes their sum over the
+    /// chosen segmentation.
     scores: Vec<f32>,
     /// BOS token ID
     bos_token_id: Option<u32>,
@@ -67,7 +68,7 @@ impl SentencePieceTokenizer {
     ///
     /// # Arguments
     /// * `tokens` - Token strings, indexed by token ID
-    /// * `scores` - Score per token (for tie-breaking). If empty, defaults to all zeros.
+    /// * `scores` - Per-token Unigram score (log-prob) summed and maximized by Viterbi. If empty, defaults to all zeros (uniform).
     /// * `bos_token_id` - Optional beginning-of-sequence token ID
     /// * `eos_token_id` - End-of-sequence token ID
     pub fn new(

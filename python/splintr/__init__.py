@@ -1,12 +1,12 @@
 """
-Splintr - Fast Rust tokenizer (BPE + SentencePiece) with Python bindings
+Splintr - Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings
 
 A high-performance tokenizer featuring:
 - Regexr with JIT and SIMD (default, pure Rust)
 - Optional PCRE2 with JIT (requires pcre2 feature)
 - Rayon parallelism for multi-core encoding
 - Linked-list BPE algorithm (avoids O(N^2) on pathological inputs)
-- SentencePiece unigram with greedy longest-match and score-based tie-breaking
+- SentencePiece unigram with Viterbi maximum-score segmentation (true Unigram) and byte fallback
 - FxHashMap for fast lookups
 - Aho-Corasick for fast special token matching
 - LRU cache for frequently encoded chunks

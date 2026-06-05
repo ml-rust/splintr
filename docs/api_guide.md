@@ -10,6 +10,7 @@ This guide provides comprehensive documentation for using Splintr's Python and R
   - [Decoding Methods](#decoding-methods)
   - [Cache Management](#cache-management)
   - [SentencePiece Tokenizer Class](#sentencepiece-tokenizer-class) (Unigram)
+  - [Loading any model from `tokenizer.json`](#loading-any-model-from-tokenizerjson)
 - [Streaming Decoder](#streaming-decoder)
   - [Regular Streaming Decoder](#regular-streaming-decoder)
   - [ByteLevel Streaming Decoder](#bytelevel-streaming-decoder)
@@ -46,7 +47,10 @@ tokenizer = Tokenizer.from_pretrained("deepseek_v3")  # DeepSeek V3/R1
 tokenizer = Tokenizer.from_pretrained("mistral_v1")   # Mistral 7B v0.1/v0.2, Mixtral 8x7B
 tokenizer = Tokenizer.from_pretrained("mistral_v2")   # Mistral 7B v0.3, Codestral, Mixtral 8x22B
 tokenizer = Tokenizer.from_pretrained("mistral_v3")   # Mistral NeMo, Large 2, Pixtral
+tokenizer = Tokenizer.from_pretrained("whisper_v3")   # OpenAI Whisper multilingual (v1/v2/v3; bare "whisper" → v2)
 ```
+
+> Whisper English-only checkpoints (`*.en`) use a different base BPE and are not bundled — load those with [`from_json`](#loading-any-model-from-tokenizerjson).
 
 **Load from custom vocabulary file:**
 
@@ -181,7 +185,7 @@ tokenizer = SentencePieceTokenizer(
 
 #### `encode(text: str) -> list[int]`
 
-Encode text using greedy longest-match with score-based tie-breaking. Prepends BOS if configured.
+Encode text using Viterbi maximum-score segmentation (true SentencePiece Unigram, not greedy), with byte fallback for unknown characters. Prepends BOS if configured.
 
 ```python
 ids = tokenizer.encode("Hello world")
@@ -215,6 +219,43 @@ text = tokenizer.decode_lossy([1, 3, 999, 4])
 #### Methods
 
 - `is_eos(token_id: int) -> bool` — Check if a token is the EOS token
+
+### Loading any model from `tokenizer.json`
+
+For models not bundled with `from_pretrained`, load a HuggingFace `tokenizer.json`
+with `from_json`. It reads everything from the file — split regex, byte-level
+flag, BPE **merge order** (independent of token ids, so RoBERTa-style vocabs
+work), the full ordered normalizer (including SentencePiece's `Precompiled`
+charsmap), and special tokens — and dispatches on `model.type` to the matching
+backend object:
+
+```python
+from splintr import from_json, from_json_bytes
+
+tok = from_json("tokenizer.json")          # from a path
+# tok = from_json_bytes(open("tokenizer.json","rb").read())  # from bytes
+
+ids = tok.encode("Hello world")                  # content tokens (HF add_special_tokens=False)
+ids = tok.encode_with_special_tokens("Hello")    # also applies the post_processor template
+text = tok.decode(ids)
+```
+
+| `model.type` | Returned object        | Example models                     |
+|--------------|------------------------|------------------------------------|
+| `BPE`        | `Tokenizer`            | GPT-2, RoBERTa, Qwen, Whisper.en   |
+| `Unigram`    | `SentencePieceTokenizer` | T5, Gemma, Albert, XLNet         |
+| `WordPiece`  | `WordPieceTokenizer`   | BERT, DistilBERT, Electra          |
+
+**Strict by design.** Rather than silently approximate an unsupported config (which
+would produce wrong tokens with no signal), `from_json` raises:
+
+- `UnsupportedModelType` — `model.type` is not BPE/Unigram/WordPiece
+- `UnsupportedNormalizer` — an unrecognized normalizer step (dropping it would mis-normalize)
+- `InvalidNormalizerRegex` — a `Replace` regex that fails to compile
+- `UnsupportedPreTokenizer` — a declared pre-tokenizer with no recognized split (refusing to guess the pattern)
+
+Output is verified id-for-id against HuggingFace `tokenizers` across all three
+families. (Rust: `splintr::from_json_path` / `from_json_bytes`.)
 
 ## Streaming Decoder
 
@@ -409,7 +450,7 @@ use splintr::SentencePieceTokenizer;
 // Create from raw vocabulary data
 let tokenizer = SentencePieceTokenizer::new(
     tokens,       // Vec<String> — token strings indexed by ID
-    scores,       // Vec<f32> — scores for tie-breaking (empty for uniform)
+    scores,       // Vec<f32> — per-token Unigram scores maximized by Viterbi (empty for uniform)
     Some(1),      // Optional BOS token ID
     2,            // EOS token ID
 )?;
@@ -426,7 +467,7 @@ let text = tokenizer.decode_lossy(&ids);
 
 #### Methods
 
-- `encode(&self, text: &str) -> Vec<u32>`: Greedy longest-match encoding with score-based tie-breaking
+- `encode(&self, text: &str) -> Vec<u32>`: Viterbi maximum-score (true SentencePiece Unigram) segmentation with byte fallback
 - `decode(&self, ids: &[u32]) -> Result<String, SentencePieceError>`: Decode to UTF-8 string
 - `decode_lossy(&self, ids: &[u32]) -> String`: Decode, skipping invalid token IDs
 - `vocab_size(&self) -> usize`: Vocabulary size

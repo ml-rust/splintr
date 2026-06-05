@@ -220,16 +220,16 @@ See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, exa
 
 ## Supported Vocabularies
 
-| Vocabulary    | Used By                            | Vocabulary Size | Special Tokens | Import Constant         |
-| ------------- | ---------------------------------- | --------------- | -------------- | ----------------------- |
-| `cl100k_base` | GPT-4, GPT-3.5-turbo               | ~100,000        | 5 + 54 agent   | `CL100K_BASE_PATTERN`   |
-| `o200k_base`  | GPT-4o                             | ~200,000        | 2 + 54 agent   | `O200K_BASE_PATTERN`    |
-| `llama3`      | Llama 3, 3.1, 3.2, 3.3 (Meta)      | ~128,000        | 11 + 54 agent  | `LLAMA3_PATTERN`        |
-| `deepseek_v3` | DeepSeek V3, DeepSeek R1           | ~128,000        | 17 + 54 agent  | `LLAMA3_PATTERN`        |
-| `mistral_v1`  | Mistral 7B v0.1/v0.2, Mixtral 8x7B | ~32,000         | 3 + 54 agent   | `SENTENCEPIECE_PATTERN` |
-| `mistral_v2`  | Mistral 7B v0.3, Codestral, 8x22B  | ~32,768         | 10 + 54 agent  | `SENTENCEPIECE_PATTERN` |
-| `mistral_v3`  | Mistral NeMo, Large 2, Pixtral     | ~131,000        | 10 + 54 agent  | `MISTRAL_V3_PATTERN`    |
-| `whisper` / `whisper_v1` / `whisper_v2` / `whisper_v3` | OpenAI Whisper multilingual (tiny..large-v3) | ~51,000 | 1608 (no agent) | `GPT2_PATTERN` |
+| Vocabulary                                             | Used By                                      | Vocabulary Size | Special Tokens  | Import Constant         |
+| ------------------------------------------------------ | -------------------------------------------- | --------------- | --------------- | ----------------------- |
+| `cl100k_base`                                          | GPT-4, GPT-3.5-turbo                         | ~100,000        | 5 + 54 agent    | `CL100K_BASE_PATTERN`   |
+| `o200k_base`                                           | GPT-4o                                       | ~200,000        | 2 + 54 agent    | `O200K_BASE_PATTERN`    |
+| `llama3`                                               | Llama 3, 3.1, 3.2, 3.3 (Meta)                | ~128,000        | 11 + 54 agent   | `LLAMA3_PATTERN`        |
+| `deepseek_v3`                                          | DeepSeek V3, DeepSeek R1                     | ~128,000        | 17 + 54 agent   | `LLAMA3_PATTERN`        |
+| `mistral_v1`                                           | Mistral 7B v0.1/v0.2, Mixtral 8x7B           | ~32,000         | 3 + 54 agent    | `SENTENCEPIECE_PATTERN` |
+| `mistral_v2`                                           | Mistral 7B v0.3, Codestral, 8x22B            | ~32,768         | 10 + 54 agent   | `SENTENCEPIECE_PATTERN` |
+| `mistral_v3`                                           | Mistral NeMo, Large 2, Pixtral               | ~131,000        | 10 + 54 agent   | `MISTRAL_V3_PATTERN`    |
+| `whisper` / `whisper_v1` / `whisper_v2` / `whisper_v3` | OpenAI Whisper multilingual (tiny..large-v3) | ~51,000         | 1608 (no agent) | `GPT2_PATTERN`          |
 
 > **Whisper** is a speech model, so it carries no agent tokens — its special tokens are the standard Whisper set (`<|startoftranscript|>`, language tokens, `<|transcribe|>`/`<|translate|>`, 1501 timestamp tokens). Bare `whisper` resolves to v2. The **English-only** checkpoints (`*.en`) use a different base BPE and are **not bundled**; load those with `from_json` (below).
 
@@ -248,13 +248,15 @@ text = tok.decode(ids)
 
 `encode` returns content tokens (HF's `add_special_tokens=False`); `encode_with_special_tokens` additionally applies the model's `post_processor` template (HF's default `encode`). Honored end-to-end: the multi-stage pre-tokenizer pipeline (`ByteLevel`, `Split` incl. `invert`, `Digits`, `Punctuation`/`Contiguous`, `Sequence`, `add_prefix_space`/`prepend_scheme`), the full ordered normalizer (`Replace`, `Strip`, `Prepend`, NFC/NFD/NFKC/NFKD, `Precompiled` charsmap, …), BPE merge order, and `added_tokens` matching. Verified id-for-id (content **and** with special tokens) against GPT-2, RoBERTa, Qwen, Whisper, T5, Albert, XLNet, BERT, DistilBERT, **Falcon, StarCoder2, DeepSeek-Coder, GPT-NeoX**.
 
-| `model.type` | Returned type | Example models |
-| ------------ | ------------- | -------------- |
-| `BPE` (byte-level) | `Tokenizer` | GPT-2, Whisper, Llama 3, Qwen, DeepSeek |
-| `Unigram` | `SentencePieceTokenizer` | T5, Gemma, Albert, XLNet |
-| `WordPiece` | `WordPieceTokenizer` | BERT, DistilBERT, Electra |
+| `model.type`       | Returned type            | Example models                          |
+| ------------------ | ------------------------ | --------------------------------------- |
+| `BPE` (byte-level) | `Tokenizer`              | GPT-2, Whisper, Llama 3, Qwen, DeepSeek |
+| `Unigram`          | `SentencePieceTokenizer` | T5, Gemma, Albert, XLNet                |
+| `WordPiece`        | `WordPieceTokenizer`     | BERT, DistilBERT, Electra               |
 
 The split regex, byte-level flag, merge order, normalizer (including SentencePiece's `Precompiled` charsmap), and special tokens are all read from the file itself. Output is verified id-for-id against HuggingFace `tokenizers` across every family — GPT-2, RoBERTa, BART, Qwen, Whisper (BPE); T5, Albert, XLNet (Unigram); BERT, DistilBERT (WordPiece). (Rust: `splintr::from_json_path` / `from_json_bytes`.)
+
+**Strict by design.** Rather than silently approximate a config it doesn't fully support (which would emit wrong tokens with no signal), `from_json` raises — `UnsupportedModelType`, `UnsupportedNormalizer`, `InvalidNormalizerRegex`, or `UnsupportedPreTokenizer` (a declared pre-tokenizer with no recognized split, so the pattern is never guessed).
 
 **OpenAI standard tokens:**
 
@@ -306,7 +308,7 @@ Splintr implements several optimizations that make tokenization faster:
 - **Regexr with JIT compilation**: Pure Rust regex engine with SIMD acceleration
 - **Rayon parallelism**: Leverages multiple CPU cores for batch encoding
 - **Linked-list BPE algorithm**: Avoids O(N²) complexity on pathological inputs
-- **SentencePiece unigram**: Greedy longest-match with score-based tie-breaking for Mistral/Llama-style models
+- **SentencePiece unigram**: Viterbi maximum-score segmentation (true Unigram, not greedy) with byte fallback, for Mistral/Llama/T5-style models
 - **WordPiece tokenizer**: BERT-compatible subword tokenization with `##` continuation prefix, BasicTokenizer preprocessing (lowercase, accent stripping, punctuation splitting)
 - **FxHashMap**: Faster lookups than default SipHash for non-adversarial contexts
 - **Aho-Corasick for special tokens**: Fast multi-pattern matching without regex alternation

@@ -17,24 +17,29 @@ ByteLevel BPE (Byte-Pair Encoding) differs from standard BPE used by OpenAI and 
 
 ByteLevel encoding uses a GPT-2 style mapping to ensure all bytes can be represented as printable characters:
 
-| Byte Range | Decimal Range | Mapping                                          |
-| ---------- | ------------- | ------------------------------------------------ |
-| 0x21-0x7E  | 33-126        | Direct ASCII (printable characters `!` to `~`)   |
-| 0x00-0x20  | 0-32          | Mapped to Unicode range U+0100-U+0120 (Ā to Š)   |
-| 0x7F-0xFF  | 127-255       | Mapped to Unicode range U+0121-U+01A0 (š to Ơ)   |
+The "printable" bytes map to themselves; the remaining 68 bytes are reassigned,
+in ascending byte order, to the contiguous block starting at U+0100:
+
+| Byte Range                          | Decimal              | Mapping                                            |
+| ----------------------------------- | -------------------- | -------------------------------------------------- |
+| 0x21-0x7E                           | 33-126               | Direct — printable ASCII (`!` to `~`)              |
+| 0xA1-0xAC                           | 161-172              | Direct — Latin-1 (`¡` to `¬`)                      |
+| 0xAE-0xFF                           | 174-255              | Direct — Latin-1 (`®` to `ÿ`)                      |
+| 0x00-0x20, 0x7F-0xA0, 0xAD (the 68 others) | 0-32, 127-160, 173 | Remapped, in byte order, to U+0100…U+0143 (Ā…Ń)    |
 
 ### Mapping Examples
 
-| Byte (Hex) | Byte (Dec) | Character | Description        |
-| ---------- | ---------- | --------- | ------------------ |
-| 0x00       | 0          | Ā (U+0100)| Null byte          |
-| 0x0A       | 10         | Ċ (U+010A)| Newline            |
-| 0x20       | 32         | Š (U+0120)| Space              |
-| 0x21       | 33         | !         | Direct (unchanged) |
-| 0x41       | 65         | A         | Direct (unchanged) |
-| 0x7E       | 126        | ~         | Direct (unchanged) |
-| 0x7F       | 127        | š (U+0121)| DEL character      |
-| 0xFF       | 255        | Ơ (U+01A0)| Max byte value     |
+| Byte (Hex) | Byte (Dec) | Character  | Description                          |
+| ---------- | ---------- | ---------- | ------------------------------------ |
+| 0x00       | 0          | Ā (U+0100) | Null byte (first remapped)           |
+| 0x0A       | 10         | Ċ (U+010A) | Newline                              |
+| 0x20       | 32         | Ġ (U+0120) | Space (last of the 0x00-0x20 block)  |
+| 0x21       | 33         | !          | Direct (unchanged)                   |
+| 0x41       | 65         | A          | Direct (unchanged)                   |
+| 0x7E       | 126        | ~          | Direct (unchanged)                   |
+| 0x7F       | 127        | ġ (U+0121) | DEL (first remapped after 0x20)      |
+| 0xAD       | 173        | Ń (U+0143) | Soft hyphen (last remapped)          |
+| 0xFF       | 255        | ÿ (U+00FF) | Direct — Latin-1 maps to itself      |
 
 ## Why ByteLevel Encoding?
 
@@ -131,11 +136,11 @@ def bytes_to_unicode():
 
 ### Space Handling
 
-In ByteLevel BPE, the space character (0x20) is mapped to `Š` (U+0120). This is why you may see vocabulary entries like:
+In ByteLevel BPE, the space character (0x20) is mapped to `Ġ` (U+0120). This is why you may see vocabulary entries like:
 
-- `ŠHello` - "Hello" with leading space
-- `Šthe` - "the" with leading space
-- `Š` - standalone space
+- `ĠHello` - "Hello" with leading space
+- `Ġthe` - "the" with leading space
+- `Ġ` - standalone space
 
 This convention allows the tokenizer to distinguish between word-initial and word-internal tokens.
 
