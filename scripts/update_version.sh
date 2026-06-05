@@ -167,9 +167,31 @@ else
     echo "  Warning: $PYTHON_INIT not found"
 fi
 
+# Bump Cargo.lock so the tracked lockfile matches the new package version
+if [[ -f "$PROJECT_ROOT/Cargo.lock" ]]; then
+    if command -v cargo >/dev/null 2>&1; then
+        ( cd "$PROJECT_ROOT" && cargo update -p splintr --precise "$CARGO_VERSION" )
+        echo "  Updated Cargo.lock -> $CARGO_VERSION"
+    else
+        echo "  Warning: cargo not found, Cargo.lock not updated"
+    fi
+fi
+
+# Bump uv.lock so the tracked lockfile matches the new PyPI version
+if [[ -f "$PROJECT_ROOT/uv.lock" ]]; then
+    if command -v uv >/dev/null 2>&1; then
+        ( cd "$PROJECT_ROOT" && uv lock )
+        echo "  Updated uv.lock -> $PYPI_VERSION"
+    else
+        echo "  Warning: uv not found, uv.lock not updated"
+    fi
+fi
+
 echo ""
 echo "Version update complete!"
 echo "  Base version:    $BASE_VERSION"
 echo "  Cargo.toml:      $CARGO_VERSION"
 echo "  pyproject.toml:  $PYPI_VERSION"
 echo "  __init__.py:     $PYPI_VERSION"
+echo "  Cargo.lock:      $CARGO_VERSION"
+echo "  uv.lock:         $PYPI_VERSION"

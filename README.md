@@ -42,6 +42,7 @@ tokenizer = Tokenizer.from_pretrained("cl100k_base")  # OpenAI GPT-4/3.5
 # tokenizer = Tokenizer.from_pretrained("mistral_v1")  # Mistral 7B v0.1/v0.2
 # tokenizer = Tokenizer.from_pretrained("mistral_v2")  # Mistral 7B v0.3, Codestral
 # tokenizer = Tokenizer.from_pretrained("mistral_v3")  # Mistral NeMo, Large 2
+# tokenizer = Tokenizer.from_pretrained("whisper_v3")  # OpenAI Whisper multilingual (v1/v2/v3)
 
 # Encode and decode
 tokens = tokenizer.encode("Hello, world!")
@@ -82,7 +83,7 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 **Built for production:**
 
-- **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), Llama 3 family (Meta), DeepSeek V3 (DeepSeek), and Mistral V1/V2/V3 (Mistral AI)
+- **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), Llama 3 family (Meta), DeepSeek V3 (DeepSeek), Mistral V1/V2/V3 (Mistral AI), and Whisper multilingual (OpenAI)
 - **Streaming decoders** - Real-time LLM output display with proper UTF-8 handling ([guide](docs/api_guide.md#streaming-decoder))
 - **54 agent tokens** - Built-in support for chat, CoT reasoning, ReAct agents, tool calling, RAG citations ([docs](docs/special_tokens.md))
 - **Battle-tested algorithms** - Regexr with JIT (pure Rust), Aho-Corasick for special tokens, linked-list BPE, SentencePiece unigram, WordPiece for BERT-family models
@@ -228,6 +229,32 @@ See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, exa
 | `mistral_v1`  | Mistral 7B v0.1/v0.2, Mixtral 8x7B | ~32,000         | 3 + 54 agent   | `SENTENCEPIECE_PATTERN` |
 | `mistral_v2`  | Mistral 7B v0.3, Codestral, 8x22B  | ~32,768         | 10 + 54 agent  | `SENTENCEPIECE_PATTERN` |
 | `mistral_v3`  | Mistral NeMo, Large 2, Pixtral     | ~131,000        | 10 + 54 agent  | `MISTRAL_V3_PATTERN`    |
+| `whisper` / `whisper_v1` / `whisper_v2` / `whisper_v3` | OpenAI Whisper multilingual (tiny..large-v3) | ~51,000 | 1608 (no agent) | `GPT2_PATTERN` |
+
+> **Whisper** is a speech model, so it carries no agent tokens — its special tokens are the standard Whisper set (`<|startoftranscript|>`, language tokens, `<|transcribe|>`/`<|translate|>`, 1501 timestamp tokens). Bare `whisper` resolves to v2. The **English-only** checkpoints (`*.en`) use a different base BPE and are **not bundled**; load those with `from_json` (below).
+
+### Loading any model from `tokenizer.json`
+
+For models not bundled above, point `splintr.from_json` at a HuggingFace `tokenizer.json`. It dispatches on the tokenizer type and returns the matching object — `Tokenizer` (BPE), `SentencePieceTokenizer` (Unigram), or `WordPieceTokenizer`:
+
+```python
+from splintr import from_json
+
+tok = from_json("tokenizer.json")   # BERT, T5, Gemma, Qwen, Whisper.en, ...
+ids = tok.encode("Hello, world!")                       # content tokens
+ids = tok.encode_with_special_tokens("Hello, world!")   # + [CLS]/[SEP]/<s> etc. (post_processor)
+text = tok.decode(ids)
+```
+
+`encode` returns content tokens (HF's `add_special_tokens=False`); `encode_with_special_tokens` additionally applies the model's `post_processor` template (HF's default `encode`). Honored end-to-end: the multi-stage pre-tokenizer pipeline (`ByteLevel`, `Split` incl. `invert`, `Digits`, `Punctuation`/`Contiguous`, `Sequence`, `add_prefix_space`/`prepend_scheme`), the full ordered normalizer (`Replace`, `Strip`, `Prepend`, NFC/NFD/NFKC/NFKD, `Precompiled` charsmap, …), BPE merge order, and `added_tokens` matching. Verified id-for-id (content **and** with special tokens) against GPT-2, RoBERTa, Qwen, Whisper, T5, Albert, XLNet, BERT, DistilBERT, **Falcon, StarCoder2, DeepSeek-Coder, GPT-NeoX**.
+
+| `model.type` | Returned type | Example models |
+| ------------ | ------------- | -------------- |
+| `BPE` (byte-level) | `Tokenizer` | GPT-2, Whisper, Llama 3, Qwen, DeepSeek |
+| `Unigram` | `SentencePieceTokenizer` | T5, Gemma, Albert, XLNet |
+| `WordPiece` | `WordPieceTokenizer` | BERT, DistilBERT, Electra |
+
+The split regex, byte-level flag, merge order, normalizer (including SentencePiece's `Precompiled` charsmap), and special tokens are all read from the file itself. Output is verified id-for-id against HuggingFace `tokenizers` across every family — GPT-2, RoBERTa, BART, Qwen, Whisper (BPE); T5, Albert, XLNet (Unigram); BERT, DistilBERT (WordPiece). (Rust: `splintr::from_json_path` / `from_json_bytes`.)
 
 **OpenAI standard tokens:**
 

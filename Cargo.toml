@@ -1,6 +1,6 @@
 [package]
 name = "splintr"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2021"
 description = "Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings"
 license = "MIT"
@@ -40,7 +40,7 @@ aho-corasick = "1.1"
 # LRU cache for frequent token sequences
 lru = "0.18"
 # regexr regex engine (default backend)
-regexr = { version = "0.1", default-features = false }
+regexr = { version = "0.1.4", default-features = false }
 # Unicode normalization for WordPiece accent stripping
 unicode-normalization = "0.1"
 # Unicode general category for punctuation detection
