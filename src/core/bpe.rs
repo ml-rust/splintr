@@ -65,18 +65,34 @@ struct Node {
 /// The linked-list approach has O(N) complexity per merge instead of O(N)
 /// memory copying that vector-based approaches require.
 pub fn byte_pair_encode(piece: &[u8], encoder: &FxHashMap<Vec<u8>, u32>) -> Vec<u32> {
+    // tiktoken-style: the token id doubles as its merge rank.
+    byte_pair_encode_with_ranks(piece, encoder, encoder)
+}
+
+/// Byte-pair encoding with **separate** merge-rank and output-id maps.
+///
+/// HuggingFace BPE models define merge priority via a `merges` list that is
+/// independent of token ids (e.g. RoBERTa orders ids differently from merges).
+/// `merge_ranks` maps a merged token's bytes → its merge priority (lower =
+/// merged first); `id_encoder` maps token bytes → output id. For tiktoken-style
+/// vocabs the two maps are identical, which is what [`byte_pair_encode`] passes.
+pub fn byte_pair_encode_with_ranks(
+    piece: &[u8],
+    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &FxHashMap<Vec<u8>, u32>,
+) -> Vec<u32> {
     if piece.is_empty() {
         return vec![];
     }
 
     // Fast path: single byte
     if piece.len() == 1 {
-        return encoder.get(piece).copied().map_or(vec![], |r| vec![r]);
+        return id_encoder.get(piece).copied().map_or(vec![], |r| vec![r]);
     }
 
     // Fast path: entire piece is a single token
-    if let Some(&rank) = encoder.get(piece) {
-        return vec![rank];
+    if let Some(&id) = id_encoder.get(piece) {
+        return vec![id];
     }
 
     // Initialize linked list - one node per byte
@@ -95,7 +111,7 @@ pub fn byte_pair_encode(piece: &[u8], encoder: &FxHashMap<Vec<u8>, u32>) -> Vec<
         });
     }
 
-    // Helper closure to compute rank of a pair
+    // Helper closure to compute the merge rank of a pair
     let get_rank = |left_idx: usize, right_idx: usize, nodes: &[Node]| -> u32 {
         if left_idx == usize::MAX || right_idx == usize::MAX {
             return u32::MAX;
@@ -107,7 +123,7 @@ pub fn byte_pair_encode(piece: &[u8], encoder: &FxHashMap<Vec<u8>, u32>) -> Vec<
         let len = left.len + right.len;
         let slice = &piece[start..start + len];
 
-        encoder.get(slice).copied().unwrap_or(u32::MAX)
+        merge_ranks.get(slice).copied().unwrap_or(u32::MAX)
     };
 
     // Initial rank calculation for all adjacent pairs
@@ -179,14 +195,14 @@ pub fn byte_pair_encode(piece: &[u8], encoder: &FxHashMap<Vec<u8>, u32>) -> Vec<
         let node = &nodes[curr];
         let slice = &piece[node.start..node.start + node.len];
 
-        if let Some(&rank) = encoder.get(slice) {
-            result.push(rank);
+        if let Some(&id) = id_encoder.get(slice) {
+            result.push(id);
         } else {
             // Fallback: if somehow we have an unknown token, try to encode bytes individually
             // This shouldn't happen with a proper BPE vocabulary that covers all bytes
             for &byte in slice {
-                if let Some(&rank) = encoder.get(&[byte][..]) {
-                    result.push(rank);
+                if let Some(&id) = id_encoder.get(&[byte][..]) {
+                    result.push(id);
                 }
             }
         }

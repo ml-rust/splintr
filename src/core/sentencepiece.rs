@@ -1,12 +1,9 @@
-//! SentencePiece-compatible unigram tokenizer.
+//! SentencePiece-compatible Unigram tokenizer.
 //!
-//! This tokenizer implements greedy longest-match encoding with score-based
-//! tie-breaking, compatible with SentencePiece unigram models used by
-//! Llama, Mistral, and other models distributed in GGUF format.
-//!
-//! Unlike BPE (which merges byte pairs iteratively), unigram tokenization
-//! greedily selects the longest matching token at each position, using
-//! scores to break ties between equal-length matches.
+//! Implements the Unigram **Viterbi** algorithm — the maximum total-score
+//! segmentation — matching SentencePiece / HuggingFace `tokenizers` (T5, Albert,
+//! XLNet, …), with metaspace pre-tokenization, byte-fallback, an ordered
+//! normalizer pipeline, and added-token matching.
 
 use std::collections::HashMap;
 use thiserror::Error;
@@ -47,6 +44,22 @@ pub struct SentencePieceTokenizer {
     bos_token_id: Option<u32>,
     /// EOS token ID
     eos_token_id: u32,
+    /// `<unk>` token ID, auto-detected from the vocab (for OOV in Viterbi).
+    unk_id: Option<u32>,
+    /// Whether the vocab carries `<0xNN>` byte tokens (byte-fallback for OOV).
+    byte_fallback: bool,
+    /// Longest token length in chars (bounds the Viterbi inner loop).
+    max_piece_chars: usize,
+    /// Minimum token score (basis for the unknown-piece penalty).
+    min_score: f32,
+    /// Ordered normalizer pipeline applied before pre-tokenization.
+    normalizer: super::normalizer::Normalizer,
+    /// Metaspace `add_prefix_space`: prepend `▁` to the first word too.
+    add_prefix_space: bool,
+    /// Added tokens recognized in the input (HF matches these during encoding).
+    added: Option<super::added::AddedTokens>,
+    /// Ids of `special=true` added tokens dropped on decode (HF default).
+    special_decode: rustc_hash::FxHashSet<u32>,
 }
 
 impl SentencePieceTokenizer {
@@ -83,65 +96,185 @@ impl SentencePieceTokenizer {
             token_to_id.insert(token.clone(), id as u32);
         }
 
+        let unk_id = token_to_id
+            .get("<unk>")
+            .or_else(|| token_to_id.get("<UNK>"))
+            .copied();
+        let byte_fallback = token_to_id.contains_key("<0x00>");
+        let max_piece_chars = tokens.iter().map(|t| t.chars().count()).max().unwrap_or(1);
+        let min_score = scores
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min)
+            .min(0.0);
+
         Ok(Self {
             token_to_id,
             id_to_token: tokens,
             scores,
             bos_token_id,
             eos_token_id,
+            unk_id,
+            byte_fallback,
+            max_piece_chars,
+            min_score,
+            normalizer: super::normalizer::Normalizer::default(),
+            add_prefix_space: true,
+            added: None,
+            special_decode: rustc_hash::FxHashSet::default(),
         })
     }
 
-    /// Encode text to token IDs using greedy longest-match.
-    ///
-    /// Prepends BOS token if configured. Replaces spaces with ▁ (U+2581)
-    /// following the SentencePiece convention.
-    pub fn encode(&self, text: &str) -> Vec<u32> {
-        let mut tokens = Vec::new();
+    /// Attach added tokens to recognize in the input during encoding.
+    pub fn with_added_tokens(mut self, map: &rustc_hash::FxHashMap<String, u32>) -> Self {
+        self.added = super::added::AddedTokens::new(map);
+        self
+    }
 
+    /// Set ids of `special=true` added tokens to drop on decode (HF default).
+    pub fn with_special_decode_ids(mut self, ids: rustc_hash::FxHashSet<u32>) -> Self {
+        self.special_decode = ids;
+        self
+    }
+
+    /// Attach an ordered normalizer pipeline (applied before pre-tokenization).
+    /// Returns `self` for chaining.
+    pub fn with_normalizer(mut self, normalizer: super::normalizer::Normalizer) -> Self {
+        self.normalizer = normalizer;
+        self
+    }
+
+    /// Set Metaspace `add_prefix_space` (whether the first word gets a leading
+    /// `▁`). Defaults to true. Returns `self` for chaining.
+    pub fn with_prefix_space(mut self, add_prefix_space: bool) -> Self {
+        self.add_prefix_space = add_prefix_space;
+        self
+    }
+
+    /// Apply the configured normalizer pipeline to an input string.
+    fn normalize(&self, text: &str) -> String {
+        if self.normalizer.is_empty() {
+            text.to_string()
+        } else {
+            self.normalizer.normalize(text)
+        }
+    }
+
+    /// Encode text to token IDs using the Unigram **Viterbi** algorithm — the
+    /// maximum total-score segmentation, matching SentencePiece / HuggingFace
+    /// `tokenizers` (not a greedy longest-match).
+    ///
+    /// Prepends BOS if configured, and follows the SentencePiece convention:
+    /// the input is `▁`-prefixed and spaces become `▁`. Characters that no token
+    /// covers fall back to `<0xNN>` byte tokens (if the vocab has them) or `<unk>`.
+    ///
+    /// Recognizes added tokens in the input first (when configured), matching
+    /// HuggingFace.
+    pub fn encode(&self, text: &str) -> Vec<u32> {
+        match &self.added {
+            Some(added) => added.encode_with(text, |gap| self.encode_ordinary(gap)),
+            None => self.encode_ordinary(text),
+        }
+    }
+
+    /// Encode without added-token matching (pure Unigram Viterbi).
+    pub fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+        let mut tokens = Vec::new();
         if let Some(bos_id) = self.bos_token_id {
             tokens.push(bos_id);
         }
 
-        // SentencePiece: prepend ▁ and replace spaces with ▁
-        let processed = format!("▁{}", text.replace(' ', "▁"));
-        let chars: Vec<char> = processed.chars().collect();
-        let mut pos = 0;
-        let mut substr_buf = String::with_capacity(256 * 4);
+        // Normalize, then SentencePiece pre-tokenization: split on whitespace
+        // (collapsing runs) and prefix each word with ▁ (WhitespaceSplit +
+        // Metaspace). Each word is then Viterbi-segmented independently.
+        let text = self.normalize(text);
+        for (i, word) in text.split_whitespace().enumerate() {
+            // Metaspace prepends ▁ to each word; with add_prefix_space=false the
+            // very first word keeps no leading ▁.
+            let piece = if i == 0 && !self.add_prefix_space {
+                word.to_string()
+            } else {
+                format!("▁{word}")
+            };
+            self.viterbi_piece(&piece.chars().collect::<Vec<_>>(), &mut tokens);
+        }
+        tokens
+    }
 
-        while pos < chars.len() {
-            let mut best_len = 0;
-            let mut best_id = None;
-            let mut best_score = f32::NEG_INFINITY;
+    /// Append the maximum-score Unigram segmentation of `chars` to `tokens`.
+    fn viterbi_piece(&self, chars: &[char], tokens: &mut Vec<u32>) {
+        let n = chars.len();
+        if n == 0 {
+            return;
+        }
 
-            substr_buf.clear();
-            for end in (pos + 1)..=chars.len().min(pos + 256) {
-                substr_buf.push(chars[end - 1]);
-                if let Some(&id) = self.token_to_id.get(&substr_buf) {
-                    let score = self.scores.get(id as usize).copied().unwrap_or(0.0);
-                    let len = end - pos;
-                    if len > best_len || (len == best_len && score > best_score) {
-                        best_len = len;
-                        best_id = Some(id);
-                        best_score = score;
+        // Viterbi over the character lattice. `best[i]` = best total score to
+        // reach position i; `back[i]` = (start, piece) of the chosen edge into i.
+        // A piece is Some(id) for a vocab token, or None for an unknown char.
+        let unk_penalty = self.min_score - 10.0; // SentencePiece's kUnkPenalty
+        let mut best = vec![f32::NEG_INFINITY; n + 1];
+        let mut back: Vec<(usize, Option<u32>)> = vec![(0, None); n + 1];
+        best[0] = 0.0;
+
+        let mut buf = String::with_capacity(self.max_piece_chars * 4);
+        for start in 0..n {
+            if best[start] == f32::NEG_INFINITY {
+                continue;
+            }
+            // Known-token edges starting at `start`.
+            buf.clear();
+            let max_end = (start + self.max_piece_chars).min(n);
+            for end in (start + 1)..=max_end {
+                buf.push(chars[end - 1]);
+                if let Some(&id) = self.token_to_id.get(&buf) {
+                    let cand = best[start] + self.scores.get(id as usize).copied().unwrap_or(0.0);
+                    if cand > best[end] {
+                        best[end] = cand;
+                        back[end] = (start, Some(id));
                     }
                 }
             }
-
-            if let Some(id) = best_id {
-                tokens.push(id);
-                pos += best_len;
-            } else {
-                let c = chars[pos];
-                let byte_tokens = self.encode_char_as_bytes(c);
-                if !byte_tokens.is_empty() {
-                    tokens.extend(byte_tokens);
-                }
-                pos += 1;
+            // Unknown single-character edge guarantees the lattice is connected.
+            let cand = best[start] + unk_penalty;
+            if cand > best[start + 1] {
+                best[start + 1] = cand;
+                back[start + 1] = (start, None);
             }
         }
 
-        tokens
+        // Backtrack into edges, then emit in forward order.
+        let mut edges: Vec<(usize, Option<u32>)> = Vec::new();
+        let mut pos = n;
+        while pos > 0 {
+            let (start, piece) = back[pos];
+            edges.push((start, piece));
+            pos = start;
+        }
+        edges.reverse();
+
+        let mut prev_unk = false;
+        for (start, piece) in edges {
+            match piece {
+                Some(id) => {
+                    tokens.push(id);
+                    prev_unk = false;
+                }
+                None => {
+                    // Unknown char: byte-fallback if available, else <unk>. A run
+                    // of consecutive unknown chars collapses to a single <unk>,
+                    // matching SentencePiece / HuggingFace.
+                    if self.byte_fallback {
+                        tokens.extend(self.encode_char_as_bytes(chars[start]));
+                        prev_unk = false;
+                    } else if let Some(unk) = self.unk_id {
+                        if !prev_unk {
+                            tokens.push(unk);
+                            prev_unk = true;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Encode a character as individual byte tokens using `<0xNN>` format.
@@ -175,7 +308,14 @@ impl SentencePieceTokenizer {
                 .get(id as usize)
                 .ok_or(SentencePieceError::InvalidTokenId(id))?;
 
-            if Some(id) == self.bos_token_id || id == self.eos_token_id {
+            // Skip special tokens (bos/eos/unk), matching HuggingFace's default
+            // decode (skip_special_tokens=True). Unknown spans were unrecoverable
+            // anyway, so the `<unk>` surface is dropped rather than rendered.
+            if Some(id) == self.bos_token_id
+                || id == self.eos_token_id
+                || Some(id) == self.unk_id
+                || self.special_decode.contains(&id)
+            {
                 continue;
             }
 
@@ -189,15 +329,19 @@ impl SentencePieceTokenizer {
 
         let result = String::from_utf8_lossy(&bytes).into_owned();
 
-        // Remove leading space only when decoding a full sequence (the leading ▁
-        // is a SentencePiece artifact). For single-token decode (streaming), the
-        // leading space is meaningful word separation — don't strip it.
-        if ids.len() > 1 {
-            if let Some(stripped) = result.strip_prefix(' ') {
-                return Ok(stripped.to_string());
-            }
+        // Strip the single leading space only when the metaspace pre-tokenizer
+        // prepended one (add_prefix_space / prepend_scheme != "never"). HF's
+        // Metaspace decoder mirrors its prepend behavior; with prefixing disabled
+        // a genuine leading space must be preserved, not eaten. (Token-by-token
+        // streaming uses the dedicated StreamingDecoder, not this method.)
+        if self.add_prefix_space {
+            Ok(result
+                .strip_prefix(' ')
+                .map(str::to_string)
+                .unwrap_or(result))
+        } else {
+            Ok(result)
         }
-        Ok(result)
     }
 
     /// Decode token IDs to text, skipping invalid IDs.
@@ -219,12 +363,21 @@ impl SentencePieceTokenizer {
         }
 
         let result = String::from_utf8_lossy(&bytes).into_owned();
-        if ids.len() > 1 {
+        // Mirror `decode`: strip the metaspace-induced leading space only when the
+        // pre-tokenizer prepended one.
+        if self.add_prefix_space {
             if let Some(stripped) = result.strip_prefix(' ') {
                 return stripped.to_string();
             }
         }
         result
+    }
+
+    /// The raw surface string of a token id (with metaspace `▁` and `<0xNN>`
+    /// byte-fallback markers intact). Used to drive a configuration-declared
+    /// decoder pipeline.
+    pub fn token_surface(&self, id: u32) -> Option<String> {
+        self.id_to_token.get(id as usize).cloned()
     }
 
     /// Check if a token is the EOS token.
@@ -318,6 +471,18 @@ mod tests {
     }
 
     #[test]
+    fn decode_preserves_leading_space_when_no_prefix() {
+        // With add_prefix_space=false (prepend_scheme="never"), a genuine leading
+        // space must survive decode rather than being stripped as a ▁ artifact.
+        let with_prefix = make_tokenizer();
+        assert_eq!(with_prefix.decode(&[3, 4]).unwrap(), "Hello world");
+
+        let no_prefix = make_tokenizer().with_prefix_space(false);
+        assert_eq!(no_prefix.decode(&[3, 4]).unwrap(), " Hello world");
+        assert_eq!(no_prefix.decode_lossy(&[3, 4]), " Hello world");
+    }
+
+    #[test]
     fn test_roundtrip() {
         let tok = make_tokenizer();
         let ids = tok.encode("Hello world");
@@ -362,8 +527,9 @@ mod tests {
     fn test_encode_empty_string() {
         let tok = make_tokenizer();
         let ids = tok.encode("");
-        // BOS + ▁ (SentencePiece always prepends ▁, which matches token 5)
-        assert_eq!(ids, vec![1, 5]);
+        // Empty input has no whitespace-split words, so only BOS is emitted
+        // (matching HF's WhitespaceSplit+Metaspace, which yields no pieces).
+        assert_eq!(ids, vec![1]);
     }
 
     #[test]

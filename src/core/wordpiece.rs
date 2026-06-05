@@ -37,13 +37,23 @@ pub struct WordPieceTokenizer {
     max_word_len: usize,
     /// Whether to lowercase and strip accents (for uncased models)
     do_lower_case: bool,
-    /// Whether the vocabulary uses `##` prefix for continuation tokens.
-    /// If false, continuations are looked up without prefix (GGUF-stripped vocabs).
-    has_continuation_prefix: bool,
+    /// Continuation-subword prefix (e.g. `##`). Empty string means continuations
+    /// are matched without a prefix (GGUF-stripped vocabs).
+    continuation_prefix: String,
+    /// Whether to isolate CJK ideographs as individual tokens (BERT's
+    /// `handle_chinese_chars`). True for all standard BERT-family models.
+    handle_chinese_chars: bool,
+    /// Whether to strip control/format characters and `\0`/`�` and normalize
+    /// whitespace before tokenizing (BERT's `clean_text`). Default true.
+    clean_text: bool,
     /// Special token IDs for [CLS], [SEP], [PAD]
     cls_token_id: Option<u32>,
     sep_token_id: Option<u32>,
     pad_token_id: Option<u32>,
+    /// Added tokens recognized in the input (HF matches these during encoding).
+    added: Option<super::added::AddedTokens>,
+    /// Ids of `special=true` added tokens dropped on decode (HF default).
+    special_decode: rustc_hash::FxHashSet<u32>,
 }
 
 impl WordPieceTokenizer {
@@ -60,13 +70,41 @@ impl WordPieceTokenizer {
         max_word_len: usize,
         do_lower_case: bool,
     ) -> Self {
+        // Auto-detect the continuation prefix ("##" if present, else none) and
+        // default `handle_chinese_chars` to true (the BERT default).
+        let prefix = if vocab.iter().any(|k| k.starts_with("##")) {
+            "##".to_string()
+        } else {
+            String::new()
+        };
+        Self::with_options(
+            vocab,
+            unk_token_id,
+            max_word_len,
+            do_lower_case,
+            true,
+            true,
+            prefix,
+        )
+    }
+
+    /// Like [`new`](Self::new) with explicit `handle_chinese_chars`, `clean_text`,
+    /// and the continuation-subword prefix (empty string = continuations matched
+    /// bare).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_options(
+        vocab: Vec<String>,
+        unk_token_id: u32,
+        max_word_len: usize,
+        do_lower_case: bool,
+        handle_chinese_chars: bool,
+        clean_text: bool,
+        continuation_prefix: String,
+    ) -> Self {
         let mut token_to_id = HashMap::with_capacity(vocab.len());
         for (id, token) in vocab.iter().enumerate() {
             token_to_id.insert(token.clone(), id as u32);
         }
-
-        // Auto-detect whether vocab uses ## prefix for continuations
-        let has_continuation_prefix = token_to_id.keys().any(|k| k.starts_with("##"));
 
         let cls_token_id = token_to_id.get("[CLS]").copied();
         let sep_token_id = token_to_id.get("[SEP]").copied();
@@ -78,11 +116,27 @@ impl WordPieceTokenizer {
             unk_token_id,
             max_word_len,
             do_lower_case,
-            has_continuation_prefix,
+            continuation_prefix,
+            handle_chinese_chars,
+            clean_text,
             cls_token_id,
             sep_token_id,
             pad_token_id,
+            added: None,
+            special_decode: rustc_hash::FxHashSet::default(),
         }
+    }
+
+    /// Attach added tokens to recognize in the input during encoding.
+    pub fn with_added_tokens(mut self, map: &rustc_hash::FxHashMap<String, u32>) -> Self {
+        self.added = super::added::AddedTokens::new(map);
+        self
+    }
+
+    /// Set ids of `special=true` added tokens to drop on decode (HF default).
+    pub fn with_special_decode_ids(mut self, ids: rustc_hash::FxHashSet<u32>) -> Self {
+        self.special_decode = ids;
+        self
     }
 
     /// Get the `[CLS]` token ID, if present in the vocabulary.
@@ -107,11 +161,39 @@ impl WordPieceTokenizer {
 
     /// Pre-tokenize: lowercase, strip accents, split on whitespace and punctuation.
     fn basic_tokenize(&self, text: &str) -> Vec<String> {
+        // clean_text: drop NUL/replacement/control/format chars and turn every
+        // whitespace char into a plain space, matching BERT's `_clean_text`.
+        let cleaned;
+        let text = if self.clean_text {
+            cleaned = clean_text(text);
+            cleaned.as_str()
+        } else {
+            text
+        };
+
+        // handle_chinese_chars: surround each CJK ideograph with spaces so it
+        // becomes its own word (matching BERT's BasicTokenizer).
+        let text = if self.handle_chinese_chars && text.chars().any(is_chinese_char) {
+            let mut s = String::with_capacity(text.len() + 8);
+            for c in text.chars() {
+                if is_chinese_char(c) {
+                    s.push(' ');
+                    s.push(c);
+                    s.push(' ');
+                } else {
+                    s.push(c);
+                }
+            }
+            s
+        } else {
+            text.to_string()
+        };
+
         let text = if self.do_lower_case {
             let lowered = text.to_lowercase();
             strip_accents(&lowered)
         } else {
-            text.to_string()
+            text
         };
 
         // Split on whitespace, then split each token on punctuation boundaries
@@ -138,29 +220,32 @@ impl WordPieceTokenizer {
 
         while start < chars.len() {
             let mut end = chars.len();
-            let mut found = false;
+            let mut matched = None;
 
             while start < end {
                 let raw: String = chars[start..end].iter().collect();
-                let lookup = if start == 0 || !self.has_continuation_prefix {
+                let lookup = if start == 0 || self.continuation_prefix.is_empty() {
                     raw
                 } else {
-                    format!("##{}", raw)
+                    format!("{}{}", self.continuation_prefix, raw)
                 };
 
                 if let Some(&id) = self.token_to_id.get(&lookup) {
-                    ids.push(id);
-                    found = true;
-                    start = end;
+                    matched = Some(id);
                     break;
                 }
 
                 end -= 1;
             }
 
-            if !found {
-                ids.push(self.unk_token_id);
-                start += 1;
+            match matched {
+                Some(id) => {
+                    ids.push(id);
+                    start = end;
+                }
+                // HuggingFace WordPiece maps an un-segmentable word to a single
+                // `[UNK]` for the whole word — not one `[UNK]` per character.
+                None => return vec![self.unk_token_id],
             }
         }
 
@@ -168,24 +253,32 @@ impl WordPieceTokenizer {
     }
 }
 
-impl Tokenize for WordPieceTokenizer {
-    fn encode(&self, text: &str) -> Vec<u32> {
+impl WordPieceTokenizer {
+    /// Encode without added-token matching (BasicTokenizer + WordPiece).
+    fn encode_ordinary(&self, text: &str) -> Vec<u32> {
         let words = self.basic_tokenize(text);
         let mut ids = Vec::new();
-
         for word in &words {
-            let word_ids = self.wordpiece_tokenize(word);
-            ids.extend(word_ids);
+            ids.extend(self.wordpiece_tokenize(word));
         }
-
         ids
+    }
+}
+
+impl Tokenize for WordPieceTokenizer {
+    fn encode(&self, text: &str) -> Vec<u32> {
+        // Recognize added tokens in the input first (HF behavior), then WordPiece.
+        match &self.added {
+            Some(added) => added.encode_with(text, |gap| self.encode_ordinary(gap)),
+            None => self.encode_ordinary(text),
+        }
     }
 
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        if self.has_continuation_prefix {
-            self.decode_with_prefix(ids)
-        } else {
+        if self.continuation_prefix.is_empty() {
             self.decode_without_prefix(ids)
+        } else {
+            self.decode_with_prefix(ids)
         }
     }
 
@@ -195,6 +288,12 @@ impl Tokenize for WordPieceTokenizer {
 }
 
 impl WordPieceTokenizer {
+    /// The raw surface string of a token id (continuation tokens keep their `##`
+    /// prefix). Used to drive a configuration-declared decoder pipeline.
+    pub fn token_surface(&self, id: u32) -> Option<String> {
+        self.id_to_token.get(id as usize).cloned()
+    }
+
     /// Decode when vocab uses `##` prefix — use prefix presence to detect continuations.
     fn decode_with_prefix(&self, ids: &[u32]) -> Result<String, TokenizeError> {
         let mut pieces = Vec::with_capacity(ids.len());
@@ -205,11 +304,11 @@ impl WordPieceTokenizer {
                 .get(id as usize)
                 .ok_or(TokenizeError::InvalidTokenId(id))?;
 
-            if is_special_token(token) {
+            if is_special_token(token) || self.special_decode.contains(&id) {
                 continue;
             }
 
-            if let Some(stripped) = token.strip_prefix("##") {
+            if let Some(stripped) = token.strip_prefix(self.continuation_prefix.as_str()) {
                 pieces.push(stripped.to_string());
             } else {
                 if !pieces.is_empty() {
@@ -219,7 +318,7 @@ impl WordPieceTokenizer {
             }
         }
 
-        Ok(pieces.join(""))
+        Ok(cleanup_tokenization(&pieces.join("")))
     }
 
     /// Decode when vocab has no `##` prefix (GGUF-stripped).
@@ -234,15 +333,26 @@ impl WordPieceTokenizer {
                 .get(id as usize)
                 .ok_or(TokenizeError::InvalidTokenId(id))?;
 
-            if is_special_token(token) {
+            if is_special_token(token) || self.special_decode.contains(&id) {
                 continue;
             }
 
             parts.push(token.as_str());
         }
 
-        Ok(parts.join(" "))
+        Ok(cleanup_tokenization(&parts.join(" ")))
     }
+}
+
+/// HuggingFace `tokenizers` WordPiece-decoder cleanup (`cleanup=true`, the
+/// default): drop the space before `. ? ! ,`. (Unlike `transformers`'
+/// `clean_up_tokenization_spaces`, the `tokenizers` decoder does NOT touch
+/// apostrophe contractions.)
+fn cleanup_tokenization(s: &str) -> String {
+    s.replace(" .", ".")
+        .replace(" ?", "?")
+        .replace(" !", "!")
+        .replace(" ,", ",")
 }
 
 fn is_special_token(token: &str) -> bool {
@@ -250,11 +360,15 @@ fn is_special_token(token: &str) -> bool {
         || (token.starts_with("[unused") && token.ends_with(']'))
 }
 
-/// Strip Unicode combining marks (accents) from text.
+/// Strip accents from text, matching BERT's `BasicTokenizer._run_strip_accents`:
+/// decompose (NFD) and drop only **Nonspacing_Mark (Mn)** characters. Spacing
+/// combining marks (Mc) — e.g. Devanagari/Thai vowel signs — are kept, unlike a
+/// blanket "all combining marks" filter which would corrupt those scripts.
 fn strip_accents(text: &str) -> String {
+    use unicode_general_category::{get_general_category, GeneralCategory};
     use unicode_normalization::UnicodeNormalization;
     text.nfd()
-        .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
+        .filter(|c| get_general_category(*c) != GeneralCategory::NonspacingMark)
         .collect()
 }
 
@@ -274,6 +388,51 @@ fn split_on_punctuation(word: &str, out: &mut Vec<String>) {
     if !current.is_empty() {
         out.push(current);
     }
+}
+
+/// Check if a character is a CJK ideograph, matching BERT's `_is_chinese_char`
+/// (the CJK Unified Ideographs blocks and their extensions/compatibility forms).
+/// BERT `_clean_text`: drop `\0`, the replacement char, and control/format
+/// characters (Unicode categories `C*`, except `\t`/`\n`/`\r`); map every
+/// whitespace character (including `Zs`) to a plain space.
+fn clean_text(text: &str) -> String {
+    use unicode_general_category::{get_general_category, GeneralCategory};
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '\0' || c == '\u{fffd}' {
+            continue;
+        }
+        let is_keepable_ws = matches!(c, '\t' | '\n' | '\r');
+        if !is_keepable_ws {
+            match get_general_category(c) {
+                GeneralCategory::Control
+                | GeneralCategory::Format
+                | GeneralCategory::Surrogate
+                | GeneralCategory::PrivateUse
+                | GeneralCategory::Unassigned => continue,
+                _ => {}
+            }
+        }
+        if c == ' ' || is_keepable_ws || get_general_category(c) == GeneralCategory::SpaceSeparator
+        {
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn is_chinese_char(c: char) -> bool {
+    let cp = c as u32;
+    (0x4E00..=0x9FFF).contains(&cp)
+        || (0x3400..=0x4DBF).contains(&cp)
+        || (0x20000..=0x2A6DF).contains(&cp)
+        || (0x2A700..=0x2B73F).contains(&cp)
+        || (0x2B740..=0x2B81F).contains(&cp)
+        || (0x2B820..=0x2CEAF).contains(&cp)
+        || (0xF900..=0xFAFF).contains(&cp)
+        || (0x2F800..=0x2FA1F).contains(&cp)
 }
 
 /// Check if a character is punctuation (matching BERT's definition).
@@ -381,11 +540,31 @@ mod tests {
     }
 
     #[test]
+    fn clean_text_strips_control_and_format_chars() {
+        // Zero-width space (Cf), ZWNJ (Cf), BOM (Cf), NUL and replacement char
+        // are removed; \t/\n become spaces; ordinary text is untouched.
+        assert_eq!(
+            clean_text("a\u{200b}b\u{200c}\u{feff}c\0\u{fffd}d\te"),
+            "abcd e"
+        );
+        assert_eq!(clean_text("plain text"), "plain text");
+    }
+
+    #[test]
     fn test_unknown_word() {
         let tok = make_tokenizer();
-        // "xyz" has no vocab entries → each char becomes [UNK]
-        let ids = tok.encode("xyz");
-        assert!(ids.iter().all(|&id| id == 1));
+        // An un-segmentable word maps to a single [UNK] (HuggingFace behavior),
+        // not one [UNK] per character.
+        assert_eq!(tok.encode("xyz"), vec![1]);
+    }
+
+    #[test]
+    fn test_handle_chinese_chars() {
+        // Each CJK ideograph is isolated into its own word; with none in the
+        // vocab here, each becomes its own [UNK] (one per char, since they are
+        // separate words — distinct from the whole-word rule above).
+        let tok = make_tokenizer();
+        assert_eq!(tok.encode("hello世界world"), vec![4, 1, 1, 5]);
     }
 
     #[test]
