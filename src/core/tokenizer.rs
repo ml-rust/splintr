@@ -1,4 +1,4 @@
-use aho_corasick::AhoCorasick;
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use lru::LruCache;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
@@ -13,9 +13,22 @@ use thiserror::Error;
 #[cfg(feature = "pcre2")]
 use pcre2::bytes::Regex as Pcre2Regex;
 
-use super::bpe::byte_pair_encode;
+use super::bpe::{byte_pair_encode, byte_pair_encode_with_ranks};
 use super::byte_level::{byte_level_decode_bytes, byte_level_encode};
 use super::vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, VocabError};
+
+/// Build the special/added-token automaton with leftmost-longest semantics, so a
+/// longer added token (e.g. a 24-space run) wins over a shorter one (a 2-space
+/// run) that starts at the same position — matching HuggingFace's added-token
+/// matching. Default `AhoCorasick` (Standard) would instead report the
+/// earliest-ending match, splitting the run into several short tokens.
+fn build_special_matcher<S: AsRef<[u8]>>(
+    patterns: &[S],
+) -> Result<AhoCorasick, aho_corasick::BuildError> {
+    AhoCorasickBuilder::new()
+        .match_kind(MatchKind::LeftmostLongest)
+        .build(patterns)
+}
 
 #[derive(Error, Debug)]
 pub enum TokenizerError {
@@ -36,11 +49,18 @@ pub enum TokenizerError {
     UnknownPretrained(String),
 }
 
-/// Default regex pattern for cl100k_base (GPT-4, GPT-3.5-turbo)
-pub const CL100K_BASE_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+/// Default regex pattern for cl100k_base (GPT-4, GPT-3.5-turbo).
+///
+/// Transcribed verbatim from tiktoken's cl100k pattern, with possessive
+/// quantifiers (`?+`/`++`/`*+`) lowered to greedy — proven split-equivalent over
+/// 40k+ random strings, and greedy compiles on the regexr backend (which has no
+/// possessive support). Note the `\s+$` end-anchored branch and trailing bare
+/// `\s`, which an earlier hand-simplified approximation omitted.
+pub const CL100K_BASE_PATTERN: &str = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s+$|\s*[\r\n]|\s+(?!\S)|\s";
 
-/// Default regex pattern for o200k_base (GPT-4o)
-pub const O200K_BASE_PATTERN: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+/// Default regex pattern for o200k_base (GPT-4o). Transcribed from tiktoken's
+/// o200k pattern (already greedy upstream).
+pub const O200K_BASE_PATTERN: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 /// Default regex pattern for Llama 3/3.1/3.2/3.3 (same as o200k_base)
 pub const LLAMA3_PATTERN: &str = O200K_BASE_PATTERN;
@@ -298,7 +318,7 @@ impl RegexBackend {
 /// # Key Optimizations
 ///
 /// - Regexr with JIT compilation and SIMD acceleration (default)
-/// - Optional PCRE2 with JIT (2-4x faster than fancy-regex)
+/// - Optional PCRE2 with JIT (industry-standard backend, via the `pcre2` feature)
 /// - Rayon parallelism for batch encoding (across texts, not within)
 /// - Linked-list BPE algorithm (avoids O(N²) on pathological inputs)
 /// - FxHashMap for fast lookups
@@ -308,6 +328,11 @@ impl RegexBackend {
 /// - Optional SentencePiece mode for Mistral/Gemma style tokenizers (▁ → space)
 pub struct Tokenizer {
     encoder: FxHashMap<Vec<u8>, u32>,
+    /// Optional separate merge-priority map (bytes → merge rank). When present,
+    /// BPE merges by this rank instead of by token id — required for HuggingFace
+    /// BPE models whose ids don't follow merge order (e.g. RoBERTa). `None`
+    /// means tiktoken-style (id doubles as merge rank).
+    merge_ranks: Option<FxHashMap<Vec<u8>, u32>>,
     decoder: FxHashMap<u32, Vec<u8>>,
     special_tokens: FxHashMap<String, u32>,
     special_tokens_decoder: FxHashMap<u32, String>,
@@ -318,6 +343,21 @@ pub struct Tokenizer {
     chunk_cache: Mutex<LruCache<u64, Vec<u32>>>,
     use_byte_level: bool,
     use_sentencepiece: bool,
+    /// Prepend a space to input before tokenizing (HF ByteLevel `add_prefix_space`).
+    add_prefix_space: bool,
+    /// Optional multi-stage pre-tokenizer pipeline (HF `pre_tokenizer` graphs
+    /// beyond a single regex, e.g. Digits/Punctuation/Sequence). When set, it
+    /// produces the (already byte-level-encoded) chunks instead of the regex.
+    pre_tokenizer: Option<std::sync::Arc<super::pretokenizer::PreTokenizer>>,
+    /// When true, `encode` first matches `special_tokens` (HF always recognizes
+    /// added tokens in the input).
+    match_added_tokens: bool,
+    /// Ids of `special=true` added tokens to drop on decode (HF default
+    /// skip_special_tokens=true). Non-special added tokens are still rendered.
+    special_decode_ids: rustc_hash::FxHashSet<u32>,
+    /// Optional text normalizer (HF `normalizer`, e.g. NFC) applied to content
+    /// before splitting. Applied per content gap, never to special-token matches.
+    normalizer: Option<std::sync::Arc<super::normalizer::Normalizer>>,
     cache_size: usize,
     use_jit: bool,
     use_pcre2: bool,
@@ -438,7 +478,7 @@ impl Tokenizer {
         let special_matcher = if special_token_strings.is_empty() {
             None
         } else {
-            Some(AhoCorasick::new(&special_token_strings)?)
+            Some(build_special_matcher(&special_token_strings)?)
         };
 
         // Initialize LRU cache
@@ -447,6 +487,7 @@ impl Tokenizer {
 
         Ok(Self {
             encoder,
+            merge_ranks: None,
             decoder,
             special_tokens,
             special_tokens_decoder,
@@ -457,10 +498,79 @@ impl Tokenizer {
             chunk_cache,
             use_byte_level,
             use_sentencepiece,
+            add_prefix_space: false,
+            pre_tokenizer: None,
+            match_added_tokens: false,
+            special_decode_ids: rustc_hash::FxHashSet::default(),
+            normalizer: None,
             cache_size,
             use_jit: true,
             use_pcre2: false,
         })
+    }
+
+    /// Attach a separate merge-priority map (bytes → merge rank) so BPE merges
+    /// by this order rather than by token id. Use for HuggingFace BPE models
+    /// whose ids don't follow merge order (e.g. RoBERTa).
+    pub fn with_merge_ranks(mut self, merge_ranks: FxHashMap<Vec<u8>, u32>) -> Self {
+        self.merge_ranks = Some(merge_ranks);
+        self
+    }
+
+    /// Enable HF ByteLevel `add_prefix_space`: a leading space is prepended to
+    /// the input before tokenizing (unless it already starts with whitespace).
+    pub fn with_prefix_space(mut self, add_prefix_space: bool) -> Self {
+        self.add_prefix_space = add_prefix_space;
+        self
+    }
+
+    /// Attach a multi-stage pre-tokenizer pipeline. Its pieces are already
+    /// byte-level-encoded, so this tokenizer must have `use_byte_level=false`.
+    pub fn with_pre_tokenizer(mut self, pt: super::pretokenizer::PreTokenizer) -> Self {
+        self.pre_tokenizer = Some(std::sync::Arc::new(pt));
+        self
+    }
+
+    /// Make `encode` recognize `special_tokens` (added tokens) in the input,
+    /// matching HuggingFace, which always recognizes added tokens.
+    pub fn with_added_token_matching(mut self, enabled: bool) -> Self {
+        self.match_added_tokens = enabled;
+        self
+    }
+
+    /// Set the ids of `special=true` added tokens to drop on decode (HF default
+    /// `skip_special_tokens=true`). Non-special added tokens stay rendered.
+    pub fn with_special_decode_ids(mut self, ids: rustc_hash::FxHashSet<u32>) -> Self {
+        self.special_decode_ids = ids;
+        self
+    }
+
+    /// Attach a text normalizer (HF `normalizer`, e.g. NFC) applied to content
+    /// before splitting. An empty normalizer is treated as absent.
+    pub fn with_normalizer(mut self, normalizer: super::normalizer::Normalizer) -> Self {
+        self.normalizer = (!normalizer.is_empty()).then(|| std::sync::Arc::new(normalizer));
+        self
+    }
+
+    /// The raw surface string of a token id (the vocab key, byte-level-encoded for
+    /// byte-level vocabs), or the special-token text. Used to drive a
+    /// configuration-declared decoder pipeline.
+    pub fn token_surface(&self, id: u32) -> Option<String> {
+        if let Some(bytes) = self.decoder.get(&id) {
+            Some(String::from_utf8_lossy(bytes).into_owned())
+        } else {
+            self.special_tokens_decoder.get(&id).cloned()
+        }
+    }
+
+    /// Apply `add_prefix_space` to an input, borrowing when no change is needed.
+    #[inline]
+    fn prefixed<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.add_prefix_space && !text.starts_with(|c: char| c.is_whitespace()) {
+            std::borrow::Cow::Owned(format!(" {text}"))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        }
     }
 
     /// Switch to PCRE2 regex backend.
@@ -621,7 +731,7 @@ impl Tokenizer {
         let special_matcher = if special_token_strings.is_empty() {
             None
         } else {
-            Some(AhoCorasick::new(&special_token_strings)?)
+            Some(build_special_matcher(&special_token_strings)?)
         };
 
         // Initialize LRU cache
@@ -630,6 +740,7 @@ impl Tokenizer {
 
         Ok(Self {
             encoder,
+            merge_ranks: None,
             decoder,
             special_tokens,
             special_tokens_decoder,
@@ -640,10 +751,24 @@ impl Tokenizer {
             chunk_cache,
             use_byte_level: false,
             use_sentencepiece: true,
+            add_prefix_space: false,
+            pre_tokenizer: None,
+            match_added_tokens: false,
+            special_decode_ids: rustc_hash::FxHashSet::default(),
+            normalizer: None,
             cache_size: DEFAULT_CACHE_SIZE,
             use_jit: true,
             use_pcre2: false,
         })
+    }
+
+    /// Run BPE on a piece, honoring a separate merge-rank map when present.
+    #[inline]
+    fn bpe(&self, bytes: &[u8]) -> Vec<u32> {
+        match &self.merge_ranks {
+            Some(ranks) => byte_pair_encode_with_ranks(bytes, ranks, &self.encoder),
+            None => byte_pair_encode(bytes, &self.encoder),
+        }
     }
 
     /// Compute a fast hash for a byte slice to use as an LRU cache key.
@@ -670,7 +795,7 @@ impl Tokenizer {
         }
 
         // Perform BPE encoding
-        let result = byte_pair_encode(bytes, &self.encoder);
+        let result = self.bpe(bytes);
 
         // Store in cache
         if let Ok(mut cache) = self.chunk_cache.lock() {
@@ -682,13 +807,17 @@ impl Tokenizer {
 
     /// Encode a single text chunk with LRU caching.
     fn encode_chunk(&self, slice: &[u8]) -> Vec<u32> {
-        // Apply ByteLevel preprocessing if enabled
-        let bytes_to_encode: std::borrow::Cow<[u8]> = if self.use_byte_level {
-            let byte_level_str = byte_level_encode(slice);
-            std::borrow::Cow::Owned(byte_level_str.into_bytes())
-        } else {
-            std::borrow::Cow::Borrowed(slice)
-        };
+        // Apply ByteLevel preprocessing if enabled. When a pre-tokenizer engine
+        // is attached it has already byte-level-encoded the pieces, so we must
+        // NOT re-encode here (but `use_byte_level` stays true so `decode` still
+        // reverses the byte-level mapping).
+        let bytes_to_encode: std::borrow::Cow<[u8]> =
+            if self.use_byte_level && self.pre_tokenizer.is_none() {
+                let byte_level_str = byte_level_encode(slice);
+                std::borrow::Cow::Owned(byte_level_str.into_bytes())
+            } else {
+                std::borrow::Cow::Borrowed(slice)
+            };
 
         // Fast path: check if entire chunk is a known token
         if let Some(&rank) = self.encoder.get(bytes_to_encode.as_ref()) {
@@ -704,7 +833,7 @@ impl Tokenizer {
         }
 
         // Perform BPE encoding
-        let result = byte_pair_encode(bytes_to_encode.as_ref(), &self.encoder);
+        let result = self.bpe(bytes_to_encode.as_ref());
 
         // Store in cache
         if let Ok(mut cache) = self.chunk_cache.lock() {
@@ -714,10 +843,46 @@ impl Tokenizer {
         result
     }
 
-    /// Encode text to token IDs (ignores special tokens in input).
+    /// Encode text to token IDs.
+    ///
+    /// By default special tokens in the input are treated as ordinary text. When
+    /// the tokenizer was built with added-token matching (HF `tokenizer.json`
+    /// loaders), `added_tokens` are recognized first.
+    pub fn encode(&self, text: &str) -> Vec<u32> {
+        if self.match_added_tokens {
+            self.encode_with_special(text)
+        } else {
+            self.encode_ordinary(text)
+        }
+    }
+
+    /// Encode text to token IDs, always treating special tokens as ordinary text.
     ///
     /// Uses sequential processing, which is faster than parallel for texts up to ~1MB.
-    pub fn encode(&self, text: &str) -> Vec<u32> {
+    pub fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+        // Apply the HF `normalizer` (e.g. NFC) to content before splitting. This
+        // runs on content gaps (special tokens are extracted upstream), matching
+        // HuggingFace's extract-then-normalize order.
+        let normalized;
+        let text = if let Some(norm) = &self.normalizer {
+            normalized = norm.normalize(text);
+            normalized.as_str()
+        } else {
+            text
+        };
+
+        // Multi-stage pre-tokenizer path (Digits/Punctuation/Sequence/…): the
+        // engine produces already byte-level-encoded pieces; BPE each directly.
+        if let Some(pt) = &self.pre_tokenizer {
+            let mut out = Vec::new();
+            for piece in pt.split(text) {
+                out.extend(self.encode_chunk(piece.as_bytes()));
+            }
+            return out;
+        }
+
+        let text = self.prefixed(text);
+        let text = text.as_ref();
         let text_bytes = text.as_bytes();
         let chunks = self.regex.find_iter(text);
 
@@ -804,11 +969,13 @@ impl Tokenizer {
     /// Note: For SentencePiece tokenizers, this falls back to sequential encoding
     /// because SentencePiece requires tracking state between chunks.
     pub fn encode_rayon(&self, text: &str) -> Vec<u32> {
-        if self.use_sentencepiece {
-            // SentencePiece requires sequential state tracking for ▁ prefix logic
+        if self.use_sentencepiece || self.pre_tokenizer.is_some() {
+            // SentencePiece and the multi-stage pre-tokenizer need sequential logic.
             return self.encode(text);
         }
 
+        let text = self.prefixed(text);
+        let text = text.as_ref();
         let text_bytes = text.as_bytes();
         let chunks = self.regex.find_iter(text);
 
@@ -842,7 +1009,7 @@ impl Tokenizer {
     /// Special tokens in the input are encoded directly without BPE.
     pub fn encode_with_special(&self, text: &str) -> Vec<u32> {
         let Some(ref special_matcher) = self.special_matcher else {
-            return self.encode(text);
+            return self.encode_ordinary(text);
         };
 
         let text_bytes = text.as_bytes();
@@ -855,7 +1022,7 @@ impl Tokenizer {
 
             if start > last_end {
                 let slice = &text[last_end..start];
-                result.extend(self.encode(slice));
+                result.extend(self.encode_ordinary(slice));
             }
 
             let pattern_idx = m.pattern().as_usize();
@@ -868,7 +1035,7 @@ impl Tokenizer {
         }
 
         if last_end < text.len() {
-            result.extend(self.encode(&text[last_end..]));
+            result.extend(self.encode_ordinary(&text[last_end..]));
         }
 
         result
@@ -879,6 +1046,10 @@ impl Tokenizer {
         let mut result = Vec::with_capacity(tokens.len() * 4);
 
         for &token in tokens {
+            // Drop `special=true` added tokens (HF default skip_special_tokens).
+            if self.special_decode_ids.contains(&token) {
+                continue;
+            }
             if let Some(bytes) = self.decoder.get(&token) {
                 if self.use_byte_level {
                     if let Some(decoded) = byte_level_decode_bytes(bytes) {
@@ -1074,11 +1245,12 @@ impl Clone for Tokenizer {
         let special_matcher = if self.special_token_strings.is_empty() {
             None
         } else {
-            Some(AhoCorasick::new(&self.special_token_strings).unwrap())
+            Some(build_special_matcher(&self.special_token_strings).unwrap())
         };
 
         Self {
             encoder: self.encoder.clone(),
+            merge_ranks: self.merge_ranks.clone(),
             decoder: self.decoder.clone(),
             special_tokens: self.special_tokens.clone(),
             special_tokens_decoder: self.special_tokens_decoder.clone(),
@@ -1089,6 +1261,11 @@ impl Clone for Tokenizer {
             chunk_cache,
             use_byte_level: self.use_byte_level,
             use_sentencepiece: self.use_sentencepiece,
+            add_prefix_space: self.add_prefix_space,
+            pre_tokenizer: self.pre_tokenizer.clone(),
+            match_added_tokens: self.match_added_tokens,
+            special_decode_ids: self.special_decode_ids.clone(),
+            normalizer: self.normalizer.clone(),
             cache_size: self.cache_size,
             use_jit: self.use_jit,
             use_pcre2: self.use_pcre2,
