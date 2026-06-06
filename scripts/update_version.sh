@@ -151,8 +151,11 @@ fi
 # Update python/splintr/__init__.py - update __version__ variable
 PYTHON_INIT="$PROJECT_ROOT/python/splintr/__init__.py"
 if [[ -f "$PYTHON_INIT" ]]; then
-    # Use sed to update __version__ = "X.Y.Z" line
-    sed -i "s/^__version__ = \".*\"/__version__ = \"$PYPI_VERSION\"/" "$PYTHON_INIT"
+    # Update __version__ = "X.Y.Z" line (portable: avoid non-portable `sed -i`)
+    awk -v ver="$PYPI_VERSION" '
+        /^__version__ = "/ { print "__version__ = \"" ver "\""; next }
+        { print }
+    ' "$PYTHON_INIT" > "$PYTHON_INIT.tmp" && mv "$PYTHON_INIT.tmp" "$PYTHON_INIT"
 
     # Verify the update worked
     UPDATED_VERSION=$(grep '^__version__ = "' "$PYTHON_INIT" | sed 's/.*"\(.*\)".*/\1/')
