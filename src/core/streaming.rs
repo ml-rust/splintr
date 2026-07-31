@@ -53,12 +53,13 @@ impl<'a> StreamingDecoder<'a> {
     /// or `None` if the current bytes are still incomplete.
     pub fn add_token(&mut self, token_id: u32) -> Option<String> {
         // Get bytes for this token
-        let bytes = if let Some(b) = self.tokenizer.decoder().get(&token_id) {
-            b.as_slice()
-        } else if let Some(s) = self.tokenizer.special_tokens_decoder().get(&token_id) {
-            s.as_bytes()
-        } else {
-            return None;
+        let bytes = match self.tokenizer.decoder().get(&token_id) {
+            Some(b) => b.as_slice(),
+            None => self
+                .tokenizer
+                .special_tokens_decoder()
+                .get(&token_id)?
+                .as_bytes(),
         };
 
         // Add to buffer
@@ -260,11 +261,10 @@ impl<'a> ByteLevelStreamingDecoder<'a> {
                 // Fallback: treat as raw bytes if ByteLevel decode fails
                 self.buffer.extend_from_slice(encoded_bytes);
             }
-        } else if let Some(special) = self.tokenizer.special_tokens_decoder().get(&token_id) {
-            // Special tokens are NOT ByteLevel-encoded, add directly
-            self.buffer.extend_from_slice(special.as_bytes());
         } else {
-            return None;
+            // Special tokens are NOT ByteLevel-encoded, add directly.
+            let special = self.tokenizer.special_tokens_decoder().get(&token_id)?;
+            self.buffer.extend_from_slice(special.as_bytes());
         }
 
         // Try to extract complete UTF-8 characters
