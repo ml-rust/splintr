@@ -285,6 +285,10 @@ impl Tokenize for WordPieceTokenizer {
     fn vocab_size(&self) -> usize {
         self.id_to_token.len()
     }
+
+    fn cls_sep_ids(&self) -> Option<(u32, u32)> {
+        Some((self.cls_token_id?, self.sep_token_id?))
+    }
 }
 
 impl WordPieceTokenizer {
