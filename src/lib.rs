@@ -3,9 +3,10 @@ pub mod core;
 mod python;
 
 pub use core::{
-    ByteLevelStreamingDecoder, SentencePieceError, SentencePieceTokenizer, StreamingDecoder,
-    Tokenize, TokenizeError, Tokenizer, TokenizerError, WordPieceTokenizer, CL100K_BASE_PATTERN,
-    GPT2_PATTERN, LLAMA3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+    ByteLevelStreamingDecoder, SentencePieceError, SentencePieceTokenizer, SpmError, SpmTokenizer,
+    StreamingDecoder, Tokenize, TokenizeError, Tokenizer, TokenizerError, WordPieceTokenizer,
+    CL100K_BASE_PATTERN, GPT2_PATTERN, LLAMA3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
+    SENTENCEPIECE_PATTERN,
 };
 
 // Re-export pretrained tokenizer API

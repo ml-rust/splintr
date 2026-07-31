@@ -40,6 +40,7 @@ mod precompiled;
 mod pretokenizer;
 pub mod pretrained;
 pub mod sentencepiece;
+pub mod spm;
 mod streaming;
 pub mod tokenize;
 mod tokenizer;
@@ -59,11 +60,13 @@ pub use pretrained::{
     PretrainedVocab,
 };
 pub use sentencepiece::{SentencePieceError, SentencePieceTokenizer};
+pub use spm::{SpmError, SpmTokenizer};
 pub use streaming::{ByteLevelStreamingDecoder, StreamingDecoder};
 pub use tokenize::{Tokenize, TokenizeError};
 pub use tokenizer::{
     cl100k_agent_tokens, o200k_agent_tokens, Tokenizer, TokenizerError, CL100K_BASE_PATTERN,
-    GPT2_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+    GPT2_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
+    SENTENCEPIECE_PATTERN,
 };
 pub use vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, VocabError};
 pub use whisper::{

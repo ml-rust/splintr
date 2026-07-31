@@ -91,6 +91,14 @@ pub const MISTRAL_V3_PATTERN: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{L
 pub const GPT2_PATTERN: &str =
     r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
 
+/// Pre-tokenizer pattern for Qwen2 / Qwen3 (llama.cpp's `qwen2` pre-tokenizer).
+///
+/// Close to [`LLAMA3_PATTERN`] but differs in two ways that change the resulting
+/// tokens, so the two are not interchangeable:
+/// - digits split one at a time (`\p{N}`) rather than in runs of up to three;
+/// - letter runs are not split on upper/lower case boundaries.
+pub const QWEN2_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
 // =============================================================================
 // Agent Token Constants (cl100k_base: 100277+, o200k_base: 200019+)
 // =============================================================================
