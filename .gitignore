@@ -63,3 +63,5 @@ coverage.xml
 
 # Local cargo config (dev overrides)
 .cargo/
+
+/releases/
