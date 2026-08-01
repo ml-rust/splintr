@@ -351,6 +351,7 @@ fn load_fixture(path: &Path) -> Result<Fixture, String> {
             .get("pre")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        precompiled_charsmap: base64_bytes(raw_vocab, "precompiled_charsmap"),
     };
 
     let mut cases = Vec::new();
@@ -368,6 +369,19 @@ fn load_fixture(path: &Path) -> Result<Fixture, String> {
     }
 
     Ok(Fixture { name, vocab, cases })
+}
+
+/// A base64 string field, decoded to raw bytes.
+///
+/// The charsmap is a quarter-megabyte binary blob, so the extractor stores it
+/// base64-encoded rather than as a JSON array of 237539 numbers — the same
+/// encoding a HuggingFace `tokenizer.json` uses for the identical bytes. A field
+/// that is absent or does not decode yields `None`, which is exactly "the file
+/// declares no table" to the loader.
+fn base64_bytes(value: &Value, key: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let text = value.get(key)?.as_str()?;
+    base64::engine::general_purpose::STANDARD.decode(text).ok()
 }
 
 fn opt_bool(value: &Value, key: &str) -> Option<bool> {

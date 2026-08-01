@@ -11,7 +11,13 @@ A metadata key the file does not declare is simply absent from the JSON, with on
 exception: `model` is a required field of `GgufVocab`, so an absent key resolves to
 llama.cpp's own documented default ("llama") rather than being omitted. Every other
 default is left to splintr's loader, which is the component that knows them per
-dialect.
+dialect. The one binary field, `precompiled_charsmap`, is base64-encoded — the
+same encoding a HuggingFace `tokenizer.json` uses for the identical bytes.
+
+Recognised `tokenizer.ggml.*` keys that have no `GgufVocab` field (see
+`UNMAPPED_KEYS`) are written to a separate top-level `unmapped_metadata` block,
+never into `vocab`, so the "one JSON key per struct field" rule above stays
+literally true.
 
 Usage:
     python3 scripts/extract_gguf_vocab.py <file.gguf|dir> [...] --out-dir DIR
@@ -36,8 +42,26 @@ fixture paired with the wrong tokenizer. The JSON also records a `reference`
 block naming the SP model path and installed `sentencepiece` version, so an
 SPM-sourced fixture can never be mistaken for an llama.cpp-sourced one.
 
+`--reference-hf PATH` is the same idea for vocabularies where the GGUF ids do
+NOT align with the raw SentencePiece model -- notably XLM-RoBERTa-family
+(`model=t5`/Unigram) vocabularies, which offset every SentencePiece id by +1
+and add 2 specials (`<s>`/`</s>`) on top. There, `--reference-spm` against the
+raw `.model` file is refused by the sanity gate (piece-count mismatch, by
+design). `--reference-hf` instead loads `tokenizers.Tokenizer.from_file(PATH)`
+(a `tokenizer.json`) and runs the same `REFERENCE_CORPUS` through
+`tokenizer.encode(text, add_special_tokens=False).ids` -- `add_special_tokens`
+is False to match `encode_raw` on the Rust side, which is what these fixtures
+are diffed against; `True` would wrap every case in CLS/SEP ids the Rust
+harness never adds. It produces the identical `cases[]` shape, is sanity-gated
+the same way (vocab size, then a sample of ids compared via `id_to_token`
+against the GGUF `tokens` array), and records its own `reference` block
+(`source: "tokenizers"`) so it can't be confused with an SPM- or
+llama.cpp-sourced fixture. `--reference-spm` and `--reference-hf` are mutually
+exclusive.
+
 Requires the `gguf` package (`pip install gguf`); `--reference-spm` further
-requires the `sentencepiece` package (`pip install sentencepiece`).
+requires the `sentencepiece` package (`pip install sentencepiece`);
+`--reference-hf` requires the `tokenizers` package (`pip install tokenizers`).
 """
 
 from __future__ import annotations
@@ -82,11 +106,38 @@ OPTIONAL_KEYS = {
     "seperator_token_id": "sep_token_id",
     "sep_token_id": "sep_token_id",
     "pre": "pre",
+    # SentencePiece's normalization table. GGUF stores it as a UINT8 array of a
+    # quarter-megabyte or so; the JSON carries it base64-encoded, the same
+    # encoding a HuggingFace `tokenizer.json` uses for the identical bytes, so a
+    # fixture stays a fraction of the size a number array would be.
+    "precompiled_charsmap": "precompiled_charsmap",
 }
 
+# `tokenizer.ggml.*` keys that are recorded but have NO `GgufVocab` field,
+# because nothing in splintr's tokenization reads them:
+#
+#   * `mask_token_id` — the id of `<mask>`, used by masked-LM training heads.
+#     Tokenization never inserts or strips it: it is neither a boundary token
+#     (that is bos/eos) nor something matched in input text (the vocabulary's
+#     own CONTROL entry already covers `<mask>` as an added token, by string).
+#   * `token_type_count` — the number of *segment* embeddings the model has
+#     (BERT's sentence A / B), a model-architecture number. Note it is unrelated
+#     to `tokenizer.ggml.token_type`, which is the per-id token-kind enum and
+#     IS read.
+#
+# They are dumped so a fixture is a faithful record of the file and so the
+# question "does splintr ignore something?" is answerable from the JSON rather
+# than by re-reading the GGUF. They live outside the `vocab` block precisely
+# because that block mirrors `GgufVocab` one key per field.
+UNMAPPED_KEYS = ("mask_token_id", "token_type_count")
 
-def read_metadata(path: Path) -> dict:
-    """Read `tokenizer.ggml.*` out of a GGUF file into GgufVocab-shaped data."""
+
+def read_metadata(path: Path) -> tuple[dict, dict]:
+    """Read `tokenizer.ggml.*` out of a GGUF file.
+
+    Returns `(vocab, unmapped)`: the GgufVocab-shaped data, and the recognised
+    keys that deliberately have no struct field (see `UNMAPPED_KEYS`).
+    """
     reader = GGUFReader(str(path))
     raw = {}
     for name, field in reader.fields.items():
@@ -111,6 +162,8 @@ def read_metadata(path: Path) -> dict:
             continue
         if field_name in ("scores", "merges", "token_type"):
             value = list(value)
+        elif field_name == "precompiled_charsmap":
+            value = base64.b64encode(bytes(value)).decode("ascii")
         elif field_name.endswith("_token_id"):
             value = int(value)
         elif field_name in (
@@ -122,7 +175,11 @@ def read_metadata(path: Path) -> dict:
             value = bool(value)
         vocab[field_name] = value
 
-    return vocab
+    unmapped = {
+        key: int(raw[key]) for key in UNMAPPED_KEYS if raw.get(key) is not None
+    }
+
+    return vocab, unmapped
 
 
 def read_cases(gguf_path: Path) -> list[dict]:
@@ -308,6 +365,120 @@ def generate_cases_from_spm(vocab: dict, spm_path: Path) -> tuple[list[dict], di
     return cases, reference_meta
 
 
+# `tokenizer.ggml.token_type` enum value for a placeholder/unused slot (the
+# `gguf` package's own `gguf.TokenType.UNUSED`). llama.cpp's GGUF converter
+# gives these ids a synthetic name (observed: `[PAD250000]`) instead of the
+# original piece text, so an HF reference tokenizer's real piece for that id
+# (observed: the XLM-R `<mask>` token, offset onto an id llama.cpp otherwise
+# treats as unused padding) legitimately disagrees on the *string* while still
+# being the same *id* -- this is not evidence of a mismatched pairing.
+GGUF_TOKEN_TYPE_UNUSED = 5
+
+
+def sanity_check_hf_pairing(vocab: dict, tokenizer) -> None:
+    """Verify `tokenizer` is the one that actually produced this GGUF vocabulary.
+
+    Same two checks as `sanity_check_spm_pairing`, against the HF
+    `tokenizers.Tokenizer` API instead of `sentencepiece`:
+
+      1. `tokenizer.get_vocab_size()` equals the GGUF's token count exactly.
+      2. A sample of ids resolve to byte-identical token strings in both,
+         via `tokenizer.id_to_token(id)` against the GGUF `tokens` array --
+         except ids the GGUF itself marks `UNUSED` (see
+         `GGUF_TOKEN_TYPE_UNUSED`), where llama.cpp is known to substitute a
+         synthetic placeholder string instead of preserving the original.
+
+    Raises `ValueError` (never returns a partial/soft result) on any mismatch.
+    """
+    tokens: list[str] = vocab["tokens"]
+    hf_size = tokenizer.get_vocab_size()
+    if hf_size != len(tokens):
+        raise ValueError(
+            f"reference HF tokenizer has {hf_size} tokens but GGUF vocabulary "
+            f"has {len(tokens)} tokens -- refusing to pair a reference "
+            f"tokenizer with a mismatched vocabulary"
+        )
+
+    token_type: list[int] | None = vocab.get("token_type")
+
+    n = len(tokens)
+    if n <= SANITY_SAMPLE_SIZE:
+        sample_ids = range(n)
+    else:
+        step = n / SANITY_SAMPLE_SIZE
+        sample_ids = {int(i * step) for i in range(SANITY_SAMPLE_SIZE)}
+        sample_ids.add(n - 1)
+
+    mismatches = []
+    for token_id in sample_ids:
+        if token_type is not None and token_type[token_id] == GGUF_TOKEN_TYPE_UNUSED:
+            continue
+        hf_token = tokenizer.id_to_token(token_id)
+        gguf_piece = tokens[token_id]
+        if hf_token != gguf_piece:
+            mismatches.append((token_id, hf_token, gguf_piece))
+
+    if mismatches:
+        detail = "\n".join(
+            f"    id {tid}: hf={hf_token!r} gguf={gguf_piece!r}"
+            for tid, hf_token, gguf_piece in mismatches[:10]
+        )
+        raise ValueError(
+            f"reference HF tokenizer and GGUF vocabulary disagree on "
+            f"{len(mismatches)}/{len(sample_ids)} sampled token(s) -- refusing "
+            f"to pair a reference tokenizer with a mismatched vocabulary:\n{detail}"
+        )
+
+
+def generate_cases_from_hf(vocab: dict, hf_path: Path) -> tuple[list[dict], dict]:
+    """Run `REFERENCE_CORPUS` through the HF `tokenizers` reference tokenizer.
+
+    Returns `(cases, reference_meta)`: `cases` is exactly the `.inp`/`.out`
+    shape (`{"input": ..., "expected": [id, ...]}`), and `reference_meta` is
+    the `reference` block recorded in the JSON so this fixture can never be
+    mistaken for one sourced from llama.cpp's `.inp`/`.out` files or from
+    `--reference-spm`.
+
+    Encodes with `add_special_tokens=False` to match `encode_raw` on the Rust
+    side (no BOS/EOS/CLS/SEP wrapping) -- confirmed against the bge-m3
+    tokenizer.json: `encode("hello world", add_special_tokens=False).ids ==
+    [33600, 31, 8999]`, matching the GGUF model's own ids exactly, while
+    `add_special_tokens=True` wraps that in `[0, ..., 2]`.
+
+    Raises `ValueError` if `sanity_check_hf_pairing` rejects the pairing --
+    the caller must not write a fixture in that case.
+    """
+    try:
+        import tokenizers
+        from tokenizers import Tokenizer
+    except ImportError:  # pragma: no cover - tooling script
+        raise ValueError(
+            "the 'tokenizers' package is required for --reference-hf "
+            "(pip install tokenizers)"
+        ) from None
+
+    tokenizer = Tokenizer.from_file(str(hf_path))
+
+    sanity_check_hf_pairing(vocab, tokenizer)
+
+    cases = [
+        {
+            "input": text,
+            "expected": [
+                int(i)
+                for i in tokenizer.encode(text, add_special_tokens=False).ids
+            ],
+        }
+        for text in REFERENCE_CORPUS
+    ]
+    reference_meta = {
+        "source": "tokenizers",
+        "model_path": str(hf_path),
+        "tokenizers_version": tokenizers.__version__,
+    }
+    return cases, reference_meta
+
+
 def piece_to_bytes(piece: str) -> bytes:
     """Render one GGUF `model=llama` piece as the raw bytes it stands for.
 
@@ -416,7 +587,21 @@ def main() -> int:
         "'sentencepiece' package). Applies to every input in this invocation, "
         "so pass one .gguf file per run when its reference tokenizer differs.",
     )
+    parser.add_argument(
+        "--reference-hf",
+        type=Path,
+        help="generate cases[] from this HF tokenizer.json run over "
+        "REFERENCE_CORPUS, instead of sibling .inp/.out files (requires the "
+        "'tokenizers' package). For vocabularies (e.g. XLM-RoBERTa/model=t5) "
+        "whose GGUF ids do not align with the raw SentencePiece model, so "
+        "--reference-spm cannot be used. Mutually exclusive with "
+        "--reference-spm. Applies to every input in this invocation, so pass "
+        "one .gguf file per run when its reference tokenizer differs.",
+    )
     args = parser.parse_args()
+
+    if args.reference_spm is not None and args.reference_hf is not None:
+        parser.error("--reference-spm and --reference-hf are mutually exclusive")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     if args.tiktoken_dir is not None:
@@ -426,10 +611,14 @@ def main() -> int:
     for gguf_path in collect(args.inputs):
         reference_meta = None
         try:
-            vocab = read_metadata(gguf_path)
+            vocab, unmapped = read_metadata(gguf_path)
             if args.reference_spm is not None:
                 cases, reference_meta = generate_cases_from_spm(
                     vocab, args.reference_spm
+                )
+            elif args.reference_hf is not None:
+                cases, reference_meta = generate_cases_from_hf(
+                    vocab, args.reference_hf
                 )
             else:
                 cases = read_cases(gguf_path)
@@ -447,6 +636,8 @@ def main() -> int:
             "vocab": vocab,
             "cases": cases,
         }
+        if unmapped:
+            payload["unmapped_metadata"] = unmapped
         if reference_meta is not None:
             payload["reference"] = reference_meta
         out_path = args.out_dir / f"{gguf_path.stem}.json"
@@ -455,7 +646,12 @@ def main() -> int:
         print(
             f"ok    {out_path}  model={vocab['model']} "
             f"pre={vocab.get('pre', '-')} tokens={len(vocab['tokens'])} "
-            f"cases={len(cases)}"
+            f"cases={len(cases)} charsmap="
+            + (
+                str(len(base64.b64decode(vocab["precompiled_charsmap"])))
+                if "precompiled_charsmap" in vocab
+                else "-"
+            )
         )
 
         if args.tiktoken_dir is not None:

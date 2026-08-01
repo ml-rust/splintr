@@ -470,6 +470,14 @@ fn load_fixture(path: &Path) -> Result<Fixture, String> {
         cls_token_id: opt_u32(raw, "cls_token_id"),
         sep_token_id: opt_u32(raw, "sep_token_id"),
         pre: raw.get("pre").and_then(Value::as_str).map(str::to_owned),
+        // Base64 in the fixture, as in a HuggingFace `tokenizer.json`: the blob
+        // is binary and long enough that a JSON number array would dwarf the
+        // vocabulary itself. Only the Unigram path reads it, so a `model=llama`
+        // fixture normally leaves it absent.
+        precompiled_charsmap: raw
+            .get("precompiled_charsmap")
+            .and_then(Value::as_str)
+            .and_then(|b64| STANDARD.decode(b64).ok()),
     };
 
     let mut cases = Vec::new();
