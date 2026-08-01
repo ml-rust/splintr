@@ -95,11 +95,51 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
         let id = id
             .as_u64()
             .ok_or(HfJsonError::MissingField("model.vocab[*] = u32"))? as u32;
-        if pre.byte_level && byte_level_decode(token).is_none() {
-            return Err(HfJsonError::InvalidByteLevel(token.clone()));
+        // A vocab entry that is ALSO declared in `added_tokens` is spelled
+        // literally, not byte-level-encoded: HuggingFace matches added tokens
+        // against the raw text *before* the model runs, so their vocab spelling
+        // is never byte-level material. DeepSeek V3 declares its 818 added
+        // tokens in both sections, and 3 of them (`<｜begin▁of▁sentence｜>`,
+        // `<｜end▁of▁sentence｜>`, `<｜▁pad▁｜>`, ids 0/1/2) also occupy a
+        // `model.vocab` slot — measured over its `tokenizer.json`, those 3 are
+        // the *only* non-byte-level entries in its 128000-entry vocab. Decoding
+        // them as byte-level fails outright (`｜` is U+FF5C, outside the
+        // byte-level alphabet), so the whole file used to be unloadable.
+        //
+        // The exemption is per entry and driven solely by membership in
+        // `added_tokens` — a vocab entry that is NOT an added token and fails to
+        // byte-level-decode is still a hard error, because there the failure
+        // means a genuinely corrupt vocabulary rather than a literal spelling.
+        // Lookup is a single `FxHashMap` probe per entry, so an 818-token added
+        // set over a 128k vocab stays O(vocab), not O(vocab × added).
+        match specials.get(token) {
+            // Both sections claim the token but disagree on its id. Neither can
+            // win: the matcher emits the `added_tokens` id while BPE and the
+            // decode tables use the `model.vocab` id, so picking either leaves a
+            // tokenizer whose encode and decode contradict each other on that
+            // token. Report it instead of quietly choosing.
+            Some(added) if added.id != id => {
+                return Err(HfJsonError::AddedTokenIdConflict {
+                    content: token.clone(),
+                    vocab_id: id,
+                    added_id: added.id,
+                });
+            }
+            // Agreed added token: literal text, so skip the byte-level check.
+            Some(_) => {}
+            None => {
+                if pre.byte_level && byte_level_decode(token).is_none() {
+                    return Err(HfJsonError::InvalidByteLevel(token.clone()));
+                }
+            }
         }
         // Byte-level encoders keep the byte-level-encoded string's bytes (encode
         // byte-level-encodes input before lookup); raw BPE keeps them as-is too.
+        // An added token keeps its literal bytes here as well, which is what
+        // makes its `model.vocab` id decodable: `decode` finds the literal in
+        // the id→bytes table, and both the built-in byte-level decode and the
+        // declared `ByteLevel` decoder pass a non-byte-level token through
+        // unchanged, so the id renders as the literal string it was declared as.
         encoder.insert(token.as_bytes().to_vec(), id);
     }
 

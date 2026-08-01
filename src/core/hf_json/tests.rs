@@ -474,3 +474,91 @@ fn added_token_lstrip_is_read_from_json_and_reaches_the_matcher() {
     // Same input shape, unflagged token: the space stays.
     assert_eq!(t.encode("a <pad>b"), vec![0, 1, 11, 2]);
 }
+
+/// A `model.vocab` entry that is ALSO an `added_tokens` entry is spelled
+/// literally, so it must be taken literally rather than byte-level-decoded.
+///
+/// This is DeepSeek V3's shape: its `tokenizer.json` declares 818 added tokens
+/// and 3 of them (`<｜begin▁of▁sentence｜>`, `<｜end▁of▁sentence｜>`,
+/// `<｜▁pad▁｜>`, ids 0/1/2) also occupy a vocab slot. `｜` is U+FF5C, outside
+/// the byte-level alphabet, so byte-level-decoding those entries fails and the
+/// whole 128000-entry file used to be unloadable.
+///
+/// Reference (`tokenizers` 0.22.1, deepseek-v3 `tokenizer.json`,
+/// `add_special_tokens=False`): `"Hello <｜begin▁of▁sentence｜> world"` ->
+/// `[19923, 223, 0, 2058]`, and decoding that back with
+/// `skip_special_tokens=False` returns the literal string — the added token is
+/// never run through the ByteLevel decoder.
+#[test]
+fn vocab_entry_that_is_also_an_added_token_is_taken_literally() {
+    let json = r#"{
+        "added_tokens": [
+            {"id": 3, "content": "<｜eos｜>", "special": true},
+            {"id": 4, "content": "<｜tool｜>", "special": false}
+        ],
+        "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false},
+        "decoder": {"type": "ByteLevel"},
+        "model": {"type": "BPE",
+            "vocab": {"a": 0, "Ġ": 1, "b": 2, "<｜eos｜>": 3, "<｜tool｜>": 4},
+            "merges": []}
+    }"#;
+    let tok = from_json_bytes(json.as_bytes()).expect("loads despite literal vocab entries");
+
+    // Encoding keeps the id `model.vocab` gives the entry.
+    assert_eq!(tok.encode_raw("a<｜tool｜>b"), vec![0, 4, 2]);
+    assert_eq!(tok.encode_raw("<｜eos｜>"), vec![3]);
+
+    // Decoding round-trips to the literal spelling, not byte-level garbage: the
+    // ByteLevel decoder passes a non-byte-level surface through unchanged.
+    assert_eq!(
+        Tokenize::decode(&tok, &[0, 4, 2]).expect("decodes"),
+        "a<｜tool｜>b"
+    );
+    // `special: true` is still dropped on decode (HF's default
+    // `skip_special_tokens=true`; `tokenizers` returns "" for deepseek's [0,1,2]).
+    assert_eq!(Tokenize::decode(&tok, &[3]).expect("decodes"), "");
+}
+
+/// The literal-spelling exemption is per entry, keyed on membership in
+/// `added_tokens` — never a blanket "ignore byte-level decode failures". A vocab
+/// entry that is NOT an added token and fails to decode means a corrupt
+/// vocabulary, so it must still be a hard error even in a file that does declare
+/// added tokens.
+#[test]
+fn non_added_token_vocab_entry_that_is_not_byte_level_still_errors() {
+    let json = r#"{
+        "added_tokens": [{"id": 3, "content": "<｜eos｜>", "special": true}],
+        "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false},
+        "model": {"type": "BPE",
+            "vocab": {"a": 0, "<｜eos｜>": 3, "你好": 5},
+            "merges": []}
+    }"#;
+    let err = from_json_bytes(json.as_bytes());
+    assert!(matches!(&err, Err(HfJsonError::InvalidByteLevel(t)) if t == "你好"));
+}
+
+/// When both sections claim a token but give it different ids, neither can win:
+/// the added-token matcher would emit the `added_tokens` id while BPE and the
+/// decode tables use the `model.vocab` id, so the tokenizer's encode and decode
+/// would contradict each other on that token. Report it instead of choosing.
+///
+/// (No local `tokenizer.json` — deepseek-v3, llama-3.2, mistral-7b-v0.3,
+/// embeddinggemma, whisper — actually disagrees, so this rejects only genuinely
+/// inconsistent files.)
+#[test]
+fn added_token_id_disagreeing_with_the_vocab_id_errors() {
+    let json = r#"{
+        "added_tokens": [{"id": 7, "content": "<｜eos｜>", "special": true}],
+        "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false},
+        "model": {"type": "BPE", "vocab": {"a": 0, "<｜eos｜>": 3}, "merges": []}
+    }"#;
+    let err = from_json_bytes(json.as_bytes());
+    assert!(matches!(
+        &err,
+        Err(HfJsonError::AddedTokenIdConflict {
+            vocab_id: 3,
+            added_id: 7,
+            ..
+        })
+    ));
+}

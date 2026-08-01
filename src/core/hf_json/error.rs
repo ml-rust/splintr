@@ -26,6 +26,17 @@ pub enum HfJsonError {
     UnsupportedPreTokenizer(String),
     #[error("vocab entry `{0}` is not valid byte-level encoding")]
     InvalidByteLevel(String),
+    #[error(
+        "added token `{content}` is listed in model.vocab with id {vocab_id} but in added_tokens with id {added_id}"
+    )]
+    AddedTokenIdConflict {
+        /// The token spelling both sections declare.
+        content: String,
+        /// The id `model.vocab` gives it (what BPE/decode would use).
+        vocab_id: u32,
+        /// The id `added_tokens` gives it (what the matcher would emit).
+        added_id: u32,
+    },
     #[error("could not determine the {0} token id from the tokenizer.json")]
     MissingSpecial(&'static str),
     #[error(transparent)]
