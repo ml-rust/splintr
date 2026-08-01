@@ -42,6 +42,8 @@ pub enum SpmError {
     EmptyVocab,
     #[error("Scores length ({scores}) does not match tokens length ({tokens})")]
     ScoreMismatch { scores: usize, tokens: usize },
+    #[error("Failed to build added-token matcher: {0}")]
+    AddedTokensError(#[from] aho_corasick::BuildError),
 }
 
 /// One symbol in the working sequence: a slice of the normalized text plus
@@ -178,9 +180,9 @@ impl SpmTokenizer {
     /// is normalized and merged like ordinary content, so the model sees a handful
     /// of fragments where its chat template promised one token — silently, since the
     /// ids stay in range and decode back to the same string.
-    pub fn with_added_tokens(mut self, map: &FxHashMap<String, u32>) -> Self {
-        self.added = super::added::AddedTokens::new(map);
-        self
+    pub fn with_added_tokens(mut self, map: &FxHashMap<String, u32>) -> Result<Self, SpmError> {
+        self.added = super::added::AddedTokens::new(map)?;
+        Ok(self)
     }
 
     /// Set SentencePiece `add_dummy_prefix` (GGUF `tokenizer.ggml.add_space_prefix`).
@@ -578,7 +580,8 @@ mod tests {
         map.insert("<bos>".to_string(), 2);
         let with_matcher = SpmTokenizer::new(tokens, scores, None, None)
             .unwrap()
-            .with_added_tokens(&map);
+            .with_added_tokens(&map)
+            .unwrap();
         assert!(with_matcher.encode("").is_empty());
     }
 
@@ -633,7 +636,8 @@ mod tests {
         map.insert("<eos>".to_string(), 1);
         let t = SpmTokenizer::new(tokens, scores, None, None)
             .unwrap()
-            .with_added_tokens(&map);
+            .with_added_tokens(&map)
+            .unwrap();
 
         assert_eq!(
             t.encode("<bos>hello world<eos>"),

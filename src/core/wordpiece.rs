@@ -8,6 +8,14 @@
 
 use super::tokenize::{Tokenize, TokenizeError};
 use std::collections::HashMap;
+use thiserror::Error;
+
+/// Errors from building a [`WordPieceTokenizer`].
+#[derive(Error, Debug)]
+pub enum WordPieceError {
+    #[error("Failed to build added-token matcher: {0}")]
+    AddedTokensError(#[from] aho_corasick::BuildError),
+}
 
 /// WordPiece tokenizer compatible with BERT-family models.
 ///
@@ -128,9 +136,12 @@ impl WordPieceTokenizer {
     }
 
     /// Attach added tokens to recognize in the input during encoding.
-    pub fn with_added_tokens(mut self, map: &rustc_hash::FxHashMap<String, u32>) -> Self {
-        self.added = super::added::AddedTokens::new(map);
-        self
+    pub fn with_added_tokens(
+        mut self,
+        map: &rustc_hash::FxHashMap<String, u32>,
+    ) -> Result<Self, WordPieceError> {
+        self.added = super::added::AddedTokens::new(map)?;
+        Ok(self)
     }
 
     /// Set ids of `special=true` added tokens to drop on decode (HF default).

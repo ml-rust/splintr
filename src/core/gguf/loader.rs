@@ -92,7 +92,8 @@ fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
 
     let eos_token_id = vocab.eos_token_id.unwrap_or(0);
     let backend = Backend::WordPiece(
-        WordPieceTokenizer::new(tokens, unk_token_id, 200, do_lower_case).with_added_tokens(&named),
+        WordPieceTokenizer::new(tokens, unk_token_id, 200, do_lower_case)
+            .with_added_tokens(&named)?,
     );
     // No boundary template: BERT wraps with `[CLS]`/`[SEP]`, and `add_bos_token`
     // / `add_eos_token` are not what these files use to say so.
@@ -121,7 +122,7 @@ fn build_unigram(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
             .with_normalizer(normalizer)
             .with_prefix_space(prefix_space)
             .with_remove_extra_whitespaces(remove_extra_whitespaces(&vocab))
-            .with_added_tokens(&specials),
+            .with_added_tokens(&specials)?,
     );
 
     Ok(AnyTokenizer::new(
@@ -146,7 +147,7 @@ fn build_spm(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
     let backend = Backend::Spm(
         SpmTokenizer::new(tokens, scores, None, None)?
             .with_prefix_space(add_space_prefix(&vocab, true))
-            .with_added_tokens(&specials),
+            .with_added_tokens(&specials)?,
     );
 
     Ok(AnyTokenizer::new(

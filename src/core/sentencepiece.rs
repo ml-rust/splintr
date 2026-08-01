@@ -16,6 +16,8 @@ pub enum SentencePieceError {
     ScoreMismatch { scores: usize, tokens: usize },
     #[error("Decoding error: token ID {0} out of range")]
     InvalidTokenId(u32),
+    #[error("Failed to build added-token matcher: {0}")]
+    AddedTokensError(#[from] aho_corasick::BuildError),
 }
 
 /// SentencePiece-compatible unigram tokenizer.
@@ -132,9 +134,12 @@ impl SentencePieceTokenizer {
     }
 
     /// Attach added tokens to recognize in the input during encoding.
-    pub fn with_added_tokens(mut self, map: &rustc_hash::FxHashMap<String, u32>) -> Self {
-        self.added = super::added::AddedTokens::new(map);
-        self
+    pub fn with_added_tokens(
+        mut self,
+        map: &rustc_hash::FxHashMap<String, u32>,
+    ) -> Result<Self, SentencePieceError> {
+        self.added = super::added::AddedTokens::new(map)?;
+        Ok(self)
     }
 
     /// Set ids of `special=true` added tokens to drop on decode (HF default).

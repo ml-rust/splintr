@@ -5,6 +5,7 @@ use thiserror::Error;
 use super::super::sentencepiece::SentencePieceError;
 use super::super::spm::SpmError;
 use super::super::tokenizer::TokenizerError;
+use super::super::wordpiece::WordPieceError;
 
 /// Errors from [`from_gguf_vocab`](super::from_gguf_vocab).
 ///
@@ -39,4 +40,6 @@ pub enum GgufVocabError {
     SentencePiece(#[from] SentencePieceError),
     #[error(transparent)]
     Spm(#[from] SpmError),
+    #[error(transparent)]
+    WordPiece(#[from] WordPieceError),
 }

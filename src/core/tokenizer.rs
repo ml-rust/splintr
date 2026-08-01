@@ -1,4 +1,3 @@
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use lru::LruCache;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
@@ -13,22 +12,10 @@ use thiserror::Error;
 #[cfg(feature = "pcre2")]
 use pcre2::bytes::Regex as Pcre2Regex;
 
+use super::added::AddedTokens;
 use super::bpe::{byte_pair_encode, byte_pair_encode_with_ranks};
 use super::byte_level::{byte_level_decode_bytes, byte_level_encode};
 use super::vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, VocabError};
-
-/// Build the special/added-token automaton with leftmost-longest semantics, so a
-/// longer added token (e.g. a 24-space run) wins over a shorter one (a 2-space
-/// run) that starts at the same position — matching HuggingFace's added-token
-/// matching. Default `AhoCorasick` (Standard) would instead report the
-/// earliest-ending match, splitting the run into several short tokens.
-fn build_special_matcher<S: AsRef<[u8]>>(
-    patterns: &[S],
-) -> Result<AhoCorasick, aho_corasick::BuildError> {
-    AhoCorasickBuilder::new()
-        .match_kind(MatchKind::LeftmostLongest)
-        .build(patterns)
-}
 
 #[derive(Error, Debug)]
 pub enum TokenizerError {
@@ -469,8 +456,9 @@ pub struct Tokenizer {
     decoder: FxHashMap<u32, Vec<u8>>,
     special_tokens: FxHashMap<String, u32>,
     special_tokens_decoder: FxHashMap<u32, String>,
-    special_token_strings: Vec<String>,
-    regex: RegexBackend,
+    /// Behind an `Arc` so cloning a tokenizer shares the compiled regex
+    /// instead of recompiling it (and re-running JIT on the pcre2 backend).
+    regex: Arc<RegexBackend>,
     pattern: String,
     /// Pre-tokenizer expressions applied AFTER [`Tokenizer::regex`], in order —
     /// llama.cpp's `regex_exprs` list beyond its first entry (see [`subdivide`]).
@@ -483,7 +471,10 @@ pub struct Tokenizer {
     /// Source expressions for [`Tokenizer::chain`], kept so switching backend or
     /// JIT recompiles the later passes the same way it recompiles the first.
     chain_patterns: Arc<[String]>,
-    special_matcher: Option<AhoCorasick>,
+    /// Special-token matcher shared with the SentencePiece/SPM/WordPiece
+    /// backends (see [`super::added::AddedTokens`]) — leftmost-longest
+    /// Aho-Corasick over `special_tokens`, `None` when it's empty.
+    special_matcher: Option<AddedTokens>,
     chunk_cache: Mutex<LruCache<u64, Vec<u32>>>,
     use_byte_level: bool,
     use_sentencepiece: bool,
@@ -693,18 +684,14 @@ impl Tokenizer {
             .collect();
 
         // Compile regex with regexr (default backend)
-        let regex = compile_pattern(pattern, false, true)?;
+        let regex = Arc::new(compile_pattern(pattern, false, true)?);
 
-        // Build Aho-Corasick automaton for special tokens
-        let special_token_strings: Vec<String> = special_tokens.keys().cloned().collect();
-        let special_matcher = if special_token_strings.is_empty() {
-            None
-        } else {
-            Some(build_special_matcher(&special_token_strings)?)
-        };
+        // Build the special-token matcher (shared with the other backends).
+        let special_matcher = AddedTokens::new(&special_tokens)?;
 
         // Initialize LRU cache
-        let cache_size_nz = NonZeroUsize::new(cache_size.max(1)).unwrap();
+        // `.max(1)` already guarantees a nonzero value; the fallback is unreachable.
+        let cache_size_nz = NonZeroUsize::new(cache_size.max(1)).unwrap_or(NonZeroUsize::MIN);
         let chunk_cache = Mutex::new(LruCache::new(cache_size_nz));
 
         Ok(Self {
@@ -713,7 +700,6 @@ impl Tokenizer {
             decoder,
             special_tokens,
             special_tokens_decoder,
-            special_token_strings,
             regex,
             pattern: pattern.to_string(),
             chain: Arc::from(Vec::new()),
@@ -819,7 +805,7 @@ impl Tokenizer {
     #[cfg(feature = "pcre2")]
     pub fn pcre2(mut self, use_pcre2: bool) -> Result<Self, TokenizerError> {
         self.use_pcre2 = use_pcre2;
-        self.regex = compile_pattern(&self.pattern, use_pcre2, self.use_jit)?;
+        self.regex = Arc::new(compile_pattern(&self.pattern, use_pcre2, self.use_jit)?);
         self.rebuild_chain()?;
         Ok(self)
     }
@@ -857,7 +843,7 @@ impl Tokenizer {
     #[cfg(feature = "pcre2")]
     pub fn jit(mut self, use_jit: bool) -> Result<Self, TokenizerError> {
         self.use_jit = use_jit;
-        self.regex = compile_pattern(&self.pattern, self.use_pcre2, use_jit)?;
+        self.regex = Arc::new(compile_pattern(&self.pattern, self.use_pcre2, use_jit)?);
         self.rebuild_chain()?;
         Ok(self)
     }
@@ -866,7 +852,7 @@ impl Tokenizer {
     #[cfg(not(feature = "pcre2"))]
     pub fn jit(mut self, use_jit: bool) -> Result<Self, TokenizerError> {
         self.use_jit = use_jit;
-        self.regex = compile_pattern(&self.pattern, self.use_pcre2, use_jit)?;
+        self.regex = Arc::new(compile_pattern(&self.pattern, self.use_pcre2, use_jit)?);
         self.rebuild_chain()?;
         Ok(self)
     }
@@ -963,16 +949,13 @@ impl Tokenizer {
         // Compile regex
         let regex = RegexBuilder::new(pattern).jit(true).build()?;
 
-        // Build Aho-Corasick automaton for special tokens
-        let special_token_strings: Vec<String> = special_tokens.keys().cloned().collect();
-        let special_matcher = if special_token_strings.is_empty() {
-            None
-        } else {
-            Some(build_special_matcher(&special_token_strings)?)
-        };
+        // Build the special-token matcher (shared with the other backends).
+        let special_matcher = AddedTokens::new(&special_tokens)?;
 
         // Initialize LRU cache
-        let cache_size_nz = NonZeroUsize::new(DEFAULT_CACHE_SIZE.max(1)).unwrap();
+        // `.max(1)` already guarantees a nonzero value; the fallback is unreachable.
+        let cache_size_nz =
+            NonZeroUsize::new(DEFAULT_CACHE_SIZE.max(1)).unwrap_or(NonZeroUsize::MIN);
         let chunk_cache = Mutex::new(LruCache::new(cache_size_nz));
 
         Ok(Self {
@@ -981,8 +964,7 @@ impl Tokenizer {
             decoder,
             special_tokens,
             special_tokens_decoder,
-            special_token_strings,
-            regex: RegexBackend::Regexr(Box::new(regex)),
+            regex: Arc::new(RegexBackend::Regexr(Box::new(regex))),
             pattern: pattern.to_string(),
             chain: Arc::from(Vec::new()),
             chain_patterns: Arc::from(Vec::new()),
@@ -1275,39 +1257,11 @@ impl Tokenizer {
 
     /// Encode text with special token handling.
     ///
-    /// Special tokens in the input are encoded directly without BPE.
+    /// Special tokens in the input are encoded directly without BPE, via the
+    /// same [`AddedTokens`] matcher the SentencePiece/SPM/WordPiece backends
+    /// use.
     pub fn encode_with_special(&self, text: &str) -> Vec<u32> {
-        let Some(ref special_matcher) = self.special_matcher else {
-            return self.encode_ordinary(text);
-        };
-
-        let text_bytes = text.as_bytes();
-        let mut result = Vec::new();
-        let mut last_end = 0;
-
-        for m in special_matcher.find_iter(text_bytes) {
-            let start = m.start();
-            let end = m.end();
-
-            if start > last_end {
-                let slice = &text[last_end..start];
-                result.extend(self.encode_ordinary(slice));
-            }
-
-            let pattern_idx = m.pattern().as_usize();
-            let token_str = &self.special_token_strings[pattern_idx];
-            if let Some(&rank) = self.special_tokens.get(token_str) {
-                result.push(rank);
-            }
-
-            last_end = end;
-        }
-
-        if last_end < text.len() {
-            result.extend(self.encode_ordinary(&text[last_end..]));
-        }
-
-        result
+        AddedTokens::dispatch(&self.special_matcher, text, |gap| self.encode_ordinary(gap))
     }
 
     /// Decode token IDs back to bytes.
@@ -1484,38 +1438,22 @@ impl Tokenizer {
 
 impl Clone for Tokenizer {
     fn clone(&self) -> Self {
-        // Clone the regex backend with the same JIT setting
-        let regex = match &self.regex {
-            RegexBackend::Regexr(_) => {
-                let regex = RegexBuilder::new(&self.pattern)
-                    .jit(self.use_jit)
-                    .build()
-                    .unwrap();
-                RegexBackend::Regexr(Box::new(regex))
-            }
-            #[cfg(feature = "pcre2")]
-            RegexBackend::Pcre2(_) => {
-                let mut regex_builder = pcre2::bytes::RegexBuilder::new();
-                if self.use_jit {
-                    regex_builder.jit_if_available(true);
-                }
-                regex_builder.utf(true);
-                regex_builder.ucp(true);
-                let regex = regex_builder.build(&self.pattern).unwrap();
-                RegexBackend::Pcre2(regex)
-            }
-        };
+        // The compiled regex is immutable once built (every backend/JIT toggle
+        // replaces the `Arc` rather than mutating through it), so a clone
+        // shares it instead of recompiling — and, on the pcre2 path, re-JITing.
+        let regex = Arc::clone(&self.regex);
 
-        // Create a new empty cache (caches are not shared)
-        let cache_size_nz = NonZeroUsize::new(self.cache_size.max(1)).unwrap();
+        // Create a new empty cache (caches are not shared).
+        // `.max(1)` guarantees the value is already >= 1, so `new` cannot
+        // fail; `unwrap_or` avoids an unwrap on the (unreachable) None arm.
+        let cache_size_nz = NonZeroUsize::new(self.cache_size.max(1)).unwrap_or(NonZeroUsize::MIN);
         let chunk_cache = Mutex::new(LruCache::new(cache_size_nz));
 
-        // Rebuild special matcher
-        let special_matcher = if self.special_token_strings.is_empty() {
-            None
-        } else {
-            Some(build_special_matcher(&self.special_token_strings).unwrap())
-        };
+        // Clone the already-built matcher directly: `AddedTokens` is `Clone`,
+        // rebuilding here would mean this infallible `Clone` impl would need to
+        // swallow a hypothetical build failure (or panic on it), and it's
+        // strictly cheaper to clone the automaton than to rebuild it.
+        let special_matcher = self.special_matcher.clone();
 
         Self {
             encoder: self.encoder.clone(),
@@ -1523,7 +1461,6 @@ impl Clone for Tokenizer {
             decoder: self.decoder.clone(),
             special_tokens: self.special_tokens.clone(),
             special_tokens_decoder: self.special_tokens_decoder.clone(),
-            special_token_strings: self.special_token_strings.clone(),
             regex,
             pattern: self.pattern.clone(),
             // The later passes are immutable once compiled, so a clone shares

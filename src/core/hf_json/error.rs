@@ -5,6 +5,7 @@ use thiserror::Error;
 use super::super::policy::PolicyError;
 use super::super::sentencepiece::SentencePieceError;
 use super::super::tokenizer::TokenizerError;
+use super::super::wordpiece::WordPieceError;
 
 /// Errors from loading a HuggingFace `tokenizer.json`.
 #[derive(Debug, Error)]
@@ -33,6 +34,8 @@ pub enum HfJsonError {
     Tokenizer(#[from] TokenizerError),
     #[error(transparent)]
     SentencePiece(#[from] SentencePieceError),
+    #[error(transparent)]
+    WordPiece(#[from] WordPieceError),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }

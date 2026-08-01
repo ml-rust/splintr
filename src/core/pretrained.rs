@@ -271,7 +271,7 @@ fn spm_from_vocab(
 
     let eos = eos_token_id(vocab);
     let tokenizer = SpmTokenizer::new(pieces, scores, bos_token_id(vocab), Some(eos))?
-        .with_added_tokens(&special);
+        .with_added_tokens(&special)?;
 
     Ok(AnyTokenizer::new(
         Backend::Spm(tokenizer),

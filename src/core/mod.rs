@@ -80,4 +80,4 @@ pub use vocab::{
 pub use whisper::{
     whisper_special_tokens, WhisperVariant, WHISPER_LANGUAGES_V1V2, WHISPER_LANGUAGES_V3,
 };
-pub use wordpiece::WordPieceTokenizer;
+pub use wordpiece::{WordPieceError, WordPieceTokenizer};
