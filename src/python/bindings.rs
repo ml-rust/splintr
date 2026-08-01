@@ -585,7 +585,7 @@ impl PySentencePieceTokenizer {
     #[pyo3(signature = (tokens, scores, eos_token_id, bos_token_id=None))]
     fn new(
         tokens: Vec<String>,
-        scores: Vec<f32>,
+        scores: Vec<f64>,
         eos_token_id: u32,
         bos_token_id: Option<u32>,
     ) -> PyResult<Self> {

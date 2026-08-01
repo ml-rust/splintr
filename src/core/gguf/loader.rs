@@ -109,7 +109,15 @@ fn build_unigram(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
     // name through the policy. Neither substitutes for the other.
     let specials = special_token_map(&vocab, &vocab.tokens);
     let tokens = std::mem::take(&mut vocab.tokens);
-    let scores = vocab.scores.take().unwrap_or_default();
+    // GGUF stores scores as `f32`; the widening is exact and lets the Viterbi
+    // compare partial sums at the `f64` precision HF `tokenizers` uses.
+    let scores: Vec<f64> = vocab
+        .scores
+        .take()
+        .unwrap_or_default()
+        .into_iter()
+        .map(f64::from)
+        .collect();
     let eos_token_id = vocab.eos_token_id.unwrap_or(2);
     let prefix_space = unigram_prefix_space(&vocab);
     let normalizer = unigram_normalizer(vocab.precompiled_charsmap.as_deref());

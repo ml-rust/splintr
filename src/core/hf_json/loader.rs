@@ -234,7 +234,10 @@ fn build_unigram(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
             .first()
             .and_then(Value::as_str)
             .ok_or(HfJsonError::MissingField("model.vocab[*][0] = token"))?;
-        let score = pair.get(1).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+        // Kept at full `f64` width: HF `tokenizers` reads the same JSON number
+        // into an `f64` and its Viterbi compares partial sums at that precision,
+        // so narrowing here would reorder equal-scoring segmentations.
+        let score = pair.get(1).and_then(Value::as_f64).unwrap_or(0.0);
         tokens.push(token.to_string());
         scores.push(score);
     }

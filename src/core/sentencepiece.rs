@@ -44,7 +44,14 @@ pub struct SentencePieceTokenizer {
     id_to_token: Vec<String>,
     /// Per-token Unigram scores (log-probs); Viterbi maximizes their sum over the
     /// chosen segmentation.
-    scores: Vec<f32>,
+    ///
+    /// `f64`, not `f32`, because the reference implementations are: HuggingFace
+    /// `tokenizers` stores `Vec<(String, f64)>` and accumulates `Node::score` /
+    /// `Node::backtrace_score` in `f64`, and a `tokenizer.json` score is a JSON
+    /// double. Narrowing to `f32` perturbs partial path sums by ~1e-7, which is
+    /// enough to reorder two segmentations whose exact scores are equal — see
+    /// [`viterbi_piece`](Self::viterbi_piece).
+    scores: Vec<f64>,
     /// BOS token ID
     bos_token_id: Option<u32>,
     /// EOS token ID
@@ -56,7 +63,7 @@ pub struct SentencePieceTokenizer {
     /// Longest token length in chars (bounds the Viterbi inner loop).
     max_piece_chars: usize,
     /// Minimum token score (basis for the unknown-piece penalty).
-    min_score: f32,
+    min_score: f64,
     /// Ordered normalizer pipeline applied before pre-tokenization.
     normalizer: super::normalizer::Normalizer,
     /// Metaspace `add_prefix_space`: mark the start of the input with `▁` when
@@ -81,7 +88,7 @@ impl SentencePieceTokenizer {
     /// * `eos_token_id` - End-of-sequence token ID
     pub fn new(
         tokens: Vec<String>,
-        scores: Vec<f32>,
+        scores: Vec<f64>,
         bos_token_id: Option<u32>,
         eos_token_id: u32,
     ) -> Result<Self, SentencePieceError> {
@@ -114,7 +121,7 @@ impl SentencePieceTokenizer {
         let min_score = scores
             .iter()
             .copied()
-            .fold(f32::INFINITY, f32::min)
+            .fold(f64::INFINITY, f64::min)
             .min(0.0);
 
         Ok(Self {
@@ -269,6 +276,32 @@ impl SentencePieceTokenizer {
     }
 
     /// Append the maximum-score Unigram segmentation of `chars` to `tokens`.
+    ///
+    /// The lattice sweep mirrors HuggingFace `tokenizers`'
+    /// `unigram::Lattice::viterbi` exactly, and the correspondence is load-bearing
+    /// on two points:
+    ///
+    /// * **Candidate order and the strict `>`.** HF relaxes each position over
+    ///   `end_nodes[pos]` in *insertion* order — `populate_nodes` walks
+    ///   `begin_pos` ascending and the trie yields pieces in ascending length, so
+    ///   the incoming edges of a position arrive sorted by start position, with
+    ///   the `<unk>` edge last among those from the same start. It keeps the first
+    ///   of two equal-scoring predecessors (`if best_node.is_none() || score >
+    ///   best_score`). The loops below enumerate `start` ascending, then `end`
+    ///   ascending with the unknown-char edge appended after the known ones, and
+    ///   likewise update on strictly-greater — so an exact tie resolves to the
+    ///   same edge.
+    /// * **`f64` accumulation.** HF carries `backtrace_score` in `f64`. Doing the
+    ///   same here is not cosmetic: accumulating in `f32` diverges on real input.
+    ///   Measured on `BAAI/bge-m3`, `"、hellohellohello"` has two segmentations
+    ///   over an identical piece multiset — `h|ello|hel|loh|ello` and
+    ///   `hel|loh|ello|h|ello` — hence an exactly equal total (-54.815895557403564
+    ///   in `f64`). In `f64` the tie survives to the comparison and the first
+    ///   candidate wins, matching HF; in `f32` the ~1e-7 rounding of the partial
+    ///   sums makes the later candidate compare strictly greater and the
+    ///   segmentation flips. Replaying this DP in Python over 13k fuzz strings,
+    ///   `f64` accumulation reproduced HF on every case and `f32` on all but that
+    ///   one family.
     fn viterbi_piece(&self, chars: &[char], tokens: &mut Vec<u32>) {
         let n = chars.len();
         if n == 0 {
@@ -279,13 +312,13 @@ impl SentencePieceTokenizer {
         // reach position i; `back[i]` = (start, piece) of the chosen edge into i.
         // A piece is Some(id) for a vocab token, or None for an unknown char.
         let unk_penalty = self.min_score - 10.0; // SentencePiece's kUnkPenalty
-        let mut best = vec![f32::NEG_INFINITY; n + 1];
+        let mut best = vec![f64::NEG_INFINITY; n + 1];
         let mut back: Vec<(usize, Option<u32>)> = vec![(0, None); n + 1];
         best[0] = 0.0;
 
         let mut buf = String::with_capacity(self.max_piece_chars * 4);
         for start in 0..n {
-            if best[start] == f32::NEG_INFINITY {
+            if best[start] == f64::NEG_INFINITY {
                 continue;
             }
             // Known-token edges starting at `start`.
@@ -723,6 +756,90 @@ mod tests {
         assert_eq!(parse_byte_fallback(""), None);
         assert_eq!(parse_byte_fallback("hello"), None);
         assert_eq!(parse_byte_fallback("<>"), None);
+    }
+
+    /// Two segmentations over an identical piece multiset score exactly equal, so
+    /// the answer is decided by which candidate the lattice keeps — and that in
+    /// turn depends on the width the partial sums are accumulated at.
+    ///
+    /// The vocabulary is the 10 pieces of `BAAI/bge-m3` that the failing lattice
+    /// actually uses, carrying their real scores (all exactly representable in
+    /// `f32`, so only the *accumulation* width is under test). Expectations come
+    /// from HuggingFace `tokenizers` 0.22.1 run on a hand-built Unigram
+    /// `tokenizer.json` holding exactly these ten entries: `"、hellohellohello"`
+    /// -> `['▁','、','h','ello','hel','loh','ello']`. Accumulating in `f32`
+    /// instead yields `['▁','、','hel','loh','ello','h','ello']` — same pieces,
+    /// different boundaries, different ids reaching the model.
+    #[test]
+    fn an_exact_score_tie_resolves_the_way_huggingface_resolves_it() {
+        let entries: [(&str, f64); 10] = [
+            ("<unk>", 0.0),
+            ("▁", -3.9299705028533936),
+            ("、", -6.610896110534668),
+            ("h", -7.701241970062256),
+            ("e", -5.701941967010498),
+            ("l", -7.762022495269775),
+            ("o", -6.417782306671143),
+            ("hel", -11.134947776794434),
+            ("ello", -11.696972846984863),
+            ("loh", -12.585760116577148),
+        ];
+        let tok = SentencePieceTokenizer::new(
+            entries.iter().map(|(t, _)| t.to_string()).collect(),
+            entries.iter().map(|(_, s)| *s).collect(),
+            None,
+            0,
+        )
+        .unwrap();
+
+        // ▁ 、 h ello hel loh ello
+        assert_eq!(tok.encode("、hellohellohello"), vec![1, 2, 3, 8, 7, 9, 8]);
+        // Neighbouring lengths never tie, and must stay exactly as they were.
+        assert_eq!(tok.encode("、hello"), vec![1, 2, 3, 8]);
+        assert_eq!(tok.encode("、hellohello"), vec![1, 2, 7, 9, 8]);
+        assert_eq!(
+            tok.encode("、hellohellohellohello"),
+            vec![1, 2, 7, 9, 8, 7, 9, 8]
+        );
+    }
+
+    /// Which of two equal-scoring predecessors a position keeps: the one that
+    /// starts *earliest* (the longer piece). HuggingFace relaxes a position over
+    /// its incoming edges in insertion order — `begin_pos` ascending — and updates
+    /// only on strictly greater, so the first one seen survives.
+    ///
+    /// Expectations measured on `tokenizers` 0.22.1 with a Unigram
+    /// `tokenizer.json` carrying exactly this vocabulary (no pre-tokenizer, hence
+    /// `with_prefix_space(false)` here): `"aaa"` -> `a|aa`, `"aaaa"` -> `aa|aa`,
+    /// `"aaaaa"` -> `a|aa|aa`, `"aabaa"` -> `a|ab|aa`. In `"aaa"` both `a|aa` and
+    /// `aa|a` total -3; the edge from position 1 is enumerated before the one from
+    /// position 2, so `a|aa` wins.
+    #[test]
+    fn equal_scoring_predecessors_resolve_to_the_earliest_start() {
+        let entries: [(&str, f64); 6] = [
+            ("<unk>", 0.0),
+            ("a", -1.0),
+            ("aa", -2.0),
+            ("b", -1.0),
+            ("ab", -2.0),
+            ("ba", -2.0),
+        ];
+        let tok = SentencePieceTokenizer::new(
+            entries.iter().map(|(t, _)| t.to_string()).collect(),
+            entries.iter().map(|(_, s)| *s).collect(),
+            None,
+            0,
+        )
+        .unwrap()
+        .with_prefix_space(false);
+
+        assert_eq!(tok.encode("aa"), vec![2]);
+        assert_eq!(tok.encode("aaa"), vec![1, 2]);
+        assert_eq!(tok.encode("aaaa"), vec![2, 2]);
+        assert_eq!(tok.encode("aaaaa"), vec![1, 2, 2]);
+        assert_eq!(tok.encode("aab"), vec![1, 4]);
+        assert_eq!(tok.encode("baa"), vec![3, 2]);
+        assert_eq!(tok.encode("aabaa"), vec![1, 4, 2]);
     }
 
     #[test]
