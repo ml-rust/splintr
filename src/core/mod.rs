@@ -52,6 +52,7 @@ mod vocab;
 pub mod whisper;
 pub mod wordpiece;
 
+pub use added::{AddedToken, AddedTokenSet};
 pub use any_tokenizer::{AnyTokenizer, Backend};
 pub use bpe::byte_pair_encode;
 pub use byte_level::{byte_level_decode, byte_level_decode_bytes, byte_level_encode};

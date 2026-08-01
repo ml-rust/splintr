@@ -235,7 +235,9 @@ pub(super) fn parse(root: &Value) -> Result<SpecialPolicy, PolicyError> {
         // falls back to `unk_id`/0 because it only drives decode-skipping, which
         // is the wrong answer for a caller asking what EOS *is*.
         eos_id: find_added_token(root, EOS_CANDIDATES),
-        named: parse_special_tokens(root),
+        // Name → id only: the `lstrip`/`rstrip` flags belong to the matcher that
+        // splits the input, not to a lookup that answers "what id is `[CLS]`?".
+        named: parse_special_tokens(root).into_id_map(),
     })
 }
 

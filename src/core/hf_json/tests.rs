@@ -445,3 +445,32 @@ fn unknown_pretokenizer_is_ok_when_split_is_anchored() {
     let tok = from_json_bytes(json.as_bytes()).expect("loads with anchored split");
     assert_eq!(tok.family(), "BPE");
 }
+
+#[test]
+fn added_token_lstrip_is_read_from_json_and_reaches_the_matcher() {
+    // `<mask>` declares `lstrip: true` and `<pad>` does not — the shape of every
+    // XLM-RoBERTa-family vocabulary (bge-m3 and friends). The space before
+    // `<mask>` must be absorbed into it, while the one before `<pad>` survives
+    // as its own piece, so the flags can only be right if they are carried per
+    // token from the json all the way into the shared matcher.
+    //
+    // Reference (`tokenizers` 0.22.1, bge-m3, add_special_tokens=False):
+    // "end. <mask>x" -> [3564, 5, 250001, 1022]; splintr used to emit the lone
+    // `▁` piece (id 6) between the two.
+    let json = r#"{
+        "added_tokens": [
+            {"id": 10, "content": "<mask>", "special": true, "lstrip": true, "rstrip": false},
+            {"id": 11, "content": "<pad>", "special": true, "lstrip": false, "rstrip": false}
+        ],
+        "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false},
+        "model": {"type": "BPE", "vocab": {"a": 0, "Ġ": 1, "b": 2}, "merges": []}
+    }"#;
+    let tok = from_json_bytes(json.as_bytes()).expect("bpe ok");
+    let Backend::Bpe(t) = tok.backend() else {
+        panic!("expected BPE backend");
+    };
+    // lstrip: the space between "a" and <mask> never becomes token 1.
+    assert_eq!(t.encode("a <mask>b"), vec![0, 10, 2]);
+    // Same input shape, unflagged token: the space stays.
+    assert_eq!(t.encode("a <pad>b"), vec![0, 1, 11, 2]);
+}

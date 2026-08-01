@@ -248,8 +248,15 @@ impl SpmTokenizer {
     /// is normalized and merged like ordinary content, so the model sees a handful
     /// of fragments where its chat template promised one token — silently, since the
     /// ids stay in range and decode back to the same string.
-    pub fn with_added_tokens(mut self, map: &FxHashMap<String, u32>) -> Result<Self, SpmError> {
-        self.added = super::added::AddedTokens::new(map)?;
+    ///
+    /// Takes anything convertible into an [`AddedTokenSet`](super::added::AddedTokenSet),
+    /// so a caller with no `lstrip`/`rstrip` flags to declare (GGUF, a bundled
+    /// vocabulary, a test) can still pass a plain name→id map.
+    pub fn with_added_tokens(
+        mut self,
+        tokens: impl Into<super::added::AddedTokenSet>,
+    ) -> Result<Self, SpmError> {
+        self.added = super::added::AddedTokens::new(&tokens.into())?;
         Ok(self)
     }
 

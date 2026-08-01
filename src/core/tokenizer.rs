@@ -12,7 +12,7 @@ use thiserror::Error;
 #[cfg(feature = "pcre2")]
 use pcre2::bytes::Regex as Pcre2Regex;
 
-use super::added::AddedTokens;
+use super::added::{AddedTokenSet, AddedTokens};
 use super::bpe::{byte_pair_encode, byte_pair_encode_with_ranks};
 use super::byte_level::{byte_level_decode_bytes, byte_level_encode};
 use super::policy::{PolicyError, SpecialMode};
@@ -506,11 +506,13 @@ impl Tokenizer {
     ///
     /// # Arguments
     /// * `encoder` - Map of byte sequences to token IDs
-    /// * `special_tokens` - Map of special token strings to token IDs
+    /// * `special_tokens` - The added tokens: an [`AddedTokenSet`] when the
+    ///   `lstrip`/`rstrip` flags matter (a `tokenizer.json`), or a plain name→id
+    ///   map when they cannot be declared at all (tiktoken vocabularies, GGUF)
     /// * `pattern` - Regex pattern for tokenization
     pub fn new(
         encoder: FxHashMap<Vec<u8>, u32>,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
         pattern: &str,
     ) -> Result<Self, TokenizerError> {
         Self::with_options(encoder, special_tokens, pattern, DEFAULT_CACHE_SIZE, false)
@@ -522,7 +524,7 @@ impl Tokenizer {
     /// that use a byte-to-unicode mapping for handling arbitrary byte sequences.
     pub fn new_byte_level(
         encoder: FxHashMap<Vec<u8>, u32>,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
         pattern: &str,
     ) -> Result<Self, TokenizerError> {
         Self::with_options(encoder, special_tokens, pattern, DEFAULT_CACHE_SIZE, true)
@@ -543,7 +545,7 @@ impl Tokenizer {
     /// pieces, then cuts digit runs into groups of three.
     pub fn new_byte_level_chain(
         encoder: FxHashMap<Vec<u8>, u32>,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
         patterns: &[&str],
     ) -> Result<Self, TokenizerError> {
         let (first, rest) = Self::split_chain_patterns(patterns)?;
@@ -561,7 +563,7 @@ impl Tokenizer {
     /// ByteLevel encoding.
     pub fn new_chain(
         encoder: FxHashMap<Vec<u8>, u32>,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
         patterns: &[&str],
     ) -> Result<Self, TokenizerError> {
         let (first, rest) = Self::split_chain_patterns(patterns)?;
@@ -612,7 +614,7 @@ impl Tokenizer {
     /// that use ▁ (U+2581) as word boundary marker. During decoding, ▁ is converted to space.
     pub fn new_sentencepiece(
         encoder: FxHashMap<Vec<u8>, u32>,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
         pattern: &str,
     ) -> Result<Self, TokenizerError> {
         Self::with_full_options(
@@ -628,7 +630,7 @@ impl Tokenizer {
     /// Create a new tokenizer with custom cache size.
     pub fn with_cache_size(
         encoder: FxHashMap<Vec<u8>, u32>,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
         pattern: &str,
         cache_size: usize,
     ) -> Result<Self, TokenizerError> {
@@ -645,7 +647,7 @@ impl Tokenizer {
     /// * `use_byte_level` - Enable ByteLevel encoding for GPT-2/Llama/DeepSeek style tokenizers
     pub fn with_options(
         encoder: FxHashMap<Vec<u8>, u32>,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
         pattern: &str,
         cache_size: usize,
         use_byte_level: bool,
@@ -671,7 +673,7 @@ impl Tokenizer {
     /// * `use_sentencepiece` - Enable SentencePiece mode (▁ → space during decode)
     pub fn with_full_options(
         encoder: FxHashMap<Vec<u8>, u32>,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
         pattern: &str,
         cache_size: usize,
         use_byte_level: bool,
@@ -679,16 +681,22 @@ impl Tokenizer {
     ) -> Result<Self, TokenizerError> {
         // Build decoder maps
         let decoder = build_decoder(&encoder);
-        let special_tokens_decoder: FxHashMap<u32, String> = special_tokens
-            .iter()
-            .map(|(k, v)| (*v, k.clone()))
-            .collect();
 
         // Compile regex with regexr (default backend)
         let regex = Arc::new(compile_pattern(pattern, false, true)?);
 
-        // Build the special-token matcher (shared with the other backends).
-        let special_matcher = AddedTokens::new(&special_tokens)?;
+        // Build the special-token matcher (shared with the other backends) from
+        // the declared set — the only place the `lstrip`/`rstrip` flags are
+        // consulted — then reduce the set to the plain name→id map the decode
+        // tables speak. Reducing *after* building means the flags never have to
+        // be carried in a second field that could drift out of step with it.
+        let added: AddedTokenSet = special_tokens.into();
+        let special_matcher = AddedTokens::new(&added)?;
+        let special_tokens = added.into_id_map();
+        let special_tokens_decoder: FxHashMap<u32, String> = special_tokens
+            .iter()
+            .map(|(k, v)| (*v, k.clone()))
+            .collect();
 
         // Initialize LRU cache
         // `.max(1)` already guarantees a nonzero value; the fallback is unreachable.
@@ -862,7 +870,7 @@ impl Tokenizer {
     pub fn from_file(
         vocab_path: &str,
         pattern: &str,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
         let encoder = load_tiktoken_bpe_file(vocab_path)?;
         Self::new(encoder, special_tokens, pattern)
@@ -872,7 +880,7 @@ impl Tokenizer {
     pub fn from_bytes(
         vocab_data: &[u8],
         pattern: &str,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
         let encoder = load_tiktoken_bpe(vocab_data)?;
         Self::new(encoder, special_tokens, pattern)
@@ -882,7 +890,7 @@ impl Tokenizer {
     pub fn from_bytes_byte_level(
         vocab_data: &[u8],
         pattern: &str,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
         let encoder = load_tiktoken_bpe(vocab_data)?;
         Self::new_byte_level(encoder, special_tokens, pattern)
@@ -893,7 +901,7 @@ impl Tokenizer {
     pub fn from_bytes_chain(
         vocab_data: &[u8],
         patterns: &[&str],
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
         let encoder = load_tiktoken_bpe(vocab_data)?;
         Self::new_chain(encoder, special_tokens, patterns)
@@ -904,7 +912,7 @@ impl Tokenizer {
     pub fn from_bytes_byte_level_chain(
         vocab_data: &[u8],
         patterns: &[&str],
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
         let encoder = load_tiktoken_bpe(vocab_data)?;
         Self::new_byte_level_chain(encoder, special_tokens, patterns)
@@ -917,7 +925,7 @@ impl Tokenizer {
     pub fn from_bytes_sentencepiece(
         vocab_data: &[u8],
         pattern: &str,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
         let encoder = load_tiktoken_bpe(vocab_data)?;
         Self::new_sentencepiece(encoder, special_tokens, pattern)
@@ -931,10 +939,20 @@ impl Tokenizer {
     pub fn from_bytes_sentencepiece_with_decoder(
         vocab_data: &[u8],
         pattern: &str,
-        special_tokens: FxHashMap<String, u32>,
+        special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
         use crate::core::vocab::load_tiktoken_bpe_with_decoder;
         let (encoder, mut decoder) = load_tiktoken_bpe_with_decoder(vocab_data)?;
+
+        // Compile regex
+        let regex = RegexBuilder::new(pattern).jit(true).build()?;
+
+        // Build the special-token matcher (shared with the other backends) from
+        // the declared set, then reduce it to the plain name→id map the decode
+        // tables speak — see `with_full_options`.
+        let added: AddedTokenSet = special_tokens.into();
+        let special_matcher = AddedTokens::new(&added)?;
+        let special_tokens = added.into_id_map();
 
         // Add special tokens to decoder
         for (token_str, id) in &special_tokens {
@@ -946,12 +964,6 @@ impl Tokenizer {
             .iter()
             .map(|(k, v)| (*v, k.clone()))
             .collect();
-
-        // Compile regex
-        let regex = RegexBuilder::new(pattern).jit(true).build()?;
-
-        // Build the special-token matcher (shared with the other backends).
-        let special_matcher = AddedTokens::new(&special_tokens)?;
 
         // Initialize LRU cache
         // `.max(1)` already guarantees a nonzero value; the fallback is unreachable.
@@ -1691,7 +1703,7 @@ mod tests {
     /// into, so a pass composition can be asserted as text rather than ids.
     fn pieces(patterns: &[&str], text: &str) -> Vec<String> {
         let tokenizer =
-            Tokenizer::new_byte_level_chain(FxHashMap::default(), FxHashMap::default(), patterns)
+            Tokenizer::new_byte_level_chain(FxHashMap::default(), AddedTokenSet::new(), patterns)
                 .expect("patterns compile");
         tokenizer
             .split_chunks(text)
@@ -1706,7 +1718,7 @@ mod tests {
     fn single_expression_list_keeps_the_original_split() {
         let one = Tokenizer::new_byte_level_chain(
             FxHashMap::default(),
-            FxHashMap::default(),
+            AddedTokenSet::new(),
             &[GPT2_PATTERN],
         )
         .expect("compiles");
@@ -1716,7 +1728,7 @@ mod tests {
         );
 
         let plain =
-            Tokenizer::new_byte_level(FxHashMap::default(), FxHashMap::default(), GPT2_PATTERN)
+            Tokenizer::new_byte_level(FxHashMap::default(), AddedTokenSet::new(), GPT2_PATTERN)
                 .expect("compiles");
         let text = "Hello, world! 1234\n\n  trailing";
         assert_eq!(one.split_chunks(text), plain.split_chunks(text));
@@ -1788,7 +1800,7 @@ mod tests {
     #[test]
     fn empty_pattern_list_is_refused() {
         assert!(matches!(
-            Tokenizer::new_byte_level_chain(FxHashMap::default(), FxHashMap::default(), &[]),
+            Tokenizer::new_byte_level_chain(FxHashMap::default(), AddedTokenSet::new(), &[]),
             Err(TokenizerError::EmptyPatternList)
         ));
     }
@@ -1798,7 +1810,7 @@ mod tests {
     fn toggling_jit_preserves_a_chained_split() {
         let patterns = [r"\p{N}", GPT2_PATTERN];
         let tokenizer =
-            Tokenizer::new_byte_level_chain(FxHashMap::default(), FxHashMap::default(), &patterns)
+            Tokenizer::new_byte_level_chain(FxHashMap::default(), AddedTokenSet::new(), &patterns)
                 .expect("compiles");
         let text = "abc 123";
         let before = tokenizer.split_chunks(text);
@@ -1812,7 +1824,7 @@ mod tests {
     fn cloning_preserves_a_chained_split() {
         let patterns = [r"\p{N}", GPT2_PATTERN];
         let tokenizer =
-            Tokenizer::new_byte_level_chain(FxHashMap::default(), FxHashMap::default(), &patterns)
+            Tokenizer::new_byte_level_chain(FxHashMap::default(), AddedTokenSet::new(), &patterns)
                 .expect("compiles");
         let text = "abc 123";
         assert_eq!(

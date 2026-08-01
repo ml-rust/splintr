@@ -2,9 +2,9 @@
 //! `pre_tokenizer`, `normalizer`, and `added_tokens`. These are backend-agnostic
 //! — the family-specific builders in [`super`] consume their output.
 
-use rustc_hash::FxHashMap;
 use serde_json::Value;
 
+use super::super::added::{AddedToken, AddedTokenSet};
 use super::super::normalizer::NormOp;
 use super::super::precompiled::Precompiled;
 use super::super::tokenizer::{GPT2_PATTERN, SENTENCEPIECE_PATTERN};
@@ -296,21 +296,35 @@ pub(super) fn parse_norm_ops(norm: Option<&Value>) -> Result<Vec<NormOp>, HfJson
     Ok(ops)
 }
 
-/// Collect **all** `added_tokens` into a name→id map.
+/// Collect **all** `added_tokens` into a content → [`AddedToken`] set.
 ///
 /// HuggingFace matches every added token during encoding — both `special` ones
 /// (`<|endoftext|>`) and non-special content tokens (e.g. gpt-neox's whitespace
 /// runs, deepseek's byte chars) — so the matcher must know all of them, not just
 /// the special-flagged ones.
-pub(in crate::core) fn parse_special_tokens(root: &Value) -> FxHashMap<String, u32> {
-    let mut specials = FxHashMap::default();
+///
+/// Each entry's `lstrip`/`rstrip` booleans are read here rather than assumed
+/// false: XLM-RoBERTa-family vocabularies (bge-m3, bge-reranker-v2-m3, and most
+/// multilingual embedding models) declare `<mask>` with `lstrip: true` while
+/// leaving it off on their four other added tokens, so the flags are only
+/// correct when taken per token from the file. Both default to `false` when
+/// absent, which is `tokenizers`' own default for an `AddedToken`.
+pub(in crate::core) fn parse_special_tokens(root: &Value) -> AddedTokenSet {
+    let mut specials = AddedTokenSet::new();
     if let Some(list) = root.get("added_tokens").and_then(Value::as_array) {
         for t in list {
             if let (Some(content), Some(id)) = (
                 t.get("content").and_then(Value::as_str),
                 t.get("id").and_then(Value::as_u64),
             ) {
-                specials.insert(content.to_string(), id as u32);
+                specials.insert(
+                    content,
+                    AddedToken {
+                        id: id as u32,
+                        lstrip: t.get("lstrip").and_then(Value::as_bool).unwrap_or(false),
+                        rstrip: t.get("rstrip").and_then(Value::as_bool).unwrap_or(false),
+                    },
+                );
             }
         }
     }

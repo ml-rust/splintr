@@ -269,7 +269,7 @@ fn build_unigram(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     let tok = SentencePieceTokenizer::new(tokens, scores, None, eos)?
         .with_normalizer(Normalizer::new(ops))
         .with_prefix_space(pre.add_prefix_space)
-        .with_added_tokens(&parse_special_tokens(root))?
+        .with_added_tokens(parse_special_tokens(root))?
         .with_special_decode_ids(parse_special_decode_ids(root));
     Ok(Backend::Unigram(tok))
 }
@@ -325,7 +325,7 @@ fn build_wordpiece(root: &Value, model: &Value) -> Result<Backend, HfJsonError> 
         norm.clean_text,
         prefix,
     )
-    .with_added_tokens(&parse_special_tokens(root))?
+    .with_added_tokens(parse_special_tokens(root))?
     .with_special_decode_ids(parse_special_decode_ids(root));
     Ok(Backend::WordPiece(tok))
 }
