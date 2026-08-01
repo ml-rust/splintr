@@ -20,7 +20,6 @@ python = ["dep:pyo3"]
 pcre2 = ["dep:pcre2"]
 rayon = ["dep:rayon"]
 regexr-jit = ["regexr/jit", "regexr/simd"]
-wasm = []                                  # disables rayon, uses scalar regex — use with --no-default-features
 
 [dependencies]
 # PCRE2 regex with JIT support (optional, for benchmarking)
@@ -47,10 +46,6 @@ unicode-normalization = "0.1"
 unicode-general-category = "1.0"
 # JSON parsing for HuggingFace tokenizer.json loader (Whisper)
 serde_json = "1.0"
-
-[dev-dependencies]
-# PCRE2 for benchmarking comparisons
-pcre2 = "0.2"
 
 [profile.release]
 opt-level = 3
