@@ -31,7 +31,8 @@ piece-level `SpmTokenizer` (see `examples/verify_spm_vs_bpe.rs`).
 
 With `--reference-spm PATH` the `cases[]` are generated instead from a
 SentencePiece reference model: a fixed, committed corpus of test strings (see
-`REFERENCE_CORPUS` below) is run through `sentencepiece.SentencePieceProcessor(
+`REFERENCE_CORPUS` in `reference_corpus.py`) is run through
+`sentencepiece.SentencePieceProcessor(
 PATH).encode(text)` and the resulting ids become the expected output, in the
 exact same `{"input": ..., "expected": [...]}` shape the `.inp`/`.out` path
 produces — `examples/verify_gguf.rs` needs no changes to consume either kind.
@@ -80,6 +81,8 @@ try:
     from gguf import GGUFReader
 except ImportError:  # pragma: no cover - tooling script
     sys.exit("error: the 'gguf' package is required (pip install gguf)")
+
+from reference_corpus import REFERENCE_CORPUS
 
 # The delimiter llama.cpp's tests/test-tokenizer-0.cpp splits `.inp` on. The
 # surrounding newlines are PART of the delimiter, so a case never carries the
@@ -222,55 +225,10 @@ def read_cases(gguf_path: Path) -> list[dict]:
     ]
 
 
-# Fixed corpus for the `--reference-spm` path. Committed so every run of the
-# script against the same reference model reproduces the same fixture. Picked
-# to hit what actually breaks SentencePiece-style tokenizers, not to dodge
-# awkward cases: whitespace edge cases (empty, runs, leading/trailing, tabs,
-# newlines), ordinary words, punctuation, contractions, CJK, emoji including a
-# ZWJ sequence, accented Latin, digits/digit runs, a code snippet, and a
-# mixed-script line.
-REFERENCE_CORPUS: list[str] = [
-    "",
-    " ",
-    "  ",
-    "   ",
-    "a",
-    " a",
-    "a ",
-    " a ",
-    "hello world",
-    "Hello World!",
-    "the quick brown fox jumps over the lazy dog",
-    "\tindented\twith\ttabs",
-    "line one\nline two\nline three",
-    "\n\n\n",
-    "trailing whitespace   ",
-    "   leading whitespace",
-    "multiple   internal    spaces",
-    "I've got it, don't worry.",
-    "it's a test — isn't it?",
-    "punctuation: ,.!?;:'\"()[]{}",
-    "hyphenated-word and em—dash",
-    "こんにちは世界",
-    "日本語のテキストです。",
-    "你好，世界！",
-    "안녕하세요 세계",
-    "emoji test 😀🎉🚀",
-    "family: 👨‍👩‍👧‍👦",
-    "flag: 🏳️‍🌈",
-    "café résumé naïve",
-    "Zürich Ångström Curaçao",
-    "0123456789",
-    "the year 2024 had 365 days",
-    "price: $19.99, quantity: 42",
-    "def add(a, b):\n    return a + b\n",
-    "if (x == 42) { print(\"hi\"); }",
-    "Mixed 混合 текст with 日本語 and English.",
-    "русский текст с числами 123",
-    "a\tb\nc d",
-    "   \t\n   ",
-    "The quick fox",  # U+00A0 non-breaking spaces
-]
+# The fixed test corpus for the `--reference-spm`/`--reference-hf` paths
+# lives in `reference_corpus.py`, imported above and shared verbatim with
+# `extract_reference_cases.py` (see that module's docstring for why and
+# what it covers).
 
 # How many (evenly spaced) ids the sanity gate below cross-checks between the
 # GGUF vocabulary and the SentencePiece reference model. Not exhaustive by

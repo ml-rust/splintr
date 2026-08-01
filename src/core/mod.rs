@@ -70,8 +70,8 @@ pub use streaming::{ByteLevelStreamingDecoder, StreamingDecoder};
 pub use tokenize::{Tokenize, TokenizeError};
 pub use tokenizer::{
     cl100k_agent_tokens, o200k_agent_tokens, Tokenizer, TokenizerError, CL100K_BASE_PATTERN,
-    GPT2_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
-    SENTENCEPIECE_PATTERN,
+    DEEPSEEK_V3_PATTERNS, GPT2_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN,
+    QWEN2_PATTERN, SENTENCEPIECE_PATTERN,
 };
 pub use vocab::{
     build_decoder, load_spm_vocab, load_tiktoken_bpe, load_tiktoken_bpe_file, place_special_pieces,

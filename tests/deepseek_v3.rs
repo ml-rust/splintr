@@ -3,7 +3,8 @@
 //! These tests verify that the DeepSeek V3 tokenizer correctly encodes and decodes text,
 //! handles ByteLevel BPE encoding, special tokens, and produces consistent results.
 
-use splintr::{Tokenizer, O200K_BASE_PATTERN};
+use splintr::pretrained::{deepseek_v3_special_tokens, DEEPSEEK_V3_VOCAB};
+use splintr::{Tokenizer, DEEPSEEK_V3_PATTERNS};
 use std::sync::LazyLock;
 
 /// Shared tokenizer instance to avoid expensive re-initialization per test.
@@ -72,6 +73,112 @@ fn test_deepseek_v3_emoji_tokens() {
         tokens,
         vec![19923, 73369, 238, 4495, 3],
         "Token IDs for emoji text changed"
+    );
+}
+
+/// Verify that DeepSeek V3's three-pass pre-tokenizer (matching llama.cpp's
+/// `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM`) is actually in effect, not OpenAI's
+/// `O200K_BASE_PATTERN`.
+///
+/// The two patterns agree on plain prose, which is exactly why the original
+/// bug (this vocabulary loaded with `O200K_BASE_PATTERN`) survived a 100%
+/// passing test suite for so long: none of the other tests in this file
+/// exercise a case where the two patterns disagree. `O200K_BASE_PATTERN`
+/// splits `\p{L}+` runs on an uppercase/lowercase boundary (so `getUserName`
+/// breaks after each capital), while DeepSeek's own pattern does not.
+///
+/// Every expected id sequence below was produced by encoding the input with
+/// Hugging Face's own `tokenizers` library against DeepSeek's published
+/// `tokenizer.json` (`Tokenizer.from_file(...).encode(text,
+/// add_special_tokens=False).ids`), never by recording splintr's own output.
+/// This vocabulary must never be re-aliased to `O200K_BASE_PATTERN` again.
+#[test]
+fn test_deepseek_v3_letter_runs_not_split_on_case() {
+    let tokenizer = create_deepseek_v3_tokenizer();
+
+    // camelCase identifier. O200K_BASE_PATTERN wrongly split this into
+    // [1133, 6756, 3240] (breaking "UserName" into "User" + "Name" style
+    // pieces on the case boundary); DeepSeek's pattern does not split here.
+    assert_eq!(
+        tokenizer.encode("getUserName"),
+        vec![1133, 110280],
+        "camelCase identifier split on a case boundary"
+    );
+
+    // Punctuation-then-letters (pass 3) combined with a parenthesized,
+    // comma-separated digit run. O200K_BASE_PATTERN wrongly gave
+    // [2161, 21498, 17159, 4042, 14, 223, 3180, 11].
+    assert_eq!(
+        tokenizer.encode("self.assertEqual(x, 42)"),
+        vec![2161, 38377, 4042, 14, 223, 3180, 11],
+        "punctuation+identifier / digit-run mix mis-split"
+    );
+
+    // camelCase identifier, no acronym.
+    assert_eq!(
+        tokenizer.encode("myVariableName"),
+        vec![4120, 40736, 3240],
+        "camelCase identifier split on a case boundary"
+    );
+
+    // PascalCase identifier with a leading all-caps acronym run.
+    assert_eq!(
+        tokenizer.encode("HTTPRequestHandler"),
+        vec![45909, 8546, 17275],
+        "PascalCase identifier with acronym split on a case boundary"
+    );
+
+    // PascalCase identifier, acronym in the middle.
+    assert_eq!(
+        tokenizer.encode("XMLHttpRequest"),
+        vec![52390, 15718, 8546],
+        "PascalCase identifier with acronym split on a case boundary"
+    );
+
+    // Pass 3's `[punctuation][A-Za-z]+` branch: a leading '.' immediately
+    // followed by a letter run, with no space.
+    assert_eq!(
+        tokenizer.encode(".isValidEmail"),
+        vec![13098, 20237, 20371],
+        "punctuation-then-letters branch mis-split"
+    );
+
+    // Pass 3's punctuation branch again, this time a method-call chain.
+    assert_eq!(
+        tokenizer.encode("config.getValue()"),
+        vec![12028, 95011, 1393],
+        "punctuation-then-letters branch mis-split"
+    );
+
+    // Pass 1's `\p{N}{1,3}` digit run: a long run of digits must be chunked
+    // into groups of at most 3, not merged into arbitrarily long tokens.
+    assert_eq!(
+        tokenizer.encode("12345678901234567890"),
+        vec![6895, 18009, 25744, 16993, 18014, 27183, 2225],
+        "long digit run not chunked into groups of <=3"
+    );
+
+    // Pass 2: a run of Japanese hiragana immediately followed by katakana,
+    // with no ASCII in between.
+    assert_eq!(
+        tokenizer.encode("こんにちはカタカナ"),
+        vec![4549, 7245, 2298, 12457, 2841, 15961, 11767, 15961, 27071],
+        "kana run mis-split"
+    );
+
+    // Pass 2: a run of CJK ideographs.
+    assert_eq!(
+        tokenizer.encode("北京市海淀区"),
+        vec![30703, 106025, 1369],
+        "CJK ideograph run mis-split"
+    );
+
+    // Mixed-script text: Latin identifier fragments interleaved with CJK,
+    // no whitespace between scripts.
+    assert_eq!(
+        tokenizer.encode("Mixed混合Text文字"),
+        vec![113685, 14769, 7233, 10541],
+        "mixed-script run mis-split"
     );
 }
 
@@ -459,73 +566,25 @@ fn create_deepseek_v3_tokenizer_by_name(_name: &str) -> Tokenizer {
     create_deepseek_v3_tokenizer_impl()
 }
 
-/// Implementation that actually constructs the tokenizer
+/// Implementation that actually constructs the tokenizer.
+///
+/// Built entirely from the production pieces — `DEEPSEEK_V3_VOCAB`,
+/// `DEEPSEEK_V3_PATTERNS`, `deepseek_v3_special_tokens()` — so this fixture
+/// cannot drift from what `pretrained::from_vocab(PretrainedVocab::DeepseekV3)`
+/// actually builds. It previously re-declared its own special-token table and
+/// its own pre-tokenizer, and that second source of truth is exactly why the
+/// suite kept passing while the vocabulary was loaded with the wrong
+/// (o200k) pre-tokenizer; the stale copy had also fallen 29 agent tokens behind.
+///
+/// The pre-tokenizer is DeepSeek's own three-pass `Split` sequence, matching
+/// llama.cpp's `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM`. It must never be
+/// re-aliased to `O200K_BASE_PATTERN` again — see
+/// `test_deepseek_v3_letter_runs_not_split_on_case`.
 fn create_deepseek_v3_tokenizer_impl() -> Tokenizer {
-    // Load the embedded vocab
-    let vocab_bytes = include_bytes!("../python/splintr/vocabs/deepseek_v3.tiktoken");
-
-    let mut special = rustc_hash::FxHashMap::default();
-
-    // DeepSeek native special tokens (0-2)
-    special.insert("<｜begin▁of▁sentence｜>".to_string(), 0);
-    special.insert("<｜end▁of▁sentence｜>".to_string(), 1);
-    special.insert("<｜▁pad▁｜>".to_string(), 2);
-
-    // Thinking tokens (128798-128799)
-    special.insert("<think>".to_string(), 128798);
-    special.insert("</think>".to_string(), 128799);
-
-    // FIM tokens (128800-128802)
-    special.insert("<｜fim▁hole｜>".to_string(), 128800);
-    special.insert("<｜fim▁begin｜>".to_string(), 128801);
-    special.insert("<｜fim▁end｜>".to_string(), 128802);
-
-    // Chat tokens (128803-128805)
-    special.insert("<｜User｜>".to_string(), 128803);
-    special.insert("<｜Assistant｜>".to_string(), 128804);
-    special.insert("<|EOT|>".to_string(), 128805);
-
-    // Tool calling tokens (128806-128814)
-    special.insert("<｜tool▁calls▁begin｜>".to_string(), 128806);
-    special.insert("<｜tool▁calls▁end｜>".to_string(), 128807);
-    special.insert("<｜tool▁call▁begin｜>".to_string(), 128808);
-    special.insert("<｜tool▁call▁end｜>".to_string(), 128809);
-    special.insert("<｜tool▁outputs▁begin｜>".to_string(), 128810);
-    special.insert("<｜tool▁outputs▁end｜>".to_string(), 128811);
-    special.insert("<｜tool▁output▁begin｜>".to_string(), 128812);
-    special.insert("<｜tool▁output▁end｜>".to_string(), 128813);
-    special.insert("<｜tool▁sep｜>".to_string(), 128814);
-
-    // Agent tokens (128900+)
-    special.insert("<|system|>".to_string(), 128900);
-    special.insert("<|user|>".to_string(), 128901);
-    special.insert("<|assistant|>".to_string(), 128902);
-    special.insert("<|im_start|>".to_string(), 128903);
-    special.insert("<|im_end|>".to_string(), 128904);
-    special.insert("<|think|>".to_string(), 128905);
-    special.insert("<|/think|>".to_string(), 128906);
-    special.insert("<|plan|>".to_string(), 128907);
-    special.insert("<|/plan|>".to_string(), 128908);
-    special.insert("<|step|>".to_string(), 128909);
-    special.insert("<|/step|>".to_string(), 128910);
-    special.insert("<|act|>".to_string(), 128911);
-    special.insert("<|/act|>".to_string(), 128912);
-    special.insert("<|observe|>".to_string(), 128913);
-    special.insert("<|/observe|>".to_string(), 128914);
-    special.insert("<|function|>".to_string(), 128915);
-    special.insert("<|/function|>".to_string(), 128916);
-    special.insert("<|result|>".to_string(), 128917);
-    special.insert("<|/result|>".to_string(), 128918);
-    special.insert("<|error|>".to_string(), 128919);
-    special.insert("<|/error|>".to_string(), 128920);
-    special.insert("<|code|>".to_string(), 128921);
-    special.insert("<|/code|>".to_string(), 128922);
-    special.insert("<|output|>".to_string(), 128923);
-    special.insert("<|/output|>".to_string(), 128924);
-
-    // DeepSeek uses ByteLevel BPE encoding. Pattern pinned to the o200k split,
-    // matching `pretrained::patterns(PretrainedVocab::DeepseekV3)`; this used to
-    // read `LLAMA3_PATTERN` back when that constant was an alias of the o200k
-    // one, which it no longer is.
-    Tokenizer::from_bytes_byte_level(vocab_bytes, O200K_BASE_PATTERN, special).unwrap()
+    Tokenizer::from_bytes_byte_level_chain(
+        DEEPSEEK_V3_VOCAB,
+        DEEPSEEK_V3_PATTERNS,
+        deepseek_v3_special_tokens(),
+    )
+    .expect("bundled deepseek_v3 vocabulary must load")
 }

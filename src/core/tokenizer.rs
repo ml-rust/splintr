@@ -123,6 +123,30 @@ pub const GPT2_PATTERN: &str =
 /// and must stay separate constants.
 pub const QWEN2_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+/// Pre-tokenizer expression list for DeepSeek V3/R1.
+///
+/// Transcribed verbatim from the three `Split` pre-tokenizers in DeepSeek's own
+/// `tokenizer.json`, which llama.cpp records byte-for-byte as
+/// `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM` (`llama-vocab.cpp:318-325`). The passes
+/// run in order, each subdividing the pieces the previous one produced — see
+/// [`Tokenizer::new_byte_level_chain`]. They are **not** collapsible into one
+/// alternation: pass 1 cuts digit runs into groups of three *before* pass 3's
+/// letter/punctuation split ever sees them, so a single regex would have to
+/// resolve both at once and would pick different boundaries.
+///
+/// This is NOT [`O200K_BASE_PATTERN`], which this vocabulary was previously and
+/// wrongly loaded with. o200k splits letter runs on case boundaries and has no
+/// dedicated CJK/kana branch at all; DeepSeek isolates CJK and kana runs in
+/// pass 2 and takes whole letter runs via `[\p{L}\p{M}]+`.
+pub const DEEPSEEK_V3_PATTERNS: &[&str] = &[
+    r"\p{N}{1,3}",
+    // U+4E00-U+9FA5 CJK, U+3040-U+309F hiragana, U+30A0-U+30FF katakana.
+    // Written as escapes so no editor or transcription step can silently
+    // renormalize the literal characters into a different codepoint.
+    r"[\u{4E00}-\u{9FA5}\u{3040}-\u{309F}\u{30A0}-\u{30FF}]+",
+    "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",
+];
+
 // =============================================================================
 // Agent Token Constants (cl100k_base: 100277+, o200k_base: 200019+)
 // =============================================================================

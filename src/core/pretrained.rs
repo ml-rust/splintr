@@ -28,8 +28,8 @@ use super::any_tokenizer::{AnyTokenizer, Backend};
 use super::policy::SpecialPolicy;
 use super::spm::{SpmTokenizer, NEVER_MERGE};
 use super::tokenizer::{
-    Tokenizer, TokenizerError, CL100K_BASE_PATTERN, GPT2_PATTERN, LLAMA3_PATTERN,
-    MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+    Tokenizer, TokenizerError, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN,
+    LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
 use super::vocab::{load_spm_vocab, place_special_pieces};
 use super::whisper::{whisper_special_tokens, WhisperVariant};
@@ -291,7 +291,8 @@ pub fn patterns(vocab: PretrainedVocab) -> &'static [&'static str] {
         PretrainedVocab::Cl100kBase => &[CL100K_BASE_PATTERN],
         PretrainedVocab::O200kBase => &[O200K_BASE_PATTERN],
         PretrainedVocab::Llama3 => &[LLAMA3_PATTERN], // Meta's own split; NOT the o200k pattern
-        PretrainedVocab::DeepseekV3 => &[O200K_BASE_PATTERN], // pinned explicitly: DeepSeek is not Llama 3
+        // DeepSeek's own three-pass split; see DEEPSEEK_V3_PATTERNS.
+        PretrainedVocab::DeepseekV3 => DEEPSEEK_V3_PATTERNS,
 
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => &[SENTENCEPIECE_PATTERN], // SentencePiece-style
         PretrainedVocab::MistralV3 => &[MISTRAL_V3_PATTERN], // Tekken has its own pattern (no contractions, single-digit numbers)
