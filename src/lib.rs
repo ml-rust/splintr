@@ -3,10 +3,11 @@ pub mod core;
 mod python;
 
 pub use core::{
-    ByteLevelStreamingDecoder, SentencePieceError, SentencePieceTokenizer, SpmError, SpmTokenizer,
-    StreamingDecoder, Tokenize, TokenizeError, Tokenizer, TokenizerError, WordPieceError,
-    WordPieceTokenizer, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN, LLAMA3_PATTERN,
-    MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN, SENTENCEPIECE_PATTERN,
+    ByteLevelStreamingDecoder, SentencePieceError, SentencePieceTokenizer, SpmError,
+    SpmPrefixScheme, SpmTokenizer, StreamingDecoder, Tokenize, TokenizeError, Tokenizer,
+    TokenizerError, WordPieceError, WordPieceTokenizer, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS,
+    GPT2_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
+    SENTENCEPIECE_PATTERN,
 };
 
 // Re-export pretrained tokenizer API
@@ -61,5 +62,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CL100K_BASE_PATTERN", CL100K_BASE_PATTERN)?;
     m.add("O200K_BASE_PATTERN", O200K_BASE_PATTERN)?;
     m.add("LLAMA3_PATTERN", LLAMA3_PATTERN)?;
+    // Whether the optional `pcre2` regex backend was compiled in. Exposed so a
+    // caller (or a test) can query the capability directly instead of inferring
+    // it from an error message, which would silently start reporting "absent"
+    // if that message were ever reworded.
+    m.add("HAS_PCRE2", cfg!(feature = "pcre2"))?;
     Ok(())
 }

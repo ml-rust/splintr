@@ -37,7 +37,9 @@
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rustc_hash::FxHashMap;
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::core::SentencePieceTokenizer;
 
@@ -52,7 +54,7 @@ use crate::core::pretrained::{
 use crate::core::spm::SpmTokenizer;
 use crate::core::wordpiece::WordPieceTokenizer;
 use crate::core::{byte_level_decode_bytes, Tokenize, Tokenizer};
-use crate::core::{AnyTokenizer, Backend, PretrainedVocab, SpecialPolicy};
+use crate::core::{AnyTokenizer, Backend, PretrainedVocab, SpecialMode, SpecialPolicy};
 
 // Special tokens are defined in crate::core::pretrained module.
 // See that module for the full token documentation and implementations.
@@ -156,10 +158,10 @@ impl PyTokenizer {
             }
             "deepseek_v3" | "deepseek-v3" => {
                 let special = deepseek_v3_special_tokens();
-                // DeepSeek uses ByteLevel BPE encoding. The pattern comes from
-                // `pretrained::patterns`, which pins it to the o200k split
-                // explicitly rather than borrowing `LLAMA3_PATTERN`: DeepSeek V3
-                // is not a Llama 3 vocabulary and the two splits are not the same.
+                // DeepSeek uses ByteLevel BPE encoding. The pre-tokenizer comes
+                // from `pretrained::patterns`, which returns DeepSeek's own
+                // three-pass expression list — not the o200k or Llama 3 split,
+                // neither of which produces DeepSeek's ids.
                 bpe(Tokenizer::from_bytes_byte_level_chain(
                     DEEPSEEK_V3_VOCAB,
                     pretrained_patterns(PretrainedVocab::DeepseekV3),
@@ -351,6 +353,50 @@ impl PyTokenizer {
     ///     List of token IDs
     fn encode_with_special(&self, text: &str) -> Vec<u32> {
         self.inner.encode_with_special(text)
+    }
+
+    /// Encode text to token IDs, never matching special tokens.
+    ///
+    /// A special token spelled out literally in the input (e.g. `<|endoftext|>`)
+    /// is encoded as ordinary text instead of being promoted to its control-token
+    /// id. Use this when tokenizing untrusted text where the caller must not be
+    /// able to forge control tokens.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+        self.inner.encode_ordinary(text)
+    }
+
+    /// Encode text to token IDs, matching only the named special tokens.
+    ///
+    /// Any other configured special token spelled out literally in the text
+    /// raises `ValueError` instead of being silently promoted to its
+    /// control-token id — use this to accept a known, bounded set of special
+    /// tokens (e.g. a chat template's own markers) from otherwise untrusted text.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///     allowed_special: Special token strings permitted to match in `text`
+    ///
+    /// Returns:
+    ///     List of token IDs
+    ///
+    /// Raises:
+    ///     ValueError: If `text` spells out a configured special token that is
+    ///         not in `allowed_special`
+    fn encode_allowed_special(
+        &self,
+        text: &str,
+        allowed_special: Vec<String>,
+    ) -> PyResult<Vec<u32>> {
+        let allowed: FxHashSet<String> = allowed_special.into_iter().collect();
+        self.inner
+            .encode_with(text, &SpecialMode::Allow(&allowed))
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Decode token IDs to a string.
@@ -573,6 +619,54 @@ impl PySentencePieceTokenizer {
             .apply_single(self.with_bos(self.inner.encode(text)))
     }
 
+    /// Encode text to token IDs, never matching special tokens.
+    ///
+    /// A special token spelled out literally in the input is encoded as
+    /// ordinary text instead of being promoted to its control-token id. BOS is
+    /// still prepended if configured — that is a boundary token this tokenizer
+    /// always adds, independent of whether special-token matching in the
+    /// content is on. Use this when tokenizing untrusted text where the caller
+    /// must not be able to forge control tokens.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+        self.with_bos(self.inner.encode_ordinary(text))
+    }
+
+    /// Encode text to token IDs, matching only the named special tokens.
+    ///
+    /// Any other configured special token spelled out literally in the text
+    /// raises `ValueError` instead of being silently promoted to its
+    /// control-token id — use this to accept a known, bounded set of special
+    /// tokens from otherwise untrusted text. BOS is still prepended if configured.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///     allowed_special: Special token strings permitted to match in `text`
+    ///
+    /// Returns:
+    ///     List of token IDs
+    ///
+    /// Raises:
+    ///     ValueError: If `text` spells out a configured special token that is
+    ///         not in `allowed_special`
+    fn encode_allowed_special(
+        &self,
+        text: &str,
+        allowed_special: Vec<String>,
+    ) -> PyResult<Vec<u32>> {
+        let allowed: FxHashSet<String> = allowed_special.into_iter().collect();
+        let ids = self
+            .inner
+            .encode_with(text, &SpecialMode::Allow(&allowed))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(self.with_bos(ids))
+    }
+
     /// Decode token IDs to text.
     ///
     /// Skips BOS/EOS tokens and converts ▁ back to spaces.
@@ -706,6 +800,90 @@ impl PySpmTokenizer {
             .apply_single(Tokenize::encode(&self.inner, text))
     }
 
+    /// Encode text with control-token handling.
+    ///
+    /// Unlike the byte-level BPE `Tokenizer`, whose `encode` treats special
+    /// tokens as ordinary text unless the vocabulary was built with
+    /// added-token matching on, this SPM-BPE backend's `encode` already
+    /// recognizes control tokens (`[INST]`, `<s>`, chat markers) — see
+    /// `encode`'s docs. This method is that same behavior under the name the
+    /// BPE surface uses, so callers migrating between the two wrapper types
+    /// do not need to special-case SPM.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_with_special(&self, text: &str) -> Vec<u32> {
+        self.encode(text)
+    }
+
+    /// Batch encode multiple texts in parallel.
+    ///
+    /// Uses Rayon to parallelize encoding across texts, mirroring
+    /// `Tokenizer::encode_batch`.
+    ///
+    /// Args:
+    ///     texts: List of texts to encode
+    ///
+    /// Returns:
+    ///     List of token ID lists
+    fn encode_batch(&self, texts: Vec<String>) -> Vec<Vec<u32>> {
+        #[cfg(feature = "rayon")]
+        {
+            texts.par_iter().map(|text| self.encode(text)).collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            texts.iter().map(|text| self.encode(text)).collect()
+        }
+    }
+
+    /// Encode text to token IDs, never matching control tokens.
+    ///
+    /// A control token spelled out literally in the input (`[INST]`, `<s>`,
+    /// chat markers) is encoded as ordinary text instead of being recognized as
+    /// a single id. Use this when tokenizing untrusted text where the caller
+    /// must not be able to forge control tokens.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+        self.inner.encode_ordinary(text)
+    }
+
+    /// Encode text to token IDs, matching only the named control tokens.
+    ///
+    /// Any other configured control token spelled out literally in the text
+    /// raises `ValueError` instead of being silently recognized as a single
+    /// id — use this to accept a known, bounded set of control tokens from
+    /// otherwise untrusted text.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///     allowed_special: Control token strings permitted to match in `text`
+    ///
+    /// Returns:
+    ///     List of token IDs
+    ///
+    /// Raises:
+    ///     ValueError: If `text` spells out a configured control token that is
+    ///         not in `allowed_special`
+    fn encode_allowed_special(
+        &self,
+        text: &str,
+        allowed_special: Vec<String>,
+    ) -> PyResult<Vec<u32>> {
+        let allowed: FxHashSet<String> = allowed_special.into_iter().collect();
+        self.inner
+            .encode_with(text, &SpecialMode::Allow(&allowed))
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Decode token IDs to text, converting `▁` back to spaces, reassembling
     /// `<0xNN>` byte-fallback runs, and dropping the single leading space that
     /// `add_dummy_prefix` introduced on encode (matching `sp.decode`).
@@ -783,6 +961,50 @@ impl PyWordPieceTokenizer {
     fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
         self.policy
             .apply_single(Tokenize::encode(&self.inner, text))
+    }
+
+    /// Encode text to token IDs, never matching special tokens.
+    ///
+    /// A special token spelled out literally in the input (e.g. `[CLS]`,
+    /// `[SEP]`) is encoded as ordinary text instead of being recognized as a
+    /// single id. Use this when tokenizing untrusted text where the caller
+    /// must not be able to forge control tokens.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+        self.inner.encode_ordinary(text)
+    }
+
+    /// Encode text to token IDs, matching only the named special tokens.
+    ///
+    /// Any other configured special token spelled out literally in the text
+    /// raises `ValueError` instead of being silently recognized as a single
+    /// id — use this to accept a known, bounded set of special tokens from
+    /// otherwise untrusted text.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///     allowed_special: Special token strings permitted to match in `text`
+    ///
+    /// Returns:
+    ///     List of token IDs
+    ///
+    /// Raises:
+    ///     ValueError: If `text` spells out a configured special token that is
+    ///         not in `allowed_special`
+    fn encode_allowed_special(
+        &self,
+        text: &str,
+        allowed_special: Vec<String>,
+    ) -> PyResult<Vec<u32>> {
+        let allowed: FxHashSet<String> = allowed_special.into_iter().collect();
+        self.inner
+            .encode_with(text, &SpecialMode::Allow(&allowed))
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Decode token IDs to text.
@@ -895,12 +1117,10 @@ impl PyStreamingDecoder {
     ///     String of complete characters, or None if still buffering
     fn add_token(&mut self, token_id: u32) -> Option<String> {
         // Get bytes for this token
-        let bytes = if let Some(b) = self.decoder.get(&token_id) {
-            b.as_slice()
-        } else if let Some(s) = self.special_decoder.get(&token_id) {
-            s.as_bytes()
-        } else {
-            return None;
+        let bytes = match self.decoder.get(&token_id) {
+            Some(b) => b.as_slice(),
+            // An id in neither table is unknown; buffer nothing and yield nothing.
+            None => self.special_decoder.get(&token_id)?.as_bytes(),
         };
 
         // Add to buffer
@@ -1081,19 +1301,21 @@ impl PyByteLevelStreamingDecoder {
     /// Returns:
     ///     String of complete characters, or None if still buffering
     fn add_token(&mut self, token_id: u32) -> Option<String> {
-        if let Some(encoded_bytes) = self.decoder.get(&token_id) {
-            // Decode ByteLevel encoding to raw bytes
-            if let Some(raw_bytes) = byte_level_decode_bytes(encoded_bytes) {
-                self.buffer.extend_from_slice(&raw_bytes);
-            } else {
-                // Fallback: treat as raw bytes if ByteLevel decode fails
-                self.buffer.extend_from_slice(encoded_bytes);
+        match self.decoder.get(&token_id) {
+            Some(encoded_bytes) => {
+                // Decode ByteLevel encoding to raw bytes
+                if let Some(raw_bytes) = byte_level_decode_bytes(encoded_bytes) {
+                    self.buffer.extend_from_slice(&raw_bytes);
+                } else {
+                    // Fallback: treat as raw bytes if ByteLevel decode fails
+                    self.buffer.extend_from_slice(encoded_bytes);
+                }
             }
-        } else if let Some(special) = self.special_decoder.get(&token_id) {
-            // Special tokens are NOT ByteLevel-encoded, add directly
-            self.buffer.extend_from_slice(special.as_bytes());
-        } else {
-            return None;
+            // Special tokens are NOT ByteLevel-encoded, add directly. An id in
+            // neither table is unknown; buffer nothing and yield nothing.
+            None => self
+                .buffer
+                .extend_from_slice(self.special_decoder.get(&token_id)?.as_bytes()),
         }
 
         self.extract_complete_utf8()

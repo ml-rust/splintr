@@ -8,6 +8,8 @@ handles special tokens, and produces consistent results.
 import pytest
 from splintr import Tokenizer, CL100K_AGENT_TOKENS, CL100K_BASE_PATTERN
 
+from .conftest import requires_pcre2
+
 
 class TestCl100kExactTokens:
     """Exact token ID verification tests.
@@ -373,6 +375,7 @@ class TestCl100kBackendOptions:
         decoded = tokenizer.decode(tokens)
         assert decoded == text
 
+    @requires_pcre2
     def test_pcre2_backend(self):
         """Test switching to PCRE2 backend."""
         tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
@@ -381,6 +384,7 @@ class TestCl100kBackendOptions:
         decoded = tokenizer.decode(tokens)
         assert decoded == text
 
+    @requires_pcre2
     def test_pcre2_switch_back_to_regexr(self):
         """Test switching from PCRE2 back to regexr."""
         tokenizer = (
@@ -409,6 +413,7 @@ class TestCl100kBackendOptions:
         decoded = tokenizer.decode(tokens)
         assert decoded == text
 
+    @requires_pcre2
     def test_pcre2_with_jit_disabled(self):
         """Test PCRE2 backend with JIT disabled."""
         tokenizer = (
@@ -421,6 +426,7 @@ class TestCl100kBackendOptions:
         decoded = tokenizer.decode(tokens)
         assert decoded == text
 
+    @requires_pcre2
     def test_pcre2_with_jit_enabled(self):
         """Test PCRE2 backend with JIT enabled."""
         tokenizer = (
@@ -433,6 +439,7 @@ class TestCl100kBackendOptions:
         decoded = tokenizer.decode(tokens)
         assert decoded == text
 
+    @requires_pcre2
     def test_backend_consistency(self):
         """Test that different backends produce same tokens."""
         text = "The quick brown fox jumps over the lazy dog. 你好世界 🦀"
@@ -529,6 +536,7 @@ class TestCl100kUtf8Boundaries:
             decoded = tokenizer.decode(tokens)
             assert decoded == text, f"Failed for text {i}: {text!r}"
 
+    @requires_pcre2
     def test_backend_consistency_multibyte(self, tokenizer, tokenizer_pcre2):
         """Test that regexr and PCRE2 produce same results for multi-byte text."""
         texts = [

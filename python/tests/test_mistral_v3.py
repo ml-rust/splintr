@@ -13,6 +13,8 @@ Key characteristics:
 import pytest
 from splintr import Tokenizer, MISTRAL_V3_AGENT_TOKENS
 
+from .conftest import requires_pcre2
+
 
 class TestMistralV3Loading:
     """Test loading Mistral V3 tokenizer."""
@@ -344,3 +346,100 @@ class TestMistralV3Roundtrip:
         tokens = tokenizer.encode(text)
         decoded = tokenizer.decode(tokens)
         assert decoded == text
+
+
+class TestMistralV3BackendOptions:
+    """Test regex backend options (regexr, PCRE2, JIT).
+
+    This coverage used to live on the V1/V2 test files, but V1/V2 route
+    through `SpmTokenizer` (SentencePiece merges), which has no regex
+    backend at all — `.pcre2()`/`.jit()` are meaningless on it. V3/Tekken
+    is the genuinely BPE-backed Mistral vocabulary (byte-level BPE, like
+    cl100k/o200k), so it is the one that can actually exercise backend
+    switching while still being a Mistral tokenizer.
+    """
+
+    def test_default_backend(self):
+        """Test default backend (regexr with JIT)."""
+        tokenizer = Tokenizer.from_pretrained("mistral_v3")
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        assert tokenizer.decode(tokens) == text
+
+    @requires_pcre2
+    def test_pcre2_backend(self):
+        """Test switching to PCRE2 backend."""
+        tokenizer = Tokenizer.from_pretrained("mistral_v3").pcre2(True)
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        assert tokenizer.decode(tokens) == text
+
+    @requires_pcre2
+    def test_pcre2_switch_back_to_regexr(self):
+        """Test switching from PCRE2 back to regexr."""
+        tokenizer = Tokenizer.from_pretrained("mistral_v3").pcre2(True).pcre2(False)
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        assert tokenizer.decode(tokens) == text
+
+    def test_jit_disabled(self):
+        """Test with JIT disabled."""
+        tokenizer = Tokenizer.from_pretrained("mistral_v3").jit(False)
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        assert tokenizer.decode(tokens) == text
+
+    def test_jit_enabled(self):
+        """Test with JIT explicitly enabled."""
+        tokenizer = Tokenizer.from_pretrained("mistral_v3").jit(True)
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        assert tokenizer.decode(tokens) == text
+
+    @requires_pcre2
+    def test_pcre2_with_jit_disabled(self):
+        """Test PCRE2 backend with JIT disabled."""
+        tokenizer = Tokenizer.from_pretrained("mistral_v3").pcre2(True).jit(False)
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        assert tokenizer.decode(tokens) == text
+
+    @requires_pcre2
+    def test_pcre2_with_jit_enabled(self):
+        """Test PCRE2 backend with JIT enabled."""
+        tokenizer = Tokenizer.from_pretrained("mistral_v3").pcre2(True).jit(True)
+        text = "Hello, world!"
+        tokens = tokenizer.encode(text)
+        assert tokenizer.decode(tokens) == text
+
+    @requires_pcre2
+    def test_backend_consistency(self):
+        """Test that different backends produce the same tokens."""
+        text = "The quick brown fox jumps over the lazy dog. 你好世界 🦀"
+
+        tok_default = Tokenizer.from_pretrained("mistral_v3")
+        tok_pcre2 = Tokenizer.from_pretrained("mistral_v3").pcre2(True)
+        tok_no_jit = Tokenizer.from_pretrained("mistral_v3").jit(False)
+
+        tokens_default = tok_default.encode(text)
+        tokens_pcre2 = tok_pcre2.encode(text)
+        tokens_no_jit = tok_no_jit.encode(text)
+
+        assert tokens_default == tokens_pcre2, "PCRE2 should produce same tokens"
+        assert tokens_default == tokens_no_jit, "Non-JIT should produce same tokens"
+
+    @requires_pcre2
+    def test_backend_consistency_multibyte(self):
+        """Test regexr and PCRE2 produce same results for multi-byte text."""
+        texts = [
+            "word—word",
+            "I'm sorry you're hurting—breakups suck.",
+            'He said, ‘Hello’ and she replied, “Goodbye”.',
+            "Check credentials—API key—in headers.",
+        ]
+        tokenizer = Tokenizer.from_pretrained("mistral_v3")
+        tokenizer_pcre2 = Tokenizer.from_pretrained("mistral_v3").pcre2(True)
+        for text in texts:
+            tokens_regexr = tokenizer.encode(text)
+            tokens_pcre2 = tokenizer_pcre2.encode(text)
+            assert tokens_regexr == tokens_pcre2, f"Backend mismatch for: {text!r}"

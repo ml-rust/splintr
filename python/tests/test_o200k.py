@@ -8,6 +8,8 @@ handles special tokens, and produces consistent results.
 import pytest
 from splintr import Tokenizer, O200K_AGENT_TOKENS, O200K_BASE_PATTERN
 
+from .conftest import requires_pcre2
+
 
 class TestO200kExactTokens:
     """Exact token ID verification tests.
@@ -470,6 +472,7 @@ class TestO200kUtf8Boundaries:
             decoded = tokenizer.decode(tokens)
             assert decoded == text, f"Failed for text {i}: {text!r}"
 
+    @requires_pcre2
     def test_backend_consistency_multibyte(self, tokenizer, tokenizer_pcre2):
         """Test that regexr and PCRE2 produce same results for multi-byte text."""
         texts = [
