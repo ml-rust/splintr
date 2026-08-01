@@ -43,7 +43,7 @@ use crate::core::SentencePieceTokenizer;
 
 use crate::core::hf_json::{
     from_json_bytes as core_from_json_bytes, from_json_path as core_from_json_path, AnyTokenizer,
-    Backend, PostProcessor,
+    Backend, SpecialPolicy,
 };
 use crate::core::pretrained::{
     cl100k_base_special_tokens, deepseek_v3_special_tokens, llama3_special_tokens,
@@ -64,7 +64,7 @@ use crate::core::{
 #[pyclass(name = "Tokenizer")]
 pub struct PyTokenizer {
     inner: Tokenizer,
-    post: PostProcessor,
+    policy: SpecialPolicy,
 }
 
 #[pymethods]
@@ -89,7 +89,7 @@ impl PyTokenizer {
 
         Ok(Self {
             inner,
-            post: PostProcessor::default(),
+            policy: SpecialPolicy::default(),
         })
     }
 
@@ -124,7 +124,7 @@ impl PyTokenizer {
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self {
                     inner,
-                    post: PostProcessor::default(),
+                    policy: SpecialPolicy::default(),
                 })
             }
             "o200k_base" => {
@@ -133,7 +133,7 @@ impl PyTokenizer {
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self {
                     inner,
-                    post: PostProcessor::default(),
+                    policy: SpecialPolicy::default(),
                 })
             }
             "llama3" | "llama3.1" | "llama3.2" | "llama3.3" => {
@@ -142,7 +142,7 @@ impl PyTokenizer {
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self {
                     inner,
-                    post: PostProcessor::default(),
+                    policy: SpecialPolicy::default(),
                 })
             }
             "deepseek_v3" | "deepseek-v3" => {
@@ -153,7 +153,7 @@ impl PyTokenizer {
                         .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self {
                     inner,
-                    post: PostProcessor::default(),
+                    policy: SpecialPolicy::default(),
                 })
             }
             // Mistral V1: Default "mistral" → V1
@@ -167,7 +167,7 @@ impl PyTokenizer {
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self {
                     inner,
-                    post: PostProcessor::default(),
+                    policy: SpecialPolicy::default(),
                 })
             }
             // Mistral V2: All 32,768 tokens in vocab file, only agent tokens are special
@@ -181,7 +181,7 @@ impl PyTokenizer {
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self {
                     inner,
-                    post: PostProcessor::default(),
+                    policy: SpecialPolicy::default(),
                 })
             }
             // Mistral V3: ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
@@ -193,7 +193,7 @@ impl PyTokenizer {
                         .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self {
                     inner,
-                    post: PostProcessor::default(),
+                    policy: SpecialPolicy::default(),
                 })
             }
             // Whisper multilingual (v1/v2/v3). Base BPE is bundled; specials are
@@ -203,7 +203,7 @@ impl PyTokenizer {
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Self {
                     inner,
-                    post: PostProcessor::default(),
+                    policy: SpecialPolicy::default(),
                 })
             }
             _ => Err(PyValueError::new_err(format!(
@@ -233,7 +233,7 @@ impl PyTokenizer {
 
         Ok(Self {
             inner,
-            post: PostProcessor::default(),
+            policy: SpecialPolicy::default(),
         })
     }
 
@@ -263,7 +263,7 @@ impl PyTokenizer {
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
             inner: result,
-            post: self.post.clone(),
+            policy: self.policy.clone(),
         })
     }
 
@@ -294,7 +294,7 @@ impl PyTokenizer {
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
             inner: result,
-            post: self.post.clone(),
+            policy: self.policy.clone(),
         })
     }
 
@@ -318,7 +318,7 @@ impl PyTokenizer {
     /// Distinct from `encode_with_special` (which recognizes special-token *strings*
     /// embedded in the input text).
     fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
-        self.post.apply(self.inner.encode(text))
+        self.policy.apply_single(self.inner.encode(text))
     }
 
     /// Encode text to token IDs using Rayon parallel processing.
@@ -519,7 +519,7 @@ impl PyTokenizer {
 #[pyclass(name = "SentencePieceTokenizer")]
 pub struct PySentencePieceTokenizer {
     inner: SentencePieceTokenizer,
-    post: PostProcessor,
+    policy: SpecialPolicy,
 }
 
 #[pymethods]
@@ -543,7 +543,7 @@ impl PySentencePieceTokenizer {
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
             inner,
-            post: PostProcessor::default(),
+            policy: SpecialPolicy::default(),
         })
     }
 
@@ -564,7 +564,7 @@ impl PySentencePieceTokenizer {
     /// Encode and apply the model's `post_processor` template, matching
     /// HuggingFace's default `encode`. Equals `encode` when there is none.
     fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
-        self.post.apply(self.inner.encode(text))
+        self.policy.apply_single(self.inner.encode(text))
     }
 
     /// Decode token IDs to text.
@@ -631,7 +631,7 @@ impl PySentencePieceTokenizer {
 #[pyclass(name = "WordPieceTokenizer")]
 pub struct PyWordPieceTokenizer {
     inner: WordPieceTokenizer,
-    post: PostProcessor,
+    policy: SpecialPolicy,
 }
 
 #[pymethods]
@@ -653,7 +653,7 @@ impl PyWordPieceTokenizer {
     ) -> Self {
         Self {
             inner: WordPieceTokenizer::new(vocab, unk_token_id, max_word_len, do_lower_case),
-            post: PostProcessor::default(),
+            policy: SpecialPolicy::default(),
         }
     }
 
@@ -666,7 +666,8 @@ impl PyWordPieceTokenizer {
     /// matching HuggingFace's default `encode`. Equals `encode` when there is no
     /// post-processor.
     fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
-        self.post.apply(Tokenize::encode(&self.inner, text))
+        self.policy
+            .apply_single(Tokenize::encode(&self.inner, text))
     }
 
     /// Decode token IDs to text.
@@ -698,13 +699,22 @@ impl PyWordPieceTokenizer {
 }
 
 /// Wrap a loaded [`AnyTokenizer`] in the matching Python class, carrying its
-/// post-processor template.
+/// special-token policy.
 fn any_tokenizer_to_py(py: Python<'_>, any: AnyTokenizer) -> PyResult<Py<PyAny>> {
-    let post = any.post_processor().clone();
+    let policy = any.policy().clone();
     Ok(match any.into_backend() {
-        Backend::Bpe(t) => Py::new(py, PyTokenizer { inner: t, post })?.into_any(),
-        Backend::Unigram(t) => Py::new(py, PySentencePieceTokenizer { inner: t, post })?.into_any(),
-        Backend::WordPiece(t) => Py::new(py, PyWordPieceTokenizer { inner: t, post })?.into_any(),
+        Backend::Bpe(t) => Py::new(py, PyTokenizer { inner: t, policy })?.into_any(),
+        Backend::Unigram(t) => {
+            Py::new(py, PySentencePieceTokenizer { inner: t, policy })?.into_any()
+        }
+        Backend::WordPiece(t) => Py::new(py, PyWordPieceTokenizer { inner: t, policy })?.into_any(),
+        // `tokenizer.json` has no SPM-BPE model type, so this is unreachable via
+        // this path; report it rather than panic if that ever changes.
+        Backend::Spm(_) => {
+            return Err(PyValueError::new_err(
+                "SPM-BPE tokenizers have no Python wrapper yet",
+            ))
+        }
     })
 }
 

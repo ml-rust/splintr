@@ -171,10 +171,12 @@ impl SpmTokenizer {
         self
     }
 
-    /// Set whether BOS / EOS are appended by `encode`.
+    /// Set the BOS / EOS ids the vocabulary defines (GGUF `add_bos_token` /
+    /// `add_eos_token` resolve to `None` here when disabled).
     ///
-    /// GGUF carries these as `add_bos_token` / `add_eos_token`. Passing `None`
-    /// for either disables it regardless of what the vocab defines.
+    /// `encode` never emits them: they are reported through
+    /// [`bos_token_id`](Self::bos_token_id) / [`eos_token_id`](Self::eos_token_id)
+    /// so the special-token policy can place them.
     pub fn with_special_ids(mut self, bos: Option<u32>, eos: Option<u32>) -> Self {
         self.bos_token_id = bos;
         self.eos_token_id = eos;
@@ -281,22 +283,36 @@ impl SpmTokenizer {
     }
 
     /// Encode without any added-token handling.
+    ///
+    /// Content tokens only: boundary tokens are the
+    /// [`SpecialPolicy`](crate::core::SpecialPolicy)'s to add, so that a caller
+    /// wrapping two sequences does not get a stray BOS in the middle.
     fn encode_ordinary(&self, text: &str) -> Vec<u32> {
         let normalized = self.normalize(text);
         let mut out = Vec::new();
-        if let Some(bos) = self.bos_token_id {
-            out.push(bos);
-        }
         for symbol in self.merge(&normalized) {
             self.emit(
                 &normalized[symbol.start..symbol.start + symbol.len],
                 &mut out,
             );
         }
-        if let Some(eos) = self.eos_token_id {
-            out.push(eos);
-        }
         out
+    }
+
+    /// The raw surface string of a token id (`▁` boundaries and `<0xNN>` byte
+    /// tokens are kept as spelled). Used to drive a declared decoder pipeline.
+    pub fn token_surface(&self, id: u32) -> Option<String> {
+        self.id_to_token.get(id as usize).cloned()
+    }
+
+    /// The beginning-of-sequence token id, when the vocabulary defines one.
+    pub fn bos_token_id(&self) -> Option<u32> {
+        self.bos_token_id
+    }
+
+    /// The end-of-sequence token id, when the vocabulary defines one.
+    pub fn eos_token_id(&self) -> Option<u32> {
+        self.eos_token_id
     }
 }
 
@@ -411,14 +427,22 @@ mod tests {
         assert_eq!(pieces(&t, "hello"), vec!["h", "el", "lo"]);
     }
 
+    /// Boundary tokens belong to the special-token policy, not to the model: a
+    /// tokenizer that adds them itself gives a caller wrapping two sequences a
+    /// stray BOS in the middle, and no way to opt out. `encode` stays raw even
+    /// when the vocabulary defines both ids, which remain readable.
     #[test]
-    fn bos_and_eos_are_added_only_when_configured() {
+    fn bos_and_eos_are_reported_but_never_encoded() {
         let (tokens, scores) = rank_scored_vocab();
         let with = SpmTokenizer::new(tokens.clone(), scores.clone(), Some(2), Some(1)).unwrap();
-        assert_eq!(pieces(&with, "hello"), vec!["<bos>", "▁hello", "<eos>"]);
+        assert_eq!(pieces(&with, "hello"), vec!["▁hello"]);
+        assert_eq!(with.bos_token_id(), Some(2));
+        assert_eq!(with.eos_token_id(), Some(1));
 
         let without = SpmTokenizer::new(tokens, scores, None, None).unwrap();
         assert_eq!(pieces(&without, "hello"), vec!["▁hello"]);
+        assert_eq!(without.bos_token_id(), None);
+        assert_eq!(without.eos_token_id(), None);
     }
 
     /// Unknown characters must become byte tokens when the vocab has the full

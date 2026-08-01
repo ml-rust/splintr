@@ -1,4 +1,6 @@
 use super::*;
+// Raw backends expose `encode` only through the trait; `AnyTokenizer`'s is inherent.
+use crate::core::tokenize::Tokenize;
 
 #[test]
 fn dispatches_bpe_byte_level() {
@@ -200,7 +202,6 @@ fn wordpiece_custom_continuation_prefix() {
 
 #[test]
 fn bpe_matches_added_tokens_in_encode() {
-    use crate::core::Tokenize;
     // A non-special added token must be recognized in the input during `encode`
     // (HF always matches added tokens), not BPE'd into its characters.
     let json = r#"{
@@ -215,7 +216,6 @@ fn bpe_matches_added_tokens_in_encode() {
 
 #[test]
 fn wordpiece_matches_added_tokens_in_input() {
-    use crate::core::Tokenize;
     // `[SEP]` in the input must be recognized as its id, not split into subwords.
     let json = r###"{
         "added_tokens": [{"id": 2, "content": "[SEP]", "special": true}],
@@ -229,7 +229,6 @@ fn wordpiece_matches_added_tokens_in_input() {
 
 #[test]
 fn unigram_matches_added_tokens_in_input() {
-    use crate::core::Tokenize;
     // `</s>` in the input is matched as its id (not Viterbi-segmented).
     let json = r#"{
         "added_tokens": [{"id": 1, "content": "</s>", "special": true}],
@@ -243,20 +242,68 @@ fn unigram_matches_added_tokens_in_input() {
     assert_eq!(tok.encode("a</s>b"), vec![2, 1, 3]);
 }
 
+/// A BERT-style tokenizer: `encode` is the model's real input (`[CLS] hi
+/// [SEP]`), and only `encode_raw` gives the bare content tokens. The default is
+/// the safe one — forgetting to wrap can no longer happen by omission.
 #[test]
 fn post_processor_wraps_with_special_tokens() {
-    use crate::core::Tokenize;
-    // BERT-style post_processor: [CLS] $A [SEP]. `encode` gives content tokens;
-    // `encode_with_special_tokens` wraps them.
-    let json = r###"{
-        "post_processor": {"type": "BertProcessing", "cls": ["[CLS]", 1], "sep": ["[SEP]", 2]},
-        "model": {"type": "WordPiece", "unk_token": "[UNK]",
-            "continuing_subword_prefix": "##", "max_input_chars_per_word": 100,
-            "vocab": {"[UNK]": 0, "[CLS]": 1, "[SEP]": 2, "hi": 3}}
-    }"###;
+    let tok = from_json_bytes(BERT_PAIR_JSON.as_bytes()).unwrap();
+    assert_eq!(tok.encode_raw("hi"), vec![3]); // content only
+    assert_eq!(tok.encode("hi"), vec![1, 3, 2]); // [CLS] hi [SEP]
+}
+
+/// A BERT-style `tokenizer.json` whose post-processor defines no `pair` array —
+/// the pair template is synthesized from the cls/sep ids.
+const BERT_PAIR_JSON: &str = r###"{
+    "post_processor": {"type": "BertProcessing", "cls": ["[CLS]", 1], "sep": ["[SEP]", 2]},
+    "model": {"type": "WordPiece", "unk_token": "[UNK]",
+        "continuing_subword_prefix": "##", "max_input_chars_per_word": 100,
+        "vocab": {"[UNK]": 0, "[CLS]": 1, "[SEP]": 2, "hi": 3, "yo": 4}}
+}"###;
+
+/// The reranker case: two segments joined the way the model was trained,
+/// `[CLS] a [SEP] b [SEP]`, without the caller hand-placing anything.
+#[test]
+fn encode_pair_applies_the_bert_pair_template() {
+    let tok = from_json_bytes(BERT_PAIR_JSON.as_bytes()).unwrap();
+    assert_eq!(tok.encode_pair("hi", "yo").unwrap(), vec![1, 3, 2, 4, 2]);
+}
+
+/// Without a pair template there is no sound way to join two sequences, so
+/// `encode_pair` errors rather than concatenating them separator-less.
+#[test]
+fn encode_pair_without_a_template_errors() {
+    let json = r#"{
+        "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false},
+        "model": {"type": "BPE", "vocab": {"a": 0, "b": 1}, "merges": []}
+    }"#;
     let tok = from_json_bytes(json.as_bytes()).unwrap();
-    assert_eq!(tok.encode("hi"), vec![3]); // content only
-    assert_eq!(tok.encode_with_special_tokens("hi"), vec![1, 3, 2]); // [CLS] hi [SEP]
+    assert!(matches!(
+        tok.encode_pair("a", "b"),
+        Err(HfJsonError::NoPairTemplate)
+    ));
+}
+
+/// The policy answers "what is EOS" and "what id is this special token" so
+/// downstream consumers stop re-deriving them from the model card.
+#[test]
+fn policy_exposes_named_specials_and_eos() {
+    let tok = from_json_bytes(
+        r###"{
+            "added_tokens": [
+                {"id": 1, "content": "[CLS]", "special": true},
+                {"id": 2, "content": "[SEP]", "special": true}
+            ],
+            "model": {"type": "WordPiece", "unk_token": "[UNK]",
+                "continuing_subword_prefix": "##", "max_input_chars_per_word": 100,
+                "vocab": {"[UNK]": 0, "[CLS]": 1, "[SEP]": 2, "hi": 3}}
+        }"###
+            .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(tok.special_token_id("[CLS]"), Some(1));
+    assert_eq!(tok.eos_token_id(), Some(2));
+    assert!(tok.is_eos(2));
 }
 
 #[test]

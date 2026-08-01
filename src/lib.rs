@@ -22,7 +22,7 @@ pub use core::{
 pub use core::{whisper_special_tokens, WhisperVariant};
 // Re-export the generic HuggingFace tokenizer.json loader
 pub use core::{
-    from_json_bytes, from_json_path, AnyTokenizer, Backend, HfJsonError, PostProcessor,
+    from_json_bytes, from_json_path, AnyTokenizer, Backend, HfJsonError, SpecialPolicy,
 };
 
 /// Splintr - Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings

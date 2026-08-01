@@ -51,7 +51,7 @@ pub mod wordpiece;
 pub use bpe::byte_pair_encode;
 pub use byte_level::{byte_level_decode, byte_level_decode_bytes, byte_level_encode};
 pub use hf_json::{
-    from_json_bytes, from_json_path, AnyTokenizer, Backend, HfJsonError, PostProcessor,
+    from_json_bytes, from_json_path, AnyTokenizer, Backend, HfJsonError, SpecialPolicy,
 };
 pub use pretrained::{
     bos_token_id, bos_token_id_by_name, cl100k_base_special_tokens, deepseek_v3_special_tokens,
