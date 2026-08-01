@@ -175,12 +175,12 @@ fn build_byte_level_bpe(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabE
     // look one up by name. Neither substitutes for the other.
     let specials = special_token_map(&vocab, &tokens);
     let named = specials.clone();
-    let pattern = byte_level_pattern(vocab.pre.as_deref())?;
+    let patterns = byte_level_pattern(vocab.pre.as_deref())?;
 
     let eos_token_id = vocab.eos_token_id.unwrap_or(0);
 
     let backend = Backend::Bpe(
-        Tokenizer::new_byte_level(encoder, specials, pattern)?
+        Tokenizer::new_byte_level_chain(encoder, specials, patterns)?
             .with_merge_ranks(merge_ranks)
             .with_added_token_matching(true),
     );
@@ -226,7 +226,83 @@ fn boundary_policy(
     SpecialPolicy::boundary(bos, eos, Some(eos_token_id), named)
 }
 
-/// The pre-tokenizer split regex a byte-level BPE vocabulary was built with.
+// ── Multi-pass pre-tokenizer expressions ─────────────────────────────────────
+//
+// Each constant below is one entry of a llama.cpp `regex_exprs` list, copied
+// character for character from `llm_tokenizer_bpe`'s constructor. They are only
+// ever used as part of an ordered list — see [`byte_level_pattern`] — because a
+// list is applied pass by pass, each pass subdividing the previous pass's
+// pieces, and no single alternation reproduces that.
+
+/// `LLAMA_VOCAB_PRE_TYPE_FALCON` pass 1, llama-vocab.cpp:344.
+///
+/// Punctuation and the ASCII symbols. llama.cpp reaches this through its
+/// collapsed-text path (`unicode.cpp:1012-1066`), where `\p{P}` expands to the
+/// PUNCTUATION category plus its sub-128 members `!-#%-*,-/:-;?-@[-]_{}` — the
+/// same set a Unicode-aware engine matches for `\p{P}` directly. The explicit
+/// `$+<=>^~|` and `` ` `` are the ASCII half of `\p{S}`, spelled out because the
+/// list deliberately does NOT take non-ASCII symbols.
+const FALCON_PUNCT_PATTERN: &str = r"[\p{P}\$\+<=>\^~\|`]+";
+
+/// `LLAMA_VOCAB_PRE_TYPE_FALCON` pass 3, llama-vocab.cpp:346.
+///
+/// Cuts a digit run into groups of three from the LEFT (the pieces pass 2 left
+/// behind are re-matched left to right, and the remainder trails as a gap).
+const FALCON_DIGIT_TRIPLE_PATTERN: &str = r"[0-9][0-9][0-9]";
+
+/// A single Unicode digit — `LLAMA_VOCAB_PRE_TYPE_STARCODER` and friends' pass 1
+/// (llama-vocab.cpp:357) and `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_CODER`'s pass 5
+/// (llama-vocab.cpp:339).
+const SINGLE_DIGIT_PATTERN: &str = r"\p{N}";
+
+/// A lone CR or LF — `DEEPSEEK_LLM` pass 1 (llama-vocab.cpp:310) and
+/// `DEEPSEEK_CODER` pass 1 (llama-vocab.cpp:335).
+///
+/// Running first, it isolates every line break into a span of its own, so no
+/// later pass in either list ever sees a span that contains one.
+const LINE_BREAK_PATTERN: &str = r"[\r\n]";
+
+/// CJK/Hangul block runs — `DEEPSEEK_LLM` pass 5 (llama-vocab.cpp:314) and
+/// `DEEPSEEK_CODER` pass 4 (llama-vocab.cpp:338), byte-identical to each other.
+///
+/// Transcribed verbatim, including the `\u{0800}`-`\u{4E00}` range that spans far
+/// more than the CJK blocks the name suggests. Narrowing it to what it "means"
+/// would change the split.
+const DEEPSEEK_CJK_PATTERN: &str = r"[一-龥ࠀ-一가-퟿]+";
+
+/// `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_CODER` pass 2, llama-vocab.cpp:336.
+const DEEPSEEK_CODER_LETTER_PATTERN: &str = r"\s?\p{L}+";
+
+/// `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_CODER` pass 3, llama-vocab.cpp:337.
+const DEEPSEEK_CODER_PUNCT_PATTERN: &str = r"\s?\p{P}+";
+
+/// `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM` pass 2, llama-vocab.cpp:311.
+///
+/// An explicit enumeration of letter ranges rather than `\p{L}`, and NOT
+/// interchangeable with it: it omits every script outside the list (Arabic,
+/// Hebrew, Devanagari, Thai, Hiragana, Han …), which the pass therefore leaves
+/// to fall through as gaps.
+const DEEPSEEK_LLM_LETTER_PATTERN: &str = r"\s?[A-Za-zµÀ-ÖØ-öø-ƺƼ-ƿǄ-ʓʕ-ʯͰ-ͳͶͷͻ-ͽͿΆΈ-ΊΌΎ-ΡΣ-ϵϷ-ҁҊ-ԯԱ-ՖႠ-ჅᎠ-Ᏽᏸ-ᏽᲐ-ᲺᲽ-Ჿᴀ-ᴫᵫ-ᵷᵹ-ᶚḀ-ἕἘ-Ἕἠ-ὅὈ-Ὅὐ-ὗὙὛὝὟ-\u{1F7D}ᾀ-ᾴᾶ-ᾼ\u{1FBE}ῂ-ῄῆ-ῌῐ-\u{1FD3}ῖ-\u{1FDB}ῠ-Ῥῲ-ῴῶ-ῼℂℇℊ-ℓℕℙ-ℝℤ\u{2126}ℨ\u{212A}-ℭℯ-ℴℹℼ-ℿⅅ-ⅉⅎↃↄⰀ-ⱻⱾ-ⳤⳫ-ⳮⳲⳳꙀ-ꙭꚀ-ꚛꜢ-ꝯꝱ-ꞇꞋ-ꞎꭰ-ꮿﬀ-ﬆﬓ-ﬗＡ-Ｚａ-ｚ𐐀-𐑏𐒰-𐓓𐓘-𐓻𐲀-𐲲𐳀-𐳲𑢠-𑣟𞤀-𞥃]+";
+
+/// `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM` pass 3, llama-vocab.cpp:312.
+///
+/// ASCII punctuation/symbols plus their fullwidth and CJK counterparts, again
+/// enumerated rather than expressed as `\p{P}`.
+const DEEPSEEK_LLM_PUNCT_PATTERN: &str = r"\s?[!-/:-~！-／：-～‘-‟　-。]+";
+
+/// `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM` pass 4, llama-vocab.cpp:313.
+///
+/// The `$` is end-of-span, not end-of-line: llama.cpp matches each pass against
+/// the span in isolation (`unicode.cpp:487`) with no multiline flag. Pass 1 of
+/// this same list already isolated every CR/LF, so by the time this runs no span
+/// holds a line break and the two readings of `$` cannot diverge.
+const DEEPSEEK_LLM_TRAILING_SPACE_PATTERN: &str = r"\s+$";
+
+/// `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM` pass 6, llama-vocab.cpp:315.
+const DEEPSEEK_LLM_DIGITS_PATTERN: &str = r"\p{N}+";
+
+/// The ordered pre-tokenizer expressions a byte-level BPE vocabulary was built
+/// with — llama.cpp's `regex_exprs` list for the named pre-tokenizer.
 ///
 /// `tokenizer.ggml.pre` names the pre-tokenizer, and the choice is not
 /// cosmetic: it decides where text is cut before any merge is applied, so two
@@ -240,17 +316,24 @@ fn boundary_policy(
 /// contraction handling — so tokenizing jina-v2-code's vocabulary with Qwen's
 /// pattern silently mis-segments every number and contraction in the corpus.
 ///
+/// Most names yield a list of ONE expression, which is the ordinary single-regex
+/// split. The rest yield several, applied in sequence — each pass re-matching
+/// the pieces the previous pass produced and cutting them finer, never merging
+/// and never re-reading the whole text (`unicode_regex_split`, unicode.cpp:990).
+/// A list of N expressions is therefore NOT their alternation: `falcon`'s
+/// three-expression list first isolates punctuation runs, then applies the GPT-2
+/// split inside each remaining piece, then chops digit runs into threes.
+///
 /// An unrecognised name is refused rather than defaulted: a wrong split is
 /// invisible downstream, and every id it produces is still in range.
-pub(super) fn byte_level_pattern(pre: Option<&str>) -> Result<&'static str, GgufVocabError> {
+pub(super) fn byte_level_pattern(
+    pre: Option<&str>,
+) -> Result<&'static [&'static str], GgufVocabError> {
     // Every name below was traced through llama.cpp twice: the `pre` string to a
     // `LLAMA_VOCAB_PRE_TYPE_*` value in `llama_vocab::impl::load`, and that value
     // to the literal `regex_exprs` list in `llm_tokenizer_bpe`'s constructor. A
-    // name is listed only when its enum value yields a SINGLE expression equal to
-    // the constant it is mapped to. Enum values that yield several expressions are
-    // deliberately absent: llama.cpp runs those passes in sequence, each one
-    // subdividing the previous pass's pieces, which no single alternation
-    // reproduces.
+    // name is listed only when the full list its enum value yields is reproduced
+    // here expression for expression, in order.
     //
     // `default` is llama.cpp's fallback pre-tokenizer, which is the GPT-2 split.
     match pre.unwrap_or("default") {
@@ -272,7 +355,7 @@ pub(super) fn byte_level_pattern(pre: Option<&str>) -> Result<&'static str, Gguf
         //   solar-open       → SOLAR_OPEN  llama-vocab.cpp:2090 → :371
         //   grok-2           → GROK_2      llama-vocab.cpp:2078 → :471
         "qwen2" | "deepseek-r1-qwen" | "kormo" | "megrez" | "stablelm2" | "hunyuan"
-        | "solar-open" | "grok-2" => Ok(QWEN2_PATTERN),
+        | "solar-open" | "grok-2" => Ok(&[QWEN2_PATTERN]),
 
         // ── GPT2_PATTERN ─────────────────────────────────────────────────────
         // `GPT2`/`MPT`/`OLMO`/`JAIS`/`TRILLION`/`GRANITE_DOCLING` share one `case`
@@ -315,7 +398,7 @@ pub(super) fn byte_level_pattern(pre: Option<&str>) -> Result<&'static str, Gguf
         "default" | "gpt-2" | "phi-2" | "roberta-bpe" | "jina-v1-en" | "jina-v2-en"
         | "jina-v2-es" | "jina-v2-de" | "jina-v2-code" | "jina-es" | "jina-de" | "gigachat"
         | "a.x-4.0" | "mellum" | "modern-bert" | "exaone4" | "mpt" | "olmo" | "jais"
-        | "trillion" | "granite-docling" => Ok(GPT2_PATTERN),
+        | "trillion" | "granite-docling" => Ok(&[GPT2_PATTERN]),
 
         // ── LLAMA3_PATTERN ───────────────────────────────────────────────────
         // `LLAMA3`, `DBRX`/`SMAUG` (one `case` label) and `CHATGLM4` each reach a
@@ -330,7 +413,75 @@ pub(super) fn byte_level_pattern(pre: Option<&str>) -> Result<&'static str, Gguf
         //   dbrx      → DBRX      llama-vocab.cpp:1970 → :301
         //   smaug-bpe → SMAUG     llama-vocab.cpp:1973 → :302
         //   glm4      → CHATGLM4  llama-vocab.cpp:1981 → :395
-        "llama-bpe" | "llama3" | "dbrx" | "smaug-bpe" | "glm4" => Ok(LLAMA3_PATTERN),
+        "llama-bpe" | "llama3" | "dbrx" | "smaug-bpe" | "glm4" => Ok(&[LLAMA3_PATTERN]),
+
+        // ── Multi-pass lists ─────────────────────────────────────────────────
+        // From here down the enum value yields several expressions, applied in
+        // order, each subdividing the previous pass's pieces.
+        //
+        // Where a list's entry is llama.cpp's GPT-2 string
+        // (`'s|'t|…|\s+(?!\S)`, no trailing `|\s+`), [`GPT2_PATTERN`] is the
+        // expression used, for the reason recorded above the GPT-2 arm:
+        // llama.cpp intercepts that exact string in `unicode_regex_split_custom`
+        // (unicode.cpp:759) and runs `unicode_regex_split_custom_gpt2`, whose
+        // whitespace fallthrough (unicode.cpp:317-322, commented `// regex:
+        // \s+`) supplies the bare run the written alternation omits.
+
+        //   falcon → FALCON   llama-vocab.cpp:1917 → :342-347
+        //
+        // Pass 1 punctuation/symbol runs, pass 2 the GPT-2 split, pass 3 digit
+        // triples. The order matters: pass 3 only ever sees the ` ?\p{N}+` runs
+        // pass 2 produced, so `1234` becomes `123` + `4` rather than being cut
+        // from the right.
+        "falcon" => Ok(&[
+            FALCON_PUNCT_PATTERN,
+            GPT2_PATTERN,
+            FALCON_DIGIT_TRIPLE_PATTERN,
+        ]),
+
+        //   starcoder  → STARCODER  llama-vocab.cpp:1923 → :349-359
+        //   refact     → REFACT     llama-vocab.cpp:1947 → :350
+        //   command-r  → COMMAND_R  llama-vocab.cpp:1950 → :351
+        //   smollm     → SMOLLM     llama-vocab.cpp:1998 → :352
+        //   codeshell  → CODESHELL  llama-vocab.cpp:2002 → :353
+        //   exaone     → EXAONE     llama-vocab.cpp:2011 → :354
+        //   minerva-7b → MINERVA    llama-vocab.cpp:2025 → :355
+        //
+        // Seven enum values sharing one `case` label at llama-vocab.cpp:349-359.
+        // Isolating single digits FIRST is what makes this differ from the plain
+        // GPT-2 split: pass 2's ` ?\p{N}+` can then never span two digits, and a
+        // leading space stays with the first digit only.
+        "starcoder" | "refact" | "command-r" | "smollm" | "codeshell" | "exaone" | "minerva-7b" => {
+            Ok(&[SINGLE_DIGIT_PATTERN, GPT2_PATTERN])
+        }
+
+        //   deepseek-llm → DEEPSEEK_LLM  llama-vocab.cpp:1900 → :308-317
+        //
+        // Six passes. Note there is no catch-all expression anywhere in the
+        // list: text no pass matches (Cyrillic-adjacent scripts, emoji, …)
+        // survives as an unmatched gap and is handed to BPE whole, which is
+        // exactly what llama.cpp does with it.
+        "deepseek-llm" => Ok(&[
+            LINE_BREAK_PATTERN,
+            DEEPSEEK_LLM_LETTER_PATTERN,
+            DEEPSEEK_LLM_PUNCT_PATTERN,
+            DEEPSEEK_LLM_TRAILING_SPACE_PATTERN,
+            DEEPSEEK_CJK_PATTERN,
+            DEEPSEEK_LLM_DIGITS_PATTERN,
+        ]),
+
+        //   deepseek-coder → DEEPSEEK_CODER  llama-vocab.cpp:1904 → :333-341
+        //
+        // Five passes, and the digit pass is `\p{N}` (one digit at a time), not
+        // `deepseek-llm`'s `\p{N}+`.
+        "deepseek-coder" => Ok(&[
+            LINE_BREAK_PATTERN,
+            DEEPSEEK_CODER_LETTER_PATTERN,
+            DEEPSEEK_CODER_PUNCT_PATTERN,
+            DEEPSEEK_CJK_PATTERN,
+            SINGLE_DIGIT_PATTERN,
+        ]),
+
         other => Err(GgufVocabError::UnsupportedPreTokenizer(other.to_owned())),
     }
 }

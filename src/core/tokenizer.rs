@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[cfg(feature = "pcre2")]
@@ -49,6 +49,8 @@ pub enum TokenizerError {
     Pcre2NotEnabled,
     #[error("Unknown pretrained model: {0}")]
     UnknownPretrained(String),
+    #[error("Pre-tokenizer pattern list is empty")]
+    EmptyPatternList,
 }
 
 /// Default regex pattern for cl100k_base (GPT-4, GPT-3.5-turbo).
@@ -315,6 +317,72 @@ impl RegexBackend {
     }
 }
 
+/// Compile one pre-tokenizer expression on the selected backend.
+///
+/// The single place that knows how each backend is configured (PCRE2 needs
+/// `utf`+`ucp` to give `\p{…}` and `\s` their Unicode meanings), so a chained
+/// pre-tokenizer's later passes are compiled exactly like its first one.
+fn compile_pattern(
+    pattern: &str,
+    use_pcre2: bool,
+    use_jit: bool,
+) -> Result<RegexBackend, TokenizerError> {
+    #[cfg(feature = "pcre2")]
+    if use_pcre2 {
+        let mut regex_builder = pcre2::bytes::RegexBuilder::new();
+        if use_jit {
+            regex_builder.jit_if_available(true);
+        }
+        regex_builder.utf(true);
+        regex_builder.ucp(true);
+        return Ok(RegexBackend::Pcre2(regex_builder.build(pattern)?));
+    }
+    #[cfg(not(feature = "pcre2"))]
+    let _ = use_pcre2;
+
+    let regex = RegexBuilder::new(pattern).jit(use_jit).build()?;
+    Ok(RegexBackend::Regexr(Box::new(regex)))
+}
+
+/// One pass of llama.cpp's `unicode_regex_split` (`unicode.cpp:990-1088`).
+///
+/// Every span produced by the previous pass is re-matched **independently** —
+/// the expression sees only that span's text, so `^`, `$` and lookaround treat
+/// the span's edges as the edges of the world — and each span is replaced by the
+/// ordered sequence of its matches AND the gaps between them
+/// (`unicode_regex_split_stl`, `unicode.cpp:486-505`: an unmatched prefix is
+/// emitted before every match, and any unmatched tail after the last one).
+///
+/// So a later expression NEVER re-examines the whole text and never merges
+/// anything: it can only cut existing pieces finer. Nothing is exempted from a
+/// later pass either — a gap left by pass 1 is an ordinary span that pass 2
+/// subdivides like any other. That is why a list of N expressions is not the
+/// alternation of those N expressions.
+fn subdivide(re: &RegexBackend, text: &str, spans: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut out = Vec::with_capacity(spans.len());
+    for &(span_start, span_end) in spans {
+        let Some(piece) = text.get(span_start..span_end) else {
+            continue;
+        };
+        let mut last = 0;
+        for (start, end) in re.find_iter(piece) {
+            if start > last {
+                out.push((span_start + last, span_start + start));
+            }
+            // A zero-width match would emit an empty piece upstream too; it
+            // carries no bytes, so it is simply not recorded.
+            if end > start {
+                out.push((span_start + start, span_start + end));
+            }
+            last = end;
+        }
+        if last < piece.len() {
+            out.push((span_start + last, span_end));
+        }
+    }
+    out
+}
+
 /// High-performance BPE tokenizer with regexr backend (default) or PCRE2 (optional).
 ///
 /// # Performance Characteristics
@@ -380,6 +448,17 @@ pub struct Tokenizer {
     special_token_strings: Vec<String>,
     regex: RegexBackend,
     pattern: String,
+    /// Pre-tokenizer expressions applied AFTER [`Tokenizer::regex`], in order —
+    /// llama.cpp's `regex_exprs` list beyond its first entry (see [`subdivide`]).
+    ///
+    /// Empty for a single-expression pre-tokenizer, which is every tiktoken-style
+    /// vocabulary and the throughput-critical case; [`Tokenizer::split_chunks`]
+    /// then runs the untouched single-regex path. Behind an `Arc` so cloning a
+    /// tokenizer shares the compiled passes instead of recompiling them.
+    chain: Arc<[RegexBackend]>,
+    /// Source expressions for [`Tokenizer::chain`], kept so switching backend or
+    /// JIT recompiles the later passes the same way it recompiles the first.
+    chain_patterns: Arc<[String]>,
     special_matcher: Option<AhoCorasick>,
     chunk_cache: Mutex<LruCache<u64, Vec<u32>>>,
     use_byte_level: bool,
@@ -431,6 +510,57 @@ impl Tokenizer {
         pattern: &str,
     ) -> Result<Self, TokenizerError> {
         Self::with_options(encoder, special_tokens, pattern, DEFAULT_CACHE_SIZE, true)
+    }
+
+    /// Create a ByteLevel tokenizer whose pre-tokenizer is a SEQUENCE of
+    /// expressions applied in order, llama.cpp's `regex_exprs` list.
+    ///
+    /// Each expression subdivides the pieces the previous one produced rather
+    /// than re-reading the whole text, and the gaps a pass leaves unmatched stay
+    /// as pieces of their own — see [`subdivide`] for the exact semantics and
+    /// their source. A one-element list is exactly [`Tokenizer::new_byte_level`]
+    /// and keeps the single-regex fast path, so callers can pass a list
+    /// unconditionally without paying for the general machinery.
+    ///
+    /// Vocabularies that need this cannot be expressed as one alternation:
+    /// `falcon` splits punctuation runs, then applies the GPT-2 split to the
+    /// pieces, then cuts digit runs into groups of three.
+    pub fn new_byte_level_chain(
+        encoder: FxHashMap<Vec<u8>, u32>,
+        special_tokens: FxHashMap<String, u32>,
+        patterns: &[&str],
+    ) -> Result<Self, TokenizerError> {
+        let (first, rest) = patterns
+            .split_first()
+            .ok_or(TokenizerError::EmptyPatternList)?;
+        let mut tokenizer = Self::new_byte_level(encoder, special_tokens, first)?;
+        tokenizer.set_chain(rest)?;
+        Ok(tokenizer)
+    }
+
+    /// Compile and install the later pre-tokenizer passes on the current backend.
+    fn set_chain(&mut self, patterns: &[&str]) -> Result<(), TokenizerError> {
+        let compiled = patterns
+            .iter()
+            .map(|p| compile_pattern(p, self.use_pcre2, self.use_jit))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.chain = Arc::from(compiled);
+        self.chain_patterns = patterns.iter().map(|p| (*p).to_owned()).collect();
+        Ok(())
+    }
+
+    /// Recompile the later pre-tokenizer passes after a backend or JIT change.
+    fn rebuild_chain(&mut self) -> Result<(), TokenizerError> {
+        if self.chain_patterns.is_empty() {
+            return Ok(());
+        }
+        let compiled = self
+            .chain_patterns
+            .iter()
+            .map(|p| compile_pattern(p, self.use_pcre2, self.use_jit))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.chain = Arc::from(compiled);
+        Ok(())
     }
 
     /// Create a new tokenizer with SentencePiece mode enabled.
@@ -512,7 +642,7 @@ impl Tokenizer {
             .collect();
 
         // Compile regex with regexr (default backend)
-        let regex = RegexBuilder::new(pattern).jit(true).build()?;
+        let regex = compile_pattern(pattern, false, true)?;
 
         // Build Aho-Corasick automaton for special tokens
         let special_token_strings: Vec<String> = special_tokens.keys().cloned().collect();
@@ -533,8 +663,10 @@ impl Tokenizer {
             special_tokens,
             special_tokens_decoder,
             special_token_strings,
-            regex: RegexBackend::Regexr(Box::new(regex)),
+            regex,
             pattern: pattern.to_string(),
+            chain: Arc::from(Vec::new()),
+            chain_patterns: Arc::from(Vec::new()),
             special_matcher,
             chunk_cache,
             use_byte_level,
@@ -636,20 +768,8 @@ impl Tokenizer {
     #[cfg(feature = "pcre2")]
     pub fn pcre2(mut self, use_pcre2: bool) -> Result<Self, TokenizerError> {
         self.use_pcre2 = use_pcre2;
-        if use_pcre2 {
-            let mut regex_builder = pcre2::bytes::RegexBuilder::new();
-            if self.use_jit {
-                regex_builder.jit_if_available(true);
-            }
-            regex_builder.utf(true);
-            regex_builder.ucp(true);
-            let regex = regex_builder.build(&self.pattern)?;
-            self.regex = RegexBackend::Pcre2(regex);
-        } else {
-            // Switch back to regexr backend
-            let regex = RegexBuilder::new(&self.pattern).jit(self.use_jit).build()?;
-            self.regex = RegexBackend::Regexr(Box::new(regex));
-        }
+        self.regex = compile_pattern(&self.pattern, use_pcre2, self.use_jit)?;
+        self.rebuild_chain()?;
         Ok(self)
     }
 
@@ -686,19 +806,8 @@ impl Tokenizer {
     #[cfg(feature = "pcre2")]
     pub fn jit(mut self, use_jit: bool) -> Result<Self, TokenizerError> {
         self.use_jit = use_jit;
-        if self.use_pcre2 {
-            let mut regex_builder = pcre2::bytes::RegexBuilder::new();
-            if use_jit {
-                regex_builder.jit_if_available(true);
-            }
-            regex_builder.utf(true);
-            regex_builder.ucp(true);
-            let regex = regex_builder.build(&self.pattern)?;
-            self.regex = RegexBackend::Pcre2(regex);
-        } else {
-            let regex = RegexBuilder::new(&self.pattern).jit(use_jit).build()?;
-            self.regex = RegexBackend::Regexr(Box::new(regex));
-        }
+        self.regex = compile_pattern(&self.pattern, self.use_pcre2, use_jit)?;
+        self.rebuild_chain()?;
         Ok(self)
     }
 
@@ -706,8 +815,8 @@ impl Tokenizer {
     #[cfg(not(feature = "pcre2"))]
     pub fn jit(mut self, use_jit: bool) -> Result<Self, TokenizerError> {
         self.use_jit = use_jit;
-        let regex = RegexBuilder::new(&self.pattern).jit(use_jit).build()?;
-        self.regex = RegexBackend::Regexr(Box::new(regex));
+        self.regex = compile_pattern(&self.pattern, self.use_pcre2, use_jit)?;
+        self.rebuild_chain()?;
         Ok(self)
     }
 
@@ -802,6 +911,8 @@ impl Tokenizer {
             special_token_strings,
             regex: RegexBackend::Regexr(Box::new(regex)),
             pattern: pattern.to_string(),
+            chain: Arc::from(Vec::new()),
+            chain_patterns: Arc::from(Vec::new()),
             special_matcher,
             chunk_cache,
             use_byte_level: false,
@@ -815,6 +926,36 @@ impl Tokenizer {
             use_jit: true,
             use_pcre2: false,
         })
+    }
+
+    /// Split `text` into pre-token spans.
+    ///
+    /// The overwhelmingly common case is a single pre-tokenizer expression, and
+    /// that case is the original code verbatim: one `find_iter` over the whole
+    /// text, matches only. The multi-pass machinery costs exactly one
+    /// `is_empty()` test per `encode` call — not per chunk, not per byte — and
+    /// the chained branch is never entered by a single-expression tokenizer, so
+    /// its spans are byte-identical to before.
+    #[inline]
+    fn split_chunks(&self, text: &str) -> Vec<(usize, usize)> {
+        if self.chain.is_empty() {
+            return self.regex.find_iter(text);
+        }
+        self.split_chunks_chained(text)
+    }
+
+    /// [`Tokenizer::split_chunks`] for a multi-expression pre-tokenizer.
+    ///
+    /// Kept out of line so the single-expression path stays a straight call to
+    /// `find_iter`. Unlike that path this keeps unmatched gaps as spans, because
+    /// llama.cpp's `unicode_regex_split_stl` does — including on the FIRST pass,
+    /// whose leftovers a later pass still gets to cut.
+    fn split_chunks_chained(&self, text: &str) -> Vec<(usize, usize)> {
+        let mut spans = subdivide(&self.regex, text, &[(0, text.len())]);
+        for pass in self.chain.iter() {
+            spans = subdivide(pass, text, &spans);
+        }
+        spans
     }
 
     /// Run BPE on a piece, honoring a separate merge-rank map when present.
@@ -939,7 +1080,7 @@ impl Tokenizer {
         let text = self.prefixed(text);
         let text = text.as_ref();
         let text_bytes = text.as_bytes();
-        let chunks = self.regex.find_iter(text);
+        let chunks = self.split_chunks(text);
 
         if chunks.is_empty() {
             return vec![];
@@ -1032,7 +1173,7 @@ impl Tokenizer {
         let text = self.prefixed(text);
         let text = text.as_ref();
         let text_bytes = text.as_bytes();
-        let chunks = self.regex.find_iter(text);
+        let chunks = self.split_chunks(text);
 
         if chunks.is_empty() {
             return vec![];
@@ -1312,6 +1453,10 @@ impl Clone for Tokenizer {
             special_token_strings: self.special_token_strings.clone(),
             regex,
             pattern: self.pattern.clone(),
+            // The later passes are immutable once compiled, so a clone shares
+            // them rather than repeating the (fallible) compilation.
+            chain: Arc::clone(&self.chain),
+            chain_patterns: Arc::clone(&self.chain_patterns),
             special_matcher,
             chunk_cache,
             use_byte_level: self.use_byte_level,
@@ -1478,6 +1623,142 @@ mod tests {
         let tokens = tokenizer.encode(text);
         let decoded = tokenizer.decode(&tokens).unwrap();
         assert_eq!(decoded, text);
+    }
+
+    // ── Multi-pass pre-tokenizer (llama.cpp `unicode_regex_split`) ───────────
+
+    /// Build a tokenizer over `patterns` and report the pieces it splits `text`
+    /// into, so a pass composition can be asserted as text rather than ids.
+    fn pieces(patterns: &[&str], text: &str) -> Vec<String> {
+        let tokenizer =
+            Tokenizer::new_byte_level_chain(FxHashMap::default(), FxHashMap::default(), patterns)
+                .expect("patterns compile");
+        tokenizer
+            .split_chunks(text)
+            .into_iter()
+            .filter_map(|(s, e)| text.get(s..e).map(str::to_owned))
+            .collect()
+    }
+
+    /// A one-expression list must take the single-regex path and behave exactly
+    /// like the plain constructor — matches only, unmatched text dropped.
+    #[test]
+    fn single_expression_list_keeps_the_original_split() {
+        let one = Tokenizer::new_byte_level_chain(
+            FxHashMap::default(),
+            FxHashMap::default(),
+            &[GPT2_PATTERN],
+        )
+        .expect("compiles");
+        assert!(
+            one.chain.is_empty(),
+            "a one-expression list must not engage the chained path"
+        );
+
+        let plain =
+            Tokenizer::new_byte_level(FxHashMap::default(), FxHashMap::default(), GPT2_PATTERN)
+                .expect("compiles");
+        let text = "Hello, world! 1234\n\n  trailing";
+        assert_eq!(one.split_chunks(text), plain.split_chunks(text));
+    }
+
+    /// The defining property: a later pass only subdivides what an earlier pass
+    /// produced. `\p{N}` first cuts every digit apart, so the GPT-2 split's
+    /// ` ?\p{N}+` can no longer take `123` as one piece — which is precisely why
+    /// `starcoder` is not the GPT-2 pre-tokenizer.
+    #[test]
+    fn later_pass_subdivides_earlier_pieces_and_cannot_re_merge() {
+        // One expression: ` ?\p{N}+` takes the whole digit run with its space.
+        assert_eq!(pieces(&[GPT2_PATTERN], "abc 123"), vec!["abc", " 123"]);
+        // Two: `\p{N}` has already cut the digits apart AND left `"abc "` as a
+        // gap, so pass 2 can only split that gap — it can never reunite the
+        // space with a digit.
+        assert_eq!(
+            pieces(&[r"\p{N}", GPT2_PATTERN], "abc 123"),
+            vec!["abc", " ", "1", "2", "3"],
+        );
+    }
+
+    /// Text a pass leaves unmatched is kept as a piece of its own rather than
+    /// dropped, and stays eligible for the passes that follow.
+    #[test]
+    fn unmatched_gaps_are_kept_and_still_subdivided() {
+        // Pass 1 matches only the digits; the letters survive as gaps. Pass 2
+        // then cuts those gaps on the letter/space boundary.
+        assert_eq!(
+            pieces(&[r"\p{N}+", r"\p{L}+"], "ab12cd"),
+            vec!["ab", "12", "cd"],
+        );
+        // With no second pass the same gaps are still pieces, not losses.
+        assert_eq!(
+            pieces(&[r"\p{N}+", r"\p{N}+"], "ab12cd"),
+            vec!["ab", "12", "cd"]
+        );
+    }
+
+    /// Each pass sees one span in isolation, so an anchor or lookahead resolves
+    /// against the span's edges — llama.cpp matches over `[start, start+offset)`
+    /// only (unicode.cpp:487). Here pass 1 isolates the digits, and `^.` in
+    /// pass 2 therefore fires inside EVERY resulting span, not once per text.
+    #[test]
+    fn each_pass_matches_within_a_span_not_across_the_text() {
+        assert_eq!(
+            pieces(&[r"\p{N}+", r"^."], "ab12cd"),
+            vec!["a", "b", "1", "2", "c", "d"],
+        );
+    }
+
+    /// Falcon's three passes compose: punctuation runs first, then the GPT-2
+    /// split inside the remaining pieces, then digit runs chopped into threes
+    /// from the left of each piece pass 2 produced.
+    #[test]
+    fn falcon_three_pass_composition() {
+        let falcon = [r"[\p{P}\$\+<=>\^~\|`]+", GPT2_PATTERN, r"[0-9][0-9][0-9]"];
+        assert_eq!(pieces(&falcon, "a=1234"), vec!["a", "=", "123", "4"]);
+        // The alternation of the same three expressions cannot do this: it takes
+        // `1234` whole via ` ?\p{N}+` and never revisits it.
+        assert_eq!(
+            pieces(&[r"[\p{P}\$\+<=>\^~\|`]+|'s| ?\p{L}+| ?\p{N}+"], "a=1234"),
+            vec!["a", "=", "1234"],
+        );
+    }
+
+    /// An empty list has no first expression to compile and is refused rather
+    /// than silently becoming a no-op split.
+    #[test]
+    fn empty_pattern_list_is_refused() {
+        assert!(matches!(
+            Tokenizer::new_byte_level_chain(FxHashMap::default(), FxHashMap::default(), &[]),
+            Err(TokenizerError::EmptyPatternList)
+        ));
+    }
+
+    /// Switching JIT recompiles the later passes too, so the split is unchanged.
+    #[test]
+    fn toggling_jit_preserves_a_chained_split() {
+        let patterns = [r"\p{N}", GPT2_PATTERN];
+        let tokenizer =
+            Tokenizer::new_byte_level_chain(FxHashMap::default(), FxHashMap::default(), &patterns)
+                .expect("compiles");
+        let text = "abc 123";
+        let before = tokenizer.split_chunks(text);
+        let tokenizer = tokenizer.jit(false).expect("recompiles");
+        assert_eq!(tokenizer.chain.len(), 1);
+        assert_eq!(tokenizer.split_chunks(text), before);
+    }
+
+    /// Cloning shares the compiled passes and keeps the split identical.
+    #[test]
+    fn cloning_preserves_a_chained_split() {
+        let patterns = [r"\p{N}", GPT2_PATTERN];
+        let tokenizer =
+            Tokenizer::new_byte_level_chain(FxHashMap::default(), FxHashMap::default(), &patterns)
+                .expect("compiles");
+        let text = "abc 123";
+        assert_eq!(
+            tokenizer.clone().split_chunks(text),
+            tokenizer.split_chunks(text)
+        );
     }
 
     const _: () = {

@@ -177,8 +177,8 @@ fn gpt2_family_pre_names_all_select_the_gpt2_pattern() {
         "granite-docling",
     ] {
         assert_eq!(
-            byte_level_pattern(Some(name)).unwrap_or("<refused>"),
-            GPT2_PATTERN,
+            byte_level_pattern(Some(name)).unwrap_or(&["<refused>"]),
+            &[GPT2_PATTERN],
             "`{name}` names llama.cpp's GPT-2 split"
         );
     }
@@ -200,8 +200,8 @@ fn qwen2_family_pre_names_all_select_the_qwen2_pattern() {
         "grok-2",
     ] {
         assert_eq!(
-            byte_level_pattern(Some(name)).unwrap_or("<refused>"),
-            QWEN2_PATTERN,
+            byte_level_pattern(Some(name)).unwrap_or(&["<refused>"]),
+            &[QWEN2_PATTERN],
             "`{name}` names llama.cpp's Qwen2 split"
         );
     }
@@ -214,32 +214,90 @@ fn qwen2_family_pre_names_all_select_the_qwen2_pattern() {
 fn llama3_family_pre_names_all_select_the_llama3_pattern() {
     for name in ["llama-bpe", "llama3", "dbrx", "smaug-bpe", "glm4"] {
         assert_eq!(
-            byte_level_pattern(Some(name)).unwrap_or("<refused>"),
-            LLAMA3_PATTERN,
+            byte_level_pattern(Some(name)).unwrap_or(&["<refused>"]),
+            &[LLAMA3_PATTERN],
             "`{name}` names llama.cpp's Llama-3 split"
         );
     }
 }
 
-/// Names whose llama.cpp enum value emits SEVERAL expressions applied in
-/// sequence — each pass subdividing the previous pass's pieces — are not
-/// expressible as one alternation, so they must stay refused rather than be
-/// approximated by the nearest single pattern.
+/// The `pre` names whose enum value emits SEVERAL expressions, and the exact
+/// list each one emits.
+///
+/// A list is applied pass by pass, so both its contents and its ORDER decide the
+/// split; asserting the whole slice pins both. `falcon` cutting digit triples
+/// before the GPT-2 split rather than after would silently produce different
+/// ids.
 #[test]
-fn multi_pass_and_unmatched_pre_names_stay_refused() {
+fn multi_pass_pre_names_select_their_full_expression_list() {
+    let falcon = byte_level_pattern(Some("falcon")).expect("falcon");
+    assert_eq!(falcon.len(), 3, "FALCON emits three expressions");
+    assert_eq!(
+        falcon[1], GPT2_PATTERN,
+        "falcon's middle pass is llama.cpp's GPT-2 split"
+    );
+    assert_eq!(falcon[2], r"[0-9][0-9][0-9]");
+
+    // One `case` label in llama.cpp covers all seven of these.
+    let starcoder = byte_level_pattern(Some("starcoder")).expect("starcoder");
+    assert_eq!(starcoder, &[r"\p{N}", GPT2_PATTERN]);
     for name in [
-        // multi-expression lists
-        "deepseek-llm",
-        "deepseek-coder",
-        "deepseek-v3",
-        "falcon",
-        "starcoder",
         "refact",
         "command-r",
         "smollm",
         "codeshell",
         "exaone",
         "minerva-7b",
+    ] {
+        assert_eq!(
+            byte_level_pattern(Some(name)).unwrap_or(&["<refused>"]),
+            starcoder,
+            "`{name}` shares llama.cpp's STARCODER `case` label"
+        );
+    }
+
+    let coder = byte_level_pattern(Some("deepseek-coder")).expect("deepseek-coder");
+    let llm = byte_level_pattern(Some("deepseek-llm")).expect("deepseek-llm");
+    assert_eq!(coder.len(), 5);
+    assert_eq!(llm.len(), 6);
+    // Both isolate line breaks FIRST, which is what keeps the later `$` in
+    // deepseek-llm's `\s+$` from ever meeting a span containing a newline.
+    assert_eq!(coder[0], r"[\r\n]");
+    assert_eq!(llm[0], r"[\r\n]");
+    // The two DeepSeek dialects differ on digits: runs versus single digits.
+    assert_eq!(coder[4], r"\p{N}");
+    assert_eq!(llm[5], r"\p{N}+");
+    assert_ne!(coder, llm);
+}
+
+/// A multi-pass list is not the alternation of its expressions — the passes
+/// compose, so no single-pattern name may resolve to the same thing.
+#[test]
+fn multi_pass_lists_are_never_a_single_expression() {
+    for name in [
+        "falcon",
+        "starcoder",
+        "refact",
+        "command-r",
+        "deepseek-coder",
+        "deepseek-llm",
+    ] {
+        let list = byte_level_pattern(Some(name)).unwrap_or(&[]);
+        assert!(
+            list.len() > 1,
+            "`{name}` is a sequence of passes, not one pattern"
+        );
+    }
+}
+
+/// Names llama.cpp resolves to an expression list splintr does not reproduce
+/// verbatim must stay refused rather than be approximated by the nearest
+/// pattern: a wrong split is invisible downstream.
+#[test]
+fn unreproduced_pre_names_stay_refused() {
+    for name in [
+        // multi-expression lists not transcribed here
+        "deepseek-v3",
         "chameleon",
         "viking",
         "youtu",
