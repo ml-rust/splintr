@@ -5,7 +5,9 @@ use rustc_hash::FxHashMap;
 
 use super::super::any_tokenizer::{AnyTokenizer, Backend};
 use super::super::bpe;
+use super::super::normalizer::{NormOp, Normalizer};
 use super::super::policy::SpecialPolicy;
+use super::super::precompiled::Precompiled;
 use super::super::sentencepiece::SentencePieceTokenizer;
 use super::super::spm::SpmTokenizer;
 use super::super::tokenizer::{Tokenizer, GPT2_PATTERN, LLAMA3_PATTERN, QWEN2_PATTERN};
@@ -109,13 +111,16 @@ fn build_unigram(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
     let scores = vocab.scores.take().unwrap_or_default();
     let eos_token_id = vocab.eos_token_id.unwrap_or(2);
     let prefix_space = unigram_prefix_space(&vocab);
+    let normalizer = unigram_normalizer(vocab.precompiled_charsmap.as_deref());
 
     // `None` for BOS: boundary tokens are placed by the policy, so the backend
     // must not also prepend one. The backend's `eos` is not a boundary — it only
     // drives decode-skipping and `is_eos` — so it takes the resolved id.
     let backend = Backend::Unigram(
         SentencePieceTokenizer::new(tokens, scores, None, eos_token_id)?
+            .with_normalizer(normalizer)
             .with_prefix_space(prefix_space)
+            .with_remove_extra_whitespaces(remove_extra_whitespaces(&vocab))
             .with_added_tokens(&specials),
     );
 
@@ -279,7 +284,41 @@ pub(super) fn unigram_prefix_space(vocab: &GgufVocab) -> bool {
     add_space_prefix(vocab, true) || remove_extra_whitespaces(vocab)
 }
 
+/// The normalizer a `t5` (Unigram) vocabulary runs before pre-tokenization.
+///
+/// `tokenizer.ggml.precompiled_charsmap` is SentencePiece's own normalization
+/// table, and llama.cpp applies it at the top of `llm_tokenizer_ugm::normalize`
+/// — before the dummy prefix, before space-run merging, before Viterbi. Skipping
+/// it does not merely change spacing: the table folds tab, newline, NBSP, ZWJ
+/// and the fullwidth punctuation block onto forms the vocabulary actually
+/// contains, so an unnormalized `，` or `\t` matches no piece and comes out as
+/// `<unk>`. Measured on bge-m3, that is 10 of 40 reference cases wrong, every
+/// one of them an `<unk>` where the reference has a real token.
+///
+/// This is the same [`NormOp::Precompiled`] step the `tokenizer.json` loader
+/// builds from the base64 `precompiled_charsmap` of a `Precompiled` normalizer —
+/// one decoder, two carriers of the same blob.
+///
+/// A blob that does not parse yields an empty pipeline rather than an error: the
+/// table is an optimization of the vocabulary's own coverage, and refusing to
+/// build a tokenizer that is otherwise complete would be worse than normalizing
+/// nothing. The other dialects get no charsmap step — llama.cpp applies this
+/// table only in its `ugm` (Unigram) tokenizer.
+fn unigram_normalizer(charsmap: Option<&[u8]>) -> Normalizer {
+    let ops = match charsmap.and_then(Precompiled::from_bytes) {
+        Some(pc) => vec![NormOp::Precompiled(pc)],
+        None => Vec::new(),
+    };
+    Normalizer::new(ops)
+}
+
 /// `tokenizer.ggml.remove_extra_whitespaces`, defaulting to false as upstream does.
+///
+/// Two things read it, both on the `t5` path: [`unigram_prefix_space`] above,
+/// and the backend's own space-run merging — llama.cpp's `shall_merge_spaces`,
+/// which turns a run of spaces into one boundary marker instead of one per
+/// space. Set, `"   "` is the same single `▁` piece as `" "`; unset, each space
+/// is its own marker. Either way the spaces are *pieces*, never discarded.
 fn remove_extra_whitespaces(vocab: &GgufVocab) -> bool {
     vocab.remove_extra_whitespaces.unwrap_or(false)
 }

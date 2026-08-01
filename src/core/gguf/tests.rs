@@ -536,3 +536,120 @@ fn control_tokens_still_match_after_widening_to_user_defined() {
     assert_eq!(tok.encode_raw("<start_of_turn>"), vec![3]);
     assert_eq!(tok.special_token_id("<start_of_turn>"), Some(3));
 }
+
+// ── Precompiled charsmap ─────────────────────────────────────────────────────
+//
+// `tokenizer.ggml.precompiled_charsmap` is SentencePiece's normalization table.
+// A Unigram vocabulary is built over its *normalized* pieces, so a character the
+// table folds — tab, newline, NBSP, ZWJ, fullwidth punctuation — has no piece of
+// its own and becomes `<unk>` when the table is not applied. The charsmap below
+// is hand-built rather than borrowed from a real model: a real one is a quarter
+// of a megabyte, and none of these tests may depend on ids the reference
+// tokenizer produces.
+
+/// A genuine, minimal SentencePiece charsmap carrying exactly one rule:
+/// TAB → SPACE.
+///
+/// The format is a darts-clone double-array — `u32` trie size, that many bytes
+/// of `u32` LE units, then the null-terminated replacement strings — and the
+/// three non-zero units encode the single-byte walk the matcher performs:
+///
+/// | unit | meaning |
+/// |---|---|
+/// | `trie[0]` | root, offset 1, so traversal starts at node `0 ^ 1 = 1` |
+/// | `trie[8]` | label `0x09` (TAB), has-leaf, offset 1: reached as `1 ^ 0x09`, leading to `8 ^ 1 = 9` |
+/// | `trie[9]` | leaf, value 0 — offset 0 into the replacement table |
+///
+/// Every other unit is zero, so no other byte matches a label and the walk stops
+/// after one step, which is the matcher's "no rule here, copy the character
+/// verbatim" path.
+fn tab_to_space_charsmap() -> Vec<u8> {
+    let mut trie = [0u32; 16];
+    trie[0] = 1 << 10;
+    trie[8] = (1 << 10) | 0x100 | 0x09;
+    // trie[9] stays 0: a leaf whose value is offset 0, where `" "` sits below.
+
+    let mut blob = Vec::with_capacity(4 + trie.len() * 4 + 2);
+    blob.extend_from_slice(&((trie.len() * 4) as u32).to_le_bytes());
+    for unit in trie {
+        blob.extend_from_slice(&unit.to_le_bytes());
+    }
+    // Replacement table: null-terminated strings, concatenated. Offset 0 is `" "`.
+    blob.extend_from_slice(b" \0");
+    blob
+}
+
+/// A Unigram vocabulary that distinguishes normalized from unnormalized input:
+/// it has a piece for a space-separated `a` and `b`, and no piece for a tab.
+fn t5_charsmap_vocab(charsmap: Option<Vec<u8>>) -> GgufVocab {
+    GgufVocab {
+        model: "t5".to_owned(),
+        tokens: v(&["<unk>", "<s>", "</s>", "▁a", "▁b", "a", "b"]),
+        scores: Some(vec![0.0, 0.0, 0.0, -1.0, -1.0, -5.0, -5.0]),
+        bos_token_id: Some(1),
+        eos_token_id: Some(2),
+        precompiled_charsmap: charsmap,
+        ..GgufVocab::default()
+    }
+}
+
+/// The declared table is applied before segmentation, so a tab tokenizes as the
+/// space it normalizes to.
+#[test]
+fn t5_applies_the_declared_charsmap() {
+    let tok = from_gguf_vocab(t5_charsmap_vocab(Some(tab_to_space_charsmap()))).expect("builds");
+
+    assert_eq!(tok.family(), "Unigram");
+    assert_eq!(
+        tok.encode_raw("a\tb"),
+        tok.encode_raw("a b"),
+        "the charsmap's TAB -> SPACE rule must run before pre-tokenization"
+    );
+    assert!(
+        !tok.encode_raw("a\tb").contains(&0),
+        "a normalized tab must not reach Viterbi as an uncovered character"
+    );
+}
+
+/// The control: without the table the same input degrades to `<unk>`, which is
+/// what makes the test above a test of the charsmap rather than of the vocab.
+#[test]
+fn t5_without_a_charsmap_leaves_the_tab_unnormalized() {
+    let tok = from_gguf_vocab(t5_charsmap_vocab(None)).expect("builds");
+
+    assert_ne!(tok.encode_raw("a\tb"), tok.encode_raw("a b"));
+    assert!(
+        tok.encode_raw("a\tb").contains(&0),
+        "no vocabulary piece covers a raw tab, so it must fall back to <unk>"
+    );
+}
+
+/// A blob that is not a usable table normalizes nothing, and must not refuse a
+/// vocabulary that is otherwise complete — nor panic on the first input. Four
+/// zero bytes are the awkward case: a well-formed header declaring an empty
+/// trie, which has no root unit for the matcher to start from.
+#[test]
+fn an_unusable_charsmap_falls_back_to_no_normalization() {
+    let tok = from_gguf_vocab(t5_charsmap_vocab(Some(vec![0, 0, 0, 0]))).expect("builds");
+    let plain = from_gguf_vocab(t5_charsmap_vocab(None)).expect("builds");
+
+    assert_eq!(tok.encode_raw("a\tb"), plain.encode_raw("a\tb"));
+}
+
+/// The charsmap is a Unigram rule. llama.cpp applies this table in its `ugm`
+/// tokenizer only, so a `llama` (SentencePiece BPE) vocabulary that carries one
+/// must tokenize exactly as it does without.
+#[test]
+fn the_charsmap_is_a_unigram_rule_only() {
+    let with = from_gguf_vocab(GgufVocab {
+        precompiled_charsmap: Some(tab_to_space_charsmap()),
+        ..llama_vocab()
+    })
+    .expect("builds");
+    let without = from_gguf_vocab(llama_vocab()).expect("builds");
+
+    assert_eq!(
+        with.encode_raw("hello\tworld"),
+        without.encode_raw("hello\tworld")
+    );
+}

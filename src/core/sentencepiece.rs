@@ -55,8 +55,12 @@ pub struct SentencePieceTokenizer {
     min_score: f32,
     /// Ordered normalizer pipeline applied before pre-tokenization.
     normalizer: super::normalizer::Normalizer,
-    /// Metaspace `add_prefix_space`: prepend `▁` to the first word too.
+    /// Metaspace `add_prefix_space`: mark the start of the input with `▁` when
+    /// it is not already marked.
     add_prefix_space: bool,
+    /// SentencePiece `remove_extra_whitespaces`: a run of spaces escapes to a
+    /// single `▁` rather than one per space.
+    remove_extra_whitespaces: bool,
     /// Added tokens recognized in the input (HF matches these during encoding).
     added: Option<super::added::AddedTokens>,
     /// Ids of `special=true` added tokens dropped on decode (HF default).
@@ -121,6 +125,7 @@ impl SentencePieceTokenizer {
             min_score,
             normalizer: super::normalizer::Normalizer::default(),
             add_prefix_space: true,
+            remove_extra_whitespaces: false,
             added: None,
             special_decode: rustc_hash::FxHashSet::default(),
         })
@@ -147,8 +152,26 @@ impl SentencePieceTokenizer {
 
     /// Set Metaspace `add_prefix_space` (whether the first word gets a leading
     /// `▁`). Defaults to true. Returns `self` for chaining.
+    ///
+    /// Matches HuggingFace's `Metaspace`: the marker is added only when the
+    /// escaped text does not already start with one, so a leading space in the
+    /// input is *the* prefix rather than getting a second marker in front of it.
     pub fn with_prefix_space(mut self, add_prefix_space: bool) -> Self {
         self.add_prefix_space = add_prefix_space;
+        self
+    }
+
+    /// Set SentencePiece `remove_extra_whitespaces` (GGUF
+    /// `tokenizer.ggml.remove_extra_whitespaces`): whether a run of spaces
+    /// collapses to a single `▁`. Defaults to false. Returns `self` for chaining.
+    ///
+    /// False is the right default for a HuggingFace `tokenizer.json`, which
+    /// declares the collapse as a normalizer step instead (XLM-R and friends
+    /// carry `Replace{" {2,}" → " "}` after the precompiled charsmap), and
+    /// applying it twice would be harmless but applying it when the file never
+    /// asked would not.
+    pub fn with_remove_extra_whitespaces(mut self, remove_extra_whitespaces: bool) -> Self {
+        self.remove_extra_whitespaces = remove_extra_whitespaces;
         self
     }
 
@@ -181,21 +204,43 @@ impl SentencePieceTokenizer {
     /// Encode without added-token matching (pure Unigram Viterbi). Never emits
     /// BOS/EOS — see [`encode`](Self::encode).
     pub fn encode_ordinary(&self, text: &str) -> Vec<u32> {
-        let mut tokens = Vec::new();
+        // Empty input has nothing to mark a boundary *of*: HuggingFace and
+        // SentencePiece both return no ids. The guard belongs here rather than
+        // in the escaping, whose leading marker is correct for every non-empty
+        // input — and here rather than in `encode`, so that attaching an
+        // added-token matcher (which skips the gap encoder for "") cannot change
+        // the answer.
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let normalized = self.normalize(text);
+        // A normalizer can empty a non-empty input too (a `Strip` over pure
+        // whitespace). HF's `prepend` is a no-op on an empty string, so no
+        // marker is manufactured there either.
+        if normalized.is_empty() {
+            return Vec::new();
+        }
 
-        // Normalize, then SentencePiece pre-tokenization: split on whitespace
-        // (collapsing runs) and prefix each word with ▁ (WhitespaceSplit +
-        // Metaspace). Each word is then Viterbi-segmented independently.
-        let text = self.normalize(text);
-        for (i, word) in text.split_whitespace().enumerate() {
-            // Metaspace prepends ▁ to each word; with add_prefix_space=false the
-            // very first word keeps no leading ▁.
-            let piece = if i == 0 && !self.add_prefix_space {
-                word.to_string()
+        // SentencePiece pre-tokenization: spaces become `▁` pieces (they are
+        // vocabulary entries, not delimiters to discard) and the text is cut
+        // before each marker. Each segment is then Viterbi-segmented
+        // independently.
+        let escaped = super::metaspace::escape(
+            &normalized,
+            if self.add_prefix_space {
+                super::metaspace::Prefix::WhenAbsent
             } else {
-                format!("▁{word}")
-            };
-            self.viterbi_piece(&piece.chars().collect::<Vec<_>>(), &mut tokens);
+                super::metaspace::Prefix::None
+            },
+            self.remove_extra_whitespaces,
+        );
+
+        let mut tokens = Vec::new();
+        let mut chars: Vec<char> = Vec::new();
+        for segment in super::metaspace::segments(&escaped) {
+            chars.clear();
+            chars.extend(segment.chars());
+            self.viterbi_piece(&chars, &mut tokens);
         }
         tokens
     }
@@ -536,10 +581,69 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// A space is a vocabulary piece, not a delimiter: `" "` must encode to the
+    /// boundary token rather than to nothing. Reference (HF `tokenizers` on
+    /// BAAI/bge-m3, `add_special_tokens=False`): `" "` -> `[6]`, the id of `▁`.
+    #[test]
+    fn a_standalone_space_encodes_to_the_boundary_piece() {
+        let tok = make_tokenizer();
+        assert_eq!(tok.encode(" "), vec![5]);
+        // Not an artifact of the dummy prefix: it is the space itself, so it
+        // survives with prefixing disabled too.
+        assert_eq!(
+            make_tokenizer().with_prefix_space(false).encode(" "),
+            vec![5]
+        );
+    }
+
+    /// Trailing whitespace is a trailing boundary piece. Reference row:
+    /// `"trailing whitespace   "` ends in the `▁` id, where whitespace-splitting
+    /// pre-tokenization dropped it entirely.
+    #[test]
+    fn trailing_whitespace_keeps_its_boundary_piece() {
+        let tok = make_tokenizer();
+        assert_eq!(tok.encode("Hello world "), vec![3, 4, 5]);
+        assert_eq!(tok.encode("Hello "), vec![3, 5]);
+    }
+
+    /// `remove_extra_whitespaces` merges a run of spaces into one marker — the
+    /// reference collapses `" "`, `"  "` and `"   "` to the same single piece —
+    /// while leaving it unset keeps one marker per space.
+    #[test]
+    fn collapsing_makes_a_run_of_spaces_one_boundary_piece() {
+        let collapsing = make_tokenizer().with_remove_extra_whitespaces(true);
+        assert_eq!(collapsing.encode("   "), collapsing.encode(" "));
+        assert_eq!(collapsing.encode("   "), vec![5]);
+        assert_eq!(collapsing.encode("Hello   world"), vec![3, 4]);
+
+        let keeping = make_tokenizer();
+        assert_eq!(keeping.encode("   "), vec![5, 5, 5]);
+    }
+
+    /// A leading space round-trips: with prefixing disabled it is content, so
+    /// decode puts it back; with prefixing enabled it *is* the dummy prefix (HF's
+    /// Metaspace does not add a second marker in front of one), so encoding is
+    /// identical to the unspaced input and decode removes exactly the one marker
+    /// the pre-tokenizer is responsible for.
+    #[test]
+    fn a_leading_space_round_trips_through_decode() {
+        let no_prefix = make_tokenizer().with_prefix_space(false);
+        let ids = no_prefix.encode(" Hello");
+        assert_eq!(ids, vec![3]);
+        assert_eq!(no_prefix.decode(&ids).unwrap(), " Hello");
+
+        let with_prefix = make_tokenizer();
+        assert_eq!(with_prefix.encode(" Hello"), with_prefix.encode("Hello"));
+        assert_eq!(
+            with_prefix.decode(&with_prefix.encode(" Hello")).unwrap(),
+            "Hello"
+        );
+    }
+
     #[test]
     fn test_encode_empty_string() {
-        // Empty input has no whitespace-split words, so no pieces are emitted
-        // (matching HF's WhitespaceSplit+Metaspace) — and, per the raw-backend
+        // Empty input has nothing to mark a boundary *of*, so no pieces are
+        // emitted (matching HF and SentencePiece) — and, per the raw-backend
         // invariant, no BOS either, whether or not one is configured.
         let tok = make_tokenizer();
         assert!(tok.encode("").is_empty());

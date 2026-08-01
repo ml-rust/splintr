@@ -40,7 +40,9 @@ pub struct GgufVocab {
     /// defaulting to true.
     pub add_space_prefix: Option<bool>,
     /// `tokenizer.ggml.remove_extra_whitespaces`, defaulting to false. Read only
-    /// by the `t5` path — see `unigram_prefix_space` in the loader.
+    /// by the `t5` path, where it decides both whether the first word is marked
+    /// (see `unigram_prefix_space` in the loader) and whether a run of spaces
+    /// collapses to a single `▁` piece.
     pub remove_extra_whitespaces: Option<bool>,
     /// `tokenizer.ggml.add_bos_token`.
     pub add_bos_token: Option<bool>,
@@ -61,4 +63,18 @@ pub struct GgufVocab {
     /// `tokenizer.ggml.pre`: which pre-tokenizer a `gpt2` vocabulary was built
     /// with. llama.cpp treats an absent key as `"default"`.
     pub pre: Option<String>,
+    /// `tokenizer.ggml.precompiled_charsmap`: SentencePiece's normalization
+    /// table, verbatim — a darts-clone trie mapping input byte sequences to
+    /// their normalized form. GGUF stores it as a `UINT8` array, so a caller
+    /// passes those bytes unchanged.
+    ///
+    /// Read by the `t5` (Unigram) path, which is where llama.cpp applies it
+    /// (`llm_tokenizer_ugm::normalize`). Without it the characters the table
+    /// folds — tab, newline, NBSP, ZWJ, fullwidth punctuation — reach Viterbi
+    /// as themselves, and a Unigram vocabulary that only ever saw their
+    /// normalized forms has no piece for them, so each one becomes `<unk>`.
+    ///
+    /// `None` means the file declares no table, which is the common case: only
+    /// SentencePiece-derived vocabularies carry one.
+    pub precompiled_charsmap: Option<Vec<u8>>,
 }

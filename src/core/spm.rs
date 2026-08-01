@@ -24,10 +24,8 @@ use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
 use thiserror::Error;
 
+use super::metaspace::{self, Prefix, WORD_BOUNDARY};
 use super::tokenize::{Tokenize, TokenizeError};
-
-/// The SentencePiece word-boundary marker (U+2581 LOWER ONE EIGHTH BLOCK).
-const WORD_BOUNDARY: &str = "\u{2581}";
 
 /// SentencePiece's "never merge" score sentinel.
 ///
@@ -208,19 +206,19 @@ impl SpmTokenizer {
 
     /// SentencePiece normalization: spaces become the boundary marker, with an
     /// optional leading marker.
+    ///
+    /// The dummy prefix is [`Prefix::Always`] — llama.cpp prepends it even when
+    /// the input already starts with a space, which is what the 46/46 reference
+    /// agreement rests on — and spaces are never merged: this backend's
+    /// vocabularies carry the whitespace-run pieces (`▁▁`, …) and merge them
+    /// themselves.
     fn normalize(&self, text: &str) -> String {
-        let mut out = String::with_capacity(text.len() + WORD_BOUNDARY.len());
-        if self.add_prefix_space {
-            out.push_str(WORD_BOUNDARY);
-        }
-        for ch in text.chars() {
-            if ch == ' ' {
-                out.push_str(WORD_BOUNDARY);
-            } else {
-                out.push(ch);
-            }
-        }
-        out
+        let prefix = if self.add_prefix_space {
+            Prefix::Always
+        } else {
+            Prefix::None
+        };
+        metaspace::escape(text, prefix, false)
     }
 
     /// Merge adjacent symbols, best score first, until nothing merges.

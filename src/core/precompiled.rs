@@ -47,7 +47,12 @@ impl Precompiled {
         }
         let trie_size = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
         let trie_end = 4 + trie_size;
-        if trie_end > blob.len() || !trie_size.is_multiple_of(4) {
+        // `trie_size == 0` is rejected alongside the malformed cases: the
+        // matcher starts from the root unit, so a table with no root has no
+        // usable entry point. Accepting it would build a `Precompiled` that
+        // panics on the first non-empty input instead of one that normalizes
+        // nothing.
+        if trie_end > blob.len() || trie_size == 0 || !trie_size.is_multiple_of(4) {
             return None;
         }
         let trie = blob[4..trie_end]

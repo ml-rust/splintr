@@ -37,6 +37,7 @@ pub mod byte_level;
 mod decoder;
 pub mod gguf;
 pub mod hf_json;
+mod metaspace;
 mod normalizer;
 mod policy;
 mod precompiled;

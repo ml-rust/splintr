@@ -260,8 +260,11 @@ fn build_unigram(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
         .unwrap_or(0);
 
     let ops = parse_norm_ops(root.get("normalizer"))?;
-    // SentencePiece whitespace-splits internally, so `pre` is consulted only for
-    // `add_prefix_space` — there is no GPT-2 default to silently guess here.
+    // The Unigram backend does its own metaspace escaping and splitting, so
+    // `pre` is consulted only for `add_prefix_space` — there is no GPT-2 default
+    // to silently guess here. Space-run merging stays off: a `tokenizer.json`
+    // that wants it declares it as a normalizer step (XLM-R's
+    // `Replace{" {2,}" → " "}`), which the pipeline above already applies.
     let pre = parse_pre_tokenizer(root.get("pre_tokenizer"));
     let tok = SentencePieceTokenizer::new(tokens, scores, None, eos)?
         .with_normalizer(Normalizer::new(ops))
