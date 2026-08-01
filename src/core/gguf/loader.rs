@@ -58,11 +58,11 @@ pub fn from_gguf_vocab(vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
 /// `bert`: WordPiece. Boundaries come from `[CLS]`/`[SEP]` in the vocabulary, so
 /// no boundary template is synthesized.
 fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
-    // Control tokens are read from the ORIGINAL strings, before normalization:
-    // `normalize_wordpiece_vocab` rewrites unbracketed pieces to `##X`, which would
-    // spell a control token as something no input ever contains. The rewrite is
-    // index-preserving, so these surface strings and the normalized vocab below
-    // agree on every id.
+    // Control and user-defined tokens are read from the ORIGINAL strings, before
+    // normalization: `normalize_wordpiece_vocab` rewrites unbracketed pieces to
+    // `##X`, which would spell one of these as something no input ever
+    // contains. The rewrite is index-preserving, so these surface strings and
+    // the normalized vocab below agree on every id.
     let mut named = special_token_map(&vocab, &vocab.tokens);
 
     // Convert a SentencePiece-marked vocab to WordPiece convention first —
@@ -79,7 +79,7 @@ fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
 
     // The named map is how a caller asks for `[CLS]` by name; BERT-family models
     // need those ids to assemble the pairs their heads were trained on. These are
-    // merged over the control tokens rather than replacing them: `lookup_special`
+    // merged over the control/user-defined tokens rather than replacing them: `lookup_special`
     // can resolve an id from metadata that the type array never flags, so dropping
     // it would lose a lookup that works today.
     for name in ["[UNK]", "[PAD]", "[CLS]", "[SEP]"] {
@@ -165,9 +165,9 @@ fn build_byte_level_bpe(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabE
     }
 
     let merge_ranks = build_merge_ranks(&merges, &tokens);
-    // Two distinct uses of the same control tokens: `specials` teaches the
-    // encoder to match them in the input, `named` lets a caller look one up by
-    // name. Neither substitutes for the other.
+    // Two distinct uses of the same control/user-defined tokens: `specials`
+    // teaches the encoder to match them in the input, `named` lets a caller
+    // look one up by name. Neither substitutes for the other.
     let specials = special_token_map(&vocab, &tokens);
     let named = specials.clone();
     let pattern = byte_level_pattern(vocab.pre.as_deref())?;
@@ -301,7 +301,18 @@ pub(super) fn build_merge_ranks(merges: &[String], tokens: &[String]) -> FxHashM
 /// CONTROL in the GGUF `tokenizer.ggml.token_type` enum.
 const CONTROL_TOKEN_TYPE: u32 = 3;
 
-/// Map of special/control token strings to ids, for added-token matching.
+/// USER_DEFINED in the GGUF `tokenizer.ggml.token_type` enum.
+const USER_DEFINED_TOKEN_TYPE: u32 = 4;
+
+/// Map of special/control/user-defined token strings to ids, for added-token
+/// matching.
+///
+/// llama.cpp partitions both CONTROL and USER_DEFINED tokens out of the input
+/// text as literal strings before merging even begins — neither ever
+/// participates in the merge loop. Selecting CONTROL alone misses vocabularies
+/// that spell their added tokens as USER_DEFINED, e.g. Gemma's whitespace-run
+/// pieces (`"  "`, `"   "`, ...), which then never match and silently fall
+/// through to be re-merged from single-space pieces instead.
 fn special_token_map(vocab: &GgufVocab, tokens: &[String]) -> FxHashMap<String, u32> {
     let mut specials = FxHashMap::default();
 
@@ -309,7 +320,10 @@ fn special_token_map(vocab: &GgufVocab, tokens: &[String]) -> FxHashMap<String, 
         // Driven from the tokens so an id the type array covers but the vocab
         // does not is skipped rather than indexed.
         for (id, token) in tokens.iter().enumerate() {
-            if types.get(id) == Some(&CONTROL_TOKEN_TYPE) {
+            if matches!(
+                types.get(id),
+                Some(&CONTROL_TOKEN_TYPE) | Some(&USER_DEFINED_TOKEN_TYPE)
+            ) {
                 specials.insert(token.clone(), id as u32);
             }
         }

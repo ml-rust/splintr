@@ -492,3 +492,47 @@ fn a_vocabulary_without_token_types_gets_no_specials() {
         "nothing declared the token special, so it is ordinary text"
     );
 }
+
+// ── USER_DEFINED tokens (Gemma whitespace runs) ──────────────────────────────
+//
+// llama.cpp matches CONTROL *and* USER_DEFINED tokens as literal strings
+// before merging even begins — neither ever reaches the merge loop. Gemma
+// spells its whitespace-run pieces (`"  "`, `"   "`, ...) as USER_DEFINED, so
+// selecting CONTROL alone leaves those runs unmatched: they fall through to
+// the merge loop and come out as the single-space piece repeated instead of
+// the trained multi-space token.
+
+/// A USER_DEFINED-flagged multi-space piece must match the run verbatim, the
+/// same way a CONTROL token does, and be resolvable by name.
+#[test]
+fn user_defined_whitespace_run_matches_as_one_token() {
+    let tok = from_gguf_vocab(GgufVocab {
+        tokens: v(&["<unk>", "<s>", "</s>", "▁", "  "]),
+        token_type: Some(vec![3, 3, 3, 1, 4]),
+        ..llama_vocab()
+    })
+    .expect("builds");
+
+    assert_eq!(tok.family(), "Spm");
+    assert_eq!(
+        tok.encode_raw("  "),
+        vec![4],
+        "a USER_DEFINED whitespace run must match verbatim, not merge from repeated single-space pieces"
+    );
+    assert_eq!(tok.special_token_id("  "), Some(4));
+}
+
+/// Widening the selector to include USER_DEFINED must not have swapped it in
+/// place of CONTROL: a CONTROL token still has to match and resolve by name.
+#[test]
+fn control_tokens_still_match_after_widening_to_user_defined() {
+    let tok = from_gguf_vocab(GgufVocab {
+        tokens: v(&["<unk>", "<s>", "</s>", "<start_of_turn>", "▁", "  "]),
+        token_type: Some(vec![3, 3, 3, 3, 1, 4]),
+        ..llama_vocab()
+    })
+    .expect("builds");
+
+    assert_eq!(tok.encode_raw("<start_of_turn>"), vec![3]);
+    assert_eq!(tok.special_token_id("<start_of_turn>"), Some(3));
+}

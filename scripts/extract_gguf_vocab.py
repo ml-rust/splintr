@@ -23,7 +23,21 @@ That rendering exists so the byte-level BPE path can be pointed at a GGUF
 `model=llama` vocabulary and scored against the same llama.cpp fixtures as the
 piece-level `SpmTokenizer` (see `examples/verify_spm_vs_bpe.rs`).
 
-Requires the `gguf` package (`pip install gguf`).
+With `--reference-spm PATH` the `cases[]` are generated instead from a
+SentencePiece reference model: a fixed, committed corpus of test strings (see
+`REFERENCE_CORPUS` below) is run through `sentencepiece.SentencePieceProcessor(
+PATH).encode(text)` and the resulting ids become the expected output, in the
+exact same `{"input": ..., "expected": [...]}` shape the `.inp`/`.out` path
+produces — `examples/verify_gguf.rs` needs no changes to consume either kind.
+Before writing anything, the SP model and the GGUF vocabulary are sanity-gated
+against each other (piece counts and a sample of piece strings must match
+exactly); a mismatch aborts with an error rather than silently emitting a
+fixture paired with the wrong tokenizer. The JSON also records a `reference`
+block naming the SP model path and installed `sentencepiece` version, so an
+SPM-sourced fixture can never be mistaken for an llama.cpp-sourced one.
+
+Requires the `gguf` package (`pip install gguf`); `--reference-spm` further
+requires the `sentencepiece` package (`pip install sentencepiece`).
 """
 
 from __future__ import annotations
@@ -151,6 +165,149 @@ def read_cases(gguf_path: Path) -> list[dict]:
     ]
 
 
+# Fixed corpus for the `--reference-spm` path. Committed so every run of the
+# script against the same reference model reproduces the same fixture. Picked
+# to hit what actually breaks SentencePiece-style tokenizers, not to dodge
+# awkward cases: whitespace edge cases (empty, runs, leading/trailing, tabs,
+# newlines), ordinary words, punctuation, contractions, CJK, emoji including a
+# ZWJ sequence, accented Latin, digits/digit runs, a code snippet, and a
+# mixed-script line.
+REFERENCE_CORPUS: list[str] = [
+    "",
+    " ",
+    "  ",
+    "   ",
+    "a",
+    " a",
+    "a ",
+    " a ",
+    "hello world",
+    "Hello World!",
+    "the quick brown fox jumps over the lazy dog",
+    "\tindented\twith\ttabs",
+    "line one\nline two\nline three",
+    "\n\n\n",
+    "trailing whitespace   ",
+    "   leading whitespace",
+    "multiple   internal    spaces",
+    "I've got it, don't worry.",
+    "it's a test — isn't it?",
+    "punctuation: ,.!?;:'\"()[]{}",
+    "hyphenated-word and em—dash",
+    "こんにちは世界",
+    "日本語のテキストです。",
+    "你好，世界！",
+    "안녕하세요 세계",
+    "emoji test 😀🎉🚀",
+    "family: 👨‍👩‍👧‍👦",
+    "flag: 🏳️‍🌈",
+    "café résumé naïve",
+    "Zürich Ångström Curaçao",
+    "0123456789",
+    "the year 2024 had 365 days",
+    "price: $19.99, quantity: 42",
+    "def add(a, b):\n    return a + b\n",
+    "if (x == 42) { print(\"hi\"); }",
+    "Mixed 混合 текст with 日本語 and English.",
+    "русский текст с числами 123",
+    "a\tb\nc d",
+    "   \t\n   ",
+    "The quick fox",  # U+00A0 non-breaking spaces
+]
+
+# How many (evenly spaced) ids the sanity gate below cross-checks between the
+# GGUF vocabulary and the SentencePiece reference model. Not exhaustive by
+# design -- an exhaustive compare is just `tokens == [sp.id_to_piece(i) ...]`,
+# which is cheap enough, but sampling keeps the check's cost describable and
+# its failure output short; a genuinely mismatched pairing disagrees on
+# nearly every id, so a sample of a few hundred catches it just as reliably.
+SANITY_SAMPLE_SIZE = 256
+
+
+def sanity_check_spm_pairing(vocab: dict, sp) -> None:
+    """Verify `sp` is the tokenizer that actually produced this GGUF vocabulary.
+
+    Pairing a GGUF file with the wrong reference `.model` would silently
+    produce a `cases[]` fixture that looks authoritative but diffs splintr
+    against nonsense. Two checks, both required:
+
+      1. `sp.get_piece_size()` equals the GGUF's token count exactly.
+      2. A sample of ids resolve to byte-identical piece strings in both.
+
+    Raises `ValueError` (never returns a partial/soft result) on any mismatch.
+    """
+    tokens: list[str] = vocab["tokens"]
+    sp_size = sp.get_piece_size()
+    if sp_size != len(tokens):
+        raise ValueError(
+            f"reference SPM has {sp_size} pieces but GGUF vocabulary has "
+            f"{len(tokens)} tokens -- refusing to pair a reference tokenizer "
+            f"with a mismatched vocabulary"
+        )
+
+    n = len(tokens)
+    if n <= SANITY_SAMPLE_SIZE:
+        sample_ids = range(n)
+    else:
+        step = n / SANITY_SAMPLE_SIZE
+        sample_ids = {int(i * step) for i in range(SANITY_SAMPLE_SIZE)}
+        sample_ids.add(n - 1)
+
+    mismatches = []
+    for token_id in sample_ids:
+        sp_piece = sp.id_to_piece(token_id)
+        gguf_piece = tokens[token_id]
+        if sp_piece != gguf_piece:
+            mismatches.append((token_id, sp_piece, gguf_piece))
+
+    if mismatches:
+        detail = "\n".join(
+            f"    id {tid}: sp={sp_piece!r} gguf={gguf_piece!r}"
+            for tid, sp_piece, gguf_piece in mismatches[:10]
+        )
+        raise ValueError(
+            f"reference SPM and GGUF vocabulary disagree on "
+            f"{len(mismatches)}/{len(sample_ids)} sampled piece(s) -- refusing "
+            f"to pair a reference tokenizer with a mismatched vocabulary:\n{detail}"
+        )
+
+
+def generate_cases_from_spm(vocab: dict, spm_path: Path) -> tuple[list[dict], dict]:
+    """Run `REFERENCE_CORPUS` through the SentencePiece reference model.
+
+    Returns `(cases, reference_meta)`: `cases` is exactly the `.inp`/`.out`
+    shape (`{"input": ..., "expected": [id, ...]}`), and `reference_meta` is
+    the `reference` block recorded in the JSON so this fixture can never be
+    mistaken for one sourced from llama.cpp's `.inp`/`.out` files.
+
+    Raises `ValueError` if `sanity_check_spm_pairing` rejects the pairing --
+    the caller must not write a fixture in that case.
+    """
+    try:
+        import sentencepiece as spm
+    except ImportError:  # pragma: no cover - tooling script
+        raise ValueError(
+            "the 'sentencepiece' package is required for --reference-spm "
+            "(pip install sentencepiece)"
+        ) from None
+
+    sp = spm.SentencePieceProcessor()
+    sp.load(str(spm_path))
+
+    sanity_check_spm_pairing(vocab, sp)
+
+    cases = [
+        {"input": text, "expected": [int(i) for i in sp.encode(text)]}
+        for text in REFERENCE_CORPUS
+    ]
+    reference_meta = {
+        "source": "sentencepiece",
+        "model_path": str(spm_path),
+        "sentencepiece_version": spm.__version__,
+    }
+    return cases, reference_meta
+
+
 def piece_to_bytes(piece: str) -> bytes:
     """Render one GGUF `model=llama` piece as the raw bytes it stands for.
 
@@ -251,6 +408,14 @@ def main() -> int:
         action="store_true",
         help="skip vocabularies that ship no .inp/.out fixtures",
     )
+    parser.add_argument(
+        "--reference-spm",
+        type=Path,
+        help="generate cases[] from this SentencePiece .model file run over "
+        "REFERENCE_CORPUS, instead of sibling .inp/.out files (requires the "
+        "'sentencepiece' package). Applies to every input in this invocation, "
+        "so pass one .gguf file per run when its reference tokenizer differs.",
+    )
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -259,12 +424,18 @@ def main() -> int:
 
     failures = 0
     for gguf_path in collect(args.inputs):
+        reference_meta = None
         try:
-            cases = read_cases(gguf_path)
+            vocab = read_metadata(gguf_path)
+            if args.reference_spm is not None:
+                cases, reference_meta = generate_cases_from_spm(
+                    vocab, args.reference_spm
+                )
+            else:
+                cases = read_cases(gguf_path)
             if args.require_cases and not cases:
                 print(f"skip  {gguf_path.name}: no .inp/.out fixtures")
                 continue
-            vocab = read_metadata(gguf_path)
         except Exception as exc:  # tooling: report and keep going
             print(f"FAIL  {gguf_path.name}: {exc}", file=sys.stderr)
             failures += 1
@@ -276,6 +447,8 @@ def main() -> int:
             "vocab": vocab,
             "cases": cases,
         }
+        if reference_meta is not None:
+            payload["reference"] = reference_meta
         out_path = args.out_dir / f"{gguf_path.stem}.json"
         with out_path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False)
