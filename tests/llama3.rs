@@ -3,6 +3,7 @@
 //! These tests verify that the Llama 3 tokenizer correctly encodes and decodes text,
 //! handles special tokens, and produces consistent results.
 
+use splintr::pretrained::{llama3_special_tokens, LLAMA3_VOCAB};
 use splintr::{Tokenizer, LLAMA3_PATTERN};
 use std::sync::LazyLock;
 
@@ -387,56 +388,23 @@ fn create_llama3_tokenizer_by_name(_name: &str) -> Tokenizer {
     create_llama3_tokenizer_impl()
 }
 
-/// Implementation that actually constructs the tokenizer
+/// Implementation that actually constructs the tokenizer.
+///
+/// Built entirely from the production pieces — `LLAMA3_VOCAB`, `LLAMA3_PATTERN`,
+/// `llama3_special_tokens()` — mirroring what
+/// `pretrained::from_vocab(PretrainedVocab::Llama3)` actually builds
+/// (`Tokenizer::from_bytes_chain(LLAMA3_VOCAB, &[LLAMA3_PATTERN], special)`), so
+/// this fixture cannot drift from production. It previously re-declared its own
+/// special-token table, which had fallen 27 tokens behind production: missing
+/// the `<|audio|>`/`<|/audio|>` and `<|video|>`/`<|/video|>` multimodal pairs, and
+/// missing the `<|lang|>`..`<|/lang|>`, `<|context|>`..`<|/context|>`,
+/// `<|quote|>`..`<|/quote|>`, `<|cite|>`..`<|/cite|>`, `<|source|>`..`<|/source|>`,
+/// `<|memory|>`..`<|/memory|>`, `<|recall|>`..`<|/recall|>`, `<|pad|>`, `<|stop|>`,
+/// `<|sep|>`, `<|title|>`..`<|/title|>`, `<|section|>`..`<|/section|>`, and
+/// `<|summary|>`..`<|/summary|>` agent tokens. Every entry the old table did have
+/// matched production's id exactly, so this was purely additive drift, not a
+/// conflict.
 fn create_llama3_tokenizer_impl() -> Tokenizer {
-    // Load the embedded vocab
-    let vocab_bytes = include_bytes!("../python/splintr/vocabs/llama3.tiktoken");
-
-    let mut special = rustc_hash::FxHashMap::default();
-
-    // Meta standard special tokens (128000-128010)
-    special.insert("<|begin_of_text|>".to_string(), 128000);
-    special.insert("<|end_of_text|>".to_string(), 128001);
-    special.insert("<|reserved_special_token_0|>".to_string(), 128002);
-    special.insert("<|reserved_special_token_1|>".to_string(), 128003);
-    special.insert("<|finetune_right_pad_id|>".to_string(), 128004);
-    special.insert("<|step_id|>".to_string(), 128005); // Llama 3.2-Vision
-    special.insert("<|start_header_id|>".to_string(), 128006);
-    special.insert("<|end_header_id|>".to_string(), 128007);
-    special.insert("<|eom_id|>".to_string(), 128008);
-    special.insert("<|eot_id|>".to_string(), 128009);
-    special.insert("<|python_tag|>".to_string(), 128010);
-
-    // Llama 3.2-Vision multimodal token
-    special.insert("<|image|>".to_string(), 128256);
-    special.insert("<|/image|>".to_string(), 128257);
-
-    // Agent tokens (128300+)
-    special.insert("<|system|>".to_string(), 128300);
-    special.insert("<|user|>".to_string(), 128301);
-    special.insert("<|assistant|>".to_string(), 128302);
-    special.insert("<|im_start|>".to_string(), 128303);
-    special.insert("<|im_end|>".to_string(), 128304);
-    special.insert("<|think|>".to_string(), 128305);
-    special.insert("<|/think|>".to_string(), 128306);
-    special.insert("<|plan|>".to_string(), 128307);
-    special.insert("<|/plan|>".to_string(), 128308);
-    special.insert("<|step|>".to_string(), 128309);
-    special.insert("<|/step|>".to_string(), 128310);
-    special.insert("<|act|>".to_string(), 128311);
-    special.insert("<|/act|>".to_string(), 128312);
-    special.insert("<|observe|>".to_string(), 128313);
-    special.insert("<|/observe|>".to_string(), 128314);
-    special.insert("<|function|>".to_string(), 128315);
-    special.insert("<|/function|>".to_string(), 128316);
-    special.insert("<|result|>".to_string(), 128317);
-    special.insert("<|/result|>".to_string(), 128318);
-    special.insert("<|error|>".to_string(), 128319);
-    special.insert("<|/error|>".to_string(), 128320);
-    special.insert("<|code|>".to_string(), 128321);
-    special.insert("<|/code|>".to_string(), 128322);
-    special.insert("<|output|>".to_string(), 128323);
-    special.insert("<|/output|>".to_string(), 128324);
-
-    Tokenizer::from_bytes(vocab_bytes, LLAMA3_PATTERN, special).unwrap()
+    Tokenizer::from_bytes_chain(LLAMA3_VOCAB, &[LLAMA3_PATTERN], llama3_special_tokens())
+        .expect("bundled llama3 vocabulary must load")
 }

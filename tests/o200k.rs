@@ -3,6 +3,7 @@
 //! These tests verify that the o200k_base tokenizer correctly encodes and decodes text,
 //! handles special tokens, and produces consistent results.
 
+use splintr::pretrained::{o200k_base_special_tokens, O200K_BASE_VOCAB};
 use splintr::{Tokenizer, O200K_BASE_PATTERN};
 use std::sync::LazyLock;
 
@@ -58,6 +59,102 @@ fn test_o200k_emoji_tokens() {
         tokens,
         vec![13225, 130321, 235, 5922, 0],
         "Token IDs for emoji text changed"
+    );
+}
+
+/// Verify that `O200K_BASE_PATTERN` is actually in effect, not
+/// `CL100K_BASE_PATTERN` (or `LLAMA3_PATTERN`).
+///
+/// o200k_base's letter run splits on an uppercase/lowercase case boundary and
+/// folds a trailing contraction suffix onto the preceding word; cl100k_base's
+/// letter run is a plain `\p{L}+` with no case rule, and treats the contraction
+/// suffix as its own leading token. Every input below produces different ids
+/// under the two patterns, so a mixup here cannot pass silently the way it did
+/// for DeepSeek V3 (see `tests/deepseek_v3.rs`).
+///
+/// Every expected id sequence was produced by `tiktoken.get_encoding("o200k_base").encode(text)`,
+/// never by recording splintr's own output.
+#[test]
+fn test_o200k_letter_runs_split_on_case() {
+    let tokenizer = create_o200k_tokenizer();
+
+    // camelCase identifier: cl100k_base wrongly gives [456, 19387] (no split).
+    assert_eq!(
+        tokenizer.encode("getUserName"),
+        vec![522, 1844, 864],
+        "camelCase identifier not split on the case boundary"
+    );
+
+    // PascalCase with a leading acronym run: cl100k_base wrongly gives
+    // [10833, 27459] (no split).
+    assert_eq!(
+        tokenizer.encode("XMLHttpRequest"),
+        vec![13836, 4682, 2303],
+        "PascalCase identifier with acronym not split on the case boundary"
+    );
+
+    // PascalCase, all-caps acronym: cl100k_base wrongly gives [64865, 3126].
+    assert_eq!(
+        tokenizer.encode("HTTPRequestHandler"),
+        vec![159684, 4139],
+        "PascalCase identifier with acronym not split on the case boundary"
+    );
+
+    // Leading punctuation immediately followed by a letter run, no space:
+    // cl100k_base wrongly gives [33261, 4886].
+    assert_eq!(
+        tokenizer.encode(".isValidEmail"),
+        vec![3109, 5258, 6622],
+        "punctuation-then-letters branch mis-split"
+    );
+
+    // A method-call chain exercising the punctuation branch again:
+    // cl100k_base wrongly gives [1710, 12165, 368].
+    assert_eq!(
+        tokenizer.encode("config.getValue()"),
+        vec![3154, 775, 1638, 416],
+        "punctuation-then-letters branch mis-split"
+    );
+
+    // Contraction: o200k_base folds the apostrophe-suffix onto the preceding
+    // letter run; cl100k_base wrongly gives [285, 77, 956] (suffix split off).
+    assert_eq!(
+        tokenizer.encode("isn't"),
+        vec![276, 3023],
+        "contraction handling mis-split"
+    );
+
+    // Long digit run: both patterns chunk `\p{N}{1,3}`, but the two vocabularies
+    // assign different ids to the same chunks. cl100k_base wrongly gives
+    // [4513, 10961, 16474, 11531, 12901, 17458, 1954].
+    assert_eq!(
+        tokenizer.encode("12345678901234567890"),
+        vec![7633, 19354, 29338, 19267, 22901, 30833, 2744],
+        "long digit run mis-split or mis-encoded"
+    );
+
+    // Punctuation + digit-run mix. cl100k_base wrongly gives
+    // [726, 8033, 2120, 11, 220, 2983, 8].
+    assert_eq!(
+        tokenizer.encode("self.assertEqual(x, 42)"),
+        vec![1156, 6429, 5676, 4061, 11, 220, 4689, 8],
+        "punctuation+identifier / digit-run mix mis-split"
+    );
+
+    // CJK ideograph run. cl100k_base wrongly gives
+    // [70090, 23530, 56235, 85315, 222, 24775].
+    assert_eq!(
+        tokenizer.encode("北京市海淀区"),
+        vec![141026, 12426, 11787, 222, 5243],
+        "CJK ideograph run mis-split"
+    );
+
+    // Mixed-script text, no whitespace between scripts. cl100k_base wrongly
+    // gives [87533, 85315, 115, 40862, 1199, 88435].
+    assert_eq!(
+        tokenizer.encode("Mixed混合Text文字"),
+        vec![97258, 85591, 4377, 1279, 79831],
+        "mixed-script run mis-split"
     );
 }
 
@@ -246,15 +343,15 @@ if __name__ == "__main__":
 fn test_o200k_multimodal_tokens() {
     let tokenizer = create_o200k_tokenizer();
 
-    // Test image tokens
-    let tokens = tokenizer.encode_with_special("<|image_start|>image data<|/image_start|>");
-    assert!(
-        tokens.contains(&200061),
-        "Should contain image_start (200061)"
-    );
+    // Test image tokens. The spelling is `<|image|>`/`<|/image|>`, matching
+    // `insert_agent_tokens` (`pretrained.rs:632`) and every other vocabulary;
+    // this test previously asserted an `<|image_start|>` spelling that no
+    // production code has ever emitted.
+    let tokens = tokenizer.encode_with_special("<|image|>image data<|/image|>");
+    assert!(tokens.contains(&200061), "Should contain image (200061)");
     assert!(
         tokens.contains(&200062),
-        "Should contain image_start_end (200062)"
+        "Should contain image_end (200062)"
     );
 
     // Test audio tokens
@@ -283,51 +380,22 @@ fn create_o200k_tokenizer() -> &'static Tokenizer {
     &TOKENIZER
 }
 
-/// Implementation that actually constructs the tokenizer
+/// Implementation that actually constructs the tokenizer.
+///
+/// Built entirely from the production pieces — `O200K_BASE_VOCAB`,
+/// `O200K_BASE_PATTERN`, `o200k_base_special_tokens()` — so this fixture cannot
+/// drift from what `pretrained::from_vocab(PretrainedVocab::O200kBase)` actually
+/// builds. It previously re-declared its own special-token table, and such a
+/// second source of truth is what let `tests/deepseek_v3.rs` sit green while the
+/// production loader used the wrong pre-tokenizer. The stale copy here had also
+/// fallen 29 agent tokens behind and had invented an `<|image_start|>` spelling
+/// that no production code emits (the canonical pair is `<|image|>`/`<|/image|>`,
+/// `pretrained.rs:632`).
 fn create_o200k_tokenizer_impl() -> Tokenizer {
-    // Load the embedded vocab
-    let vocab_bytes = include_bytes!("../python/splintr/vocabs/o200k_base.tiktoken");
-
-    let mut special = rustc_hash::FxHashMap::default();
-
-    // OpenAI standard special tokens
-    special.insert("<|endoftext|>".to_string(), 199999);
-    special.insert("<|endofprompt|>".to_string(), 200018);
-
-    // Agent tokens (200019+)
-    special.insert("<|system|>".to_string(), 200019);
-    special.insert("<|user|>".to_string(), 200020);
-    special.insert("<|assistant|>".to_string(), 200021);
-    special.insert("<|im_start|>".to_string(), 200022);
-    special.insert("<|im_end|>".to_string(), 200023);
-    special.insert("<|think|>".to_string(), 200024);
-    special.insert("<|/think|>".to_string(), 200025);
-    special.insert("<|plan|>".to_string(), 200026);
-    special.insert("<|/plan|>".to_string(), 200027);
-    special.insert("<|step|>".to_string(), 200028);
-    special.insert("<|/step|>".to_string(), 200029);
-    special.insert("<|act|>".to_string(), 200030);
-    special.insert("<|/act|>".to_string(), 200031);
-    special.insert("<|observe|>".to_string(), 200032);
-    special.insert("<|/observe|>".to_string(), 200033);
-    special.insert("<|function|>".to_string(), 200034);
-    special.insert("<|/function|>".to_string(), 200035);
-    special.insert("<|result|>".to_string(), 200036);
-    special.insert("<|/result|>".to_string(), 200037);
-    special.insert("<|error|>".to_string(), 200038);
-    special.insert("<|/error|>".to_string(), 200039);
-    special.insert("<|code|>".to_string(), 200040);
-    special.insert("<|/code|>".to_string(), 200041);
-    special.insert("<|output|>".to_string(), 200042);
-    special.insert("<|/output|>".to_string(), 200043);
-
-    // Multimodal tokens
-    special.insert("<|image_start|>".to_string(), 200061);
-    special.insert("<|/image_start|>".to_string(), 200062);
-    special.insert("<|audio|>".to_string(), 200063);
-    special.insert("<|/audio|>".to_string(), 200064);
-    special.insert("<|video|>".to_string(), 200065);
-    special.insert("<|/video|>".to_string(), 200066);
-
-    Tokenizer::from_bytes(vocab_bytes, O200K_BASE_PATTERN, special).unwrap()
+    Tokenizer::from_bytes_chain(
+        O200K_BASE_VOCAB,
+        &[O200K_BASE_PATTERN],
+        o200k_base_special_tokens(),
+    )
+    .expect("bundled o200k_base vocabulary must load")
 }
