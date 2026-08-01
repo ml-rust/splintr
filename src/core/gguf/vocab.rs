@@ -33,7 +33,8 @@ pub struct GgufVocab {
     /// `gpt2`, which is *defined* by this list.
     pub merges: Option<Vec<String>>,
     /// `tokenizer.ggml.token_type`: the GGUF token-type enum per id, where
-    /// `3` == CONTROL. Used by `gpt2` to find the special tokens.
+    /// `3` == CONTROL. Every dialect uses it to find the special tokens: they
+    /// must be matched verbatim in the input and reachable by name.
     pub token_type: Option<Vec<u32>>,
     /// `tokenizer.ggml.add_space_prefix` (SentencePiece `add_dummy_prefix`),
     /// defaulting to true.

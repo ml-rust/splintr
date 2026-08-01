@@ -385,4 +385,110 @@ fn gpt2_control_tokens_become_named_specials() {
         "only CONTROL-flagged tokens are special"
     );
     assert_eq!(tok.eos_token_id(), Some(3));
+    assert_eq!(
+        tok.encode_raw("ab<|endoftext|>"),
+        vec![2, 3],
+        "a control token in the text stays whole"
+    );
+}
+
+// ── Control tokens across every dialect ──────────────────────────────────────
+//
+// A chat template is assembled by splicing markers like `<start_of_turn>` into
+// the prompt string. If the backend does not match them, they shatter into
+// content pieces; if the policy does not name them, the caller cannot splice the
+// id instead. Both failures are invisible — the ids stay in range and decode
+// back to the original string — so every dialect is pinned here.
+
+/// `llama` (SPM-BPE): the dialect that had no matcher at all, so a Gemma-style
+/// chat marker was silently ground into fragments.
+///
+/// The vocabulary carries the pieces a real SPM file would (`hi` before `▁hi`),
+/// so the gap after the marker has to complete a merge chain rather than land on
+/// a single entry.
+#[test]
+fn llama_control_tokens_are_matched_and_named() {
+    let tok = from_gguf_vocab(GgufVocab {
+        tokens: v(&[
+            "<unk>",
+            "<s>",
+            "</s>",
+            "<start_of_turn>",
+            "▁",
+            "h",
+            "i",
+            "hi",
+            "▁hi",
+        ]),
+        token_type: Some(vec![3, 3, 3, 3, 1, 1, 1, 1, 1]),
+        ..llama_vocab()
+    })
+    .expect("builds");
+
+    assert_eq!(tok.family(), "Spm");
+    assert_eq!(tok.special_token_id("<start_of_turn>"), Some(3));
+    assert_eq!(
+        tok.encode_raw("<start_of_turn>hi"),
+        vec![3, 8],
+        "the marker is one id, and the text after it still merges to a whole word"
+    );
+    assert_eq!(
+        tok.special_token_id("▁hi"),
+        None,
+        "only CONTROL-flagged tokens are special"
+    );
+}
+
+/// `t5` (Unigram): the map was empty, so nothing resolved by name.
+#[test]
+fn t5_control_tokens_are_matched_and_named() {
+    let tok = from_gguf_vocab(GgufVocab {
+        model: "t5".to_owned(),
+        tokens: v(&["<unk>", "<s>", "</s>", "▁hi", "<start_of_turn>"]),
+        scores: Some(vec![-10.0, -10.0, -10.0, -1.0, -10.0]),
+        token_type: Some(vec![3, 3, 3, 1, 3]),
+        bos_token_id: Some(1),
+        eos_token_id: Some(2),
+        ..GgufVocab::default()
+    })
+    .expect("builds");
+
+    assert_eq!(tok.family(), "Unigram");
+    assert_eq!(tok.special_token_id("<start_of_turn>"), Some(4));
+    assert_eq!(tok.encode_raw("<start_of_turn>hi"), vec![4, 3]);
+}
+
+/// `bert` (WordPiece): the control map must be merged into the `[UNK]`/`[CLS]`/
+/// `[SEP]` lookups, never replace them.
+#[test]
+fn bert_control_tokens_are_matched_without_losing_the_bracketed_ids() {
+    let tok = from_gguf_vocab(GgufVocab {
+        model: "bert".to_owned(),
+        tokens: v(&["[PAD]", "[UNK]", "[CLS]", "[SEP]", "the", "<start_of_turn>"]),
+        token_type: Some(vec![3, 3, 3, 3, 1, 3]),
+        ..GgufVocab::default()
+    })
+    .expect("builds");
+
+    assert_eq!(tok.family(), "WordPiece");
+    assert_eq!(tok.special_token_id("<start_of_turn>"), Some(5));
+    assert_eq!(tok.encode_raw("<start_of_turn>the"), vec![5, 4]);
+
+    // The pre-existing lookups must survive the merge.
+    assert_eq!(tok.special_token_id("[UNK]"), Some(1));
+    assert_eq!(tok.special_token_id("[CLS]"), Some(2));
+    assert_eq!(tok.special_token_id("[SEP]"), Some(3));
+    assert_eq!(tok.special_token_id("[PAD]"), Some(0));
+}
+
+/// A file with no `token_type` array names no control tokens at all, so no
+/// matcher is attached and tokenization is exactly what it was before.
+#[test]
+fn a_vocabulary_without_token_types_gets_no_specials() {
+    let tok = from_gguf_vocab(llama_vocab()).expect("builds");
+    assert_eq!(tok.special_token_id("<s>"), None);
+    assert!(
+        !tok.encode_raw("<s>hello").contains(&1),
+        "nothing declared the token special, so it is ordinary text"
+    );
 }

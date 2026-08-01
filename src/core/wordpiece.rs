@@ -268,10 +268,7 @@ impl WordPieceTokenizer {
 impl Tokenize for WordPieceTokenizer {
     fn encode(&self, text: &str) -> Vec<u32> {
         // Recognize added tokens in the input first (HF behavior), then WordPiece.
-        match &self.added {
-            Some(added) => added.encode_with(text, |gap| self.encode_ordinary(gap)),
-            None => self.encode_ordinary(text),
-        }
+        super::added::AddedTokens::dispatch(&self.added, text, |gap| self.encode_ordinary(gap))
     }
 
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {

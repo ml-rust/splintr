@@ -175,10 +175,7 @@ impl SentencePieceTokenizer {
     /// Recognizes added tokens in the input first (when configured), matching
     /// HuggingFace.
     pub fn encode(&self, text: &str) -> Vec<u32> {
-        match &self.added {
-            Some(added) => added.encode_with(text, |gap| self.encode_ordinary(gap)),
-            None => self.encode_ordinary(text),
-        }
+        super::added::AddedTokens::dispatch(&self.added, text, |gap| self.encode_ordinary(gap))
     }
 
     /// Encode without added-token matching (pure Unigram Viterbi). Never emits

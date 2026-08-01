@@ -95,6 +95,8 @@ pub struct SpmTokenizer {
     byte_ids: Option<Box<[u32; 256]>>,
     /// Prepend a word boundary to the input (SentencePiece `add_dummy_prefix`).
     add_prefix_space: bool,
+    /// Control/added tokens to recognize verbatim in the input during encoding.
+    added: Option<super::added::AddedTokens>,
 }
 
 impl SpmTokenizer {
@@ -159,7 +161,19 @@ impl SpmTokenizer {
             unk_id,
             byte_ids: complete.then(|| Box::new(byte_ids)),
             add_prefix_space: true,
+            added: None,
         })
+    }
+
+    /// Attach added tokens to recognize in the input during encoding.
+    ///
+    /// Without this, a control token spliced into the prompt text (`<start_of_turn>`)
+    /// is normalized and merged like ordinary content, so the model sees a handful
+    /// of fragments where its chat template promised one token — silently, since the
+    /// ids stay in range and decode back to the same string.
+    pub fn with_added_tokens(mut self, map: &FxHashMap<String, u32>) -> Self {
+        self.added = super::added::AddedTokens::new(map);
+        self
     }
 
     /// Set SentencePiece `add_dummy_prefix` (GGUF `tokenizer.ggml.add_space_prefix`).
@@ -318,7 +332,8 @@ impl SpmTokenizer {
 
 impl Tokenize for SpmTokenizer {
     fn encode(&self, text: &str) -> Vec<u32> {
-        self.encode_ordinary(text)
+        // Recognize added tokens in the input first (HF behavior), then SPM-BPE.
+        super::added::AddedTokens::dispatch(&self.added, text, |gap| self.encode_ordinary(gap))
     }
 
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
@@ -491,6 +506,39 @@ mod tests {
     fn empty_input_with_prefix_space_is_the_boundary_marker() {
         let t = tok();
         assert_eq!(pieces(&t, ""), vec!["▁"]);
+    }
+
+    /// A control token spliced into the prompt text must survive as its own id.
+    /// Without matching it is normalized and merged like content — `<bos>hello`
+    /// silently becomes a run of `<unk>`s, in range and reversible, so nothing
+    /// downstream notices the chat template was destroyed.
+    #[test]
+    fn added_tokens_in_the_input_encode_to_their_own_id() {
+        let (tokens, scores) = rank_scored_vocab();
+        let mut map = FxHashMap::default();
+        map.insert("<bos>".to_string(), 2);
+        map.insert("<eos>".to_string(), 1);
+        let t = SpmTokenizer::new(tokens, scores, None, None)
+            .unwrap()
+            .with_added_tokens(&map);
+
+        assert_eq!(
+            t.encode("<bos>hello world<eos>"),
+            vec![2, 22, 23, 1],
+            "the markers stay whole and the gaps still merge into whole words"
+        );
+    }
+
+    /// A tokenizer built without added tokens must behave exactly as it did
+    /// before matching existed — same words, and a marker string left as content.
+    #[test]
+    fn without_added_tokens_encoding_is_unchanged() {
+        let t = tok();
+        assert_eq!(pieces(&t, "hello world"), vec!["▁hello", "▁world"]);
+        assert!(
+            !t.encode("<bos>hello").contains(&2),
+            "no matcher configured, so `<bos>` is ordinary text"
+        );
     }
 
     /// Merging must be deterministic and must not depend on how many equal

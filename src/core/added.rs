@@ -54,6 +54,19 @@ impl AddedTokens {
         }
         out
     }
+
+    /// Shared `Tokenize::encode` dispatch for the SPM/Unigram/WordPiece backends:
+    /// recognize added tokens first (HF behavior), falling back to `encode_gap`
+    /// when none are configured.
+    pub fn dispatch<F>(added: &Option<Self>, text: &str, mut encode_gap: F) -> Vec<u32>
+    where
+        F: FnMut(&str) -> Vec<u32>,
+    {
+        match added {
+            Some(added) => added.encode_with(text, encode_gap),
+            None => encode_gap(text),
+        }
+    }
 }
 
 #[cfg(test)]

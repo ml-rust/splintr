@@ -58,6 +58,13 @@ pub fn from_gguf_vocab(vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
 /// `bert`: WordPiece. Boundaries come from `[CLS]`/`[SEP]` in the vocabulary, so
 /// no boundary template is synthesized.
 fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
+    // Control tokens are read from the ORIGINAL strings, before normalization:
+    // `normalize_wordpiece_vocab` rewrites unbracketed pieces to `##X`, which would
+    // spell a control token as something no input ever contains. The rewrite is
+    // index-preserving, so these surface strings and the normalized vocab below
+    // agree on every id.
+    let mut named = special_token_map(&vocab, &vocab.tokens);
+
     // Convert a SentencePiece-marked vocab to WordPiece convention first —
     // see `normalize_wordpiece_vocab`. Everything below (the [UNK] lookup
     // and the uncased heuristic) matches against plain strings like "the",
@@ -71,8 +78,10 @@ fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
     let do_lower_case = tokens.iter().any(|t| t == "the") && !tokens.iter().any(|t| t == "The");
 
     // The named map is how a caller asks for `[CLS]` by name; BERT-family models
-    // need those ids to assemble the pairs their heads were trained on.
-    let mut named = FxHashMap::default();
+    // need those ids to assemble the pairs their heads were trained on. These are
+    // merged over the control tokens rather than replacing them: `lookup_special`
+    // can resolve an id from metadata that the type array never flags, so dropping
+    // it would lose a lookup that works today.
     for name in ["[UNK]", "[PAD]", "[CLS]", "[SEP]"] {
         if let Some(id) = lookup_special(&tokens, &vocab, name) {
             named.insert(name.to_owned(), id);
@@ -80,12 +89,9 @@ fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
     }
 
     let eos_token_id = vocab.eos_token_id.unwrap_or(0);
-    let backend = Backend::WordPiece(WordPieceTokenizer::new(
-        tokens,
-        unk_token_id,
-        200,
-        do_lower_case,
-    ));
+    let backend = Backend::WordPiece(
+        WordPieceTokenizer::new(tokens, unk_token_id, 200, do_lower_case).with_added_tokens(&named),
+    );
     // No boundary template: BERT wraps with `[CLS]`/`[SEP]`, and `add_bos_token`
     // / `add_eos_token` are not what these files use to say so.
     Ok(AnyTokenizer::new(
@@ -96,6 +102,9 @@ fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
 
 /// `t5`: true Unigram. Scores are log-probabilities and Viterbi is correct.
 fn build_unigram(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
+    // One map, two uses: matched in the input by the backend, and resolvable by
+    // name through the policy. Neither substitutes for the other.
+    let specials = special_token_map(&vocab, &vocab.tokens);
     let tokens = std::mem::take(&mut vocab.tokens);
     let scores = vocab.scores.take().unwrap_or_default();
     let eos_token_id = vocab.eos_token_id.unwrap_or(2);
@@ -106,18 +115,23 @@ fn build_unigram(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
     // drives decode-skipping and `is_eos` — so it takes the resolved id.
     let backend = Backend::Unigram(
         SentencePieceTokenizer::new(tokens, scores, None, eos_token_id)?
-            .with_prefix_space(prefix_space),
+            .with_prefix_space(prefix_space)
+            .with_added_tokens(&specials),
     );
 
     Ok(AnyTokenizer::new(
         backend,
-        boundary_policy(&vocab, eos_token_id, true, true, FxHashMap::default()),
+        boundary_policy(&vocab, eos_token_id, true, true, specials),
     ))
 }
 
 /// `llama`: SentencePiece BPE. Scores are merge ranks, so segmentation is
 /// repeated best-adjacent-pair merging, not Viterbi.
 fn build_spm(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
+    // One map, two uses: matched in the input by the backend, and resolvable by
+    // name through the policy. A chat template needs both — the marker spliced
+    // into the prompt text must survive, and its id must be reachable by name.
+    let specials = special_token_map(&vocab, &vocab.tokens);
     let tokens = std::mem::take(&mut vocab.tokens);
     let scores = vocab.scores.take().unwrap_or_default();
     let eos_token_id = vocab.eos_token_id.unwrap_or(2);
@@ -126,12 +140,13 @@ fn build_spm(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
     // must not insert any of its own.
     let backend = Backend::Spm(
         SpmTokenizer::new(tokens, scores, None, None)?
-            .with_prefix_space(add_space_prefix(&vocab, true)),
+            .with_prefix_space(add_space_prefix(&vocab, true))
+            .with_added_tokens(&specials),
     );
 
     Ok(AnyTokenizer::new(
         backend,
-        boundary_policy(&vocab, eos_token_id, true, false, FxHashMap::default()),
+        boundary_policy(&vocab, eos_token_id, true, false, specials),
     ))
 }
 
