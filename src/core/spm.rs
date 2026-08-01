@@ -201,7 +201,7 @@ impl SpmTokenizer {
     /// optional leading marker.
     fn normalize(&self, text: &str) -> String {
         let mut out = String::with_capacity(text.len() + WORD_BOUNDARY.len());
-        if self.add_prefix_space && !text.starts_with(' ') {
+        if self.add_prefix_space {
             out.push_str(WORD_BOUNDARY);
         }
         for ch in text.chars() {
@@ -506,6 +506,45 @@ mod tests {
     fn empty_input_with_prefix_space_is_the_boundary_marker() {
         let t = tok();
         assert_eq!(pieces(&t, ""), vec!["▁"]);
+    }
+
+    /// llama.cpp prepends the dummy prefix **unconditionally** when
+    /// `add_space_prefix` is on — a leading space in the input is never
+    /// treated as "already have one". A real llama.cpp vocabulary later
+    /// merges `▁▁` into a single piece (e.g. `ggml-vocab-llama-spm.gguf`
+    /// maps `" "` to id `259`, spelled `▁▁`), but this synthetic vocab has
+    /// no such merged token, so the two boundary symbols simply stay
+    /// unmerged. What must hold regardless of vocabulary is the boundary
+    /// *count*: a leading space must produce one more boundary symbol than
+    /// no leading space at all, never fewer or the same.
+    #[test]
+    fn leading_space_is_never_swallowed_by_the_dummy_prefix() {
+        let t = tok();
+        // Single space: two independent boundary pieces, not one.
+        assert_eq!(pieces(&t, " "), vec!["▁", "▁"]);
+        // The dummy prefix stands alone (nothing merges "▁▁"), and the rest
+        // of the input still tokenizes exactly as it would with no leading
+        // space at all.
+        assert_eq!(pieces(&t, " hello"), vec!["▁", "▁hello"]);
+        assert_eq!(pieces(&t, " hello world"), vec!["▁", "▁hello", "▁world"]);
+    }
+
+    /// Structural property that must hold for any vocabulary, not just this
+    /// synthetic one: with `add_prefix_space` on, encoding text with a
+    /// leading space must yield exactly one more leading boundary symbol
+    /// than encoding the same text without it. This is the guarantee
+    /// llama.cpp's reference outputs rely on (verified separately against
+    /// `ggml-vocab-llama-spm.gguf` / `ggml-vocab-phi-3.gguf`, where e.g.
+    /// `" Hello"` -> `[29871, 15043]` but `"Hello"` -> `[15043]`: the extra
+    /// leading id is exactly one standalone boundary token).
+    #[test]
+    fn leading_space_yields_exactly_one_extra_leading_boundary_piece() {
+        let t = tok();
+        let without = pieces(&t, "hello");
+        let with = pieces(&t, " hello");
+        assert_eq!(with.len(), without.len() + 1);
+        assert_eq!(with[0], WORD_BOUNDARY);
+        assert_eq!(&with[1..], &without[..]);
     }
 
     /// A control token spliced into the prompt text must survive as its own id.
