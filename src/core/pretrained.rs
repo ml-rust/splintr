@@ -8,6 +8,11 @@
 //! - `mistral` - Mistral 7B family (~32k tokens)
 //! - `whisper` - OpenAI Whisper multilingual v1/v2/v3 (~51k tokens)
 //!
+//! Every loader here returns an [`AnyTokenizer`], the same universal handle the
+//! HuggingFace-json and GGUF loaders return, so a consumer never has to branch
+//! on where a vocabulary came from. `encode` means one thing across all of them:
+//! special tokens present in the input text are recognized as single ids.
+//!
 //! # Example
 //!
 //! ```rust
@@ -19,6 +24,8 @@
 
 use rustc_hash::FxHashMap;
 
+use super::any_tokenizer::{AnyTokenizer, Backend};
+use super::policy::SpecialPolicy;
 use super::tokenizer::{
     Tokenizer, TokenizerError, CL100K_BASE_PATTERN, GPT2_PATTERN, MISTRAL_V3_PATTERN,
     O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
@@ -75,16 +82,6 @@ pub enum PretrainedVocab {
 }
 
 impl PretrainedVocab {
-    /// Map a Whisper pretrained vocab to its [`WhisperVariant`], if it is one.
-    fn whisper_variant(self) -> Option<WhisperVariant> {
-        match self {
-            Self::WhisperV1 => Some(WhisperVariant::V1Multilingual),
-            Self::WhisperV2 => Some(WhisperVariant::V2Multilingual),
-            Self::WhisperV3 => Some(WhisperVariant::V3Multilingual),
-            _ => None,
-        }
-    }
-
     /// Parse vocabulary name from string.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
@@ -156,7 +153,7 @@ impl PretrainedVocab {
 ///
 /// let tokenizer = from_pretrained("llama3").unwrap();
 /// ```
-pub fn from_pretrained(name: &str) -> Result<Tokenizer, TokenizerError> {
+pub fn from_pretrained(name: &str) -> Result<AnyTokenizer, TokenizerError> {
     let vocab = PretrainedVocab::from_name(name).ok_or_else(|| {
         TokenizerError::UnknownPretrained(format!(
             "{}. Supported: {}",
@@ -169,11 +166,18 @@ pub fn from_pretrained(name: &str) -> Result<Tokenizer, TokenizerError> {
 }
 
 /// Create a pretrained tokenizer from vocabulary enum.
-pub fn from_vocab(vocab: PretrainedVocab) -> Result<Tokenizer, TokenizerError> {
+///
+/// The backend is always BPE; it is wrapped in an [`AnyTokenizer`] whose policy
+/// carries the vocabulary's EOS id and its named special tokens, but **no**
+/// boundary template — a bundled vocabulary states no such template, and a
+/// chat server or trainer places BOS itself. `apply_single` is therefore a
+/// passthrough and the encoded ids are exactly the backend's.
+pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError> {
     let special = special_tokens(vocab);
+    let named = special.clone();
     let pat = pattern(vocab);
 
-    match vocab {
+    let tokenizer = match vocab {
         PretrainedVocab::Cl100kBase => Tokenizer::from_bytes(CL100K_BASE_VOCAB, pat, special),
         PretrainedVocab::O200kBase => Tokenizer::from_bytes(O200K_BASE_VOCAB, pat, special),
         PretrainedVocab::Llama3 => Tokenizer::from_bytes(LLAMA3_VOCAB, pat, special),
@@ -198,7 +202,15 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<Tokenizer, TokenizerError> {
             // Whisper uses GPT-2 ByteLevel BPE; specials are generated per variant
             Tokenizer::from_bytes_byte_level(WHISPER_VOCAB, pat, special)
         }
-    }
+    }?;
+
+    // In-text special-token matching is on for every bundled vocabulary, the
+    // same as the json and GGUF loaders, so `AnyTokenizer::encode` means one
+    // thing regardless of which loader produced the handle.
+    Ok(AnyTokenizer::new(
+        Backend::Bpe(tokenizer.with_added_token_matching(true)),
+        SpecialPolicy::boundary(None, None, Some(eos_token_id(vocab)), named),
+    ))
 }
 
 /// Get the regex pattern for a vocabulary.
@@ -235,10 +247,12 @@ pub fn eos_token_id(vocab: PretrainedVocab) -> u32 {
         PretrainedVocab::Llama3 => 128001,     // <|end_of_text|>
         PretrainedVocab::DeepseekV3 => 1,      // <｜end▁of▁sentence｜>
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 | PretrainedVocab::MistralV3 => 2, // </s>
-        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
-            // <|endoftext|>, derived per variant
-            vocab.whisper_variant().unwrap().eos_token_id()
-        }
+        // <|endoftext|>, derived per variant. Matched one variant at a time so the
+        // compiler forces this to be revisited if a Whisper generation is added,
+        // rather than resolving it through a fallible lookup at runtime.
+        PretrainedVocab::WhisperV1 => WhisperVariant::V1Multilingual.eos_token_id(),
+        PretrainedVocab::WhisperV2 => WhisperVariant::V2Multilingual.eos_token_id(),
+        PretrainedVocab::WhisperV3 => WhisperVariant::V3Multilingual.eos_token_id(),
     }
 }
 
@@ -298,9 +312,9 @@ pub fn special_tokens(vocab: PretrainedVocab) -> FxHashMap<String, u32> {
         PretrainedVocab::MistralV1 => mistral_v1_special_tokens(),
         PretrainedVocab::MistralV2 => mistral_v2_special_tokens(),
         PretrainedVocab::MistralV3 => mistral_v3_special_tokens(),
-        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
-            whisper_special_tokens(vocab.whisper_variant().unwrap())
-        }
+        PretrainedVocab::WhisperV1 => whisper_special_tokens(WhisperVariant::V1Multilingual),
+        PretrainedVocab::WhisperV2 => whisper_special_tokens(WhisperVariant::V2Multilingual),
+        PretrainedVocab::WhisperV3 => whisper_special_tokens(WhisperVariant::V3Multilingual),
     }
 }
 
@@ -623,6 +637,15 @@ fn insert_agent_tokens_llama3(special: &mut FxHashMap<String, u32>, base: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Tokenize;
+
+    /// Reach the concrete BPE tokenizer for assertions on `Tokenizer`-only APIs.
+    fn bpe(tokenizer: AnyTokenizer) -> Tokenizer {
+        match tokenizer.into_backend() {
+            Backend::Bpe(t) => t,
+            _ => panic!("every bundled vocabulary is BPE"),
+        }
+    }
 
     #[test]
     fn test_from_pretrained_llama3() {
@@ -646,10 +669,37 @@ mod tests {
             ("whisper-v3", WhisperVariant::V3Multilingual),
         ] {
             let tok = from_pretrained(name).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert_eq!(tok.encoder().len(), 50257, "{name} base vocab size");
             // vocab_size == max special id + 1, which equals the variant's size.
             assert_eq!(tok.vocab_size(), variant.vocab_size(), "{name} vocab_size");
+            assert_eq!(bpe(tok).encoder().len(), 50257, "{name} base vocab size");
         }
+    }
+
+    /// The policy is an empty boundary template plus the vocabulary's EOS and
+    /// named specials: encoding must be untouched, but the ids must be askable.
+    #[test]
+    fn test_policy_is_passthrough_but_knows_its_specials() {
+        let tok = from_pretrained("llama3").unwrap();
+        assert_eq!(tok.eos_token_id(), Some(128001));
+        assert!(tok.is_eos(128001));
+        assert_eq!(tok.special_token_id("<|eot_id|>"), Some(128009));
+        // No template: the wrapped ids equal the bare backend output.
+        let text = "Hello, world!";
+        assert_eq!(tok.encode(text), tok.encode_raw(text));
+    }
+
+    /// Batch encoding must agree with encoding each text on its own.
+    #[test]
+    fn test_encode_batch_matches_individual() {
+        let tok = from_pretrained("llama3").unwrap();
+        let texts = ["Hello, world!", "", "<|eot_id|>after", "你好世界"];
+        let batch = tok.encode_batch(&texts);
+        assert_eq!(batch.len(), texts.len());
+        for (got, text) in batch.iter().zip(texts) {
+            assert_eq!(got, &tok.encode(text), "batch mismatch for {text:?}");
+        }
+        // Matching is on, so an in-text special is one id, not BPE'd text.
+        assert!(batch[2].starts_with(&[128009]));
     }
 
     #[test]
@@ -657,13 +707,13 @@ mod tests {
         // Specials must be emitted as single ids at the variant-correct offsets,
         // proving the bundled base aligns with the generated special block.
         let tok = from_pretrained("whisper_v3").unwrap();
-        assert_eq!(tok.encode_with_special("<|en|>"), vec![50259]);
+        assert_eq!(tok.encode("<|en|>"), vec![50259]);
         assert_eq!(
-            tok.encode_with_special("<|transcribe|>"),
+            tok.encode("<|transcribe|>"),
             vec![WhisperVariant::V3Multilingual.transcribe_token_id()]
         );
         // <|yue|> only exists on v3.
-        assert_eq!(tok.encode_with_special("<|yue|>"), vec![50259 + 99]);
+        assert_eq!(tok.encode("<|yue|>"), vec![50259 + 99]);
     }
 
     #[test]

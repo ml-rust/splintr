@@ -7,7 +7,7 @@
 //! - Much larger vocabulary than V1/V2 (4x larger)
 //! - Used by: Mistral NeMo, Mistral Large 2, Pixtral
 
-use splintr::from_pretrained;
+use splintr::{from_pretrained, Tokenize};
 
 // =============================================================================
 // Loading Tests
@@ -28,7 +28,7 @@ fn test_v3_bos_token() {
     let tok = from_pretrained("mistral_v3").expect("Failed to load mistral_v3");
 
     // <s> = BOS = token 1
-    let tokens = tok.encode_with_special("<s>");
+    let tokens = tok.encode("<s>");
     assert_eq!(tokens, vec![1], "<s> should be token 1");
 }
 
@@ -37,7 +37,7 @@ fn test_v3_eos_token() {
     let tok = from_pretrained("mistral_v3").expect("Failed to load mistral_v3");
 
     // </s> = EOS = token 2
-    let tokens = tok.encode_with_special("</s>");
+    let tokens = tok.encode("</s>");
     assert_eq!(tokens, vec![2], "</s> should be token 2");
 }
 
@@ -46,7 +46,7 @@ fn test_v3_unk_token() {
     let tok = from_pretrained("mistral_v3").expect("Failed to load mistral_v3");
 
     // <unk> = UNK = token 0
-    let tokens = tok.encode_with_special("<unk>");
+    let tokens = tok.encode("<unk>");
     assert_eq!(tokens, vec![0], "<unk> should be token 0");
 }
 
@@ -96,15 +96,15 @@ fn test_v3_agent_tokens_conversation() {
 
     // Agent tokens start at 131072 for V3
     // <|system|> = 131072 + 0 = 131072
-    let tokens = tok.encode_with_special("<|system|>");
+    let tokens = tok.encode("<|system|>");
     assert_eq!(tokens, vec![131072]);
 
     // <|user|> = 131072 + 1 = 131073
-    let tokens = tok.encode_with_special("<|user|>");
+    let tokens = tok.encode("<|user|>");
     assert_eq!(tokens, vec![131073]);
 
     // <|assistant|> = 131072 + 2 = 131074
-    let tokens = tok.encode_with_special("<|assistant|>");
+    let tokens = tok.encode("<|assistant|>");
     assert_eq!(tokens, vec![131074]);
 }
 
@@ -113,11 +113,11 @@ fn test_v3_agent_tokens_thinking() {
     let tok = from_pretrained("mistral_v3").expect("Failed to load mistral_v3");
 
     // <|think|> = 131072 + 5 = 131077
-    let tokens = tok.encode_with_special("<|think|>");
+    let tokens = tok.encode("<|think|>");
     assert_eq!(tokens, vec![131077]);
 
     // <|/think|> = 131072 + 6 = 131078
-    let tokens = tok.encode_with_special("<|/think|>");
+    let tokens = tok.encode("<|/think|>");
     assert_eq!(tokens, vec![131078]);
 }
 
@@ -126,11 +126,11 @@ fn test_v3_agent_tokens_function() {
     let tok = from_pretrained("mistral_v3").expect("Failed to load mistral_v3");
 
     // <|function|> = 131072 + 15 = 131087
-    let tokens = tok.encode_with_special("<|function|>");
+    let tokens = tok.encode("<|function|>");
     assert_eq!(tokens, vec![131087]);
 
     // <|/function|> = 131072 + 16 = 131088
-    let tokens = tok.encode_with_special("<|/function|>");
+    let tokens = tok.encode("<|/function|>");
     assert_eq!(tokens, vec![131088]);
 }
 
@@ -163,7 +163,7 @@ fn test_v3_special_tokens_in_mixed_text() {
     let tok = from_pretrained("mistral_v3").expect("Failed to load mistral_v3");
 
     // Test that special tokens are properly recognized in mixed content
-    let tokens = tok.encode_with_special("<|system|>Hi<|user|>Hello<|assistant|>World");
+    let tokens = tok.encode("<|system|>Hi<|user|>Hello<|assistant|>World");
 
     // Verify special tokens are present
     assert!(tokens.contains(&131072)); // system
@@ -182,7 +182,7 @@ fn test_v3_special_tokens_in_mixed_text() {
 fn test_v3_thinking_tokens_mixed() {
     let tok = from_pretrained("mistral_v3").expect("Failed to load mistral_v3");
 
-    let tokens = tok.encode_with_special("<|think|>reasoning<|/think|>");
+    let tokens = tok.encode("<|think|>reasoning<|/think|>");
 
     // Verify thinking tokens are present
     assert!(tokens.contains(&131077)); // think

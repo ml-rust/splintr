@@ -28,7 +28,9 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```rust
+//! use splintr::core::byte_level::byte_level_encode;
+//!
 //! // Space (0x20 = 32) maps to 'Ġ' (U+0120)
 //! let encoded = byte_level_encode(b" ");
 //! assert_eq!(encoded, "Ġ");
@@ -94,7 +96,9 @@ static CHAR_TO_BYTE: LazyLock<FxHashMap<char, u8>> = LazyLock::new(|| {
 /// A String where each byte is represented as a Unicode character
 ///
 /// # Example
-/// ```ignore
+/// ```rust
+/// use splintr::core::byte_level::byte_level_encode;
+///
 /// // Space becomes 'Ġ'
 /// assert_eq!(byte_level_encode(b" hello"), "Ġhello");
 ///
@@ -117,7 +121,9 @@ pub fn byte_level_encode(bytes: &[u8]) -> String {
 /// The original raw bytes, or None if the string contains invalid ByteLevel characters
 ///
 /// # Example
-/// ```ignore
+/// ```rust
+/// use splintr::core::byte_level::byte_level_decode;
+///
 /// let bytes = byte_level_decode("Ġhello").unwrap();
 /// assert_eq!(bytes, b" hello");
 /// ```

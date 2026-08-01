@@ -1,19 +1,19 @@
-use splintr::from_pretrained;
+use splintr::{from_pretrained, Tokenize};
 
 #[test]
 fn test_v2_control_tokens_inst() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
 
     // Test [INST] token (ID 3)
-    let tokens = tok.encode_with_special("[INST]");
+    let tokens = tok.encode("[INST]");
     assert_eq!(tokens, vec![3]);
 
     // Test [/INST] token (ID 4)
-    let tokens = tok.encode_with_special("[/INST]");
+    let tokens = tok.encode("[/INST]");
     assert_eq!(tokens, vec![4]);
 
     // Test instruction format
-    let tokens = tok.encode_with_special("[INST]Hello[/INST]");
+    let tokens = tok.encode("[INST]Hello[/INST]");
     assert!(tokens.contains(&3)); // [INST]
     assert!(tokens.contains(&4)); // [/INST]
 }
@@ -23,11 +23,11 @@ fn test_v2_control_tokens_tool_calls() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
 
     // Test [TOOL_CALLS] token (ID 5)
-    let tokens = tok.encode_with_special("[TOOL_CALLS]");
+    let tokens = tok.encode("[TOOL_CALLS]");
     assert_eq!(tokens, vec![5]);
 
     // Test [AVAILABLE_TOOLS] token (ID 6)
-    let tokens = tok.encode_with_special("[AVAILABLE_TOOLS]");
+    let tokens = tok.encode("[AVAILABLE_TOOLS]");
     assert_eq!(tokens, vec![6]);
 }
 
@@ -36,15 +36,15 @@ fn test_v2_native_sentencepiece_tokens() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
 
     // Test <s> token (ID 1)
-    let tokens = tok.encode_with_special("<s>");
+    let tokens = tok.encode("<s>");
     assert_eq!(tokens, vec![1]);
 
     // Test </s> token (ID 2)
-    let tokens = tok.encode_with_special("</s>");
+    let tokens = tok.encode("</s>");
     assert_eq!(tokens, vec![2]);
 
     // Test <unk> token (ID 0)
-    let tokens = tok.encode_with_special("<unk>");
+    let tokens = tok.encode("<unk>");
     assert_eq!(tokens, vec![0]);
 }
 
@@ -59,11 +59,11 @@ fn test_v2_agent_tokens() {
 
     // Agent tokens start at 32768 for V2
     // <|think|> is at offset 5 (after system, user, assistant, im_start, im_end)
-    let tokens = tok.encode_with_special("<|think|>");
+    let tokens = tok.encode("<|think|>");
     assert_eq!(tokens, vec![32773]); // THINK token = 32768 + 5
 
     // <|function|> is at offset 15
-    let tokens = tok.encode_with_special("<|function|>");
+    let tokens = tok.encode("<|function|>");
     assert_eq!(tokens, vec![32783]); // FUNCTION token = 32768 + 15
 }
 
@@ -93,7 +93,7 @@ fn test_v2_full_instruction_roundtrip() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
 
     let text = "[INST]What is the weather today?[/INST]";
-    let tokens = tok.encode_with_special(text);
+    let tokens = tok.encode(text);
     let decoded = tok.decode(&tokens).expect("Failed to decode");
     assert_eq!(decoded, text);
 }
@@ -103,7 +103,7 @@ fn test_v2_model_name_underscore() {
     let tok = from_pretrained("mistral_v2").unwrap();
 
     // V2 should recognize control tokens
-    let tokens = tok.encode_with_special("[INST]");
+    let tokens = tok.encode("[INST]");
     assert_eq!(tokens, vec![3]);
 }
 
@@ -121,10 +121,10 @@ fn test_v2_eos_bos_tokens() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
 
     // EOS token should be 2 (</s>)
-    let tokens = tok.encode_with_special("</s>");
+    let tokens = tok.encode("</s>");
     assert_eq!(tokens, vec![2]);
 
     // BOS token should be 1 (<s>)
-    let tokens = tok.encode_with_special("<s>");
+    let tokens = tok.encode("<s>");
     assert_eq!(tokens, vec![1]);
 }

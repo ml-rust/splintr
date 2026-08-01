@@ -199,8 +199,20 @@ impl PyTokenizer {
             // Whisper multilingual (v1/v2/v3). Base BPE is bundled; specials are
             // generated per variant. Delegates to the core name→variant mapping.
             name if name.starts_with("whisper") => {
-                let inner = crate::core::pretrained::from_pretrained(name)
+                let loaded = crate::core::pretrained::from_pretrained(name)
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                let Backend::Bpe(inner) = loaded.into_backend() else {
+                    return Err(PyValueError::new_err(
+                        "whisper vocabularies must load as a BPE tokenizer",
+                    ));
+                };
+                // Every other arm here builds its tokenizer with added-token
+                // matching OFF: on the Python surface `encode` treats specials
+                // as ordinary text and `encode_with_special` opts in. Leaving it
+                // on for whisper alone would make Python inconsistent with
+                // itself, so it is turned back off; the Python surface is
+                // aligned with the Rust `encode` semantics in a later change.
+                let inner = inner.with_added_token_matching(false);
                 Ok(Self {
                     inner,
                     policy: SpecialPolicy::default(),

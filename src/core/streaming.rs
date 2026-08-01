@@ -21,17 +21,23 @@ use super::tokenizer::Tokenizer;
 ///
 /// # Example
 ///
-/// ```ignore
-/// let tokenizer = Tokenizer::from_pretrained("cl100k_base")?;
+/// ```rust
+/// use splintr::{from_pretrained, Backend, StreamingDecoder};
+///
+/// let any = from_pretrained("cl100k_base")?;
+/// let Backend::Bpe(tokenizer) = any.into_backend() else {
+///     unreachable!("cl100k_base loads as a BPE backend");
+/// };
 /// let mut decoder = StreamingDecoder::new(&tokenizer);
 ///
-/// for token_id in token_stream {
+/// for token_id in tokenizer.encode("Hello, world!") {
 ///     if let Some(text) = decoder.add_token(token_id) {
 ///         print!("{}", text);
 ///     }
 /// }
 /// // Flush any remaining buffered bytes
 /// print!("{}", decoder.flush());
+/// # Ok::<(), splintr::TokenizerError>(())
 /// ```
 pub struct StreamingDecoder<'a> {
     tokenizer: &'a Tokenizer,
@@ -218,17 +224,23 @@ impl<'a> StreamingDecoder<'a> {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let tokenizer = Tokenizer::from_pretrained("deepseek_v3")?;
+/// ```rust
+/// use splintr::{from_pretrained, Backend, ByteLevelStreamingDecoder};
+///
+/// let any = from_pretrained("deepseek_v3")?;
+/// let Backend::Bpe(tokenizer) = any.into_backend() else {
+///     unreachable!("deepseek_v3 loads as a BPE backend");
+/// };
 /// let mut decoder = ByteLevelStreamingDecoder::new(&tokenizer);
 ///
-/// for token_id in token_stream {
+/// for token_id in tokenizer.encode("Hello, world!") {
 ///     if let Some(text) = decoder.add_token(token_id) {
 ///         print!("{}", text);
 ///     }
 /// }
 /// // Flush any remaining buffered bytes
 /// print!("{}", decoder.flush());
+/// # Ok::<(), splintr::TokenizerError>(())
 /// ```
 pub struct ByteLevelStreamingDecoder<'a> {
     tokenizer: &'a Tokenizer,

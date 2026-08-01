@@ -108,6 +108,25 @@ impl AnyTokenizer {
         }
     }
 
+    /// Encode many sequences, applying the policy's single-sequence template to
+    /// each — the batch form of [`encode`](Self::encode).
+    ///
+    /// Parallel across texts when the `rayon` feature is on, mirroring
+    /// [`Tokenizer::encode_batch`](super::tokenizer::Tokenizer::encode_batch);
+    /// the parallelism lives here rather than in one backend so every family
+    /// gets it.
+    pub fn encode_batch(&self, texts: &[&str]) -> Vec<Vec<u32>> {
+        #[cfg(feature = "rayon")]
+        {
+            use rayon::prelude::*;
+            texts.par_iter().map(|&text| self.encode(text)).collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            texts.iter().map(|&text| self.encode(text)).collect()
+        }
+    }
+
     /// Encode two sequences into one input using the policy's pair template
     /// (a reranker's `[CLS] query [SEP] document [SEP]`).
     ///

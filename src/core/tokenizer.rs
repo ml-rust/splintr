@@ -315,12 +315,23 @@ impl RegexBackend {
 /// By default, uses the `regexr` backend (pure Rust with JIT and SIMD support).
 /// To use PCRE2 instead, enable the `pcre2` feature and call `.pcre2(true)`:
 ///
-/// ```ignore
-/// // Default (regexr)
-/// let tokenizer = Tokenizer::from_pretrained("cl100k_base")?;
+/// ```rust
+/// use splintr::{from_pretrained, Backend};
 ///
-/// // With PCRE2 (requires --features pcre2)
-/// let tokenizer = Tokenizer::from_pretrained("cl100k_base")?.pcre2(true)?;
+/// // Default (regexr) — `from_pretrained` returns an `AnyTokenizer`; reach the
+/// // concrete `Tokenizer` (needed for `.pcre2()`) through `into_backend()`.
+/// let any = from_pretrained("cl100k_base")?;
+/// let Backend::Bpe(tokenizer) = any.into_backend() else {
+///     unreachable!("cl100k_base loads as a BPE backend");
+/// };
+///
+/// // With PCRE2 (requires --features pcre2; without it this returns an error
+/// // rather than switching backends).
+/// match tokenizer.pcre2(true) {
+///     Ok(_pcre2_tokenizer) => { /* now using the PCRE2 backend */ }
+///     Err(_) => { /* `pcre2` feature not enabled at compile time */ }
+/// }
+/// # Ok::<(), splintr::TokenizerError>(())
 /// ```
 ///
 /// # Key Optimizations
@@ -587,8 +598,15 @@ impl Tokenizer {
     /// to be enabled at compile time.
     ///
     /// # Example
-    /// ```ignore
-    /// let tokenizer = Tokenizer::from_pretrained("cl100k_base")?.pcre2(true)?;
+    /// ```rust
+    /// use splintr::{from_pretrained, Backend};
+    ///
+    /// let any = from_pretrained("cl100k_base")?;
+    /// let Backend::Bpe(tokenizer) = any.into_backend() else {
+    ///     unreachable!("cl100k_base loads as a BPE backend");
+    /// };
+    /// let tokenizer = tokenizer.pcre2(true)?;
+    /// # Ok::<(), splintr::TokenizerError>(())
     /// ```
     ///
     /// # Errors
@@ -633,8 +651,15 @@ impl Tokenizer {
     /// * `use_jit` - Whether to try using JIT compilation
     ///
     /// # Example
-    /// ```ignore
-    /// let tokenizer = Tokenizer::from_pretrained("cl100k_base")?.jit(false)?;
+    /// ```rust
+    /// use splintr::{from_pretrained, Backend};
+    ///
+    /// let any = from_pretrained("cl100k_base")?;
+    /// let Backend::Bpe(tokenizer) = any.into_backend() else {
+    ///     unreachable!("cl100k_base loads as a BPE backend");
+    /// };
+    /// let tokenizer = tokenizer.jit(false)?;
+    /// # Ok::<(), splintr::TokenizerError>(())
     /// ```
     #[cfg(feature = "pcre2")]
     pub fn jit(mut self, use_jit: bool) -> Result<Self, TokenizerError> {
