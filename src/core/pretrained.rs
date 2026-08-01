@@ -29,7 +29,7 @@ use super::policy::SpecialPolicy;
 use super::spm::{SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
 use super::tokenizer::{
     Tokenizer, TokenizerError, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN,
-    LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+    LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN,
 };
 use super::vocab::{load_spm_vocab, place_special_pieces};
 use super::whisper::{whisper_special_tokens, WhisperVariant};
@@ -194,7 +194,21 @@ fn resolve_vocab(name: &str) -> Result<PretrainedVocab, TokenizerError> {
 pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError> {
     let special = special_tokens(vocab);
     let named = special.clone();
-    let pats = patterns(vocab);
+    // Mistral V1/V2 are SentencePiece: they take the SPM-BPE backend, which has
+    // no pre-tokenizer regex, and so must return before `patterns` is consulted.
+    match vocab {
+        PretrainedVocab::MistralV1 => {
+            return spm_from_vocab(MISTRAL_SPM_VOCAB, vocab, special, named)
+        }
+        PretrainedVocab::MistralV2 => {
+            return spm_from_vocab(MISTRAL_V2_SPM_VOCAB, vocab, special, named)
+        }
+        _ => {}
+    }
+    // Every remaining vocabulary is byte-level BPE and states a pattern. A
+    // `None` here would reach `from_bytes_*_chain` as an empty list and surface
+    // as `EmptyPatternList` rather than silently encoding without a split.
+    let pats = patterns(vocab).unwrap_or(&[]);
 
     let tokenizer = match vocab {
         PretrainedVocab::Cl100kBase => {
@@ -206,13 +220,11 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
             // DeepSeek uses ByteLevel BPE encoding
             Tokenizer::from_bytes_byte_level_chain(DEEPSEEK_V3_VOCAB, pats, special)
         }
-        // Mistral V1/V2 are SentencePiece, so they take the SPM-BPE backend and
-        // return here rather than falling through to byte-level BPE.
-        PretrainedVocab::MistralV1 => {
-            return spm_from_vocab(MISTRAL_SPM_VOCAB, vocab, special, named)
-        }
-        PretrainedVocab::MistralV2 => {
-            return spm_from_vocab(MISTRAL_V2_SPM_VOCAB, vocab, special, named)
+        // Handled above, before `patterns` is consulted.
+        PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => {
+            return Err(TokenizerError::UnknownPretrained(
+                "Mistral V1/V2 take the SPM backend and are routed earlier".to_owned(),
+            ))
         }
         PretrainedVocab::MistralV3 => {
             // V3 uses ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
@@ -314,25 +326,33 @@ fn spm_prefix_scheme(vocab: PretrainedVocab) -> SpmPrefixScheme {
     }
 }
 
-/// Get the ordered pre-tokenizer pattern sequence for a vocabulary.
+/// The ordered pre-tokenizer expression sequence for a vocabulary, or `None`
+/// when it has no regex pre-tokenizer at all.
 ///
-/// Every bundled vocabulary is currently a single-pass pre-tokenizer, so each
-/// arm returns a one-element slice; the return type is a slice (rather than a
-/// single pattern) so a vocabulary whose pre-tokenizer is a multi-pass
-/// sequence — llama.cpp's `regex_exprs` — can be expressed without changing
-/// the accessor's shape again.
-pub fn patterns(vocab: PretrainedVocab) -> &'static [&'static str] {
+/// The return type is a slice rather than a single pattern so a multi-pass
+/// pre-tokenizer — llama.cpp's `regex_exprs`, which DeepSeek V3 needs — can be
+/// expressed without reshaping the accessor again.
+///
+/// `None` is not "unknown", it is "this vocabulary does not pre-tokenize with a
+/// regex". Mistral V1/V2 are the case: they run on [`SpmTokenizer`], which
+/// segments by merging pieces and never applies a split pattern. This arm used
+/// to answer `SENTENCEPIECE_PATTERN`, which was a plausible-looking lie — no
+/// caller could tell that the pattern it was handed is never applied to that
+/// vocabulary, and `from_vocab` computed it only to discard it.
+pub fn patterns(vocab: PretrainedVocab) -> Option<&'static [&'static str]> {
     match vocab {
-        PretrainedVocab::Cl100kBase => &[CL100K_BASE_PATTERN],
-        PretrainedVocab::O200kBase => &[O200K_BASE_PATTERN],
-        PretrainedVocab::Llama3 => &[LLAMA3_PATTERN], // Meta's own split; NOT the o200k pattern
+        PretrainedVocab::Cl100kBase => Some(&[CL100K_BASE_PATTERN]),
+        PretrainedVocab::O200kBase => Some(&[O200K_BASE_PATTERN]),
+        // Meta's own split; NOT the o200k pattern.
+        PretrainedVocab::Llama3 => Some(&[LLAMA3_PATTERN]),
         // DeepSeek's own three-pass split; see DEEPSEEK_V3_PATTERNS.
-        PretrainedVocab::DeepseekV3 => DEEPSEEK_V3_PATTERNS,
-
-        PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => &[SENTENCEPIECE_PATTERN], // SentencePiece-style
-        PretrainedVocab::MistralV3 => &[MISTRAL_V3_PATTERN], // Tekken has its own pattern (no contractions, single-digit numbers)
+        PretrainedVocab::DeepseekV3 => Some(DEEPSEEK_V3_PATTERNS),
+        // SPM-BPE: merges pieces, no pre-tokenizer regex.
+        PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => None,
+        // Tekken has its own pattern (no contractions, single-digit numbers).
+        PretrainedVocab::MistralV3 => Some(&[MISTRAL_V3_PATTERN]),
         PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
-            &[GPT2_PATTERN]
+            Some(&[GPT2_PATTERN])
         }
     }
 }

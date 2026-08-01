@@ -135,7 +135,7 @@ impl PyTokenizer {
                 let special = cl100k_base_special_tokens();
                 bpe(Tokenizer::from_bytes_chain(
                     CL100K_BASE_VOCAB,
-                    pretrained_patterns(PretrainedVocab::Cl100kBase),
+                    pretrained_patterns(PretrainedVocab::Cl100kBase).unwrap_or(&[]),
                     special,
                 )
                 .map_err(|e| PyValueError::new_err(e.to_string()))?)
@@ -144,7 +144,7 @@ impl PyTokenizer {
                 let special = o200k_base_special_tokens();
                 bpe(Tokenizer::from_bytes_chain(
                     O200K_BASE_VOCAB,
-                    pretrained_patterns(PretrainedVocab::O200kBase),
+                    pretrained_patterns(PretrainedVocab::O200kBase).unwrap_or(&[]),
                     special,
                 )
                 .map_err(|e| PyValueError::new_err(e.to_string()))?)
@@ -153,7 +153,7 @@ impl PyTokenizer {
                 let special = llama3_special_tokens();
                 bpe(Tokenizer::from_bytes_chain(
                     LLAMA3_VOCAB,
-                    pretrained_patterns(PretrainedVocab::Llama3),
+                    pretrained_patterns(PretrainedVocab::Llama3).unwrap_or(&[]),
                     special,
                 )
                 .map_err(|e| PyValueError::new_err(e.to_string()))?)
@@ -166,7 +166,7 @@ impl PyTokenizer {
                 // neither of which produces DeepSeek's ids.
                 bpe(Tokenizer::from_bytes_byte_level_chain(
                     DEEPSEEK_V3_VOCAB,
-                    pretrained_patterns(PretrainedVocab::DeepseekV3),
+                    pretrained_patterns(PretrainedVocab::DeepseekV3).unwrap_or(&[]),
                     special,
                 )
                 .map_err(|e| PyValueError::new_err(e.to_string()))?)
@@ -187,7 +187,7 @@ impl PyTokenizer {
                 let special = mistral_v3_special_tokens();
                 bpe(Tokenizer::from_bytes_byte_level_chain(
                     MISTRAL_V3_VOCAB,
-                    pretrained_patterns(PretrainedVocab::MistralV3),
+                    pretrained_patterns(PretrainedVocab::MistralV3).unwrap_or(&[]),
                     special,
                 )
                 .map_err(|e| PyValueError::new_err(e.to_string()))?)

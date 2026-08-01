@@ -6,10 +6,11 @@
 //!   `llm_tokenizer_spm` merge-by-score loop, byte fallback through the
 //!   `<0xNN>` pieces. This is what a GGUF `model=llama` vocabulary loads into,
 //!   and it reproduces llama.cpp's ids for `ggml-vocab-llama-spm` exactly.
-//! * [`Tokenizer`] in SentencePiece mode (`from_bytes_sentencepiece`) —
+//! * [`Tokenizer`] with its metaspace decoder (`from_bytes_with_metaspace_decoder`) —
 //!   byte-level (`Vec<u8>`), tiktoken-style pairwise merges over a regex-chunked
-//!   input. This is what the bundled MistralV1/V2 vocabularies used before this
-//!   experiment moved them to `SpmTokenizer`.
+//!   input, with a decode-time ▁→space substitution. Despite the historical name
+//!   this is plain BPE, not SentencePiece. This is what the bundled MistralV1/V2
+//!   vocabularies used before this experiment moved them to `SpmTokenizer`.
 //!
 //! If the byte-level path can reproduce llama.cpp's ids for the *same*
 //! vocabulary, the two are equivalent on real input and one of them is
@@ -31,18 +32,18 @@
 //!
 //! # Which byte-level constructor, and why
 //!
-//! [`Tokenizer::from_bytes_sentencepiece`] — not
-//! `from_bytes_sentencepiece_with_decoder`. The two differ only in how they
-//! resolve byte sequences that appear at more than one id, and this vocabulary
-//! has 95 of them: every `<0xNN>` byte-fallback piece whose byte is also a real
-//! single-character piece (`<0x21>` at id 36 vs `!` at id 29991). `_with_decoder`
-//! keeps the *lowest* id for the encoder, which would make every `!` encode as
-//! the byte-fallback token 36; llama.cpp emits 29991, because in SPM byte
-//! fallback applies only to text with no piece at all. Plain
-//! `from_bytes_sentencepiece` keeps the *last* line for a repeated byte
-//! sequence, and since the file is written in id order that is the real piece —
-//! the id llama.cpp actually produces. Its decoder loses the duplicate ids, but
-//! this experiment only compares encode output.
+//! [`Tokenizer::from_bytes_with_metaspace_decoder`] — not
+//! `from_bytes_with_metaspace_decoder_preserving_ids`. The two differ only in how
+//! they resolve byte sequences that appear at more than one id, and this
+//! vocabulary has 95 of them: every `<0xNN>` byte-fallback piece whose byte is
+//! also a real single-character piece (`<0x21>` at id 36 vs `!` at id 29991).
+//! `_preserving_ids` keeps the *lowest* id for the encoder, which would make
+//! every `!` encode as the byte-fallback token 36; llama.cpp emits 29991,
+//! because in SPM byte fallback applies only to text with no piece at all.
+//! Plain `from_bytes_with_metaspace_decoder` keeps the *last* line for a
+//! repeated byte sequence, and since the file is written in id order that is
+//! the real piece — the id llama.cpp actually produces. Its decoder loses the
+//! duplicate ids, but this experiment only compares encode output.
 //!
 //! # Prefix space
 //!
@@ -50,7 +51,7 @@
 //! defaulting to true): `ied 4 ½ months` tokenizes as `▁i|ed|…`. The byte-level
 //! `Tokenizer` has no notion of that flag; the closest equivalent a caller can
 //! reach without touching library code is [`Tokenizer::with_prefix_space`],
-//! which prepends a literal space that SentencePiece mode then turns into `▁`.
+//! which prepends a literal space that the metaspace decoder then turns into `▁`.
 //! Both variants are scored, so the prefix is never the thing that decides the
 //! verdict.
 
@@ -143,25 +144,28 @@ fn main() -> ExitCode {
     // No special tokens: llama.cpp's test harness runs with `parse_special =
     // false`, so nothing in the input text is matched as special.
     let specials: FxHashMap<String, u32> = FxHashMap::default();
-    let bpe = match Tokenizer::from_bytes_sentencepiece(
+    let bpe = match Tokenizer::from_bytes_with_metaspace_decoder(
         &tiktoken,
         SENTENCEPIECE_PATTERN,
         specials.clone(),
     ) {
         Ok(tokenizer) => tokenizer,
         Err(err) => {
-            eprintln!("error: from_bytes_sentencepiece: {err}");
+            eprintln!("error: from_bytes_with_metaspace_decoder: {err}");
             return ExitCode::from(2);
         }
     };
-    let bpe_prefixed =
-        match Tokenizer::from_bytes_sentencepiece(&tiktoken, SENTENCEPIECE_PATTERN, specials) {
-            Ok(tokenizer) => tokenizer.with_prefix_space(true),
-            Err(err) => {
-                eprintln!("error: from_bytes_sentencepiece: {err}");
-                return ExitCode::from(2);
-            }
-        };
+    let bpe_prefixed = match Tokenizer::from_bytes_with_metaspace_decoder(
+        &tiktoken,
+        SENTENCEPIECE_PATTERN,
+        specials,
+    ) {
+        Ok(tokenizer) => tokenizer.with_prefix_space(true),
+        Err(err) => {
+            eprintln!("error: from_bytes_with_metaspace_decoder: {err}");
+            return ExitCode::from(2);
+        }
+    };
 
     let mut paths = vec![
         Candidate {
@@ -347,7 +351,7 @@ fn check_conversion(fixture: &Fixture, tiktoken: &[u8]) -> bool {
             .map(|&id| format!("{id}={:?}", tokens[id as usize]))
             .collect();
         println!(
-            "    {bytes:?} at {} — from_bytes_sentencepiece keeps the last ({})",
+            "    {bytes:?} at {} — from_bytes_with_metaspace_decoder keeps the last ({})",
             named.join(", "),
             hits.last().copied().unwrap_or_default()
         );

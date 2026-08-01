@@ -446,7 +446,7 @@ fn subdivide(re: &RegexBackend, text: &str, spans: &[(usize, usize)]) -> Vec<(us
 /// - Aho-Corasick for fast multi-pattern special token matching
 /// - LRU cache for frequently encoded chunks
 /// - Optional ByteLevel encoding for GPT-2/Llama/DeepSeek style tokenizers
-/// - Optional SentencePiece mode for Mistral/Gemma style tokenizers (▁ → space)
+/// - Optional metaspace decoder for Mistral/Gemma style tokenizers (▁ → space)
 pub struct Tokenizer {
     encoder: FxHashMap<Vec<u8>, u32>,
     /// Optional separate merge-priority map (bytes → merge rank). When present,
@@ -478,7 +478,11 @@ pub struct Tokenizer {
     special_matcher: Option<AddedTokens>,
     chunk_cache: Mutex<LruCache<u64, Vec<u32>>>,
     use_byte_level: bool,
-    use_sentencepiece: bool,
+    /// BPE with a metaspace (▁) decoder — see [`Tokenizer::new_with_metaspace_decoder`].
+    /// This is NOT SentencePiece (Unigram/Viterbi); for that use
+    /// [`crate::core::sentencepiece::SentencePieceTokenizer`] or
+    /// [`crate::core::spm::SpmTokenizer`].
+    use_metaspace_decoder: bool,
     /// Prepend a space to input before tokenizing (HF ByteLevel `add_prefix_space`).
     add_prefix_space: bool,
     /// Optional multi-stage pre-tokenizer pipeline (HF `pre_tokenizer` graphs
@@ -608,11 +612,16 @@ impl Tokenizer {
         Ok(())
     }
 
-    /// Create a new tokenizer with SentencePiece mode enabled.
+    /// Create a new tokenizer with a metaspace (▁) decoder enabled.
     ///
-    /// SentencePiece mode is required for Mistral, Gemma, and similar tokenizers
-    /// that use ▁ (U+2581) as word boundary marker. During decoding, ▁ is converted to space.
-    pub fn new_sentencepiece(
+    /// This is byte-level BPE, not SentencePiece — despite the historical name,
+    /// it is the linked-list BPE algorithm in this file with a decode-time
+    /// ▁ (U+2581) → space substitution bolted on. It is required for Mistral,
+    /// Gemma, and similar tokenizers that use ▁ as a word-boundary marker in
+    /// their vocab. For real SentencePiece (Unigram, Viterbi decoding) use
+    /// [`crate::core::sentencepiece::SentencePieceTokenizer`]; for SPM-BPE
+    /// (merge-by-rank) vocabularies use [`crate::core::spm::SpmTokenizer`].
+    pub fn new_with_metaspace_decoder(
         encoder: FxHashMap<Vec<u8>, u32>,
         special_tokens: impl Into<AddedTokenSet>,
         pattern: &str,
@@ -662,7 +671,8 @@ impl Tokenizer {
         )
     }
 
-    /// Create a new tokenizer with all configuration options including SentencePiece mode.
+    /// Create a new tokenizer with all configuration options including the
+    /// metaspace decoder.
     ///
     /// # Arguments
     /// * `encoder` - Map of byte sequences to token IDs
@@ -670,14 +680,15 @@ impl Tokenizer {
     /// * `pattern` - Regex pattern for tokenization
     /// * `cache_size` - Size of the LRU cache for encoded chunks
     /// * `use_byte_level` - Enable ByteLevel encoding for GPT-2/Llama/DeepSeek style tokenizers
-    /// * `use_sentencepiece` - Enable SentencePiece mode (▁ → space during decode)
+    /// * `use_metaspace_decoder` - Enable the metaspace decoder (▁ → space during decode);
+    ///   NOT SentencePiece, see [`Tokenizer::new_with_metaspace_decoder`]
     pub fn with_full_options(
         encoder: FxHashMap<Vec<u8>, u32>,
         special_tokens: impl Into<AddedTokenSet>,
         pattern: &str,
         cache_size: usize,
         use_byte_level: bool,
-        use_sentencepiece: bool,
+        use_metaspace_decoder: bool,
     ) -> Result<Self, TokenizerError> {
         // Build decoder maps
         let decoder = build_decoder(&encoder);
@@ -716,7 +727,7 @@ impl Tokenizer {
             special_matcher,
             chunk_cache,
             use_byte_level,
-            use_sentencepiece,
+            use_metaspace_decoder,
             add_prefix_space: false,
             pre_tokenizer: None,
             match_added_tokens: false,
@@ -918,25 +929,28 @@ impl Tokenizer {
         Self::new_byte_level_chain(encoder, special_tokens, patterns)
     }
 
-    /// Create a tokenizer from raw vocabulary bytes with SentencePiece mode.
+    /// Create a tokenizer from raw vocabulary bytes with the metaspace decoder.
     ///
-    /// SentencePiece mode converts ▁ (U+2581) to space during decoding.
-    /// Used for Mistral, Gemma, and similar tokenizers.
-    pub fn from_bytes_sentencepiece(
+    /// This is byte-level BPE, not SentencePiece — see
+    /// [`Tokenizer::new_with_metaspace_decoder`]. It converts ▁ (U+2581) to
+    /// space during decoding. Used for Mistral, Gemma, and similar tokenizers.
+    pub fn from_bytes_with_metaspace_decoder(
         vocab_data: &[u8],
         pattern: &str,
         special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
         let encoder = load_tiktoken_bpe(vocab_data)?;
-        Self::new_sentencepiece(encoder, special_tokens, pattern)
+        Self::new_with_metaspace_decoder(encoder, special_tokens, pattern)
     }
 
-    /// Create a SentencePiece tokenizer with explicit decoder to preserve all token IDs.
+    /// Create a metaspace-decoder BPE tokenizer (see
+    /// [`Tokenizer::new_with_metaspace_decoder`] — NOT SentencePiece) with an
+    /// explicit decoder to preserve all token IDs.
     ///
     /// This is used for vocabs with duplicate byte sequences (like Mistral V2 where byte fallback
     /// tokens may duplicate BPE merges). The decoder preserves ALL token IDs, while the encoder
     /// only keeps the lowest ID for each byte sequence.
-    pub fn from_bytes_sentencepiece_with_decoder(
+    pub fn from_bytes_with_metaspace_decoder_preserving_ids(
         vocab_data: &[u8],
         pattern: &str,
         special_tokens: impl Into<AddedTokenSet>,
@@ -984,7 +998,7 @@ impl Tokenizer {
             special_matcher,
             chunk_cache,
             use_byte_level: false,
-            use_sentencepiece: true,
+            use_metaspace_decoder: true,
             add_prefix_space: false,
             pre_tokenizer: None,
             match_added_tokens: false,
@@ -1154,8 +1168,8 @@ impl Tokenizer {
             return vec![];
         }
 
-        if self.use_sentencepiece {
-            // SentencePiece mode: convert spaces to ▁, encode newlines as bytes
+        if self.use_metaspace_decoder {
+            // Metaspace decoder mode: convert spaces to ▁, encode newlines as bytes
             // Rules:
             // - Spaces → ▁ characters (may merge with following word or form ▁▁▁ tokens)
             // - Newlines/tabs → encoded as byte tokens
@@ -1214,7 +1228,7 @@ impl Tokenizer {
 
             results
         } else {
-            // Non-SentencePiece mode: use original logic
+            // No metaspace decoder: use original logic
             let results: Vec<Vec<u32>> = chunks
                 .iter()
                 .map(|&(start, end)| {
@@ -1230,11 +1244,12 @@ impl Tokenizer {
     /// Encode text to token IDs using Rayon parallel processing.
     ///
     /// Only beneficial for very large texts (>1MB).
-    /// Note: For SentencePiece tokenizers, this falls back to sequential encoding
-    /// because SentencePiece requires tracking state between chunks.
+    /// Note: For metaspace-decoder tokenizers, this falls back to sequential
+    /// encoding because the metaspace substitution requires tracking state
+    /// between chunks.
     pub fn encode_rayon(&self, text: &str) -> Vec<u32> {
-        if self.use_sentencepiece || self.pre_tokenizer.is_some() {
-            // SentencePiece and the multi-stage pre-tokenizer need sequential logic.
+        if self.use_metaspace_decoder || self.pre_tokenizer.is_some() {
+            // Metaspace decoder and the multi-stage pre-tokenizer need sequential logic.
             return self.encode(text);
         }
 
@@ -1344,7 +1359,7 @@ impl Tokenizer {
         self.postprocess_decode(text)
     }
 
-    /// Post-process decoded text for SentencePiece tokenizers.
+    /// Post-process decoded text for metaspace-decoder tokenizers.
     ///
     /// Converts ▁ (U+2581, lower one eighth block) to space.
     ///
@@ -1354,7 +1369,7 @@ impl Tokenizer {
     /// handle that at a higher level (e.g., in your generation loop).
     #[inline]
     fn postprocess_decode(&self, text: String) -> String {
-        if self.use_sentencepiece {
+        if self.use_metaspace_decoder {
             // Replace ▁ with space - this preserves word boundaries
             text.replace('\u{2581}', " ")
         } else {
@@ -1509,7 +1524,7 @@ impl Clone for Tokenizer {
             special_matcher,
             chunk_cache,
             use_byte_level: self.use_byte_level,
-            use_sentencepiece: self.use_sentencepiece,
+            use_metaspace_decoder: self.use_metaspace_decoder,
             add_prefix_space: self.add_prefix_space,
             pre_tokenizer: self.pre_tokenizer.clone(),
             match_added_tokens: self.match_added_tokens,
