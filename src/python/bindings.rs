@@ -113,9 +113,11 @@ impl PyTokenizer {
     ///     name: Model name (e.g., "cl100k_base", "o200k_base", "llama3", "mistral_v3")
     ///
     /// Returns:
-    ///     A `Tokenizer` for byte-level BPE vocabularies, or an `SpmTokenizer`
-    ///     for the SentencePiece ones ("mistral" / "mistral_v1" / "mistral_v2"),
-    ///     which are merged as pieces rather than as bytes.
+    ///     A `Tokenizer` for the byte-level BPE vocabularies, or an
+    ///     `AnyTokenizer` for the SentencePiece ones ("mistral" / "mistral_v1" /
+    ///     "mistral_v2"), which are merged as pieces rather than as bytes and
+    ///     load through the universal handle so their policy and decode
+    ///     pipeline travel with them.
     #[staticmethod]
     fn from_pretrained(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
         let bpe = |inner: Tokenizer| -> PyResult<Py<PyAny>> {
@@ -1035,36 +1037,218 @@ impl PyWordPieceTokenizer {
     }
 }
 
-/// Wrap a loaded [`AnyTokenizer`] in the matching Python class, carrying its
-/// special-token policy.
+/// Python wrapper for a loaded [`AnyTokenizer`] — the universal handle every
+/// loader returns.
+///
+/// This holds the `AnyTokenizer` **whole** rather than unpacking it into one of
+/// the family-specific wrappers above. That matters because an `AnyTokenizer`
+/// is more than its backend: it also carries the special-token policy, the
+/// `decoder` pipeline declared in the `tokenizer.json`, and the set of
+/// `special=true` ids to drop on decode. Unpacking kept only the backend and
+/// the policy, so a file whose decoding *is* its declared pipeline (Mistral's
+/// `Replace ▁→" "` → `ByteFallback` → `Fuse` → `Strip`) decoded to raw pieces
+/// like `▁hello▁world` the moment it crossed into Python. Carrying the handle
+/// whole means a field added to `AnyTokenizer` cannot go missing here.
+///
+/// Every method delegates to `AnyTokenizer`'s own inherent method, so Python
+/// and Rust cannot drift apart in what `encode`/`decode` mean.
+#[pyclass(name = "AnyTokenizer")]
+pub struct PyAnyTokenizer {
+    inner: AnyTokenizer,
+}
+
+#[pymethods]
+impl PyAnyTokenizer {
+    /// Encode text and apply the model's boundary template, matching
+    /// HuggingFace's default `encode` (`add_special_tokens=True`).
+    ///
+    /// Special tokens spelled out literally in `text` are matched (every loader
+    /// turns added-token matching on); use `encode_ordinary` or
+    /// `encode_allowed_special` to constrain that.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode(&self, text: &str) -> Vec<u32> {
+        self.inner.encode(text)
+    }
+
+    /// Encode without applying the boundary template — the backend's content
+    /// tokens alone, matching HuggingFace's `add_special_tokens=False`.
+    ///
+    /// Use this when assembling your own sequence (a chat template, a reranker
+    /// pair) and placing the boundary tokens yourself.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_raw(&self, text: &str) -> Vec<u32> {
+        self.inner.encode_raw(text)
+    }
+
+    /// Encode text, matching every configured special token found in it.
+    ///
+    /// This is what `encode` already does; the name exists so callers migrating
+    /// from the family-specific wrappers keep working. Distinct from
+    /// `encode_ordinary` (matches none) and `encode_allowed_special` (matches a
+    /// named subset).
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_with_special(&self, text: &str) -> PyResult<Vec<u32>> {
+        self.inner
+            .encode_with(text, &SpecialMode::All)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Encode text to token IDs, never matching special tokens.
+    ///
+    /// A special token spelled out literally in the input (e.g. `<|endoftext|>`,
+    /// `[INST]`) is encoded as ordinary text instead of being promoted to its
+    /// control-token id. Use this when tokenizing untrusted text where the
+    /// caller must not be able to forge control tokens.
+    ///
+    /// The model's boundary template is still applied, exactly as in
+    /// `AnyTokenizer::encode_with`: boundary tokens come from the template, not
+    /// from matching text against the vocabulary, so locking down special-token
+    /// matching in the *content* must not also strip the boundary tokens the
+    /// model was trained with. Use `encode_raw` for the untemplated form.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_ordinary(&self, text: &str) -> PyResult<Vec<u32>> {
+        self.inner
+            .encode_with(text, &SpecialMode::Ordinary)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Encode text to token IDs, matching only the named special tokens.
+    ///
+    /// Any other configured special token spelled out literally in the text
+    /// raises `ValueError` instead of being silently promoted to its
+    /// control-token id — use this to accept a known, bounded set of special
+    /// tokens (e.g. a chat template's own markers) from otherwise untrusted
+    /// text. The boundary template is applied, as in `encode_ordinary`.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///     allowed_special: Special token strings permitted to match in `text`
+    ///
+    /// Returns:
+    ///     List of token IDs
+    ///
+    /// Raises:
+    ///     ValueError: If `text` spells out a configured special token that is
+    ///         not in `allowed_special`
+    fn encode_allowed_special(
+        &self,
+        text: &str,
+        allowed_special: Vec<String>,
+    ) -> PyResult<Vec<u32>> {
+        let allowed: FxHashSet<String> = allowed_special.into_iter().collect();
+        self.inner
+            .encode_with(text, &SpecialMode::Allow(&allowed))
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Batch encode multiple texts, applying the boundary template to each —
+    /// the batch form of `encode`.
+    ///
+    /// Uses Rayon to parallelize across texts.
+    ///
+    /// Args:
+    ///     texts: List of texts to encode
+    ///
+    /// Returns:
+    ///     List of token ID lists
+    fn encode_batch(&self, texts: Vec<String>) -> Vec<Vec<u32>> {
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        self.inner.encode_batch(&refs)
+    }
+
+    /// Decode token IDs to a string.
+    ///
+    /// Runs the `decoder` pipeline declared in the source `tokenizer.json` when
+    /// there is one — dropping `special=true` ids first, matching HuggingFace's
+    /// default `skip_special_tokens=True` — and the backend's built-in decode
+    /// otherwise.
+    ///
+    /// Args:
+    ///     ids: List of token IDs
+    ///
+    /// Returns:
+    ///     Decoded string
+    ///
+    /// Raises:
+    ///     ValueError: If a token ID is out of range or the bytes are not UTF-8
+    fn decode(&self, ids: Vec<u32>) -> PyResult<String> {
+        Tokenize::decode(&self.inner, &ids).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Get the vocabulary size (including special tokens).
+    #[getter]
+    fn vocab_size(&self) -> usize {
+        Tokenize::vocab_size(&self.inner)
+    }
+
+    /// Check if a token is the EOS token.
+    fn is_eos(&self, token_id: u32) -> bool {
+        self.inner.is_eos(token_id)
+    }
+
+    /// Get the EOS token ID, if the source names one.
+    #[getter]
+    fn eos_token_id(&self) -> Option<u32> {
+        self.inner.eos_token_id()
+    }
+
+    /// Get the id of an added token by its content (e.g. `"[CLS]"`,
+    /// `"<|im_end|>"`), or None if this tokenizer does not define it.
+    fn special_token_id(&self, name: &str) -> Option<u32> {
+        self.inner.special_token_id(name)
+    }
+
+    /// The backend family this handle holds ("BPE", "Unigram", "WordPiece", "Spm").
+    #[getter]
+    fn family(&self) -> &'static str {
+        self.inner.family()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AnyTokenizer(family={}, vocab_size={})",
+            self.inner.family(),
+            Tokenize::vocab_size(&self.inner)
+        )
+    }
+}
+
+/// Wrap a loaded [`AnyTokenizer`] for Python, carrying the handle whole.
 fn any_tokenizer_to_py(py: Python<'_>, any: AnyTokenizer) -> PyResult<Py<PyAny>> {
-    let policy = any.policy().clone();
-    Ok(match any.into_backend() {
-        Backend::Bpe(t) => Py::new(py, PyTokenizer { inner: t, policy })?.into_any(),
-        Backend::Unigram(t) => Py::new(
-            py,
-            PySentencePieceTokenizer {
-                inner: t,
-                policy,
-                bos_token_id: None,
-            },
-        )?
-        .into_any(),
-        Backend::WordPiece(t) => Py::new(py, PyWordPieceTokenizer { inner: t, policy })?.into_any(),
-        Backend::Spm(t) => Py::new(py, PySpmTokenizer { inner: t, policy })?.into_any(),
-    })
+    Ok(Py::new(py, PyAnyTokenizer { inner: any })?.into_any())
 }
 
 /// Load any HuggingFace `tokenizer.json` from a file path.
-///
-/// Dispatches on the model family and returns the matching tokenizer object:
-/// `Tokenizer` (BPE), `SentencePieceTokenizer` (Unigram), or `WordPieceTokenizer`.
 ///
 /// Args:
 ///     path: Path to a `tokenizer.json` file
 ///
 /// Returns:
-///     A Tokenizer / SentencePieceTokenizer / WordPieceTokenizer instance
+///     An `AnyTokenizer` — the universal loaded-tokenizer handle. It keeps the
+///     file's special-token policy AND its declared `decoder` pipeline, so
+///     `decode` reproduces HuggingFace's output for files (Mistral, Llama,
+///     Gemma) whose decoding is defined by that pipeline. Query `.family` for
+///     the backend it dispatched to ("BPE", "Unigram", "WordPiece", "Spm").
 #[pyfunction]
 pub fn from_json(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
     let any = core_from_json_path(path).map_err(|e| PyValueError::new_err(e.to_string()))?;

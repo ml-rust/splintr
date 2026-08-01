@@ -53,6 +53,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<python::PySentencePieceTokenizer>()?;
     m.add_class::<python::PySpmTokenizer>()?;
     m.add_class::<python::PyWordPieceTokenizer>()?;
+    m.add_class::<python::PyAnyTokenizer>()?;
     m.add_class::<python::PyStreamingDecoder>()?;
     m.add_class::<python::PyByteLevelStreamingDecoder>()?;
     m.add_function(wrap_pyfunction!(python::from_json, m)?)?;

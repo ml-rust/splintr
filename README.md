@@ -235,24 +235,25 @@ See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, exa
 
 ### Loading any model from `tokenizer.json`
 
-For models not bundled above, point `splintr.from_json` at a HuggingFace `tokenizer.json`. It dispatches on the tokenizer type and returns the matching object — `Tokenizer` (BPE), `SentencePieceTokenizer` (Unigram), or `WordPieceTokenizer`:
+For models not bundled above, point `splintr.from_json` at a HuggingFace `tokenizer.json`. It returns an `AnyTokenizer` — the universal loaded-tokenizer handle, which dispatches internally to the right backend for the file's `model.type` while keeping everything else the file declares: the special-token policy, the `decoder` pipeline, and the ids to skip on decode:
 
 ```python
 from splintr import from_json
 
 tok = from_json("tokenizer.json")   # BERT, T5, Gemma, Qwen, Whisper.en, ...
-ids = tok.encode("Hello, world!")                       # content tokens
-ids = tok.encode_with_special_tokens("Hello, world!")   # + [CLS]/[SEP]/<s> etc. (post_processor)
+ids = tok.encode("Hello, world!")       # + [CLS]/[SEP]/<s> etc. (post_processor)
+ids = tok.encode_raw("Hello, world!")   # content tokens only
 text = tok.decode(ids)
+tok.family                              # "BPE" | "Unigram" | "WordPiece" | "Spm"
 ```
 
-`encode` returns content tokens (HF's `add_special_tokens=False`); `encode_with_special_tokens` additionally applies the model's `post_processor` template (HF's default `encode`). Honored end-to-end: the multi-stage pre-tokenizer pipeline (`ByteLevel`, `Split` incl. `invert`, `Digits`, `Punctuation`/`Contiguous`, `Sequence`, `add_prefix_space`/`prepend_scheme`), the full ordered normalizer (`Replace`, `Strip`, `Prepend`, NFC/NFD/NFKC/NFKD, `Precompiled` charsmap, …), BPE merge order, and `added_tokens` matching. Verified id-for-id (content **and** with special tokens) against GPT-2, RoBERTa, Qwen, Whisper, T5, Albert, XLNet, BERT, DistilBERT, **Falcon, StarCoder2, DeepSeek-Coder, GPT-NeoX**.
+`encode` applies the model's `post_processor` template (HF's default `encode`); `encode_raw` returns content tokens alone (HF's `add_special_tokens=False`). `decode` runs the file's declared `decoder` chain (`Replace`, `ByteFallback`, `Fuse`, `Strip`, `Metaspace`, `ByteLevel`, `WordPiece`, `BPEDecoder`, `Sequence`) after dropping `special=true` ids, so files whose decoding *is* that chain — Mistral, Llama, Gemma — come back as text rather than raw pieces. Honored end-to-end: the multi-stage pre-tokenizer pipeline (`ByteLevel`, `Split` incl. `invert`, `Digits`, `Punctuation`/`Contiguous`, `Sequence`, `add_prefix_space`/`prepend_scheme`), the full ordered normalizer (`Replace`, `Strip`, `Prepend`, NFC/NFD/NFKC/NFKD, `Precompiled` charsmap, …), BPE merge order, and `added_tokens` matching. Verified id-for-id (content **and** with special tokens) against GPT-2, RoBERTa, Qwen, Whisper, T5, Albert, XLNet, BERT, DistilBERT, **Falcon, StarCoder2, DeepSeek-Coder, GPT-NeoX**.
 
-| `model.type`       | Returned type            | Example models                          |
-| ------------------ | ------------------------ | --------------------------------------- |
-| `BPE` (byte-level) | `Tokenizer`              | GPT-2, Whisper, Llama 3, Qwen, DeepSeek |
-| `Unigram`          | `SentencePieceTokenizer` | T5, Gemma, Albert, XLNet                |
-| `WordPiece`        | `WordPieceTokenizer`     | BERT, DistilBERT, Electra               |
+| `model.type`       | `tok.family` | Backend                  | Example models                          |
+| ------------------ | ------------ | ------------------------ | --------------------------------------- |
+| `BPE` (byte-level) | `"BPE"`      | `Tokenizer`              | GPT-2, Whisper, Llama 3, Qwen, DeepSeek |
+| `Unigram`          | `"Unigram"`  | `SentencePieceTokenizer` | T5, Gemma, Albert, XLNet                |
+| `WordPiece`        | `"WordPiece"`| `WordPieceTokenizer`     | BERT, DistilBERT, Electra               |
 
 The split regex, byte-level flag, merge order, normalizer (including SentencePiece's `Precompiled` charsmap), and special tokens are all read from the file itself. Output is verified id-for-id against HuggingFace `tokenizers` across every family — GPT-2, RoBERTa, BART, Qwen, Whisper (BPE); T5, Albert, XLNet (Unigram); BERT, DistilBERT (WordPiece). (Rust: `splintr::from_json_path` / `from_json_bytes`.)
 

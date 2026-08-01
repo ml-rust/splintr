@@ -247,4 +247,59 @@ mod tests {
         // Content tokens should be exactly "hi" encoded byte-by-byte, unmodified.
         assert_eq!(&ids[1..], &[b'h' as u32, b'i' as u32]);
     }
+
+    /// `AnyTokenizer::decode` must run the declared `decoder` pipeline and drop
+    /// the `special_decode` ids first — those two fields are the whole reason
+    /// decoding is config-driven rather than inferred from the backend, and a
+    /// handle that carries them but ignores them decodes to raw pieces
+    /// (`▁hello▁world`) instead of text.
+    ///
+    /// The pipeline here is Mistral's, verbatim from its `tokenizer.json`.
+    #[test]
+    fn decode_applies_declared_pipeline_and_skips_special_ids() {
+        let mut encoder = rustc_hash::FxHashMap::default();
+        encoder.insert("\u{2581}hello".as_bytes().to_vec(), 10);
+        encoder.insert("\u{2581}world".as_bytes().to_vec(), 11);
+        let mut special_tokens = rustc_hash::FxHashMap::default();
+        special_tokens.insert("<s>".to_string(), 1);
+
+        let tokenizer = Tokenizer::new(encoder, special_tokens.clone(), r"\S+|\s+").unwrap();
+        let policy = SpecialPolicy::boundary(Some(1), None, None, special_tokens);
+
+        let declared = serde_json::json!({
+            "type": "Sequence",
+            "decoders": [
+                {"type": "Replace", "pattern": {"String": "\u{2581}"}, "content": " "},
+                {"type": "ByteFallback"},
+                {"type": "Fuse"},
+                {"type": "Strip", "content": " ", "start": 1, "stop": 0}
+            ]
+        });
+
+        let ids = [1, 10, 11];
+
+        // Without the pipeline the backend's own decode renders the pieces raw —
+        // this is exactly the wrong output the pipeline exists to prevent.
+        let bare = AnyTokenizer::new(Backend::Bpe(tokenizer.clone()), policy.clone());
+        assert_eq!(
+            Tokenize::decode(&bare, &ids).unwrap(),
+            "<s>\u{2581}hello\u{2581}world"
+        );
+
+        let configured = AnyTokenizer {
+            backend: Backend::Bpe(tokenizer),
+            policy,
+            decoder: super::super::decoder::parse(Some(&declared)),
+            special_decode: [1].into_iter().collect(),
+        };
+        assert!(
+            configured.decoder.is_some(),
+            "the declared Sequence decoder must parse"
+        );
+        assert_eq!(
+            Tokenize::decode(&configured, &ids).unwrap(),
+            "hello world",
+            "declared decoder pipeline + special_decode must both apply"
+        );
+    }
 }
