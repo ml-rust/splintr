@@ -65,3 +65,6 @@ coverage.xml
 .cargo/
 
 /releases/
+
+# Claude Code session scratch (prep files)
+.claude/prep/
