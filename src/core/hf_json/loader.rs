@@ -9,12 +9,12 @@ use super::super::sentencepiece::SentencePieceTokenizer;
 use super::super::tokenizer::Tokenizer;
 use super::super::wordpiece::WordPieceTokenizer;
 
-use super::any_tokenizer::{AnyTokenizer, Backend};
+use super::super::any_tokenizer::{AnyTokenizer, Backend};
+use super::super::policy;
 use super::components::{
     find_added_token, parse_bert_norm, parse_norm_ops, parse_pre_tokenizer,
     parse_special_decode_ids, parse_special_tokens,
 };
-use super::policy;
 use super::HfJsonError;
 
 /// Load a tokenizer from a `tokenizer.json` file path.

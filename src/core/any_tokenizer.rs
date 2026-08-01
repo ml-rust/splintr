@@ -1,13 +1,11 @@
 //! The tagged-union tokenizer handle returned by the HF json loader.
 
-use super::super::sentencepiece::SentencePieceTokenizer;
-use super::super::spm::SpmTokenizer;
-use super::super::tokenize::{Tokenize, TokenizeError};
-use super::super::tokenizer::Tokenizer;
-use super::super::wordpiece::WordPieceTokenizer;
-
-use super::policy::SpecialPolicy;
-use super::HfJsonError;
+use super::policy::{PolicyError, SpecialPolicy};
+use super::sentencepiece::SentencePieceTokenizer;
+use super::spm::SpmTokenizer;
+use super::tokenize::{Tokenize, TokenizeError};
+use super::tokenizer::Tokenizer;
+use super::wordpiece::WordPieceTokenizer;
 
 /// A tokenizer loaded from a `tokenizer.json`, tagged by its backend family.
 ///
@@ -50,7 +48,7 @@ pub struct AnyTokenizer {
     pub(super) policy: SpecialPolicy,
     /// The `decoder` pipeline declared in the json. When present it drives
     /// decoding (config-driven); when absent the backend's built-in decode runs.
-    pub(super) decoder: Option<super::super::decoder::Decoder>,
+    pub(super) decoder: Option<super::decoder::Decoder>,
     /// Ids of `special=true` added tokens, skipped before the decoder pipeline.
     pub(super) special_decode: rustc_hash::FxHashSet<u32>,
 }
@@ -59,7 +57,7 @@ impl AnyTokenizer {
     /// Pair a backend with a special-token policy.
     ///
     /// Decoding uses the backend's own; callers loading a `tokenizer.json` get
-    /// the declared `decoder` pipeline through [`from_json_bytes`](super::from_json_bytes) instead.
+    /// the declared `decoder` pipeline through [`from_json_bytes`](super::hf_json::from_json_bytes) instead.
     pub fn new(backend: Backend, policy: SpecialPolicy) -> Self {
         Self {
             backend,
@@ -115,7 +113,7 @@ impl AnyTokenizer {
     ///
     /// Errors when the tokenizer defines no pair template rather than
     /// concatenating the two halves without a separator.
-    pub fn encode_pair(&self, a: &str, b: &str) -> Result<Vec<u32>, HfJsonError> {
+    pub fn encode_pair(&self, a: &str, b: &str) -> Result<Vec<u32>, PolicyError> {
         self.policy
             .apply_pair(&self.encode_raw(a), &self.encode_raw(b))
     }

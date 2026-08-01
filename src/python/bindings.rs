@@ -42,8 +42,7 @@ use rustc_hash::FxHashMap;
 use crate::core::SentencePieceTokenizer;
 
 use crate::core::hf_json::{
-    from_json_bytes as core_from_json_bytes, from_json_path as core_from_json_path, AnyTokenizer,
-    Backend, SpecialPolicy,
+    from_json_bytes as core_from_json_bytes, from_json_path as core_from_json_path,
 };
 use crate::core::pretrained::{
     cl100k_base_special_tokens, deepseek_v3_special_tokens, llama3_special_tokens,
@@ -56,6 +55,7 @@ use crate::core::{
     byte_level_decode_bytes, Tokenize, Tokenizer, CL100K_BASE_PATTERN, LLAMA3_PATTERN,
     MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
+use crate::core::{AnyTokenizer, Backend, SpecialPolicy};
 
 // Special tokens are defined in crate::core::pretrained module.
 // See that module for the full token documentation and implementations.

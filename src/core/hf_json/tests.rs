@@ -1,6 +1,8 @@
 use super::*;
+use crate::core::policy::PolicyError;
 // Raw backends expose `encode` only through the trait; `AnyTokenizer`'s is inherent.
 use crate::core::tokenize::Tokenize;
+use crate::core::Backend;
 
 #[test]
 fn dispatches_bpe_byte_level() {
@@ -186,7 +188,6 @@ fn unigram_applies_replace_normalizer_in_order() {
 
 #[test]
 fn wordpiece_custom_continuation_prefix() {
-    use crate::core::Tokenize;
     // A model whose continuation prefix is "@@" rather than "##".
     let json = r###"{
         "model": {"type": "WordPiece", "unk_token": "[UNK]",
@@ -280,7 +281,7 @@ fn encode_pair_without_a_template_errors() {
     let tok = from_json_bytes(json.as_bytes()).unwrap();
     assert!(matches!(
         tok.encode_pair("a", "b"),
-        Err(HfJsonError::NoPairTemplate)
+        Err(PolicyError::NoPairTemplate)
     ));
 }
 
@@ -308,7 +309,6 @@ fn policy_exposes_named_specials_and_eos() {
 
 #[test]
 fn decode_skips_special_keeps_nonspecial_added_tokens() {
-    use crate::core::Tokenize;
     // Byte-level BPE with one special added token (id 2) and one non-special
     // added token (id 3). Decode drops the special, keeps the non-special.
     let json = r#"{

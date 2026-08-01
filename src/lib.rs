@@ -20,9 +20,10 @@ pub use core::{
     PretrainedVocab,
 };
 pub use core::{whisper_special_tokens, WhisperVariant};
-// Re-export the generic HuggingFace tokenizer.json loader
+// Re-export the universal loaded-tokenizer type and its special-token policy,
+// plus the HuggingFace `tokenizer.json` loader that is one source of them.
 pub use core::{
-    from_json_bytes, from_json_path, AnyTokenizer, Backend, HfJsonError, SpecialPolicy,
+    from_json_bytes, from_json_path, AnyTokenizer, Backend, HfJsonError, PolicyError, SpecialPolicy,
 };
 
 /// Splintr - Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings

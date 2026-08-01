@@ -302,7 +302,7 @@ pub(super) fn parse_norm_ops(norm: Option<&Value>) -> Result<Vec<NormOp>, HfJson
 /// (`<|endoftext|>`) and non-special content tokens (e.g. gpt-neox's whitespace
 /// runs, deepseek's byte chars) — so the matcher must know all of them, not just
 /// the special-flagged ones.
-pub(super) fn parse_special_tokens(root: &Value) -> FxHashMap<String, u32> {
+pub(in crate::core) fn parse_special_tokens(root: &Value) -> FxHashMap<String, u32> {
     let mut specials = FxHashMap::default();
     if let Some(list) = root.get("added_tokens").and_then(Value::as_array) {
         for t in list {
@@ -335,7 +335,7 @@ pub(super) fn parse_special_decode_ids(root: &Value) -> rustc_hash::FxHashSet<u3
 }
 
 /// Find the id of the first matching token content in `added_tokens`.
-pub(super) fn find_added_token(root: &Value, candidates: &[&str]) -> Option<u32> {
+pub(in crate::core) fn find_added_token(root: &Value, candidates: &[&str]) -> Option<u32> {
     let list = root.get("added_tokens").and_then(Value::as_array)?;
     for cand in candidates {
         for t in list {

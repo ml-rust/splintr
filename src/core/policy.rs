@@ -10,9 +10,19 @@
 
 use rustc_hash::FxHashMap;
 use serde_json::Value;
+use thiserror::Error;
 
-use super::components::{find_added_token, parse_special_tokens};
-use super::HfJsonError;
+use super::hf_json::components::{find_added_token, parse_special_tokens};
+
+/// Errors from [`SpecialPolicy::apply_pair`] — loader-agnostic, since the
+/// policy itself is shared by every loader (HF json, GGUF, …).
+#[derive(Debug, Error)]
+pub enum PolicyError {
+    #[error("post_processor Sequence composes several segment-placing processors ({0}) — refusing to guess where the second sequence goes")]
+    UnsupportedPairComposition(String),
+    #[error("this tokenizer defines no pair template — refusing to concatenate the two sequences without the separator the model expects")]
+    NoPairTemplate,
+}
 
 /// Candidate contents for the end-of-sequence token, most specific first.
 ///
@@ -97,12 +107,12 @@ impl SpecialPolicy {
     /// Errors when the json defined no pair template — concatenating `a` and `b`
     /// without the model's separator would feed it a sequence unlike anything it
     /// saw in training, and silently.
-    pub fn apply_pair(&self, a: &[u32], b: &[u32]) -> Result<Vec<u32>, HfJsonError> {
+    pub fn apply_pair(&self, a: &[u32], b: &[u32]) -> Result<Vec<u32>, PolicyError> {
         let pair = match &self.template.pair {
             PairTemplate::Defined(pair) => pair,
-            PairTemplate::Absent => return Err(HfJsonError::NoPairTemplate),
+            PairTemplate::Absent => return Err(PolicyError::NoPairTemplate),
             PairTemplate::Ambiguous(names) => {
-                return Err(HfJsonError::UnsupportedPairComposition(names.clone()))
+                return Err(PolicyError::UnsupportedPairComposition(names.clone()))
             }
         };
         let mut out = Vec::with_capacity(a.len() + b.len() + pair.len());
@@ -138,7 +148,7 @@ fn render(segments: &[Segment], a: &[u32], b: &[u32], out: &mut Vec<u32>) {
 }
 
 /// Parse the whole policy out of a `tokenizer.json` root value.
-pub(super) fn parse(root: &Value) -> Result<SpecialPolicy, HfJsonError> {
+pub(super) fn parse(root: &Value) -> Result<SpecialPolicy, PolicyError> {
     Ok(SpecialPolicy {
         template: parse_template(root.get("post_processor"))?,
         // Deliberately a genuine `Option`: the Unigram backend's internal eos
@@ -150,7 +160,7 @@ pub(super) fn parse(root: &Value) -> Result<SpecialPolicy, HfJsonError> {
 }
 
 /// Parse a `post_processor` node into its single and pair templates.
-fn parse_template(pp: Option<&Value>) -> Result<Template, HfJsonError> {
+fn parse_template(pp: Option<&Value>) -> Result<Template, PolicyError> {
     let Some(pp) = pp else {
         return Ok(Template::default());
     };
@@ -258,7 +268,7 @@ fn parse_template_processing(pp: &Value) -> Template {
 ///
 /// Singles nest: each processor wraps the result of the ones before it, so the
 /// earlier processor's tokens sit closest to the content.
-fn parse_sequence(pp: &Value) -> Result<Template, HfJsonError> {
+fn parse_sequence(pp: &Value) -> Result<Template, PolicyError> {
     let mut single = vec![Segment::A];
     let mut pair = PairTemplate::Absent;
     let mut contributors: Vec<String> = Vec::new();
@@ -304,7 +314,7 @@ fn substitute(outer: &[Segment], inner: &[Segment]) -> Vec<Segment> {
 mod tests {
     use super::*;
 
-    fn policy(json: &str) -> Result<SpecialPolicy, HfJsonError> {
+    fn policy(json: &str) -> Result<SpecialPolicy, PolicyError> {
         let root: Value = serde_json::from_str(json).expect("valid json");
         parse(&root)
     }
@@ -315,7 +325,7 @@ mod tests {
         assert_eq!(p.apply_single(vec![7, 8]), vec![7, 8]);
         assert!(matches!(
             p.apply_pair(&[7], &[8]),
-            Err(HfJsonError::NoPairTemplate)
+            Err(PolicyError::NoPairTemplate)
         ));
     }
 
@@ -403,7 +413,7 @@ mod tests {
         assert_eq!(p.apply_single(vec![99]), vec![1, 3, 99, 4, 2]);
         assert!(matches!(
             p.apply_pair(&[99], &[100]),
-            Err(HfJsonError::UnsupportedPairComposition(_))
+            Err(PolicyError::UnsupportedPairComposition(_))
         ));
     }
 

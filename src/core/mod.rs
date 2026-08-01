@@ -31,11 +31,13 @@
 //! - **LRU Cache**: Avoids redundant BPE computation for repeated chunks
 
 mod added;
+mod any_tokenizer;
 mod bpe;
 pub mod byte_level;
 mod decoder;
 pub mod hf_json;
 mod normalizer;
+mod policy;
 mod precompiled;
 mod pretokenizer;
 pub mod pretrained;
@@ -48,11 +50,11 @@ mod vocab;
 pub mod whisper;
 pub mod wordpiece;
 
+pub use any_tokenizer::{AnyTokenizer, Backend};
 pub use bpe::byte_pair_encode;
 pub use byte_level::{byte_level_decode, byte_level_decode_bytes, byte_level_encode};
-pub use hf_json::{
-    from_json_bytes, from_json_path, AnyTokenizer, Backend, HfJsonError, SpecialPolicy,
-};
+pub use hf_json::{from_json_bytes, from_json_path, HfJsonError};
+pub use policy::{PolicyError, SpecialPolicy};
 pub use pretrained::{
     bos_token_id, bos_token_id_by_name, cl100k_base_special_tokens, deepseek_v3_special_tokens,
     eos_token_id, eos_token_id_by_name, from_pretrained, from_vocab, llama3_special_tokens,

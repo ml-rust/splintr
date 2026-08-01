@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use super::super::policy::PolicyError;
 use super::super::sentencepiece::SentencePieceError;
 use super::super::tokenizer::TokenizerError;
 
@@ -26,10 +27,8 @@ pub enum HfJsonError {
     InvalidByteLevel(String),
     #[error("could not determine the {0} token id from the tokenizer.json")]
     MissingSpecial(&'static str),
-    #[error("post_processor Sequence composes several segment-placing processors ({0}) — refusing to guess where the second sequence goes")]
-    UnsupportedPairComposition(String),
-    #[error("this tokenizer defines no pair template — refusing to concatenate the two sequences without the separator the model expects")]
-    NoPairTemplate,
+    #[error(transparent)]
+    Policy(#[from] PolicyError),
     #[error(transparent)]
     Tokenizer(#[from] TokenizerError),
     #[error(transparent)]

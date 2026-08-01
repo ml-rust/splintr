@@ -19,16 +19,12 @@
 //! For the bundled, zero-config vocabularies (including Whisper multilingual),
 //! prefer [`crate::pretrained::from_pretrained`].
 
-mod any_tokenizer;
-mod components;
+pub(super) mod components;
 mod error;
 mod loader;
-mod policy;
 
-pub use any_tokenizer::{AnyTokenizer, Backend};
 pub use error::HfJsonError;
 pub use loader::{from_json_bytes, from_json_path};
-pub use policy::SpecialPolicy;
 
 #[cfg(test)]
 mod tests;
