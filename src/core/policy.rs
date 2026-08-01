@@ -134,6 +134,43 @@ impl SpecialPolicy {
     pub fn special_token_id(&self, name: &str) -> Option<u32> {
         self.named.get(name).copied()
     }
+
+    /// Build a policy that only wraps a single sequence in boundary tokens.
+    ///
+    /// For sources that state their boundaries as flags plus ids rather than as
+    /// a template — a GGUF's `add_bos_token` / `add_eos_token` — so the loader
+    /// resolves the flags and hands over the ids that survive them. Passing
+    /// `None` for both yields the identity template, which is what a BERT-family
+    /// GGUF wants: it wraps with `[CLS]`/`[SEP]` through the vocabulary, not
+    /// through a boundary template.
+    ///
+    /// `eos_id` is the vocabulary's end-of-sequence token, which exists
+    /// independently of whether one is *appended*: a generation loop must still
+    /// be able to stop on it.
+    ///
+    /// There is deliberately no pair template. These sources never declare one,
+    /// and synthesizing one would concatenate two sequences without the
+    /// separator the model expects — [`apply_pair`](Self::apply_pair) refuses
+    /// instead.
+    pub(super) fn boundary(
+        bos: Option<u32>,
+        eos: Option<u32>,
+        eos_id: Option<u32>,
+        named: FxHashMap<String, u32>,
+    ) -> Self {
+        let mut single = Vec::with_capacity(3);
+        single.extend(bos.map(Segment::Special));
+        single.push(Segment::A);
+        single.extend(eos.map(Segment::Special));
+        Self {
+            template: Template {
+                single,
+                pair: PairTemplate::Absent,
+            },
+            eos_id,
+            named,
+        }
+    }
 }
 
 /// Expand a template into ids, substituting the content of both sequences.

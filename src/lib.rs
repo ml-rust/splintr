@@ -21,9 +21,11 @@ pub use core::{
 };
 pub use core::{whisper_special_tokens, WhisperVariant};
 // Re-export the universal loaded-tokenizer type and its special-token policy,
-// plus the HuggingFace `tokenizer.json` loader that is one source of them.
+// plus the two loaders that produce them: a HuggingFace `tokenizer.json`, and a
+// GGUF file's embedded vocabulary as extracted by the caller.
 pub use core::{
-    from_json_bytes, from_json_path, AnyTokenizer, Backend, HfJsonError, PolicyError, SpecialPolicy,
+    from_gguf_vocab, from_json_bytes, from_json_path, AnyTokenizer, Backend, GgufVocab,
+    GgufVocabError, HfJsonError, PolicyError, SpecialPolicy,
 };
 
 /// Splintr - Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings

@@ -35,6 +35,7 @@ mod any_tokenizer;
 mod bpe;
 pub mod byte_level;
 mod decoder;
+pub mod gguf;
 pub mod hf_json;
 mod normalizer;
 mod policy;
@@ -53,6 +54,7 @@ pub mod wordpiece;
 pub use any_tokenizer::{AnyTokenizer, Backend};
 pub use bpe::byte_pair_encode;
 pub use byte_level::{byte_level_decode, byte_level_decode_bytes, byte_level_encode};
+pub use gguf::{from_gguf_vocab, GgufVocab, GgufVocabError};
 pub use hf_json::{from_json_bytes, from_json_path, HfJsonError};
 pub use policy::{PolicyError, SpecialPolicy};
 pub use pretrained::{

@@ -520,6 +520,10 @@ impl PyTokenizer {
 pub struct PySentencePieceTokenizer {
     inner: SentencePieceTokenizer,
     policy: SpecialPolicy,
+    /// BOS id to prepend on `encode`, applied here rather than in the backend
+    /// (which is policy-free). `None` when constructed via a loader path,
+    /// where `AnyTokenizer`'s `SpecialPolicy` already owns boundary tokens.
+    bos_token_id: Option<u32>,
 }
 
 #[pymethods]
@@ -544,6 +548,7 @@ impl PySentencePieceTokenizer {
         Ok(Self {
             inner,
             policy: SpecialPolicy::default(),
+            bos_token_id,
         })
     }
 
@@ -558,13 +563,14 @@ impl PySentencePieceTokenizer {
     /// Returns:
     ///     List of token IDs
     fn encode(&self, text: &str) -> Vec<u32> {
-        self.inner.encode(text)
+        self.with_bos(self.inner.encode(text))
     }
 
     /// Encode and apply the model's `post_processor` template, matching
     /// HuggingFace's default `encode`. Equals `encode` when there is none.
     fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
-        self.policy.apply_single(self.inner.encode(text))
+        self.policy
+            .apply_single(self.with_bos(self.inner.encode(text)))
     }
 
     /// Decode token IDs to text.
@@ -624,6 +630,19 @@ impl PySentencePieceTokenizer {
             "SentencePieceTokenizer(vocab_size={})",
             self.inner.vocab_size()
         )
+    }
+}
+
+impl PySentencePieceTokenizer {
+    /// Prepend the constructor-supplied BOS id, if any. The backend itself is
+    /// policy-free (`SentencePieceTokenizer::encode` never inserts boundary
+    /// tokens), so this binding owns the BOS-prepending behaviour it has
+    /// always exposed to Python.
+    fn with_bos(&self, mut ids: Vec<u32>) -> Vec<u32> {
+        if let Some(bos) = self.bos_token_id {
+            ids.insert(0, bos);
+        }
+        ids
     }
 }
 
@@ -704,9 +723,15 @@ fn any_tokenizer_to_py(py: Python<'_>, any: AnyTokenizer) -> PyResult<Py<PyAny>>
     let policy = any.policy().clone();
     Ok(match any.into_backend() {
         Backend::Bpe(t) => Py::new(py, PyTokenizer { inner: t, policy })?.into_any(),
-        Backend::Unigram(t) => {
-            Py::new(py, PySentencePieceTokenizer { inner: t, policy })?.into_any()
-        }
+        Backend::Unigram(t) => Py::new(
+            py,
+            PySentencePieceTokenizer {
+                inner: t,
+                policy,
+                bos_token_id: None,
+            },
+        )?
+        .into_any(),
         Backend::WordPiece(t) => Py::new(py, PyWordPieceTokenizer { inner: t, policy })?.into_any(),
         // `tokenizer.json` has no SPM-BPE model type, so this is unreachable via
         // this path; report it rather than panic if that ever changes.

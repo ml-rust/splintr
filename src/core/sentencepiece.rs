@@ -165,9 +165,12 @@ impl SentencePieceTokenizer {
     /// maximum total-score segmentation, matching SentencePiece / HuggingFace
     /// `tokenizers` (not a greedy longest-match).
     ///
-    /// Prepends BOS if configured, and follows the SentencePiece convention:
-    /// the input is `▁`-prefixed and spaces become `▁`. Characters that no token
-    /// covers fall back to `<0xNN>` byte tokens (if the vocab has them) or `<unk>`.
+    /// Never emits BOS/EOS: they are reported through
+    /// [`bos_token_id`](Self::bos_token_id) / [`eos_token_id`](Self::eos_token_id)
+    /// so the special-token policy can place them. Follows the SentencePiece
+    /// convention: the input is `▁`-prefixed and spaces become `▁`. Characters
+    /// that no token covers fall back to `<0xNN>` byte tokens (if the vocab has
+    /// them) or `<unk>`.
     ///
     /// Recognizes added tokens in the input first (when configured), matching
     /// HuggingFace.
@@ -178,12 +181,10 @@ impl SentencePieceTokenizer {
         }
     }
 
-    /// Encode without added-token matching (pure Unigram Viterbi).
+    /// Encode without added-token matching (pure Unigram Viterbi). Never emits
+    /// BOS/EOS — see [`encode`](Self::encode).
     pub fn encode_ordinary(&self, text: &str) -> Vec<u32> {
         let mut tokens = Vec::new();
-        if let Some(bos_id) = self.bos_token_id {
-            tokens.push(bos_id);
-        }
 
         // Normalize, then SentencePiece pre-tokenization: split on whitespace
         // (collapsing runs) and prefix each word with ▁ (WhitespaceSplit +
@@ -449,12 +450,26 @@ mod tests {
         SentencePieceTokenizer::new(tokens, scores, Some(1), 2).unwrap()
     }
 
+    /// Raw `encode` never inserts BOS/EOS — only `AnyTokenizer`'s
+    /// `SpecialPolicy` places boundary tokens. The ids remain readable through
+    /// the accessors so a policy can be built from them. Mirrors
+    /// `spm::tests::bos_and_eos_are_reported_but_never_encoded`.
     #[test]
-    fn test_encode_basic() {
-        let tok = make_tokenizer();
-        let ids = tok.encode("Hello world");
-        // BOS(1), ▁Hello(3), ▁world(4)
-        assert_eq!(ids, vec![1, 3, 4]);
+    fn bos_and_eos_are_reported_but_never_encoded() {
+        let with = make_tokenizer();
+        assert_eq!(with.encode("Hello world"), vec![3, 4]);
+        assert_eq!(with.bos_token_id(), Some(1));
+        assert_eq!(with.eos_token_id(), 2);
+
+        let tokens = vec![
+            "<unk>".to_string(),
+            "▁Hello".to_string(),
+            "▁world".to_string(),
+        ];
+        let scores = vec![0.0; tokens.len()];
+        let without = SentencePieceTokenizer::new(tokens, scores, None, 0).unwrap();
+        assert_eq!(without.encode("Hello world"), vec![1, 2]);
+        assert_eq!(without.bos_token_id(), None);
     }
 
     #[test]
@@ -526,19 +541,15 @@ mod tests {
 
     #[test]
     fn test_encode_empty_string() {
+        // Empty input has no whitespace-split words, so no pieces are emitted
+        // (matching HF's WhitespaceSplit+Metaspace) — and, per the raw-backend
+        // invariant, no BOS either, whether or not one is configured.
         let tok = make_tokenizer();
-        let ids = tok.encode("");
-        // Empty input has no whitespace-split words, so only BOS is emitted
-        // (matching HF's WhitespaceSplit+Metaspace, which yields no pieces).
-        assert_eq!(ids, vec![1]);
-    }
+        assert!(tok.encode("").is_empty());
 
-    #[test]
-    fn test_encode_empty_string_no_bos() {
         let tokens = vec!["▁a".to_string(), "▁b".to_string()];
         let tok = SentencePieceTokenizer::new(tokens, vec![], None, 1).unwrap();
-        let ids = tok.encode("");
-        assert!(ids.is_empty());
+        assert!(tok.encode("").is_empty());
     }
 
     #[test]
