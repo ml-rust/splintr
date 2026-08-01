@@ -50,6 +50,21 @@ impl AddedTokens {
         Ok(Some(Self { matcher, ids }))
     }
 
+    /// The id of the added token occupying byte 0 of `text`, if any.
+    ///
+    /// The SentencePiece backends need this because their dummy prefix belongs
+    /// to the whole input and is applied *before* the split: when an added token
+    /// starts the input the prefix has nothing to attach to, and whether it then
+    /// surfaces as a standalone piece depends on *which* token that is. Asking
+    /// the same matcher that performs the split keeps the two answers from
+    /// disagreeing about where the first boundary falls.
+    pub fn id_at_start(&self, text: &str) -> Option<u32> {
+        self.matcher
+            .find(text)
+            .filter(|m| m.start() == 0)
+            .map(|m| self.ids[m.pattern().as_usize()])
+    }
+
     /// Split `text` on added tokens, emitting their ids and encoding the gaps via
     /// `encode_gap`. Equivalent to [`encode_with_mode`](Self::encode_with_mode)
     /// under [`SpecialMode::All`], which admits every match and therefore cannot

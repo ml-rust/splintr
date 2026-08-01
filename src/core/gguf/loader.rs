@@ -9,7 +9,7 @@ use super::super::normalizer::{NormOp, Normalizer};
 use super::super::policy::SpecialPolicy;
 use super::super::precompiled::Precompiled;
 use super::super::sentencepiece::SentencePieceTokenizer;
-use super::super::spm::SpmTokenizer;
+use super::super::spm::{SpmPrefixScheme, SpmTokenizer};
 use super::super::tokenizer::{Tokenizer, GPT2_PATTERN, LLAMA3_PATTERN, QWEN2_PATTERN};
 use super::super::wordpiece::WordPieceTokenizer;
 use super::error::GgufVocabError;
@@ -144,9 +144,17 @@ fn build_spm(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
 
     // `None` for both special ids: the policy places boundaries, so the backend
     // must not insert any of its own.
+    // llama.cpp is the reference for a GGUF file — it is what actually runs
+    // these vocabularies — so the dummy prefix follows its `is_prev_special`
+    // rule: prepended to the first text fragment and to every fragment after a
+    // control token, with no standalone marker before a leading one. Encoding
+    // `"<start_of_turn>hi"` must be `[<start_of_turn>, ▁hi]`; under the
+    // HuggingFace scheme it would be `[▁, <start_of_turn>, hi]`, three pieces
+    // the model never saw in that arrangement.
     let backend = Backend::Spm(
         SpmTokenizer::new(tokens, scores, None, None)?
             .with_prefix_space(add_space_prefix(&vocab, true))
+            .with_prefix_scheme(SpmPrefixScheme::AfterEachSpecial)
             .with_added_tokens(&specials)?,
     );
 

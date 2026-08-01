@@ -132,14 +132,23 @@ class TestMistralV1SpecialTokens:
         assert decoded == "[INST]"
 
     def test_agent_tokens(self, tokenizer):
-        """Test agent tokens at offset 32000."""
+        """Test agent tokens at offset 32000.
+
+        Mistral V1 declares ``legacy = true`` in its ``tokenizer_config.json``,
+        so it prefixes each stretch that *follows* an added token rather than
+        prefixing the whole input once. An added token at byte 0 therefore has
+        no stretch before it and emits no standalone ``▁``. Verified against
+        ``AutoTokenizer.from_pretrained(mistral-7b-awq-int4, use_fast=False)``:
+        ``tokenize("<s>x") == ['<s>', '▁x']``, where V2 (``legacy = false``)
+        gives ``['<s>', 'x']``.
+        """
         # <|think|> = THINK = 32000 + 5 = 32005
         tokens = tokenizer.encode_with_special("<|think|>")
-        assert tokens == [32005], f"<|think|> should be [32005], got {tokens}"
+        assert tokens == [32005], f"unexpected <|think|> ids: {tokens}"
 
         # <|function|> = FUNCTION = 32000 + 15 = 32015
         tokens = tokenizer.encode_with_special("<|function|>")
-        assert tokens == [32015], f"<|function|> should be [32015], got {tokens}"
+        assert tokens == [32015], f"unexpected <|function|> ids: {tokens}"
 
     def test_decode_agent_tokens(self, tokenizer):
         """Test decoding agent tokens."""
@@ -211,10 +220,6 @@ class TestMistralV1Utf8Boundaries:
     def tokenizer(self):
         return Tokenizer.from_pretrained("mistral_v1")
 
-    @pytest.fixture
-    def tokenizer_pcre2(self):
-        return Tokenizer.from_pretrained("mistral_v1").pcre2(True)
-
     def test_em_dash(self, tokenizer):
         """Test em-dash (3-byte UTF-8: E2 80 94)."""
         text = "I'm sorry you're hurting—breakups suck, but you'll get through it."
@@ -244,18 +249,11 @@ class TestMistralV1Utf8Boundaries:
             decoded = tokenizer.decode(tokens)
             assert decoded == text, f"Failed for: {text!r}"
 
-    def test_backend_consistency_multibyte(self, tokenizer, tokenizer_pcre2):
-        """Test regexr and PCRE2 produce same results for multi-byte text."""
-        texts = [
-            "word—word",
-            "I'm sorry you're hurting—breakups suck.",
-            'He said, \u2018Hello\u2019 and she replied, \u201cGoodbye\u201d.',
-            "Check credentials—API key—in headers.",
-        ]
-        for text in texts:
-            tokens_regexr = tokenizer.encode(text)
-            tokens_pcre2 = tokenizer_pcre2.encode(text)
-            assert tokens_regexr == tokens_pcre2, f"Backend mismatch for: {text!r}"
+    # Backend (regexr vs PCRE2) consistency on multi-byte text is exercised
+    # in `test_mistral_v3.py::TestMistralV3BackendOptions` instead: V1 routes
+    # through `SpmTokenizer`, which has no regex backend at all, so there is
+    # no "backend" for this vocabulary's multi-byte handling to be consistent
+    # across.
 
 
 class TestMistralV1LargeScaleBatch:
@@ -291,41 +289,8 @@ class TestMistralV1LargeScaleBatch:
             assert decoded == texts[i], f"Failed roundtrip for text {i}"
 
 
-class TestMistralV1BackendOptions:
-    """Test regex backend options (regexr, PCRE2, JIT)."""
-
-    def test_default_backend(self):
-        """Test default backend (regexr with JIT)."""
-        tokenizer = Tokenizer.from_pretrained("mistral_v1")
-        text = "Hello, world!"
-        tokens = tokenizer.encode(text)
-        assert tokenizer.decode(tokens) == text
-
-    def test_pcre2_backend(self):
-        """Test PCRE2 backend."""
-        tokenizer = Tokenizer.from_pretrained("mistral_v1").pcre2(True)
-        text = "Hello, world!"
-        tokens = tokenizer.encode(text)
-        assert tokenizer.decode(tokens) == text
-
-    def test_jit_disabled(self):
-        """Test with JIT disabled."""
-        tokenizer = Tokenizer.from_pretrained("mistral_v1").jit(False)
-        text = "Hello, world!"
-        tokens = tokenizer.encode(text)
-        assert tokenizer.decode(tokens) == text
-
-    def test_backend_consistency(self):
-        """Test all backends produce identical tokens."""
-        text = "The quick brown fox 你好 🦀 jumps—over—the lazy dog."
-
-        tok_default = Tokenizer.from_pretrained("mistral_v1")
-        tok_pcre2 = Tokenizer.from_pretrained("mistral_v1").pcre2(True)
-        tok_no_jit = Tokenizer.from_pretrained("mistral_v1").jit(False)
-
-        tokens_default = tok_default.encode(text)
-        tokens_pcre2 = tok_pcre2.encode(text)
-        tokens_no_jit = tok_no_jit.encode(text)
-
-        assert tokens_default == tokens_pcre2, "PCRE2 should match default"
-        assert tokens_default == tokens_no_jit, "Non-JIT should match default"
+# `TestMistralV1BackendOptions` (regexr/PCRE2/JIT backend switching) was
+# removed: V1 routes through `SpmTokenizer`, which has no regex backend at
+# all (no `.pcre2()`/`.jit()`), so the concern does not apply to this
+# vocabulary. The equivalent coverage now lives on the genuinely BPE-backed
+# Mistral vocabulary in `test_mistral_v3.py::TestMistralV3BackendOptions`.

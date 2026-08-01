@@ -49,37 +49,51 @@ fn v2_reference_cases_round_trip() {
     }
 }
 
+/// SentencePiece applies `add_dummy_prefix` to the whole input *before* it
+/// splits on added tokens, so a control token at byte 0 leaves the prefix with
+/// nothing to attach to and it is emitted as the lone `▁` piece (id 29473).
+///
+/// Reference (`AutoTokenizer.from_pretrained("mistral-7b-v0.3",
+/// use_fast=False)`, `add_special_tokens=False`):
+/// `"[INST]"` -> `[29473, 3]`, `"[/INST]"` -> `[29473, 4]`,
+/// `"[INST]Hello[/INST]"` -> `[29473, 3, 16998, 4]` — note `16998` is bare
+/// `Hello`, not `▁Hello`: a gap that follows a control token gets no prefix of
+/// its own.
 #[test]
 fn test_v2_control_tokens_inst() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
 
     // Test [INST] token (ID 3)
     let tokens = tok.encode("[INST]");
-    assert_eq!(tokens, vec![3]);
+    assert_eq!(tokens, vec![29473, 3]);
 
     // Test [/INST] token (ID 4)
     let tokens = tok.encode("[/INST]");
-    assert_eq!(tokens, vec![4]);
+    assert_eq!(tokens, vec![29473, 4]);
 
     // Test instruction format
     let tokens = tok.encode("[INST]Hello[/INST]");
-    assert!(tokens.contains(&3)); // [INST]
-    assert!(tokens.contains(&4)); // [/INST]
+    assert_eq!(tokens, vec![29473, 3, 16998, 4]);
 }
 
 #[test]
 fn test_v2_control_tokens_tool_calls() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
 
-    // Test [TOOL_CALLS] token (ID 5)
+    // Test [TOOL_CALLS] token (ID 5); leading `29473` is the standalone dummy
+    // prefix, exactly as the reference emits it.
     let tokens = tok.encode("[TOOL_CALLS]");
-    assert_eq!(tokens, vec![5]);
+    assert_eq!(tokens, vec![29473, 5]);
 
     // Test [AVAILABLE_TOOLS] token (ID 6)
     let tokens = tok.encode("[AVAILABLE_TOOLS]");
-    assert_eq!(tokens, vec![6]);
+    assert_eq!(tokens, vec![29473, 6]);
 }
 
+/// The vocabulary's own sentinels are the exception: a leading `<s>`, `</s>` or
+/// `<unk>` *swallows* the standalone dummy prefix, so these stay single ids
+/// while `"[INST]"` above does not. Reference: `"<s>"` -> `[1]`, `"</s>"` ->
+/// `[2]`, `"<unk>"` -> `[0]`, versus `"[INST]"` -> `[29473, 3]`.
 #[test]
 fn test_v2_native_sentencepiece_tokens() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
@@ -106,14 +120,16 @@ fn test_v2_native_sentencepiece_tokens() {
 fn test_v2_agent_tokens() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
 
-    // Agent tokens start at 32768 for V2
+    // Agent tokens start at 32768 for V2. They are ordinary added tokens, not
+    // the vocabulary's BOS/EOS/UNK sentinels, so a leading one carries the
+    // standalone dummy prefix (29473) just as `[INST]` does.
     // <|think|> is at offset 5 (after system, user, assistant, im_start, im_end)
     let tokens = tok.encode("<|think|>");
-    assert_eq!(tokens, vec![32773]); // THINK token = 32768 + 5
+    assert_eq!(tokens, vec![29473, 32773]); // THINK token = 32768 + 5
 
     // <|function|> is at offset 15
     let tokens = tok.encode("<|function|>");
-    assert_eq!(tokens, vec![32783]); // FUNCTION token = 32768 + 15
+    assert_eq!(tokens, vec![29473, 32783]); // FUNCTION token = 32768 + 15
 }
 
 #[test]
@@ -143,26 +159,32 @@ fn test_v2_full_instruction_roundtrip() {
 
     let text = "[INST]What is the weather today?[/INST]";
     let tokens = tok.encode(text);
-    let decoded = tok.decode(&tokens).expect("Failed to decode");
 
-    // encode -> decode is NOT lossless across an added-token boundary in
-    // SentencePiece, and the reference does not round-trip this string either.
-    // The input is split on the added tokens, and `add_dummy_prefix` prepends a
-    // word boundary to each remaining fragment — so "What ..." encodes as
-    // "▁What ..." and renders back with a leading space. Only ONE dummy prefix
-    // is stripped on decode, the one at the very start of the output; this one
-    // sits after "[INST]", so it stays. HuggingFace `tokenizers` on
-    // mistral-7b's tokenizer.json returns exactly this string.
-    assert_eq!(decoded, "[INST] What is the weather today?[/INST]");
+    // Reference ids (`AutoTokenizer.from_pretrained("mistral-7b-v0.3",
+    // use_fast=False)`, `add_special_tokens=False`): the lone dummy prefix,
+    // `[INST]`, then bare `What` — the gap after a control token is not
+    // re-prefixed — and `[/INST]`.
+    assert_eq!(
+        tokens,
+        vec![29473, 3, 3963, 1117, 1040, 8854, 3922, 29572, 4]
+    );
+
+    // Because the dummy prefix is now the only space-like piece added, and
+    // `decode` strips exactly that one, this string does round-trip. (HF's own
+    // detokenizer prints "[INST] What ... [/INST]" — it re-spaces around added
+    // tokens on the way out. The ids are the contract; that spacing is not.)
+    let decoded = tok.decode(&tokens).expect("Failed to decode");
+    assert_eq!(decoded, text);
 }
 
 #[test]
 fn test_v2_model_name_underscore() {
     let tok = from_pretrained("mistral_v2").unwrap();
 
-    // V2 should recognize control tokens
+    // V2 should recognize control tokens (preceded by the standalone dummy
+    // prefix, since `[INST]` opens the input).
     let tokens = tok.encode("[INST]");
-    assert_eq!(tokens, vec![3]);
+    assert_eq!(tokens, vec![29473, 3]);
 }
 
 #[test]

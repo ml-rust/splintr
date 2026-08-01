@@ -65,7 +65,7 @@ pub use pretrained::{
     PretrainedVocab,
 };
 pub use sentencepiece::{SentencePieceError, SentencePieceTokenizer};
-pub use spm::{SpmError, SpmTokenizer, NEVER_MERGE};
+pub use spm::{SpmError, SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
 pub use streaming::{ByteLevelStreamingDecoder, StreamingDecoder};
 pub use tokenize::{Tokenize, TokenizeError};
 pub use tokenizer::{

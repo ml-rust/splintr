@@ -37,6 +37,70 @@ use super::tokenize::{Tokenize, TokenizeError};
 /// such as an added token that must be matched verbatim rather than merged into.
 pub const NEVER_MERGE: f32 = -1e9;
 
+/// Where the dummy prefix (`add_dummy_prefix` / `add_space_prefix`) is placed
+/// once the input is split on added tokens.
+///
+/// The two reference implementations of this same vocabulary format genuinely
+/// disagree, and both were measured rather than inferred — so neither is "the"
+/// behavior and the loader that built the tokenizer has to say which one its
+/// vocabulary was produced for. Encoding `"[INST]Write"` and `"a[INST]b"`:
+///
+/// | | [`Once`](Self::Once) (HF) | [`AfterEachSpecial`](Self::AfterEachSpecial) (llama.cpp) |
+/// |---|---|---|
+/// | `[INST]Write` | `▁`, `[INST]`, `Write` | `[INST]`, `▁Write` |
+/// | `a[INST]b` | `▁a`, `[INST]`, `b` | `▁a`, `[INST]`, `▁b` |
+///
+/// Getting this wrong is invisible from the outside — every id stays in range
+/// and decodes back to the original string — while every chat prompt (which is
+/// exactly a text/marker alternation) reaches the model as pieces it was not
+/// trained on.
+///
+/// The default is [`AfterEachSpecial`](Self::AfterEachSpecial), because
+/// [`SpmTokenizer::new`] takes a GGUF-style vocabulary and llama.cpp is the
+/// reference for those. A vocabulary lifted out of a HuggingFace
+/// `tokenizer.model` is the case that has to be declared, and its one loader
+/// does declare it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SpmPrefixScheme {
+    /// Prefix the whole text **once**, before splitting on added tokens
+    /// (HuggingFace / `sentencepiece`).
+    ///
+    /// SentencePiece normalizes — and therefore prefixes — the input and only
+    /// then splits, so only the stretch beginning at byte 0 can carry a marker.
+    /// A leading added token leaves the marker standing alone, with no text to
+    /// attach to. Measured with
+    /// `AutoTokenizer.from_pretrained("mistral-7b-v0.3", use_fast=False)` and
+    /// `add_special_tokens=False`: `"[INST]Write"` -> `[29473, 3, 6006]`
+    /// (`▁`, `[INST]`, bare `Write`) and `"a[INST]b"` -> `[1032, 3, 29494]`
+    /// (`▁a`, `[INST]`, bare `b`).
+    ///
+    /// This is HuggingFace's *corrected* behavior (`legacy = false` in
+    /// `tokenizer_config.json`). Which scheme a bundled `.spm` vocabulary needs
+    /// is not determined by the fact that it came from a `tokenizer.model` —
+    /// it is that per-checkpoint `legacy` flag: Mistral V2 sets `legacy = false`
+    /// and needs `Once`, but Mistral V1 sets `legacy = true` and needs
+    /// [`AfterEachSpecial`](Self::AfterEachSpecial) despite also being extracted
+    /// from a `tokenizer.model` — see `spm_prefix_scheme` in `pretrained.rs`,
+    /// which reads that flag off per vocabulary rather than assuming it.
+    Once,
+    /// Prefix the first stretch **and every stretch that follows an added
+    /// token** (llama.cpp's `is_prev_special`).
+    ///
+    /// `llama-vocab.cpp`'s `LLAMA_VOCAB_TYPE_SPM` arm walks the fragment buffer
+    /// with `bool is_prev_special = true` ("prefix with space if first token"),
+    /// prepending `' '` to a raw-text fragment whenever the flag is set and
+    /// re-arming it on every special-token fragment. A special token at the very
+    /// start therefore emits **no** standalone marker — there is no text
+    /// fragment before it to prefix.
+    ///
+    /// Correct for every GGUF-loaded vocabulary, because llama.cpp is what
+    /// actually runs those files — and so the default, see the type's docs.
+    /// Also correct for a bundled `.spm` vocabulary whose checkpoint declares
+    /// `legacy = true` (Mistral V1) — see [`Once`](Self::Once)'s docs.
+    #[default]
+    AfterEachSpecial,
+}
+
 #[derive(Error, Debug)]
 pub enum SpmError {
     #[error("Empty vocabulary")]
@@ -105,6 +169,8 @@ pub struct SpmTokenizer {
     byte_ids: Option<Box<[u32; 256]>>,
     /// Prepend a word boundary to the input (SentencePiece `add_dummy_prefix`).
     add_prefix_space: bool,
+    /// *Where* that word boundary goes once the input is split on added tokens.
+    prefix_scheme: SpmPrefixScheme,
     /// Control/added tokens to recognize verbatim in the input during encoding.
     added: Option<super::added::AddedTokens>,
 }
@@ -171,6 +237,7 @@ impl SpmTokenizer {
             unk_id,
             byte_ids: complete.then(|| Box::new(byte_ids)),
             add_prefix_space: true,
+            prefix_scheme: SpmPrefixScheme::default(),
             added: None,
         })
     }
@@ -195,6 +262,28 @@ impl SpmTokenizer {
         self
     }
 
+    /// Select where the dummy prefix lands relative to added tokens — see
+    /// [`SpmPrefixScheme`], whose two arms are the two references' measured,
+    /// mutually incompatible behaviors.
+    ///
+    /// The loader that read the vocabulary is the only place that knows which
+    /// reference the file runs under, so it is the only place that can answer
+    /// this. Every GGUF file runs under llama.cpp
+    /// ([`AfterEachSpecial`](SpmPrefixScheme::AfterEachSpecial)). A vocabulary
+    /// extracted from a HuggingFace `tokenizer.model` is *not* determined by
+    /// that fact alone — it depends on the checkpoint's `legacy` flag in
+    /// `tokenizer_config.json` (`false` -> [`Once`](SpmPrefixScheme::Once),
+    /// `true` -> `AfterEachSpecial` too) — see [`SpmPrefixScheme::Once`]'s docs
+    /// and `spm_prefix_scheme` in `pretrained.rs`, which reads that flag off
+    /// per vocabulary.
+    ///
+    /// Inert when [`with_prefix_space`](Self::with_prefix_space) is off: with no
+    /// marker to place, the two schemes agree everywhere.
+    pub fn with_prefix_scheme(mut self, prefix_scheme: SpmPrefixScheme) -> Self {
+        self.prefix_scheme = prefix_scheme;
+        self
+    }
+
     /// Set the BOS / EOS ids the vocabulary defines (GGUF `add_bos_token` /
     /// `add_eos_token` resolve to `None` here when disabled).
     ///
@@ -207,21 +296,37 @@ impl SpmTokenizer {
         self
     }
 
-    /// SentencePiece normalization: spaces become the boundary marker, with an
-    /// optional leading marker.
+    /// The dummy-prefix convention this vocabulary encodes under.
     ///
-    /// The dummy prefix is [`Prefix::Always`] — llama.cpp prepends it even when
-    /// the input already starts with a space, which is what the 46/46 reference
-    /// agreement rests on — and spaces are never merged: this backend's
-    /// vocabularies carry the whitespace-run pieces (`▁▁`, …) and merge them
-    /// themselves.
-    fn normalize(&self, text: &str) -> String {
-        let prefix = if self.add_prefix_space {
+    /// [`Prefix::Always`] — SentencePiece prepends the marker even when the
+    /// input already starts with a space, which is what the 46/46 llama.cpp
+    /// reference agreement rests on — unless `add_dummy_prefix` is off, in
+    /// which case no marker is ever added anywhere.
+    ///
+    /// This answers *whether* a stretch handed to
+    /// [`encode_segment`](Self::encode_segment) gets a marker;
+    /// [`SpmPrefixScheme`] answers *which* stretches are handed one.
+    fn prefix(&self) -> Prefix {
+        if self.add_prefix_space {
             Prefix::Always
         } else {
             Prefix::None
-        };
-        metaspace::escape(text, prefix, false)
+        }
+    }
+
+    /// Escape one stretch of the input and merge it into pieces.
+    ///
+    /// Which stretches get a `prefix` other than [`Prefix::None`] is the
+    /// [`SpmPrefixScheme`]'s decision — see [`gap_encoder`](Self::gap_encoder).
+    /// Spaces themselves are never collapsed: this backend's vocabularies carry
+    /// the whitespace-run pieces (`▁▁`, …) and merge them themselves.
+    fn encode_segment(&self, text: &str, prefix: Prefix) -> Vec<u32> {
+        let escaped = metaspace::escape(text, prefix, false);
+        let mut out = Vec::new();
+        for symbol in self.merge(&escaped) {
+            self.emit(&escaped[symbol.start..symbol.start + symbol.len], &mut out);
+        }
+        out
     }
 
     /// Merge adjacent symbols, best score first, until nothing merges.
@@ -314,24 +419,149 @@ impl SpmTokenizer {
     pub(crate) fn encode_ordinary(&self, text: &str) -> Vec<u32> {
         // Empty input has nothing to mark a boundary *of*: `sp.encode("")` is
         // `[]`, and so is llama.cpp's `ggml-vocab-llama-spm` fixture. The guard
-        // belongs here rather than in `normalize`, whose unconditional prefix is
-        // correct for every non-empty input (verified 46/46 against llama.cpp).
-        // It also has to be here rather than in `encode` so that attaching an
-        // added-token matcher cannot change the answer: `encode_with` skips the
-        // gap encoder entirely for "" and would otherwise be the only path that
-        // returned `[]`.
+        // belongs here rather than in `encode_segment`, whose unconditional
+        // prefix is correct for every non-empty input (verified 46/46 against
+        // llama.cpp) and is what deliberately produces the standalone marker
+        // from an empty stretch in `standalone_prefix`.
         if text.is_empty() {
             return Vec::new();
         }
-        let normalized = self.normalize(text);
-        let mut out = Vec::new();
-        for symbol in self.merge(&normalized) {
-            self.emit(
-                &normalized[symbol.start..symbol.start + symbol.len],
-                &mut out,
-            );
+        self.encode_segment(text, self.prefix())
+    }
+
+    /// Whether the whole-input dummy prefix must surface as a standalone `▁`
+    /// piece because an added token occupies byte 0.
+    ///
+    /// Measured against `AutoTokenizer.from_pretrained("mistral-7b-v0.3",
+    /// use_fast=False)` with `add_special_tokens=False`, i.e. Mistral's own
+    /// SentencePiece-backed tokenizer: `"[INST]Write"` -> `[29473, 3, 6006]` =
+    /// `▁`, `[INST]`, `Write`. The prefix belongs to the *input*, not to a gap,
+    /// so when the input opens with an added token the prefix has nothing to
+    /// attach to and is emitted on its own.
+    ///
+    /// The exception is the vocabulary's own sentinels (BOS / EOS / UNK), which
+    /// swallow it: `"<s>x"` -> `[1, 29512]`, not `[29473, 1, 29512]`, while the
+    /// otherwise identical `"[INST]x"` -> `[29473, 3, 29512]`. HuggingFace's
+    /// `LlamaTokenizer.tokenize` drops a leading lone `▁` exactly when the piece
+    /// after it is one of `all_special_tokens`, which for these vocabularies is
+    /// precisely `<s>` / `</s>` / `<unk>` — the three ids named here.
+    ///
+    /// Byte 0 only, and only a *lone* marker: `"[INST]<s>x"` keeps the prefix
+    /// (`[29473, 3, 1, 29512]`) because the sentinel is not first, and `" <s>x"`
+    /// never had a lone marker to drop (`[1027, 1, 29512]` — `▁▁` then `<s>`).
+    ///
+    /// All of this is [`SpmPrefixScheme::Once`]'s alone. Under
+    /// [`AfterEachSpecial`](SpmPrefixScheme::AfterEachSpecial) a standalone
+    /// marker never exists to begin with — llama.cpp prefixes *text* fragments,
+    /// and a leading added token has none before it — so the sentinel rule has
+    /// nothing to suppress and needs no second code path here.
+    fn prefix_stands_alone(&self, text: &str) -> bool {
+        if !self.add_prefix_space || self.prefix_scheme != SpmPrefixScheme::Once {
+            return false;
         }
-        out
+        self.added
+            .as_ref()
+            .and_then(|added| added.id_at_start(text))
+            .is_some_and(|id| {
+                let leading = Some(id);
+                leading != self.bos_token_id
+                    && leading != self.eos_token_id
+                    && leading != self.unk_id
+            })
+    }
+
+    /// Whether an added token occupies byte 0, so that no gap begins the input.
+    ///
+    /// This — not "a standalone marker was emitted" — is what spends the single
+    /// [`Once`](SpmPrefixScheme::Once) prefix: a leading sentinel swallows it
+    /// (`"<s>x"` -> `['<s>', 'x']`, bare `x`) while any other leading added
+    /// token leaves it standing alone (`"[INST]Write"` -> `['▁', '[INST]',
+    /// 'Write']`). Both spend it; only one of them emits anything.
+    fn starts_with_added_token(&self, text: &str, split: bool) -> bool {
+        split
+            && self
+                .added
+                .as_ref()
+                .is_some_and(|added| added.id_at_start(text).is_some())
+    }
+
+    /// The ids that precede the added-token split: the lone `▁` piece when the
+    /// whole-input dummy prefix has nothing to attach to, otherwise nothing.
+    ///
+    /// `split` is false for [`SpecialMode::Ordinary`], which never consults the
+    /// matcher: the whole text is then one stretch starting at byte 0 and
+    /// carries the prefix itself.
+    fn standalone_prefix(&self, text: &str, split: bool) -> Vec<u32> {
+        if split && self.prefix_stands_alone(text) {
+            // An empty stretch escaped *with* the prefix is exactly the lone
+            // boundary piece, so no separate id lookup is needed and a
+            // vocabulary that spells the marker differently still agrees with
+            // itself.
+            self.encode_segment("", self.prefix())
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The gap encoder to hand to [`AddedTokens`](super::added::AddedTokens),
+    /// applying the dummy prefix where this tokenizer's [`SpmPrefixScheme`] says
+    /// it goes.
+    ///
+    /// A gap is by construction either the stretch beginning at byte 0 or the
+    /// stretch immediately following an added token, so the two schemes reduce
+    /// to two lines here:
+    ///
+    /// - [`Once`](SpmPrefixScheme::Once) — SentencePiece normalizes, and
+    ///   therefore prefixes, *before* it splits, so only the stretch beginning
+    ///   at byte 0 can carry the prefix. Prefixing every gap instead changes the
+    ///   ids of every Mistral chat prompt, since those all embed
+    ///   `[INST]`/`[/INST]` mid-text: `"a[INST]b"` came out `▁a`, `[INST]`, `▁b`
+    ///   (`[1032, 3, 1055]`) where the HF reference is `▁a`, `[INST]`, `b`
+    ///   (`[1032, 3, 29494]`).
+    /// - [`AfterEachSpecial`](SpmPrefixScheme::AfterEachSpecial) — llama.cpp's
+    ///   `is_prev_special` is set before the loop and re-set by every special
+    ///   fragment, so *every* text fragment is prefixed. That is `"a[INST]b"` ->
+    ///   `▁a`, `[INST]`, `▁b`, which is what the GGUF path must produce.
+    ///
+    /// The matcher runs over the **original** text, not the escaped text.
+    /// Escaping rewrites every space as a three-byte `▁`, which shifts byte
+    /// offsets and would stop an added token that contains a space (a
+    /// whitespace-run token, a multi-word chat marker) from ever matching. The
+    /// added-token strings are unescaped surface forms, so matching them against
+    /// unescaped input is the only self-consistent choice — and it costs
+    /// nothing, because escaping is per-character and therefore identical
+    /// whether it happens before or after the split. Only the prefix is
+    /// position-dependent, and that is what this function places.
+    ///
+    /// `prefix_spent` says whether the single whole-input prefix is already
+    /// accounted for; if so, no gap carries one — which can only arise under
+    /// [`Once`](SpmPrefixScheme::Once), the one scheme that has a single prefix
+    /// to spend. Note "spent" is not "emitted": when a sentinel leads the input
+    /// the prefix is *swallowed* rather than emitted, and it must not then
+    /// reappear on the following gap — reference `"<s>x"` -> `['<s>', 'x']`,
+    /// with a bare `x`. Handing the encoder back
+    /// rather than driving the split here lets the infallible
+    /// ([`Tokenize::encode`]) and mode-aware ([`encode_with`](Self::encode_with))
+    /// paths share this placement without either inventing an error it cannot
+    /// produce.
+    fn gap_encoder(&self, prefix_spent: bool) -> impl FnMut(&str) -> Vec<u32> + '_ {
+        // Under `Once`: whichever stretch begins at byte 0 carries the prefix —
+        // and when an added token begins the input instead, no stretch does.
+        // `AddedTokens` never hands out an empty gap, so this cannot be spent on
+        // nothing. Unused under `AfterEachSpecial`, where every gap is prefixed
+        // and `standalone_prefix` is always empty.
+        let mut carries_prefix = !prefix_spent;
+        move |gap: &str| {
+            let carries = match self.prefix_scheme {
+                // Every gap either begins the input or follows an added token,
+                // which is exactly llama.cpp's `is_prev_special` condition.
+                SpmPrefixScheme::AfterEachSpecial => true,
+                // One prefix for the whole input, spent on the first gap.
+                SpmPrefixScheme::Once => std::mem::take(&mut carries_prefix),
+            };
+            let prefix = if carries { self.prefix() } else { Prefix::None };
+            self.encode_segment(gap, prefix)
+        }
     }
 
     /// The raw surface string of a token id (`▁` boundaries and `<0xNN>` byte
@@ -357,16 +587,40 @@ impl SpmTokenizer {
     /// are [`SpecialPolicy`](crate::core::SpecialPolicy)'s to add via
     /// `AnyTokenizer::encode_with`.
     pub fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
-        super::added::AddedTokens::dispatch_with_mode(&self.added, text, mode, |gap| {
-            self.encode_ordinary(gap)
-        })
+        // See `encode_ordinary`: empty input has nothing to mark a boundary
+        // *of*, and the guard must sit ahead of the split so that attaching a
+        // matcher cannot change the answer.
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
+        let split = !matches!(mode, SpecialMode::Ordinary);
+        let mut out = self.standalone_prefix(text, split);
+        let mut encode_gap = self.gap_encoder(self.starts_with_added_token(text, split));
+        out.extend(super::added::AddedTokens::dispatch_with_mode(
+            &self.added,
+            text,
+            mode,
+            &mut encode_gap,
+        )?);
+        Ok(out)
     }
 }
 
 impl Tokenize for SpmTokenizer {
     fn encode(&self, text: &str) -> Vec<u32> {
         // Recognize added tokens in the input first (HF behavior), then SPM-BPE.
-        super::added::AddedTokens::dispatch(&self.added, text, |gap| self.encode_ordinary(gap))
+        // See `encode_ordinary` for why empty input is guarded ahead of the split.
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let mut out = self.standalone_prefix(text, true);
+        let mut encode_gap = self.gap_encoder(self.starts_with_added_token(text, true));
+        out.extend(super::added::AddedTokens::dispatch(
+            &self.added,
+            text,
+            &mut encode_gap,
+        ));
+        out
     }
 
     fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
@@ -641,26 +895,263 @@ mod tests {
         assert_eq!(&with[1..], &without[..]);
     }
 
+    /// Attach `<bos>`/`<eos>` as ordinary added tokens — *not* as the
+    /// vocabulary's BOS/EOS sentinels, which behave differently at byte 0 (see
+    /// `sentinel_added_tokens_swallow_the_standalone_prefix`).
+    fn tok_with_added_scheme(scheme: SpmPrefixScheme) -> SpmTokenizer {
+        let (tokens, scores) = rank_scored_vocab();
+        let mut map = FxHashMap::default();
+        map.insert("<bos>".to_string(), 2);
+        map.insert("<eos>".to_string(), 1);
+        SpmTokenizer::new(tokens, scores, None, None)
+            .unwrap()
+            .with_prefix_scheme(scheme)
+            .with_added_tokens(&map)
+            .unwrap()
+    }
+
+    /// The HuggingFace / `sentencepiece` scheme, which every reference row in
+    /// the tests below was measured under.
+    fn tok_with_added() -> SpmTokenizer {
+        tok_with_added_scheme(SpmPrefixScheme::Once)
+    }
+
     /// A control token spliced into the prompt text must survive as its own id.
     /// Without matching it is normalized and merged like content — `<bos>hello`
     /// silently becomes a run of `<unk>`s, in range and reversible, so nothing
     /// downstream notices the chat template was destroyed.
     #[test]
     fn added_tokens_in_the_input_encode_to_their_own_id() {
+        let t = tok_with_added();
+        assert_eq!(
+            pieces(&t, "<bos>hello world<eos>"),
+            // The dummy prefix is the whole input's, applied before the split:
+            // `<bos>` sits at byte 0, so the prefix stands alone, and the gap
+            // that *follows* an added token is escaped bare — hence `h|el|lo`
+            // rather than `▁hello`. This test previously asserted
+            // `[2, 22, 23, 1]` (`<bos>`, `▁hello`, `▁world`, `<eos>`), which
+            // pinned the per-gap prefixing bug.
+            vec!["▁", "<bos>", "h", "el", "lo", "▁world", "<eos>"],
+            "the markers stay whole and the gaps still merge"
+        );
+    }
+
+    /// Under [`SpmPrefixScheme::Once`] the dummy prefix belongs to the *input*,
+    /// not to each gap between added tokens (llama.cpp differs — see
+    /// `the_two_prefix_schemes_disagree_exactly_here`). Measured against
+    /// Mistral's own SentencePiece tokenizer
+    /// (`AutoTokenizer.from_pretrained("mistral-7b-v0.3", use_fast=False)`,
+    /// `add_special_tokens=False`):
+    ///
+    /// | input | reference ids | pieces |
+    /// |---|---|---|
+    /// | `a[INST]b` | `[1032, 3, 29494]` | `▁a`, `[INST]`, `b` |
+    /// | `x[/INST]y` | `[2086, 4, 29492]` | `▁x`, `[/INST]`, `y` |
+    ///
+    /// Prefixing each gap instead produced `▁b` / `▁y`, changing the ids of
+    /// every Mistral chat prompt.
+    #[test]
+    fn only_the_stretch_at_byte_zero_carries_the_dummy_prefix() {
+        let t = tok_with_added();
+        assert_eq!(
+            pieces(&t, "hello<eos>world"),
+            vec!["▁hello", "<eos>", "w", "or", "ld"],
+            "the leading gap is prefixed; the gap after the marker is not"
+        );
+        // Three gaps, still exactly one prefix — the first one.
+        assert_eq!(
+            pieces(&t, "hello<eos>world<eos>hello"),
+            vec!["▁hello", "<eos>", "w", "or", "ld", "<eos>", "h", "el", "lo"]
+        );
+    }
+
+    /// Under [`SpmPrefixScheme::Once`], when an added token occupies byte 0 the
+    /// prefix has nothing to attach to, and SentencePiece emits it as a
+    /// standalone `▁` piece before the token.
+    /// Reference: `"[INST]Write"` -> `[29473, 3, 6006]` and `"[INST]"` ->
+    /// `[29473, 3]`, where `29473` is the lone `▁` piece.
+    #[test]
+    fn a_leading_added_token_leaves_the_dummy_prefix_standing_alone() {
+        let t = tok_with_added();
+        assert_eq!(pieces(&t, "<bos>"), vec!["▁", "<bos>"]);
+        assert_eq!(
+            pieces(&t, "<bos>hello"),
+            vec!["▁", "<bos>", "h", "el", "lo"]
+        );
+        // A leading *space* means the marker is no longer alone — it is part of
+        // the first gap, which carries the prefix as usual. Reference:
+        // `" <s>x"` -> `[1027, 1, 29512]`, whose first id is the merged `▁▁`
+        // piece; this synthetic vocabulary has no `▁▁`, so the two markers stay
+        // unmerged. What must hold either way is that the gap is escaped with
+        // the prefix rather than a bare marker being emitted beside it.
+        assert_eq!(
+            pieces(&t, " <bos>hello"),
+            vec!["▁", "▁", "<bos>", "h", "el", "lo"]
+        );
+    }
+
+    /// Under [`SpmPrefixScheme::Once`], a leading BOS/EOS/UNK *swallows* the
+    /// standalone prefix, unlike any other added token. It is an HF-path rule:
+    /// under [`SpmPrefixScheme::AfterEachSpecial`] no standalone marker is
+    /// produced for any leading token, sentinel or not — pinned by
+    /// `the_sentinel_rule_is_inert_under_the_llama_cpp_scheme`.
+    ///
+    /// Reference: `"<s>x"` -> `[1, 29512]` but `"[INST]x"` ->
+    /// `[29473, 3, 29512]`; HuggingFace's `LlamaTokenizer.tokenize` drops a
+    /// leading lone `▁` exactly when the next piece is one of
+    /// `all_special_tokens` (`<s>`, `</s>`, `<unk>` for these vocabularies).
+    ///
+    /// And only at byte 0: `"[INST]<s>x"` -> `[29473, 3, 1, 29512]` keeps it.
+    #[test]
+    fn sentinel_added_tokens_swallow_the_standalone_prefix() {
         let (tokens, scores) = rank_scored_vocab();
         let mut map = FxHashMap::default();
         map.insert("<bos>".to_string(), 2);
         map.insert("<eos>".to_string(), 1);
-        let t = SpmTokenizer::new(tokens, scores, None, None)
+        // BOS = `<bos>` (2); EOS left unset so `<eos>` stays an ordinary added
+        // token and the two cases are visible side by side in one tokenizer.
+        let t = SpmTokenizer::new(tokens, scores, Some(2), None)
             .unwrap()
+            .with_prefix_scheme(SpmPrefixScheme::Once)
             .with_added_tokens(&map)
             .unwrap();
 
+        assert_eq!(pieces(&t, "<bos>hello"), vec!["<bos>", "h", "el", "lo"]);
         assert_eq!(
-            t.encode("<bos>hello world<eos>"),
-            vec![2, 22, 23, 1],
-            "the markers stay whole and the gaps still merge into whole words"
+            pieces(&t, "<eos>hello"),
+            vec!["▁", "<eos>", "h", "el", "lo"]
         );
+        // Byte 0 only: the sentinel sitting second does not reach back and drop
+        // a prefix that a non-sentinel already left standing.
+        assert_eq!(
+            pieces(&t, "<eos><bos>hello"),
+            vec!["▁", "<eos>", "<bos>", "h", "el", "lo"]
+        );
+    }
+
+    /// The two schemes, on the same inputs, in one place — so the difference is
+    /// documented in code and neither can silently drift into the other. Both
+    /// columns are the measured behavior of their own reference:
+    ///
+    /// | input | [`Once`] (HF, `use_fast=False`) | [`AfterEachSpecial`] (llama.cpp) |
+    /// |---|---|---|
+    /// | `<M>hello` | `▁`, `<M>`, `h`,`el`,`lo` | `<M>`, `▁hello` |
+    /// | `hello<M>world` | `▁hello`, `<M>`, `w`,`or`,`ld` | `▁hello`, `<M>`, `▁world` |
+    /// | `<M>` | `▁`, `<M>` | `<M>` |
+    ///
+    /// HF rows follow `"[INST]Write"` -> `[29473, 3, 6006]` and `"a[INST]b"` ->
+    /// `[1032, 3, 29494]` (a bare gap after the marker). llama.cpp rows follow
+    /// `llama-vocab.cpp`'s `is_prev_special`, which is armed before the loop and
+    /// re-armed by every special fragment, so every *text* fragment is prefixed
+    /// and a leading special has no fragment before it to prefix.
+    ///
+    /// [`Once`]: SpmPrefixScheme::Once
+    /// [`AfterEachSpecial`]: SpmPrefixScheme::AfterEachSpecial
+    #[test]
+    fn the_two_prefix_schemes_disagree_exactly_here() {
+        let hf = tok_with_added_scheme(SpmPrefixScheme::Once);
+        let cpp = tok_with_added_scheme(SpmPrefixScheme::AfterEachSpecial);
+
+        // A leading added token: HF strands the marker, llama.cpp emits none and
+        // prefixes the text that follows instead.
+        assert_eq!(
+            pieces(&hf, "<bos>hello"),
+            vec!["▁", "<bos>", "h", "el", "lo"]
+        );
+        assert_eq!(pieces(&cpp, "<bos>hello"), vec!["<bos>", "▁hello"]);
+
+        // A mid-text added token: HF has already spent its one prefix on the
+        // leading stretch, llama.cpp prefixes the following stretch too.
+        assert_eq!(
+            pieces(&hf, "hello<eos>world"),
+            vec!["▁hello", "<eos>", "w", "or", "ld"]
+        );
+        assert_eq!(
+            pieces(&cpp, "hello<eos>world"),
+            vec!["▁hello", "<eos>", "▁world"]
+        );
+
+        // Nothing but a marker.
+        assert_eq!(pieces(&hf, "<bos>"), vec!["▁", "<bos>"]);
+        assert_eq!(pieces(&cpp, "<bos>"), vec!["<bos>"]);
+
+        // With no added token in the input there is one stretch, which begins at
+        // byte 0 and is prefixed either way — the schemes must agree here, or
+        // one of them is prefixing something other than a fragment boundary.
+        for text in ["hello world", " hello", "hello"] {
+            assert_eq!(pieces(&hf, text), pieces(&cpp, text), "input {text:?}");
+        }
+    }
+
+    /// The BOS/EOS/UNK sentinel rule is HuggingFace's: `LlamaTokenizer.tokenize`
+    /// drops a leading lone `▁` when the next piece is in `all_special_tokens`.
+    /// Under [`SpmPrefixScheme::AfterEachSpecial`] there is no standalone marker
+    /// for it to drop, so the rule must be inert — a sentinel and an ordinary
+    /// added token in the same position encode identically, and neither needs a
+    /// second code path.
+    #[test]
+    fn the_sentinel_rule_is_inert_under_the_llama_cpp_scheme() {
+        let (tokens, scores) = rank_scored_vocab();
+        let mut map = FxHashMap::default();
+        map.insert("<bos>".to_string(), 2);
+        map.insert("<eos>".to_string(), 1);
+        // BOS = `<bos>`; `<eos>` stays an ordinary added token, exactly as in
+        // `sentinel_added_tokens_swallow_the_standalone_prefix` — where the two
+        // differ.
+        let t = SpmTokenizer::new(tokens, scores, Some(2), None)
+            .unwrap()
+            .with_prefix_scheme(SpmPrefixScheme::AfterEachSpecial)
+            .with_added_tokens(&map)
+            .unwrap();
+
+        assert_eq!(pieces(&t, "<bos>hello"), vec!["<bos>", "▁hello"]);
+        assert_eq!(
+            pieces(&t, "<eos>hello"),
+            vec!["<eos>", "▁hello"],
+            "the sentinel and the ordinary marker must be indistinguishable here"
+        );
+    }
+
+    /// With `add_space_prefix = false` (Gemma) there is no dummy prefix to place
+    /// at all, so added-token splitting must add nothing anywhere — neither a
+    /// standalone marker before a leading token nor one inside any gap. With no
+    /// marker to place, the scheme has nothing to choose between, so both must
+    /// give the same answer.
+    #[test]
+    fn prefix_disabled_adds_no_marker_around_added_tokens() {
+        for scheme in [SpmPrefixScheme::Once, SpmPrefixScheme::AfterEachSpecial] {
+            let (tokens, scores) = rank_scored_vocab();
+            let mut map = FxHashMap::default();
+            map.insert("<bos>".to_string(), 2);
+            let t = SpmTokenizer::new(tokens, scores, None, None)
+                .unwrap()
+                .with_prefix_space(false)
+                .with_prefix_scheme(scheme)
+                .with_added_tokens(&map)
+                .unwrap();
+
+            assert_eq!(
+                pieces(&t, "<bos>hello"),
+                vec!["<bos>", "h", "el", "lo"],
+                "{scheme:?}"
+            );
+            assert_eq!(
+                pieces(&t, "hello<bos>"),
+                vec!["h", "el", "lo", "<bos>"],
+                "{scheme:?}"
+            );
+        }
+    }
+
+    /// [`SpecialMode::Ordinary`] never splits, so the whole text is one stretch
+    /// beginning at byte 0 and carries the prefix — the marker's literal
+    /// spelling is content, and no standalone prefix piece appears.
+    #[test]
+    fn ordinary_mode_prefixes_the_whole_text_once() {
+        let t = tok_with_added();
+        let ids = t.encode_with("<bos>hello", &SpecialMode::Ordinary).unwrap();
+        assert_eq!(ids, t.encode_ordinary("<bos>hello"));
+        assert!(!ids.contains(&2), "the marker is content, not its own id");
     }
 
     /// A tokenizer built without added tokens must behave exactly as it did

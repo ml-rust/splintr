@@ -26,7 +26,7 @@ use rustc_hash::FxHashMap;
 
 use super::any_tokenizer::{AnyTokenizer, Backend};
 use super::policy::SpecialPolicy;
-use super::spm::{SpmTokenizer, NEVER_MERGE};
+use super::spm::{SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
 use super::tokenizer::{
     Tokenizer, TokenizerError, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN,
     LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
@@ -271,12 +271,40 @@ fn spm_from_vocab(
 
     let eos = eos_token_id(vocab);
     let tokenizer = SpmTokenizer::new(pieces, scores, bos_token_id(vocab), Some(eos))?
+        .with_prefix_scheme(spm_prefix_scheme(vocab))
         .with_added_tokens(&special)?;
 
     Ok(AnyTokenizer::new(
         Backend::Spm(tokenizer),
         SpecialPolicy::boundary(None, None, Some(eos), named),
     ))
+}
+
+/// Where a bundled SentencePiece vocabulary places its dummy prefix.
+///
+/// This is **not** a property of the file format — it is HuggingFace's `legacy`
+/// flag, declared per checkpoint in `tokenizer_config.json`, and the two Mistral
+/// generations disagree. Measured with
+/// `AutoTokenizer.from_pretrained(..., use_fast=False).tokenize("<s>x")`:
+///
+/// | vocabulary | `legacy` | result | scheme |
+/// |---|---|---|---|
+/// | Mistral V1 (`mistral-7b-awq-int4`) | `true`  | `['<s>', '▁x']` | [`AfterEachSpecial`](SpmPrefixScheme::AfterEachSpecial) |
+/// | Mistral V2 (`mistral-7b-v0.3`)     | `false` | `['<s>', 'x']`  | [`Once`](SpmPrefixScheme::Once) |
+///
+/// `legacy = true` reproduces the pre-fix `LlamaTokenizer`, which prefixed every
+/// stretch following a special token — the same rule llama.cpp still implements
+/// (`llama-vocab.cpp`'s `is_prev_special`). `legacy = false` is the corrected
+/// behaviour: one prefix for the whole input, applied before the split.
+///
+/// So a new bundled `.spm` vocabulary must have its checkpoint's `legacy` flag
+/// read off and mapped here — never assumed from the fact that it came from a
+/// `tokenizer.model`.
+fn spm_prefix_scheme(vocab: PretrainedVocab) -> SpmPrefixScheme {
+    match vocab {
+        PretrainedVocab::MistralV1 => SpmPrefixScheme::AfterEachSpecial,
+        _ => SpmPrefixScheme::Once,
+    }
 }
 
 /// Get the ordered pre-tokenizer pattern sequence for a vocabulary.
