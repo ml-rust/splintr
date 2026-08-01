@@ -267,7 +267,10 @@ impl WordPieceTokenizer {
 
 impl WordPieceTokenizer {
     /// Encode without added-token matching (BasicTokenizer + WordPiece).
-    pub(crate) fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+    ///
+    /// Public on every backend, so a caller holding a concrete tokenizer has the
+    /// same escape hatch regardless of which one it is.
+    pub fn encode_ordinary(&self, text: &str) -> Vec<u32> {
         let words = self.basic_tokenize(text);
         let mut ids = Vec::new();
         for word in &words {

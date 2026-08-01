@@ -416,7 +416,7 @@ impl SpmTokenizer {
     /// Content tokens only: boundary tokens are the
     /// [`SpecialPolicy`](crate::core::SpecialPolicy)'s to add, so that a caller
     /// wrapping two sequences does not get a stray BOS in the middle.
-    pub(crate) fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+    pub fn encode_ordinary(&self, text: &str) -> Vec<u32> {
         // Empty input has nothing to mark a boundary *of*: `sp.encode("")` is
         // `[]`, and so is llama.cpp's `ggml-vocab-llama-spm` fixture. The guard
         // belongs here rather than in `encode_segment`, whose unconditional
