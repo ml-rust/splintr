@@ -16,15 +16,27 @@ dialect.
 Usage:
     python3 scripts/extract_gguf_vocab.py <file.gguf|dir> [...] --out-dir DIR
 
+With `--tiktoken-dir DIR` the same vocabulary is ALSO rendered in the tiktoken
+text format splintr's byte-level loader reads (`python/splintr/vocabs/*.tiktoken`):
+one `base64(token_bytes) rank` line per token, in id order, rank == token id.
+That rendering exists so the byte-level BPE path can be pointed at a GGUF
+`model=llama` vocabulary and scored against the same llama.cpp fixtures as the
+piece-level `SpmTokenizer` (see `examples/verify_spm_vs_bpe.rs`).
+
 Requires the `gguf` package (`pip install gguf`).
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import re
 import sys
 from pathlib import Path
+
+# A SentencePiece byte-fallback piece: `<0x00>` .. `<0xFF>`.
+BYTE_PIECE = re.compile(r"^<0x([0-9A-Fa-f]{2})>$")
 
 try:
     from gguf import GGUFReader
@@ -139,6 +151,81 @@ def read_cases(gguf_path: Path) -> list[dict]:
     ]
 
 
+def piece_to_bytes(piece: str) -> bytes:
+    """Render one GGUF `model=llama` piece as the raw bytes it stands for.
+
+    Two rules, and only two:
+      * `<0xNN>` (byte fallback) is the single raw byte `0xNN`;
+      * anything else is its own UTF-8 bytes, `▁` (U+2581) included verbatim.
+
+    Raises for a piece that fits neither — notably a lone surrogate, which has no
+    UTF-8 encoding. Such a piece is reported, never silently dropped.
+    """
+    match = BYTE_PIECE.match(piece)
+    if match is not None:
+        return bytes([int(match.group(1), 16)])
+    try:
+        return piece.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"piece {piece!r} is not encodable as UTF-8: {exc}") from exc
+
+
+def write_tiktoken(vocab: dict, out_path: Path) -> str:
+    """Write the tiktoken rendering and return a one-line sanity report.
+
+    The report is the point: the conversion is only trustworthy if the line count
+    matches the piece count and the duplicate byte sequences are the ones we
+    expect (a `<0xNN>` byte-fallback piece colliding with a real single-character
+    piece of the same bytes). Duplicates are NOT resolved here — both lines are
+    written, in id order, and it is the Rust loader's documented policy that
+    decides which id wins.
+    """
+    tokens: list[str] = vocab["tokens"]
+
+    rendered: list[bytes] = []
+    problems: list[str] = []
+    for token_id, piece in enumerate(tokens):
+        try:
+            rendered.append(piece_to_bytes(piece))
+        except ValueError as exc:
+            problems.append(f"id {token_id}: {exc}")
+            # Keep ids aligned with line numbers; the caller sees `problems`.
+            rendered.append(piece.encode("utf-8", "surrogatepass"))
+
+    lines = [
+        f"{base64.b64encode(raw).decode('ascii')} {token_id}"
+        for token_id, raw in enumerate(rendered)
+    ]
+    out_path.write_text("\n".join(lines) + "\n", encoding="ascii")
+
+    seen: dict[bytes, list[int]] = {}
+    for token_id, raw in enumerate(rendered):
+        seen.setdefault(raw, []).append(token_id)
+    dups = {raw: ids for raw, ids in seen.items() if len(ids) > 1}
+
+    # Classify each collision: byte-fallback vs real piece is expected and
+    # harmless (the loaders have a stated tie-break); anything else is not.
+    unexpected = [
+        (raw, ids)
+        for raw, ids in dups.items()
+        if not (
+            len(ids) == 2
+            and BYTE_PIECE.match(tokens[ids[0]])
+            and not BYTE_PIECE.match(tokens[ids[1]])
+        )
+    ]
+
+    report = (
+        f"lines={len(lines)} pieces={len(tokens)} distinct={len(seen)} "
+        f"dups={len(dups)} (byte-fallback collisions; unexpected={len(unexpected)})"
+    )
+    for raw, ids in unexpected[:5]:
+        report += f"\n        UNEXPECTED DUP {raw!r} -> ids {ids}"
+    for problem in problems:
+        report += f"\n        PIECE PROBLEM {problem}"
+    return report
+
+
 def collect(paths: list[Path]) -> list[Path]:
     found: list[Path] = []
     for path in paths:
@@ -154,6 +241,12 @@ def main() -> int:
     parser.add_argument("inputs", nargs="+", type=Path, help=".gguf files or directories")
     parser.add_argument("--out-dir", type=Path, required=True, help="where to write the JSON")
     parser.add_argument(
+        "--tiktoken-dir",
+        type=Path,
+        help="also write a `<name>.tiktoken` rendering of each vocabulary here "
+        "(only meaningful for model=llama SentencePiece vocabularies)",
+    )
+    parser.add_argument(
         "--require-cases",
         action="store_true",
         help="skip vocabularies that ship no .inp/.out fixtures",
@@ -161,6 +254,8 @@ def main() -> int:
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.tiktoken_dir is not None:
+        args.tiktoken_dir.mkdir(parents=True, exist_ok=True)
 
     failures = 0
     for gguf_path in collect(args.inputs):
@@ -189,6 +284,16 @@ def main() -> int:
             f"pre={vocab.get('pre', '-')} tokens={len(vocab['tokens'])} "
             f"cases={len(cases)}"
         )
+
+        if args.tiktoken_dir is not None:
+            tiktoken_path = args.tiktoken_dir / f"{gguf_path.stem}.tiktoken"
+            try:
+                report = write_tiktoken(vocab, tiktoken_path)
+            except Exception as exc:  # tooling: report and keep going
+                print(f"FAIL  {tiktoken_path}: {exc}", file=sys.stderr)
+                failures += 1
+                continue
+            print(f"      {tiktoken_path}  {report}")
 
     return 1 if failures else 0
 
