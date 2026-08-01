@@ -1,6 +1,6 @@
 //! The tagged-union tokenizer handle returned by the HF json loader.
 
-use super::policy::{PolicyError, SpecialPolicy};
+use super::policy::{PolicyError, SpecialMode, SpecialPolicy};
 use super::sentencepiece::SentencePieceTokenizer;
 use super::spm::SpmTokenizer;
 use super::tokenize::{Tokenize, TokenizeError};
@@ -108,6 +108,29 @@ impl AnyTokenizer {
         }
     }
 
+    /// Encode one sequence under an explicit [`SpecialMode`], then apply the
+    /// policy's single-sequence template — the mode-aware sibling of
+    /// [`encode`](Self::encode).
+    ///
+    /// Boundary tokens (BOS/EOS/CLS/SEP) come from the policy template, NOT
+    /// from matching text against the vocabulary, so they are applied under
+    /// EVERY mode including [`SpecialMode::Ordinary`]: refusing to match a
+    /// special token spelled out in user-supplied text says nothing about
+    /// whether this tokenizer itself wraps content in its own boundary
+    /// tokens — those two concerns are independent, and conflating them would
+    /// mean a caller who locks down special-token matching for safety
+    /// unexpectedly also loses the boundary tokens the model was trained
+    /// with.
+    pub fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
+        let raw = match &self.backend {
+            Backend::Bpe(t) => Tokenize::encode_with(t, text, mode),
+            Backend::Unigram(t) => Tokenize::encode_with(t, text, mode),
+            Backend::WordPiece(t) => Tokenize::encode_with(t, text, mode),
+            Backend::Spm(t) => Tokenize::encode_with(t, text, mode),
+        }?;
+        Ok(self.policy.apply_single(raw))
+    }
+
     /// Encode many sequences, applying the policy's single-sequence template to
     /// each — the batch form of [`encode`](Self::encode).
     ///
@@ -158,6 +181,10 @@ impl Tokenize for AnyTokenizer {
         AnyTokenizer::encode(self, text)
     }
 
+    fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
+        AnyTokenizer::encode_with(self, text, mode)
+    }
+
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
         // When the json declares a `decoder`, drive decoding from it: collect the
         // surface strings (skipping special-flagged added tokens, matching HF's
@@ -185,5 +212,39 @@ impl Tokenize for AnyTokenizer {
             Backend::WordPiece(t) => Tokenize::vocab_size(t),
             Backend::Spm(t) => Tokenize::vocab_size(t),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The policy's boundary template (BOS here) must still be applied under
+    /// `SpecialMode::Ordinary` — that mode only turns off matching a special
+    /// token's literal spelling *in the content*, it says nothing about the
+    /// boundary tokens the loaded tokenizer always wraps a sequence in.
+    #[test]
+    fn boundary_template_still_applies_under_ordinary_mode() {
+        let mut encoder = rustc_hash::FxHashMap::default();
+        for b in 32u8..=126 {
+            encoder.insert(vec![b], b as u32);
+        }
+        let mut special_tokens = rustc_hash::FxHashMap::default();
+        special_tokens.insert("<s>".to_string(), 1000);
+
+        let tokenizer = Tokenizer::new(encoder, special_tokens.clone(), r"\S+|\s+")
+            .unwrap()
+            .with_added_token_matching(true);
+
+        let policy = SpecialPolicy::boundary(Some(1000), None, None, special_tokens);
+        let any = AnyTokenizer::new(Backend::Bpe(tokenizer), policy);
+
+        let ids = any
+            .encode_with("hi", &SpecialMode::Ordinary)
+            .expect("ordinary mode never refuses on this input");
+
+        assert_eq!(ids.first(), Some(&1000), "BOS from the policy template");
+        // Content tokens should be exactly "hi" encoded byte-by-byte, unmodified.
+        assert_eq!(&ids[1..], &[b'h' as u32, b'i' as u32]);
     }
 }

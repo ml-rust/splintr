@@ -15,6 +15,7 @@ use pcre2::bytes::Regex as Pcre2Regex;
 use super::added::AddedTokens;
 use super::bpe::{byte_pair_encode, byte_pair_encode_with_ranks};
 use super::byte_level::{byte_level_decode_bytes, byte_level_encode};
+use super::policy::{PolicyError, SpecialMode};
 use super::vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, VocabError};
 
 #[derive(Error, Debug)]
@@ -1264,6 +1265,32 @@ impl Tokenizer {
         AddedTokens::dispatch(&self.special_matcher, text, |gap| self.encode_ordinary(gap))
     }
 
+    /// Encode text to token IDs under an explicit [`SpecialMode`], governing
+    /// whether `special_tokens` found in the input text are matched.
+    ///
+    /// This only concerns added-token matching in the content — it says
+    /// nothing about boundary tokens (BOS/EOS/CLS/SEP), which this backend
+    /// has no notion of; those come from [`SpecialPolicy`](super::SpecialPolicy)
+    /// via [`AnyTokenizer::encode_with`](super::AnyTokenizer::encode_with).
+    ///
+    /// If this tokenizer was never configured for added-token matching
+    /// ([`with_added_token_matching`](Self::with_added_token_matching) is
+    /// `false`, [`Tokenizer::encode`]'s default), [`SpecialMode::All`] is read
+    /// as "there is no matching to turn on" and falls back to the ordinary
+    /// encoding — the same behavior [`Tokenizer::encode`] already gives in
+    /// that configuration. [`SpecialMode::Ordinary`] and
+    /// [`SpecialMode::Allow`] are the caller stating an explicit choice rather
+    /// than asking for this tokenizer's default, so they always take effect
+    /// regardless of that flag.
+    pub fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
+        if matches!(mode, SpecialMode::All) && !self.match_added_tokens {
+            return Ok(self.encode_ordinary(text));
+        }
+        AddedTokens::dispatch_with_mode(&self.special_matcher, text, mode, |gap| {
+            self.encode_ordinary(gap)
+        })
+    }
+
     /// Decode token IDs back to bytes.
     pub fn decode_bytes(&self, tokens: &[u32]) -> Vec<u8> {
         let mut result = Vec::with_capacity(tokens.len() * 4);
@@ -1488,6 +1515,10 @@ impl super::tokenize::Tokenize for Tokenizer {
         self.encode(text)
     }
 
+    fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
+        self.encode_with(text, mode)
+    }
+
     fn decode(&self, ids: &[u32]) -> Result<String, super::tokenize::TokenizeError> {
         self.decode(ids).map_err(|e| match e {
             TokenizerError::Utf8Error => super::tokenize::TokenizeError::Utf8Error,
@@ -1535,6 +1566,25 @@ mod tests {
         let text = "Hello<|endoftext|>World";
         let tokens = tokenizer.encode_with_special(text);
         assert!(tokens.contains(&50256));
+    }
+
+    /// `SpecialMode::All` and `SpecialMode::Ordinary` must diverge on text
+    /// containing a special token's literal spelling, and `Ordinary` must
+    /// never promote it — the literal text round-trips through decode.
+    #[test]
+    fn encode_with_all_vs_ordinary_diverge_on_a_special_token() {
+        let tokenizer = make_test_tokenizer().with_added_token_matching(true);
+        let text = "Hello<|endoftext|>World";
+
+        let all_ids = tokenizer.encode_with(text, &SpecialMode::All).unwrap();
+        let ordinary_ids = tokenizer.encode_with(text, &SpecialMode::Ordinary).unwrap();
+
+        assert_ne!(all_ids, ordinary_ids);
+        assert!(all_ids.contains(&50256));
+        assert!(!ordinary_ids.contains(&50256));
+
+        let decoded = tokenizer.decode(&ordinary_ids).unwrap();
+        assert_eq!(decoded, text);
     }
 
     #[test]

@@ -3,6 +3,8 @@
 //! The `Tokenize` trait provides a common interface across BPE, SentencePiece,
 //! and WordPiece tokenizers, enabling generic code that works with any backend.
 
+use super::policy::{PolicyError, SpecialMode};
+
 /// Common interface for all tokenizer backends.
 ///
 /// Implemented by [`Tokenizer`](super::Tokenizer) (BPE),
@@ -11,6 +13,15 @@
 pub trait Tokenize: Send + Sync {
     /// Encode text into token IDs.
     fn encode(&self, text: &str) -> Vec<u32>;
+
+    /// Encode text into token IDs under an explicit [`SpecialMode`], governing
+    /// whether special/control tokens spelled out in `text` are matched.
+    ///
+    /// Deliberately not defaulted: every implementor of this trait lives in
+    /// this crate, and a default body that ignored `mode` would make the
+    /// allow-list/deny-all guarantee silently inert for any future backend
+    /// that forgot to override it.
+    fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError>;
 
     /// Decode token IDs back to text.
     ///

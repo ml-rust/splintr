@@ -8,6 +8,8 @@
 use std::collections::HashMap;
 use thiserror::Error;
 
+use super::policy::{PolicyError, SpecialMode};
+
 #[derive(Error, Debug)]
 pub enum SentencePieceError {
     #[error("Empty vocabulary")]
@@ -204,6 +206,18 @@ impl SentencePieceTokenizer {
     /// HuggingFace.
     pub fn encode(&self, text: &str) -> Vec<u32> {
         super::added::AddedTokens::dispatch(&self.added, text, |gap| self.encode_ordinary(gap))
+    }
+
+    /// Encode text to token IDs under an explicit [`SpecialMode`], governing
+    /// whether the added tokens attached via
+    /// [`with_added_tokens`](Self::with_added_tokens) are matched in the input
+    /// text. Never emits BOS/EOS — see [`encode`](Self::encode); boundary
+    /// tokens are [`SpecialPolicy`](crate::core::SpecialPolicy)'s to add via
+    /// `AnyTokenizer::encode_with`.
+    pub fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
+        super::added::AddedTokens::dispatch_with_mode(&self.added, text, mode, |gap| {
+            self.encode_ordinary(gap)
+        })
     }
 
     /// Encode without added-token matching (pure Unigram Viterbi). Never emits
@@ -453,6 +467,10 @@ impl SentencePieceTokenizer {
 impl super::tokenize::Tokenize for SentencePieceTokenizer {
     fn encode(&self, text: &str) -> Vec<u32> {
         self.encode(text)
+    }
+
+    fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
+        self.encode_with(text, mode)
     }
 
     fn decode(&self, ids: &[u32]) -> Result<String, super::tokenize::TokenizeError> {

@@ -25,6 +25,7 @@ use std::collections::BinaryHeap;
 use thiserror::Error;
 
 use super::metaspace::{self, Prefix, WORD_BOUNDARY};
+use super::policy::{PolicyError, SpecialMode};
 use super::tokenize::{Tokenize, TokenizeError};
 
 /// SentencePiece's "never merge" score sentinel.
@@ -310,7 +311,7 @@ impl SpmTokenizer {
     /// Content tokens only: boundary tokens are the
     /// [`SpecialPolicy`](crate::core::SpecialPolicy)'s to add, so that a caller
     /// wrapping two sequences does not get a stray BOS in the middle.
-    fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+    pub(crate) fn encode_ordinary(&self, text: &str) -> Vec<u32> {
         // Empty input has nothing to mark a boundary *of*: `sp.encode("")` is
         // `[]`, and so is llama.cpp's `ggml-vocab-llama-spm` fixture. The guard
         // belongs here rather than in `normalize`, whose unconditional prefix is
@@ -348,12 +349,28 @@ impl SpmTokenizer {
     pub fn eos_token_id(&self) -> Option<u32> {
         self.eos_token_id
     }
+
+    /// Encode text to token IDs under an explicit [`SpecialMode`], governing
+    /// whether the added tokens attached via
+    /// [`with_added_tokens`](Self::with_added_tokens) are matched in the input
+    /// text. Never emits BOS/EOS — see [`Tokenize::encode`]; boundary tokens
+    /// are [`SpecialPolicy`](crate::core::SpecialPolicy)'s to add via
+    /// `AnyTokenizer::encode_with`.
+    pub fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
+        super::added::AddedTokens::dispatch_with_mode(&self.added, text, mode, |gap| {
+            self.encode_ordinary(gap)
+        })
+    }
 }
 
 impl Tokenize for SpmTokenizer {
     fn encode(&self, text: &str) -> Vec<u32> {
         // Recognize added tokens in the input first (HF behavior), then SPM-BPE.
         super::added::AddedTokens::dispatch(&self.added, text, |gap| self.encode_ordinary(gap))
+    }
+
+    fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
+        self.encode_with(text, mode)
     }
 
     /// Render the pieces, then strip the dummy prefix.

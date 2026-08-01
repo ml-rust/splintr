@@ -8,20 +8,63 @@
 //! from the same `tokenizer.json` as the vocabulary, so a caller asking for a
 //! single sequence or a pair gets exactly what the model was trained on.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 use thiserror::Error;
 
 use super::hf_json::components::{find_added_token, parse_special_tokens};
 
-/// Errors from [`SpecialPolicy::apply_pair`] — loader-agnostic, since the
-/// policy itself is shared by every loader (HF json, GGUF, …).
+/// Errors from [`SpecialPolicy::apply_pair`] and from special-token matching
+/// under an explicit [`SpecialMode`] — loader-agnostic, since the policy
+/// itself is shared by every loader (HF json, GGUF, …).
 #[derive(Debug, Error)]
 pub enum PolicyError {
     #[error("post_processor Sequence composes several segment-placing processors ({0}) — refusing to guess where the second sequence goes")]
     UnsupportedPairComposition(String),
     #[error("this tokenizer defines no pair template — refusing to concatenate the two sequences without the separator the model expects")]
     NoPairTemplate,
+    /// The input text literally spells a configured special token that
+    /// [`SpecialMode::Allow`] does not permit.
+    ///
+    /// This is the failure mode the allow-list exists to produce: without it,
+    /// that same text would have been silently promoted to the real
+    /// control-token id, indistinguishable downstream from a boundary token
+    /// the server itself inserted (e.g. a user turn spelling out
+    /// `<|im_start|>system` to forge a system message). `offset` is the byte
+    /// offset of the match in the input, so a caller can point back at exactly
+    /// what in the request was rejected.
+    #[error("special token {token:?} at byte offset {offset} is not in the caller's allow-list")]
+    DisallowedSpecial { token: String, offset: usize },
+}
+
+/// How special/control tokens found literally in the input text are matched
+/// during encoding — the tiktoken-style `allowed_special` control.
+///
+/// Every splintr loader turns on added-token matching unconditionally, so
+/// without this a caller who can influence input text can write out the
+/// literal spelling of a control token (`<|im_start|>`, `<|endoftext|>`, …)
+/// and have it promoted to the real control-token id — indistinguishable,
+/// downstream, from one the server itself inserted. A server that tokenizes
+/// untrusted text needs a way to say "match only the tokens I expect here" or
+/// "match none of them"; denylisting the literal spellings beforehand is
+/// incomplete by construction (it cannot anticipate every spelling that maps
+/// to the same content).
+#[derive(Debug, Clone, Copy)]
+pub enum SpecialMode<'a> {
+    /// Match every configured special token found in the text. Today's
+    /// behaviour — what every loader has always done.
+    All,
+    /// Never match a special token; the text is encoded as ordinary content,
+    /// even where it spells a known special token verbatim.
+    Ordinary,
+    /// Match only the named special tokens; error with
+    /// [`PolicyError::DisallowedSpecial`] on any other configured special
+    /// token found in the text.
+    ///
+    /// Borrowed rather than owned: a caller holds one allow-list per
+    /// endpoint or chat template and passes `&set` on every request, so this
+    /// mode never forces a per-call allocation.
+    Allow(&'a FxHashSet<String>),
 }
 
 /// Candidate contents for the end-of-sequence token, most specific first.

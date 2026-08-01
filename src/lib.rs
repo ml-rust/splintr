@@ -25,7 +25,7 @@ pub use core::{whisper_special_tokens, WhisperVariant};
 // GGUF file's embedded vocabulary as extracted by the caller.
 pub use core::{
     from_gguf_vocab, from_json_bytes, from_json_path, AnyTokenizer, Backend, GgufVocab,
-    GgufVocabError, HfJsonError, PolicyError, SpecialPolicy,
+    GgufVocabError, HfJsonError, PolicyError, SpecialMode, SpecialPolicy,
 };
 
 /// Splintr - Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings

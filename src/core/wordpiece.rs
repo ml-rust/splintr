@@ -6,6 +6,7 @@
 //!
 //! Handles `[CLS]`, `[SEP]`, `[PAD]`, `[UNK]` special tokens.
 
+use super::policy::{PolicyError, SpecialMode};
 use super::tokenize::{Tokenize, TokenizeError};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -266,7 +267,7 @@ impl WordPieceTokenizer {
 
 impl WordPieceTokenizer {
     /// Encode without added-token matching (BasicTokenizer + WordPiece).
-    fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+    pub(crate) fn encode_ordinary(&self, text: &str) -> Vec<u32> {
         let words = self.basic_tokenize(text);
         let mut ids = Vec::new();
         for word in &words {
@@ -274,12 +275,27 @@ impl WordPieceTokenizer {
         }
         ids
     }
+
+    /// Encode text to token IDs under an explicit [`SpecialMode`], governing
+    /// whether the added tokens attached during construction are matched in
+    /// the input text. Boundary tokens (`[CLS]`/`[SEP]`) are
+    /// [`SpecialPolicy`](crate::core::SpecialPolicy)'s to add via
+    /// `AnyTokenizer::encode_with`, not this method's concern.
+    pub fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
+        super::added::AddedTokens::dispatch_with_mode(&self.added, text, mode, |gap| {
+            self.encode_ordinary(gap)
+        })
+    }
 }
 
 impl Tokenize for WordPieceTokenizer {
     fn encode(&self, text: &str) -> Vec<u32> {
         // Recognize added tokens in the input first (HF behavior), then WordPiece.
         super::added::AddedTokens::dispatch(&self.added, text, |gap| self.encode_ordinary(gap))
+    }
+
+    fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
+        self.encode_with(text, mode)
     }
 
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
