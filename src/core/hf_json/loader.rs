@@ -203,30 +203,18 @@ fn parse_merge_ranks(
     if merged.is_empty() {
         return None;
     }
-    let merge_set: std::collections::HashSet<&str> = merged.iter().map(String::as_str).collect();
 
-    let mut ranks: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
-
-    // Base alphabet first (vocab tokens that are not a merge result), ordered by
-    // id for determinism. They only need ranks below every merge.
+    // Vocabulary in id order, so the base-alphabet ranks are deterministic.
     let mut base: Vec<(&String, u64)> = vocab
         .iter()
-        .filter(|(k, _)| !merge_set.contains(k.as_str()))
         .filter_map(|(k, v)| v.as_u64().map(|id| (k, id)))
         .collect();
     base.sort_by_key(|&(_, id)| id);
-    for (tok, _) in &base {
-        ranks.insert(tok.as_bytes().to_vec(), ranks.len() as u32);
-    }
 
-    // Then merges, preserving priority order.
-    let base_count = ranks.len() as u32;
-    for (i, tok) in merged.iter().enumerate() {
-        ranks
-            .entry(tok.as_bytes().to_vec())
-            .or_insert(base_count + i as u32);
-    }
-    Some(ranks)
+    Some(super::super::bpe::merge_ranks(
+        &merged,
+        base.iter().map(|(k, _)| k.as_str()),
+    ))
 }
 
 fn build_unigram(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
