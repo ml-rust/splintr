@@ -530,12 +530,39 @@ impl Tokenizer {
         special_tokens: FxHashMap<String, u32>,
         patterns: &[&str],
     ) -> Result<Self, TokenizerError> {
-        let (first, rest) = patterns
-            .split_first()
-            .ok_or(TokenizerError::EmptyPatternList)?;
+        let (first, rest) = Self::split_chain_patterns(patterns)?;
         let mut tokenizer = Self::new_byte_level(encoder, special_tokens, first)?;
         tokenizer.set_chain(rest)?;
         Ok(tokenizer)
+    }
+
+    /// Create a tokenizer whose pre-tokenizer is a SEQUENCE of expressions
+    /// applied in order, llama.cpp's `regex_exprs` list.
+    ///
+    /// Identical to [`Tokenizer::new_byte_level_chain`] except the head
+    /// tokenizer is built with [`Tokenizer::new`] rather than
+    /// [`Tokenizer::new_byte_level`], for vocabularies that do not use
+    /// ByteLevel encoding.
+    pub fn new_chain(
+        encoder: FxHashMap<Vec<u8>, u32>,
+        special_tokens: FxHashMap<String, u32>,
+        patterns: &[&str],
+    ) -> Result<Self, TokenizerError> {
+        let (first, rest) = Self::split_chain_patterns(patterns)?;
+        let mut tokenizer = Self::new(encoder, special_tokens, first)?;
+        tokenizer.set_chain(rest)?;
+        Ok(tokenizer)
+    }
+
+    /// Split a pre-tokenizer pattern list into its head (compiled as the
+    /// primary regex) and the remaining passes (installed via [`Self::set_chain`]).
+    fn split_chain_patterns<'a>(
+        patterns: &'a [&'a str],
+    ) -> Result<(&'a str, &'a [&'a str]), TokenizerError> {
+        patterns
+            .split_first()
+            .map(|(first, rest)| (*first, rest))
+            .ok_or(TokenizerError::EmptyPatternList)
     }
 
     /// Compile and install the later pre-tokenizer passes on the current backend.
@@ -848,6 +875,28 @@ impl Tokenizer {
     ) -> Result<Self, TokenizerError> {
         let encoder = load_tiktoken_bpe(vocab_data)?;
         Self::new_byte_level(encoder, special_tokens, pattern)
+    }
+
+    /// Create a tokenizer from raw vocabulary bytes with a chained pre-tokenizer
+    /// pattern sequence. See [`Tokenizer::new_chain`].
+    pub fn from_bytes_chain(
+        vocab_data: &[u8],
+        patterns: &[&str],
+        special_tokens: FxHashMap<String, u32>,
+    ) -> Result<Self, TokenizerError> {
+        let encoder = load_tiktoken_bpe(vocab_data)?;
+        Self::new_chain(encoder, special_tokens, patterns)
+    }
+
+    /// Create a tokenizer from raw vocabulary bytes with ByteLevel encoding and
+    /// a chained pre-tokenizer pattern sequence. See [`Tokenizer::new_byte_level_chain`].
+    pub fn from_bytes_byte_level_chain(
+        vocab_data: &[u8],
+        patterns: &[&str],
+        special_tokens: FxHashMap<String, u32>,
+    ) -> Result<Self, TokenizerError> {
+        let encoder = load_tiktoken_bpe(vocab_data)?;
+        Self::new_byte_level_chain(encoder, special_tokens, patterns)
     }
 
     /// Create a tokenizer from raw vocabulary bytes with SentencePiece mode.

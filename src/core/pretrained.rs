@@ -187,15 +187,17 @@ pub fn from_pretrained(name: &str) -> Result<AnyTokenizer, TokenizerError> {
 pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError> {
     let special = special_tokens(vocab);
     let named = special.clone();
-    let pat = pattern(vocab);
+    let pats = patterns(vocab);
 
     let tokenizer = match vocab {
-        PretrainedVocab::Cl100kBase => Tokenizer::from_bytes(CL100K_BASE_VOCAB, pat, special),
-        PretrainedVocab::O200kBase => Tokenizer::from_bytes(O200K_BASE_VOCAB, pat, special),
-        PretrainedVocab::Llama3 => Tokenizer::from_bytes(LLAMA3_VOCAB, pat, special),
+        PretrainedVocab::Cl100kBase => {
+            Tokenizer::from_bytes_chain(CL100K_BASE_VOCAB, pats, special)
+        }
+        PretrainedVocab::O200kBase => Tokenizer::from_bytes_chain(O200K_BASE_VOCAB, pats, special),
+        PretrainedVocab::Llama3 => Tokenizer::from_bytes_chain(LLAMA3_VOCAB, pats, special),
         PretrainedVocab::DeepseekV3 => {
             // DeepSeek uses ByteLevel BPE encoding
-            Tokenizer::from_bytes_byte_level(DEEPSEEK_V3_VOCAB, pat, special)
+            Tokenizer::from_bytes_byte_level_chain(DEEPSEEK_V3_VOCAB, pats, special)
         }
         // Mistral V1/V2 are SentencePiece, so they take the SPM-BPE backend and
         // return here rather than falling through to byte-level BPE.
@@ -207,11 +209,11 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
         }
         PretrainedVocab::MistralV3 => {
             // V3 uses ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
-            Tokenizer::from_bytes_byte_level(MISTRAL_V3_VOCAB, pat, special)
+            Tokenizer::from_bytes_byte_level_chain(MISTRAL_V3_VOCAB, pats, special)
         }
         PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
             // Whisper uses GPT-2 ByteLevel BPE; specials are generated per variant
-            Tokenizer::from_bytes_byte_level(WHISPER_VOCAB, pat, special)
+            Tokenizer::from_bytes_byte_level_chain(WHISPER_VOCAB, pats, special)
         }
     }?;
 
@@ -277,18 +279,24 @@ fn spm_from_vocab(
     ))
 }
 
-/// Get the regex pattern for a vocabulary.
-pub fn pattern(vocab: PretrainedVocab) -> &'static str {
+/// Get the ordered pre-tokenizer pattern sequence for a vocabulary.
+///
+/// Every bundled vocabulary is currently a single-pass pre-tokenizer, so each
+/// arm returns a one-element slice; the return type is a slice (rather than a
+/// single pattern) so a vocabulary whose pre-tokenizer is a multi-pass
+/// sequence — llama.cpp's `regex_exprs` — can be expressed without changing
+/// the accessor's shape again.
+pub fn patterns(vocab: PretrainedVocab) -> &'static [&'static str] {
     match vocab {
-        PretrainedVocab::Cl100kBase => CL100K_BASE_PATTERN,
-        PretrainedVocab::O200kBase => O200K_BASE_PATTERN,
-        PretrainedVocab::Llama3 => LLAMA3_PATTERN, // Meta's own split; NOT the o200k pattern
-        PretrainedVocab::DeepseekV3 => O200K_BASE_PATTERN, // pinned explicitly: DeepSeek is not Llama 3
+        PretrainedVocab::Cl100kBase => &[CL100K_BASE_PATTERN],
+        PretrainedVocab::O200kBase => &[O200K_BASE_PATTERN],
+        PretrainedVocab::Llama3 => &[LLAMA3_PATTERN], // Meta's own split; NOT the o200k pattern
+        PretrainedVocab::DeepseekV3 => &[O200K_BASE_PATTERN], // pinned explicitly: DeepSeek is not Llama 3
 
-        PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => SENTENCEPIECE_PATTERN, // SentencePiece-style
-        PretrainedVocab::MistralV3 => MISTRAL_V3_PATTERN, // Tekken has its own pattern (no contractions, single-digit numbers)
+        PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => &[SENTENCEPIECE_PATTERN], // SentencePiece-style
+        PretrainedVocab::MistralV3 => &[MISTRAL_V3_PATTERN], // Tekken has its own pattern (no contractions, single-digit numbers)
         PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
-            GPT2_PATTERN
+            &[GPT2_PATTERN]
         }
     }
 }

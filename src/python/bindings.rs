@@ -46,16 +46,13 @@ use crate::core::hf_json::{
 };
 use crate::core::pretrained::{
     cl100k_base_special_tokens, deepseek_v3_special_tokens, llama3_special_tokens,
-    mistral_v3_special_tokens, o200k_base_special_tokens, CL100K_BASE_VOCAB, DEEPSEEK_V3_VOCAB,
-    LLAMA3_VOCAB, MISTRAL_V3_VOCAB, O200K_BASE_VOCAB,
+    mistral_v3_special_tokens, o200k_base_special_tokens, patterns as pretrained_patterns,
+    CL100K_BASE_VOCAB, DEEPSEEK_V3_VOCAB, LLAMA3_VOCAB, MISTRAL_V3_VOCAB, O200K_BASE_VOCAB,
 };
 use crate::core::spm::SpmTokenizer;
 use crate::core::wordpiece::WordPieceTokenizer;
-use crate::core::{
-    byte_level_decode_bytes, Tokenize, Tokenizer, CL100K_BASE_PATTERN, LLAMA3_PATTERN,
-    MISTRAL_V3_PATTERN, O200K_BASE_PATTERN,
-};
-use crate::core::{AnyTokenizer, Backend, SpecialPolicy};
+use crate::core::{byte_level_decode_bytes, Tokenize, Tokenizer};
+use crate::core::{AnyTokenizer, Backend, PretrainedVocab, SpecialPolicy};
 
 // Special tokens are defined in crate::core::pretrained module.
 // See that module for the full token documentation and implementations.
@@ -132,32 +129,40 @@ impl PyTokenizer {
         match name {
             "cl100k_base" => {
                 let special = cl100k_base_special_tokens();
-                bpe(
-                    Tokenizer::from_bytes(CL100K_BASE_VOCAB, CL100K_BASE_PATTERN, special)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                bpe(Tokenizer::from_bytes_chain(
+                    CL100K_BASE_VOCAB,
+                    pretrained_patterns(PretrainedVocab::Cl100kBase),
+                    special,
                 )
+                .map_err(|e| PyValueError::new_err(e.to_string()))?)
             }
             "o200k_base" => {
                 let special = o200k_base_special_tokens();
-                bpe(
-                    Tokenizer::from_bytes(O200K_BASE_VOCAB, O200K_BASE_PATTERN, special)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                bpe(Tokenizer::from_bytes_chain(
+                    O200K_BASE_VOCAB,
+                    pretrained_patterns(PretrainedVocab::O200kBase),
+                    special,
                 )
+                .map_err(|e| PyValueError::new_err(e.to_string()))?)
             }
             "llama3" | "llama3.1" | "llama3.2" | "llama3.3" => {
                 let special = llama3_special_tokens();
-                bpe(Tokenizer::from_bytes(LLAMA3_VOCAB, LLAMA3_PATTERN, special)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?)
+                bpe(Tokenizer::from_bytes_chain(
+                    LLAMA3_VOCAB,
+                    pretrained_patterns(PretrainedVocab::Llama3),
+                    special,
+                )
+                .map_err(|e| PyValueError::new_err(e.to_string()))?)
             }
             "deepseek_v3" | "deepseek-v3" => {
                 let special = deepseek_v3_special_tokens();
-                // DeepSeek uses ByteLevel BPE encoding. The pattern is pinned to
-                // the o200k split explicitly (matching `pretrained::pattern`)
-                // rather than borrowed from `LLAMA3_PATTERN`: DeepSeek V3 is not
-                // a Llama 3 vocabulary and the two splits are not the same.
-                bpe(Tokenizer::from_bytes_byte_level(
+                // DeepSeek uses ByteLevel BPE encoding. The pattern comes from
+                // `pretrained::patterns`, which pins it to the o200k split
+                // explicitly rather than borrowing `LLAMA3_PATTERN`: DeepSeek V3
+                // is not a Llama 3 vocabulary and the two splits are not the same.
+                bpe(Tokenizer::from_bytes_byte_level_chain(
                     DEEPSEEK_V3_VOCAB,
-                    O200K_BASE_PATTERN,
+                    pretrained_patterns(PretrainedVocab::DeepseekV3),
                     special,
                 )
                 .map_err(|e| PyValueError::new_err(e.to_string()))?)
@@ -176,10 +181,12 @@ impl PyTokenizer {
             // Uses its own pattern (no contractions, single-digit numbers)
             "mistral_v3" => {
                 let special = mistral_v3_special_tokens();
-                bpe(
-                    Tokenizer::from_bytes_byte_level(MISTRAL_V3_VOCAB, MISTRAL_V3_PATTERN, special)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                bpe(Tokenizer::from_bytes_byte_level_chain(
+                    MISTRAL_V3_VOCAB,
+                    pretrained_patterns(PretrainedVocab::MistralV3),
+                    special,
                 )
+                .map_err(|e| PyValueError::new_err(e.to_string()))?)
             }
             // Whisper multilingual (v1/v2/v3). Base BPE is bundled; specials are
             // generated per variant. Delegates to the core name→variant mapping.

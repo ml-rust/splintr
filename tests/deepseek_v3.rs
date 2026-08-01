@@ -524,7 +524,7 @@ fn create_deepseek_v3_tokenizer_impl() -> Tokenizer {
     special.insert("<|/output|>".to_string(), 128924);
 
     // DeepSeek uses ByteLevel BPE encoding. Pattern pinned to the o200k split,
-    // matching `pretrained::pattern(PretrainedVocab::DeepseekV3)`; this used to
+    // matching `pretrained::patterns(PretrainedVocab::DeepseekV3)`; this used to
     // read `LLAMA3_PATTERN` back when that constant was an alias of the o200k
     // one, which it no longer is.
     Tokenizer::from_bytes_byte_level(vocab_bytes, O200K_BASE_PATTERN, special).unwrap()

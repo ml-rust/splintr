@@ -16,7 +16,7 @@ pub use core::whisper;
 pub use core::{
     bos_token_id, bos_token_id_by_name, cl100k_base_special_tokens, deepseek_v3_special_tokens,
     eos_token_id, eos_token_id_by_name, from_pretrained, from_vocab, llama3_special_tokens,
-    o200k_base_special_tokens, pad_token_id, pattern, special_tokens, uses_byte_level,
+    o200k_base_special_tokens, pad_token_id, patterns, special_tokens, uses_byte_level,
     PretrainedVocab,
 };
 pub use core::{whisper_special_tokens, WhisperVariant};
