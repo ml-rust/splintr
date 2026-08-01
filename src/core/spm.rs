@@ -29,6 +29,15 @@ use super::tokenize::{Tokenize, TokenizeError};
 /// The SentencePiece word-boundary marker (U+2581 LOWER ONE EIGHTH BLOCK).
 const WORD_BOUNDARY: &str = "\u{2581}";
 
+/// SentencePiece's "never merge" score sentinel.
+///
+/// A trainer writes this on pieces it refuses to let the merger build — in
+/// Mistral's vocabularies, the 15 whitespace runs `▁`, `▁▁`, … Since scores are
+/// merge ranks here (higher merges earlier), it loses to every real merge.
+/// It is also the right score for a slot added after the vocabulary file ends,
+/// such as an added token that must be matched verbatim rather than merged into.
+pub const NEVER_MERGE: f32 = -1e9;
+
 #[derive(Error, Debug)]
 pub enum SpmError {
     #[error("Empty vocabulary")]

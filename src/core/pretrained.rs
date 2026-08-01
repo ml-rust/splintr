@@ -26,12 +26,12 @@ use rustc_hash::FxHashMap;
 
 use super::any_tokenizer::{AnyTokenizer, Backend};
 use super::policy::SpecialPolicy;
-use super::spm::SpmTokenizer;
+use super::spm::{SpmTokenizer, NEVER_MERGE};
 use super::tokenizer::{
     Tokenizer, TokenizerError, CL100K_BASE_PATTERN, GPT2_PATTERN, MISTRAL_V3_PATTERN,
     O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
-use super::vocab::{load_tiktoken_spm_pieces, place_special_pieces};
+use super::vocab::{load_spm_vocab, place_special_pieces};
 use super::whisper::{whisper_special_tokens, WhisperVariant};
 
 // Embed vocabulary files at compile time
@@ -42,9 +42,19 @@ pub const O200K_BASE_VOCAB: &[u8] =
 pub const LLAMA3_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/llama3.tiktoken");
 pub const DEEPSEEK_V3_VOCAB: &[u8] =
     include_bytes!("../../python/splintr/vocabs/deepseek_v3.tiktoken");
-pub const MISTRAL_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/mistral.tiktoken");
-pub const MISTRAL_V2_VOCAB: &[u8] =
-    include_bytes!("../../python/splintr/vocabs/mistral_v2.tiktoken");
+
+/// Mistral V1 SentencePiece vocabulary (32,000 pieces with their scores).
+///
+/// Extracted straight from `tokenizer.model` by `scripts/extract_spm_vocab.py`,
+/// so pieces keep their SentencePiece spelling (`<0x41>`, `▁▁`) and every score
+/// survives — including the `-1e9` "never merge" sentinel on the 15 whitespace
+/// runs, which the `.tiktoken` form of this vocabulary silently inverted into a
+/// *preferred* merge.
+pub const MISTRAL_SPM_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/mistral.spm");
+
+/// Mistral V2 SentencePiece vocabulary (32,768 pieces with their scores).
+pub const MISTRAL_V2_SPM_VOCAB: &[u8] =
+    include_bytes!("../../python/splintr/vocabs/mistral_v2.spm");
 
 /// Mistral V3/Tekken vocabulary file (Tiktoken-based, ~131k tokens).
 pub const MISTRAL_V3_VOCAB: &[u8] =
@@ -190,10 +200,10 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
         // Mistral V1/V2 are SentencePiece, so they take the SPM-BPE backend and
         // return here rather than falling through to byte-level BPE.
         PretrainedVocab::MistralV1 => {
-            return spm_from_tiktoken(MISTRAL_VOCAB, vocab, special, named)
+            return spm_from_vocab(MISTRAL_SPM_VOCAB, vocab, special, named)
         }
         PretrainedVocab::MistralV2 => {
-            return spm_from_tiktoken(MISTRAL_V2_VOCAB, vocab, special, named)
+            return spm_from_vocab(MISTRAL_V2_SPM_VOCAB, vocab, special, named)
         }
         PretrainedVocab::MistralV3 => {
             // V3 uses ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
@@ -214,7 +224,7 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
     ))
 }
 
-/// Build an SPM-BPE tokenizer from a bundled SentencePiece `.tiktoken` file.
+/// Build an SPM-BPE tokenizer from a bundled SentencePiece `.spm` file.
 ///
 /// A SentencePiece vocabulary is a list of *pieces*, and its word-boundary
 /// marker `▁` is U+2581 = `E2 96 81`. Byte-level BPE builds tokens by merging
@@ -225,26 +235,40 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
 /// ids stay in range and decode back to the original text, while the model is
 /// fed fragments it never saw during training.
 ///
-/// So the file is converted to pieces and merged by
+/// So the vocabulary is loaded as pieces and merged by
 /// [`SpmTokenizer`](super::spm::SpmTokenizer), which reproduces llama.cpp's
 /// `llm_tokenizer_spm`.
 ///
-/// Scores are left empty on purpose: `SpmTokenizer` then merges in token-id
-/// order, which is the order these vocabularies were written in and matches the
-/// merge ranks the original SentencePiece model carried.
-fn spm_from_tiktoken(
+/// **Scores come from the file, not from id order.** SentencePiece merges by
+/// score, and the 15 whitespace-run pieces (`▁`, `▁▁`, …) carry a `-1e9`
+/// "never merge" sentinel. Falling back to id order does not approximate that,
+/// it inverts it: those sentinel pieces sit at low ids, so id order makes the
+/// pieces SentencePiece refuses to merge the *first* ones merged. `" Hello
+/// world"` came out as `▁▁` + `Hello` + `▁world` (`[259, 16230, 1526]`) instead
+/// of `▁` + `▁Hello` + `▁world` (`[28705, 22557, 1526]`).
+fn spm_from_vocab(
     data: &[u8],
     vocab: PretrainedVocab,
     special: FxHashMap<String, u32>,
     named: FxHashMap<String, u32>,
 ) -> Result<AnyTokenizer, TokenizerError> {
-    let mut pieces = load_tiktoken_spm_pieces(data)?;
+    let (mut pieces, mut scores) = load_spm_vocab(data)?;
     // Agent tokens live above the vocabulary file's last id; give them slots so
     // they decode and count towards `vocab_size`, not just match on encode.
     place_special_pieces(&mut pieces, &special)?;
+    // Grow the scores in step: `SpmTokenizer` indexes them by id, so a shorter
+    // vector is a length mismatch rather than a missing entry.
+    //
+    // `NEVER_MERGE` is SentencePiece's own "never merge" sentinel, and it is the
+    // right value for these slots. Added tokens are matched verbatim before
+    // merging, so their score should never decide anything; if a merge does
+    // reach one — because the input literally spells it, or because a hole was
+    // left by `place_special_pieces` — it must lose to every genuine merge
+    // rather than swallow the surrounding text as a chat marker.
+    scores.resize(pieces.len(), NEVER_MERGE);
 
     let eos = eos_token_id(vocab);
-    let tokenizer = SpmTokenizer::new(pieces, Vec::new(), bos_token_id(vocab), Some(eos))?
+    let tokenizer = SpmTokenizer::new(pieces, scores, bos_token_id(vocab), Some(eos))?
         .with_added_tokens(&special);
 
     Ok(AnyTokenizer::new(
@@ -700,7 +724,7 @@ mod tests {
     /// assert against the vocabulary, not against whatever the tokenizer
     /// currently happens to produce.
     fn spm_piece_id(vocab_data: &[u8], piece: &str) -> u32 {
-        let pieces = load_tiktoken_spm_pieces(vocab_data).expect("vocabulary converts to pieces");
+        let (pieces, _) = load_spm_vocab(vocab_data).expect("vocabulary loads");
         let id = pieces
             .iter()
             .position(|p| p == piece)
@@ -862,7 +886,10 @@ mod tests {
     /// pinned here directly.
     #[test]
     fn test_mistral_never_shatters_the_word_boundary_marker() {
-        for (name, data) in [("mistral", MISTRAL_VOCAB), ("mistral_v2", MISTRAL_V2_VOCAB)] {
+        for (name, data) in [
+            ("mistral", MISTRAL_SPM_VOCAB),
+            ("mistral_v2", MISTRAL_V2_SPM_VOCAB),
+        ] {
             let shattered = [
                 spm_piece_id(data, "<0xE2>"),
                 spm_piece_id(data, "<0x96>"),
@@ -882,8 +909,8 @@ mod tests {
     /// words must produce them — a byte-level merger reaches neither.
     #[test]
     fn test_mistral_reaches_whole_word_pieces() {
-        let the = spm_piece_id(MISTRAL_VOCAB, "▁the");
-        let sour = spm_piece_id(MISTRAL_VOCAB, "▁sour");
+        let the = spm_piece_id(MISTRAL_SPM_VOCAB, "▁the");
+        let sour = spm_piece_id(MISTRAL_SPM_VOCAB, "▁sour");
         let ids = from_pretrained("mistral").unwrap().encode("the sourdough");
         assert!(ids.contains(&the), "▁the ({the}) missing from {ids:?}");
         assert!(ids.contains(&sour), "▁sour ({sour}) missing from {ids:?}");

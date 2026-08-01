@@ -308,7 +308,8 @@ Splintr implements several optimizations that make tokenization faster:
 - **Regexr with JIT compilation**: Pure Rust regex engine with SIMD acceleration
 - **Rayon parallelism**: Leverages multiple CPU cores for batch encoding
 - **Linked-list BPE algorithm**: Avoids O(N²) complexity on pathological inputs
-- **SentencePiece unigram**: Viterbi maximum-score segmentation (true Unigram, not greedy) with byte fallback, for Mistral/Llama/T5-style models
+- **SentencePiece Unigram**: Viterbi maximum-score segmentation (true Unigram, not greedy) with byte fallback, for T5/Gemma-style models loaded via `from_json`
+- **SentencePiece BPE**: merge-by-score segmentation with byte fallback, for Mistral V1/V2
 - **WordPiece tokenizer**: BERT-compatible subword tokenization with `##` continuation prefix, BasicTokenizer preprocessing (lowercase, accent stripping, punctuation splitting)
 - **FxHashMap**: Faster lookups than default SipHash for non-adversarial contexts
 - **Aho-Corasick for special tokens**: Fast multi-pattern matching without regex alternation

@@ -1,7 +1,13 @@
-//! Vocabulary loading utilities for tiktoken BPE format.
+//! Vocabulary loading utilities for the bundled vocabulary formats.
 //!
-//! This module handles loading BPE vocabularies from the tiktoken file format
-//! used by OpenAI's tokenizers (GPT-3.5, GPT-4, GPT-4o, etc.).
+//! Two formats live here:
+//!
+//! - **tiktoken** (`.tiktoken`) — `base64(token_bytes) rank` per line, used by
+//!   OpenAI's byte-level tokenizers (GPT-3.5, GPT-4, GPT-4o, …).
+//! - **SentencePiece** (`.spm`) — `base64(piece) score` per line in id order,
+//!   see [`load_spm_vocab`]. A SentencePiece vocabulary cannot be stored in the
+//!   tiktoken format without losing its scores and its `<0xNN>` byte-fallback
+//!   spellings, which is why it has a format of its own.
 //!
 //! # Tiktoken Format
 //!
@@ -50,21 +56,106 @@ pub enum VocabError {
     IoError(#[from] std::io::Error),
     #[error("Vocabulary is empty")]
     EmptyVocab,
-    #[error("Vocabulary has no token for id {0}")]
-    MissingId(u32),
-    #[error(
-        "Vocabulary has no run of 256 consecutive single-byte tokens, so it carries no \
-         SentencePiece byte fallback"
-    )]
-    MissingByteFallback,
-    #[error("Token {id} is not valid UTF-8 and lies outside the byte-fallback run")]
-    NonUtf8Token { id: u32 },
     #[error("Special token {name:?} claims id {id}, which the vocabulary spells {found:?}")]
     SpecialTokenConflict {
         id: u32,
         name: String,
         found: String,
     },
+    #[error("SentencePiece vocabulary line for id {id} has no space separating piece from score")]
+    SpmMissingScore { id: u32 },
+    #[error("SentencePiece piece for id {id} is not valid base64: {source}")]
+    SpmBase64 {
+        id: u32,
+        source: base64::DecodeError,
+    },
+    #[error("SentencePiece score for id {id} is not a number: {value:?}")]
+    SpmScore { id: u32, value: String },
+    #[error("SentencePiece piece for id {id} is not valid UTF-8")]
+    SpmNonUtf8 { id: u32 },
+}
+
+/// Load a bundled SentencePiece vocabulary (`.spm`) as pieces and scores.
+///
+/// # Format
+///
+/// One line per token id, **in ascending id order with no gaps**:
+///
+/// ```text
+/// <base64 of the piece, UTF-8 encoded> <score>
+/// ```
+///
+/// The id is the line's position, so it cannot be non-monotonic or duplicated
+/// by construction — there is no id field to disagree with the ordering. The
+/// piece is SentencePiece's own `id_to_piece`, so byte fallback keeps its real
+/// `<0x41>` spelling instead of being reconstructed from a run of raw bytes,
+/// and the `▁` word-boundary runs keep theirs.
+///
+/// # Why not `.tiktoken`
+///
+/// A `.tiktoken` line is `base64(token_bytes) rank`, which throws away the
+/// score. SentencePiece merges by score, not by id order, and the 15 whitespace
+/// pieces (`▁`, `▁▁`, …) carry a `-1e9` "never merge" sentinel that id order
+/// inverts: with id-order merge ranks, `" Hello world"` comes out as
+/// `▁▁` + `Hello` + `▁world` instead of `▁` + `▁Hello` + `▁world`.
+///
+/// Scores are written as the shortest decimal that round-trips the value, and
+/// the vocabularies bundled here hold whole numbers plus the `-1e9` sentinel —
+/// all exactly representable in `f32`, so the parse is lossless.
+///
+/// # Errors
+///
+/// Returns [`VocabError`] when the data is empty, a line has no separator, a
+/// piece is not valid base64 or not valid UTF-8, or a score does not parse.
+pub fn load_spm_vocab(data: &[u8]) -> Result<(Vec<String>, Vec<f32>), VocabError> {
+    let mut pieces = Vec::new();
+    let mut scores = Vec::new();
+
+    for line in data.split(|&b| b == b'\n') {
+        // Tolerate a trailing newline and CRLF line endings; a blank line
+        // carries no id, so it is skipped rather than filling a slot.
+        let line = match line.strip_suffix(b"\r") {
+            Some(stripped) => stripped,
+            None => line,
+        };
+        if line.is_empty() {
+            continue;
+        }
+        let id = pieces.len() as u32;
+
+        let space = line
+            .iter()
+            .rposition(|&b| b == b' ')
+            .ok_or(VocabError::SpmMissingScore { id })?;
+        let (Some(piece_b64), Some(score_bytes)) = (line.get(..space), line.get(space + 1..))
+        else {
+            return Err(VocabError::SpmMissingScore { id });
+        };
+
+        let bytes = STANDARD
+            .decode(piece_b64)
+            .map_err(|source| VocabError::SpmBase64 { id, source })?;
+        let piece = String::from_utf8(bytes).map_err(|_| VocabError::SpmNonUtf8 { id })?;
+
+        let score_str = std::str::from_utf8(score_bytes)
+            .map_err(|_| VocabError::SpmScore {
+                id,
+                value: String::from_utf8_lossy(score_bytes).into_owned(),
+            })?
+            .trim();
+        let score: f32 = score_str.parse().map_err(|_| VocabError::SpmScore {
+            id,
+            value: score_str.to_string(),
+        })?;
+
+        pieces.push(piece);
+        scores.push(score);
+    }
+
+    if pieces.is_empty() {
+        return Err(VocabError::EmptyVocab);
+    }
+    Ok((pieces, scores))
 }
 
 /// Load a tiktoken BPE vocabulary from raw bytes.
@@ -155,76 +246,6 @@ pub fn load_tiktoken_bpe_with_decoder(data: &[u8]) -> Result<EncoderDecoderPair,
     Ok((encoder, decoder))
 }
 
-/// Load a tiktoken file as a **SentencePiece piece list**, indexed by token id.
-///
-/// A `.tiktoken` file stores every token as raw bytes, which is the right shape
-/// for byte-level BPE and the wrong shape for SentencePiece. SentencePiece
-/// merges *pieces*, and its word-boundary marker `▁` (U+2581 = `E2 96 81`) can
-/// only be produced by merging characters: `E2 96` is not a piece any
-/// SentencePiece vocabulary was ever trained on, so a byte-level merger can
-/// never build `▁` and every word boundary shatters into three byte-fallback
-/// tokens. Converting the file to pieces up front is what lets
-/// [`SpmTokenizer`](super::spm::SpmTokenizer) merge the way llama.cpp does.
-///
-/// The 256 raw single-byte tokens these files carry are re-spelled `<0xNN>`
-/// (uppercase hex), the GGUF/SentencePiece byte-fallback spelling that
-/// `SpmTokenizer` recognizes. They are located by scanning for the run of 256
-/// consecutive ids holding `0x00..=0xFF` in order rather than assuming a fixed
-/// offset — the bundled Mistral files disagree on where it starts (V1 at id 3,
-/// V2 at id 771) — and a file without such a run is rejected rather than
-/// silently loaded with no byte fallback.
-///
-/// Every token outside that run must be valid UTF-8; one that is not means the
-/// file is not a SentencePiece vocabulary, and is reported instead of being
-/// lossily converted.
-pub fn load_tiktoken_spm_pieces(data: &[u8]) -> Result<Vec<String>, VocabError> {
-    let (_, decoder) = load_tiktoken_bpe_with_decoder(data)?;
-    let max_id = decoder
-        .keys()
-        .copied()
-        .max()
-        .ok_or(VocabError::EmptyVocab)?;
-
-    // Dense id → bytes. A hole means the file cannot be indexed by id at all.
-    let mut slots: Vec<Option<Vec<u8>>> = vec![None; max_id as usize + 1];
-    for (id, bytes) in decoder {
-        if let Some(slot) = slots.get_mut(id as usize) {
-            *slot = Some(bytes);
-        }
-    }
-    let mut raw: Vec<Vec<u8>> = Vec::with_capacity(slots.len());
-    for (id, slot) in slots.into_iter().enumerate() {
-        match slot {
-            Some(bytes) => raw.push(bytes),
-            None => return Err(VocabError::MissingId(id as u32)),
-        }
-    }
-
-    let start = byte_fallback_start(&raw).ok_or(VocabError::MissingByteFallback)?;
-
-    let mut pieces = Vec::with_capacity(raw.len());
-    for (id, bytes) in raw.iter().enumerate() {
-        match id.checked_sub(start).filter(|offset| *offset < 256) {
-            Some(byte) => pieces.push(format!("<0x{byte:02X}>")),
-            None => match std::str::from_utf8(bytes) {
-                Ok(piece) => pieces.push(piece.to_string()),
-                Err(_) => return Err(VocabError::NonUtf8Token { id: id as u32 }),
-            },
-        }
-    }
-    Ok(pieces)
-}
-
-/// The id at which the 256 single-byte tokens `0x00..=0xFF` start, in order.
-fn byte_fallback_start(raw: &[Vec<u8>]) -> Option<usize> {
-    (0..raw.len()).find(|&start| {
-        (0..=255u8).all(|b| {
-            raw.get(start + b as usize)
-                .is_some_and(|token| token.len() == 1 && token.first() == Some(&b))
-        })
-    })
-}
-
 /// Place named special tokens into a piece list at the ids they claim.
 ///
 /// Bundled vocabularies carry special tokens the vocabulary *file* does not:
@@ -289,93 +310,6 @@ mod tests {
         assert_eq!(encoder.len(), 2);
     }
 
-    /// Build a `.tiktoken` blob from tokens listed in id order.
-    fn tiktoken_blob(tokens: &[&[u8]]) -> Vec<u8> {
-        let mut out = Vec::new();
-        for (id, token) in tokens.iter().enumerate() {
-            out.extend_from_slice(STANDARD.encode(token).as_bytes());
-            out.extend_from_slice(format!(" {id}\n").as_bytes());
-        }
-        out
-    }
-
-    /// A SentencePiece-shaped vocabulary: a leading control token, the 256 raw
-    /// bytes, then real pieces carrying the `▁` word-boundary marker.
-    fn spm_shaped(byte_run_start: usize) -> Vec<Vec<u8>> {
-        let mut tokens: Vec<Vec<u8>> = Vec::new();
-        for i in 0..byte_run_start {
-            tokens.push(format!("<ctrl_{i}>").into_bytes());
-        }
-        for b in 0..=255u8 {
-            tokens.push(vec![b]);
-        }
-        tokens.push("▁the".as_bytes().to_vec());
-        tokens.push("▁sour".as_bytes().to_vec());
-        tokens
-    }
-
-    fn pieces_of(tokens: &[Vec<u8>]) -> Result<Vec<String>, VocabError> {
-        let refs: Vec<&[u8]> = tokens.iter().map(Vec::as_slice).collect();
-        load_tiktoken_spm_pieces(&tiktoken_blob(&refs))
-    }
-
-    /// The whole point of the conversion: the raw byte tokens become `<0xNN>`
-    /// (the spelling `SpmTokenizer` recognizes as byte fallback) while real
-    /// pieces keep their `▁` marker intact, so a word boundary is one piece
-    /// rather than three bytes.
-    #[test]
-    fn spm_pieces_respell_the_byte_run_and_keep_the_word_boundary_marker() {
-        let tokens = spm_shaped(3);
-        let pieces = pieces_of(&tokens).unwrap();
-
-        assert_eq!(pieces.len(), 3 + 256 + 2);
-        assert_eq!(pieces[0], "<ctrl_0>");
-        assert_eq!(pieces[3], "<0x00>");
-        assert_eq!(pieces[3 + 0xE2], "<0xE2>");
-        assert_eq!(pieces[3 + 255], "<0xFF>");
-        assert_eq!(pieces[259], "▁the");
-        assert_eq!(pieces[260], "▁sour");
-        // Uppercase hex, matching GGUF/SentencePiece — `<0xab>` would not be found.
-        assert_eq!(pieces[3 + 0xAB], "<0xAB>");
-    }
-
-    /// The run is located by scanning, not by a fixed offset: the bundled
-    /// Mistral files start it at id 3 (V1) and id 771 (V2).
-    #[test]
-    fn spm_pieces_find_the_byte_run_wherever_it_starts() {
-        for start in [0, 3, 771] {
-            let pieces = pieces_of(&spm_shaped(start)).unwrap();
-            assert_eq!(pieces[start], "<0x00>", "run start {start}");
-            assert_eq!(pieces[start + 255], "<0xFF>", "run start {start}");
-            assert_eq!(pieces[start + 256], "▁the", "run start {start}");
-        }
-    }
-
-    /// Without a complete byte run there is no byte fallback, so arbitrary input
-    /// could not be encoded. That must be an error, not a silent load.
-    #[test]
-    fn spm_pieces_reject_a_vocabulary_without_a_byte_run() {
-        let mut tokens = spm_shaped(3);
-        tokens.remove(3 + 200);
-        assert!(matches!(
-            pieces_of(&tokens),
-            Err(VocabError::MissingByteFallback)
-        ));
-    }
-
-    /// A non-UTF-8 token outside the byte run means the file is not a
-    /// SentencePiece vocabulary; converting it lossily would invent a piece.
-    #[test]
-    fn spm_pieces_reject_non_utf8_outside_the_byte_run() {
-        let mut tokens = spm_shaped(3);
-        // `E2 96` — the first two bytes of `▁`, which is not a piece anywhere.
-        tokens.push(vec![0xE2, 0x96]);
-        assert!(matches!(
-            pieces_of(&tokens),
-            Err(VocabError::NonUtf8Token { id: 261 })
-        ));
-    }
-
     /// Special tokens above the file's last id must gain a slot, so they decode
     /// and count towards `vocab_size` rather than existing only in the matcher.
     #[test]
@@ -406,6 +340,109 @@ mod tests {
             place_special_pieces(&mut pieces, &special),
             Err(VocabError::SpecialTokenConflict { id: 1, .. })
         ));
+    }
+
+    /// Build a `.spm` blob from `(piece, score)` pairs listed in id order.
+    fn spm_blob(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (piece, score) in entries {
+            out.extend_from_slice(STANDARD.encode(piece.as_bytes()).as_bytes());
+            out.extend_from_slice(format!(" {score}\n").as_bytes());
+        }
+        out
+    }
+
+    /// The point of the format: pieces arrive spelled exactly as SentencePiece
+    /// spells them — byte fallback as `<0xNN>`, word boundaries as `▁` — and the
+    /// scores arrive alongside them instead of being inferred from id order.
+    #[test]
+    fn spm_vocab_keeps_piece_spelling_and_scores() {
+        let data = spm_blob(&[
+            ("<unk>", "0.0"),
+            ("<0x41>", "0.0"),
+            ("▁the", "-31.0"),
+            ("▁▁", "-1000000000.0"),
+        ]);
+        let (pieces, scores) = load_spm_vocab(&data).unwrap();
+
+        assert_eq!(pieces, vec!["<unk>", "<0x41>", "▁the", "▁▁"]);
+        assert_eq!(scores, vec![0.0, 0.0, -31.0, -1e9]);
+    }
+
+    /// The `-1e9` "never merge" sentinel is the whole reason scores are stored:
+    /// it must survive the text round-trip bit-for-bit, not land near `-1e9`.
+    #[test]
+    fn spm_vocab_parses_the_never_merge_sentinel_exactly() {
+        let data = spm_blob(&[("▁", "-1000000000.0")]);
+        let (_, scores) = load_spm_vocab(&data).unwrap();
+        assert_eq!(scores.first().copied(), Some(-1e9f32));
+        assert_eq!(
+            scores.first().map(|s| s.to_bits()),
+            Some((-1e9f32).to_bits())
+        );
+    }
+
+    /// A trailing newline and CRLF endings carry no id, so they must not shift
+    /// every later piece by one slot.
+    #[test]
+    fn spm_vocab_ignores_blank_and_carriage_return_line_endings() {
+        let mut data = spm_blob(&[("a", "-1.0"), ("b", "-2.0")]);
+        data.extend_from_slice(b"\n");
+        let (pieces, _) = load_spm_vocab(&data).unwrap();
+        assert_eq!(pieces, vec!["a", "b"]);
+
+        let crlf = b"YQ== -1.0\r\nYg== -2.0\r\n";
+        let (pieces, scores) = load_spm_vocab(crlf).unwrap();
+        assert_eq!(pieces, vec!["a", "b"]);
+        assert_eq!(scores, vec![-1.0, -2.0]);
+    }
+
+    /// A line without a separator has no score, and inventing one would put a
+    /// piece at an id whose merge priority is a guess.
+    #[test]
+    fn spm_vocab_rejects_a_line_without_a_score() {
+        assert!(matches!(
+            load_spm_vocab(b"YQ== -1.0\nYg==\n"),
+            Err(VocabError::SpmMissingScore { id: 1 })
+        ));
+    }
+
+    /// Bad base64, a non-UTF-8 piece, and an unparseable score are each
+    /// reported against the id that carries them.
+    #[test]
+    fn spm_vocab_reports_malformed_fields_with_their_id() {
+        assert!(matches!(
+            load_spm_vocab(b"YQ== -1.0\n!!!! -2.0\n"),
+            Err(VocabError::SpmBase64 { id: 1, .. })
+        ));
+        // `loE=` decodes to `96 81` — `▁` (`E2 96 81`) with its lead byte lost,
+        // which is not valid UTF-8 and so cannot be a piece.
+        assert!(matches!(
+            load_spm_vocab(b"YQ== -1.0\nloE= -2.0\n"),
+            Err(VocabError::SpmNonUtf8 { id: 1 })
+        ));
+        assert!(matches!(
+            load_spm_vocab(b"YQ== -1.0\nYg== rank\n"),
+            Err(VocabError::SpmScore { id: 1, .. })
+        ));
+    }
+
+    /// A `.tiktoken` file fed to the SentencePiece loader must not be accepted
+    /// as if it were one: its raw high bytes are not valid UTF-8 pieces.
+    #[test]
+    fn spm_vocab_rejects_a_tiktoken_file() {
+        let mut data = Vec::new();
+        data.extend_from_slice(STANDARD.encode([0x80u8]).as_bytes());
+        data.extend_from_slice(b" 0\n");
+        assert!(matches!(
+            load_spm_vocab(&data),
+            Err(VocabError::SpmNonUtf8 { id: 0 })
+        ));
+    }
+
+    #[test]
+    fn spm_vocab_rejects_empty_data() {
+        assert!(matches!(load_spm_vocab(b""), Err(VocabError::EmptyVocab)));
     }
 
     #[test]

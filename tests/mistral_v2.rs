@@ -1,5 +1,54 @@
 use splintr::{from_pretrained, Tokenize};
 
+// =============================================================================
+// Exact Token ID Tests
+// =============================================================================
+
+/// Reference ids from the `sentencepiece` Python package, version 0.2.0,
+/// reading Mistral 7B v0.3's own `tokenizer.model` — the 32,768-piece model
+/// that splintr bundles as `mistral_v2`, 15 of whose pieces carry the `-1e9`
+/// "never merge" score sentinel.
+///
+/// These are the reference, not a snapshot: a mismatch means splintr diverged
+/// from SentencePiece. They pin what the tiktoken-format vocabulary could not
+/// express — without the file's scores, `SpmTokenizer` merged in token-id
+/// order, which inverts SentencePiece's order for the whitespace-run pieces and
+/// turned `" Hello world"` into `[1027, 16998, 2294]`.
+#[test]
+fn v2_matches_sentencepiece_exactly() {
+    let tok = from_pretrained("mistral_v2").expect("mistral_v2 loads");
+    let cases: &[(&str, &[u32])] = &[
+        ("the sourdough", &[1040, 18961, 29483, 1668]),
+        (" Hello world", &[29473, 23325, 2294]),
+        ("Hello, world!", &[23325, 29493, 2294, 29576]),
+        ("hello world", &[7080, 29477, 2294]),
+    ];
+
+    for (text, expected) in cases {
+        assert_eq!(
+            tok.encode_raw(text),
+            *expected,
+            "sentencepiece reference mismatch for {text:?}"
+        );
+    }
+}
+
+/// The reference ids must also decode back to the text they came from.
+#[test]
+fn v2_reference_cases_round_trip() {
+    let tok = from_pretrained("mistral_v2").expect("mistral_v2 loads");
+    for text in [
+        "the sourdough",
+        " Hello world",
+        "Hello, world!",
+        "hello world",
+    ] {
+        let ids = tok.encode_raw(text);
+        let decoded = tok.decode(&ids).expect("decodes");
+        assert_eq!(decoded, text, "round trip failed for {text:?}");
+    }
+}
+
 #[test]
 fn test_v2_control_tokens_inst() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");

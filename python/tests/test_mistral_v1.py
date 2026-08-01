@@ -27,8 +27,11 @@ class TestMistralV1ExactTokens:
     def test_hello_world_tokens(self, tokenizer):
         """Verify exact token IDs for 'Hello world'."""
         tokens = tokenizer.encode("Hello world")
-        # SentencePiece: "Hello" + "▁world"
-        assert tokens == [16230, 1526], f"Expected [16230, 1526], got {tokens}"
+        # "▁Hello" + "▁world". Reference: sentencepiece 0.2.0 on Mistral 7B
+        # v0.1's tokenizer.model. The previous expectation, [16230, 1526], was
+        # "Hello" with no word-boundary marker — an artifact of merging this
+        # SentencePiece vocabulary byte-wise instead of piece-wise.
+        assert tokens == [22557, 1526], f"Expected [22557, 1526], got {tokens}"
 
     def test_hello_world_punctuation(self, tokenizer):
         """Verify exact token IDs for 'Hello, world!'."""

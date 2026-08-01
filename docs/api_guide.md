@@ -442,7 +442,7 @@ let batch_tokens = tokenizer.encode_batch(&texts);
 
 ### SentencePiece Tokenizer
 
-For models using SentencePiece unigram tokenization (e.g., Mistral V1/V2):
+For models using SentencePiece Unigram tokenization (e.g., T5, Gemma, Albert, XLNet, loaded via `from_json`). Mistral V1/V2 are SentencePiece **BPE** (merge-by-score, not Unigram) and load through the Rust-only `SpmTokenizer` via `from_pretrained` instead — see [`src/core/spm.rs`](../src/core/spm.rs).
 
 ```rust
 use splintr::SentencePieceTokenizer;
