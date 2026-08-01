@@ -15,10 +15,10 @@ pub use core::pretrained;
 // Re-export Whisper tokenizer API
 pub use core::whisper;
 pub use core::{
-    bos_token_id, bos_token_id_by_name, cl100k_base_special_tokens, deepseek_v3_special_tokens,
-    eos_token_id, eos_token_id_by_name, from_pretrained, from_vocab, llama3_special_tokens,
-    o200k_base_special_tokens, pad_token_id, patterns, special_tokens, uses_byte_level,
-    PretrainedVocab,
+    base_vocab_size, base_vocab_size_by_name, bos_token_id, bos_token_id_by_name,
+    cl100k_base_special_tokens, deepseek_v3_special_tokens, eos_token_id, eos_token_id_by_name,
+    from_pretrained, from_vocab, llama3_special_tokens, o200k_base_special_tokens, pad_token_id,
+    patterns, special_tokens, uses_byte_level, PretrainedVocab,
 };
 pub use core::{whisper_special_tokens, WhisperVariant};
 // Re-export the universal loaded-tokenizer type and its special-token policy,
@@ -58,6 +58,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<python::PyByteLevelStreamingDecoder>()?;
     m.add_function(wrap_pyfunction!(python::from_json, m)?)?;
     m.add_function(wrap_pyfunction!(python::from_json_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(python::base_vocab_size, m)?)?;
     // Register all agent token classes (auto-generated from scripts/generate_agent_tokens.py)
     python::register_agent_tokens(m)?;
     m.add("CL100K_BASE_PATTERN", CL100K_BASE_PATTERN)?;

@@ -1262,6 +1262,33 @@ pub fn from_json_bytes(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
     any_tokenizer_to_py(py, any)
 }
 
+/// Base vocabulary size for a bundled pretrained tokenizer — the size the
+/// upstream reference implementation reports, *without* splintr's 54 added
+/// agent tokens.
+///
+/// Use this to size a model's embedding or logit layer, or to identify which
+/// vocabulary a checkpoint uses from the shape of its token-embedding
+/// tensor — both must match the checkpoint's own vocabulary, not splintr's
+/// extended one. `Tokenizer.vocab_size` / `AnyTokenizer.vocab_size` report
+/// the *extended* size (base + agent tokens); this reports the base alone.
+/// Agent tokens are always appended above every id the base vocabulary uses,
+/// so this is also exactly the id at which splintr's additions start.
+///
+/// Args:
+///     name: Vocabulary name, same names accepted by `Tokenizer.from_pretrained`
+///         (e.g. "cl100k_base", "o200k_base", "llama3", "mistral_v3", "whisper_v3")
+///
+/// Returns:
+///     The base vocabulary size.
+///
+/// Raises:
+///     ValueError: If `name` is not a known pretrained vocabulary.
+#[pyfunction]
+pub fn base_vocab_size(name: &str) -> PyResult<u32> {
+    crate::core::pretrained::base_vocab_size_by_name(name)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// Parse special tokens from Python dict to FxHashMap.
 fn parse_special_tokens(
     special_tokens: Option<&Bound<'_, PyDict>>,

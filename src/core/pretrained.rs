@@ -166,15 +166,22 @@ impl PretrainedVocab {
 /// let tokenizer = from_pretrained("llama3").unwrap();
 /// ```
 pub fn from_pretrained(name: &str) -> Result<AnyTokenizer, TokenizerError> {
-    let vocab = PretrainedVocab::from_name(name).ok_or_else(|| {
+    from_vocab(resolve_vocab(name)?)
+}
+
+/// Resolve a vocabulary name to its enum, or the same "unknown name" error
+/// every name-taking entry point in this module reports.
+///
+/// Centralized so [`from_pretrained`] and [`base_vocab_size_by_name`] cannot
+/// drift apart on what counts as a valid name or how the error reads.
+fn resolve_vocab(name: &str) -> Result<PretrainedVocab, TokenizerError> {
+    PretrainedVocab::from_name(name).ok_or_else(|| {
         TokenizerError::UnknownPretrained(format!(
             "{}. Supported: {}",
             name,
             PretrainedVocab::supported_names().join(", ")
         ))
-    })?;
-
-    from_vocab(vocab)
+    })
 }
 
 /// Create a pretrained tokenizer from vocabulary enum.
@@ -404,6 +411,45 @@ pub fn pad_token_id(vocab: PretrainedVocab) -> Option<u32> {
     }
 }
 
+/// Get the base vocabulary size for a bundled vocabulary — the size the
+/// upstream reference implementation (`tiktoken`, `tokenizers`, or
+/// `sentencepiece`, depending on the vocabulary) reports, *without* the 54
+/// agent tokens splintr adds on top.
+///
+/// This is what a consumer needs when sizing a model's embedding or logit
+/// layer, or when identifying which vocabulary a checkpoint uses from the
+/// shape of its token-embedding tensor — both must match the checkpoint's own
+/// vocabulary, not splintr's extended one. [`Tokenize::vocab_size`] /
+/// [`Tokenizer::vocab_size`](super::tokenizer::Tokenizer::vocab_size) report
+/// the *extended* size (base + agent tokens); this reports the base alone.
+/// Agent tokens are always appended **above** every id the base vocabulary
+/// uses (see the per-vocabulary special-token tables below), so this is also
+/// exactly the id at which splintr's additions start — every id below it is
+/// untouched, unshifted, and identical to the reference tokenizer's.
+pub fn base_vocab_size(vocab: PretrainedVocab) -> u32 {
+    match vocab {
+        PretrainedVocab::Cl100kBase => CL100K_BASE_BASE_VOCAB_SIZE,
+        PretrainedVocab::O200kBase => O200K_BASE_BASE_VOCAB_SIZE,
+        PretrainedVocab::Llama3 => LLAMA3_BASE_VOCAB_SIZE,
+        PretrainedVocab::DeepseekV3 => DEEPSEEK_V3_BASE_VOCAB_SIZE,
+        PretrainedVocab::MistralV1 => MISTRAL_V1_BASE_VOCAB_SIZE,
+        PretrainedVocab::MistralV2 => MISTRAL_V2_BASE_VOCAB_SIZE,
+        PretrainedVocab::MistralV3 => MISTRAL_V3_BASE_VOCAB_SIZE,
+        // Whisper carries no agent tokens at all (see `pad_token_id`), so its
+        // base size *is* the full generated vocabulary size — there is no
+        // separate "extended" size to subtract from.
+        PretrainedVocab::WhisperV1 => WhisperVariant::V1Multilingual.vocab_size() as u32,
+        PretrainedVocab::WhisperV2 => WhisperVariant::V2Multilingual.vocab_size() as u32,
+        PretrainedVocab::WhisperV3 => WhisperVariant::V3Multilingual.vocab_size() as u32,
+    }
+}
+
+/// [`base_vocab_size`] by vocabulary name string, for callers (e.g. the
+/// Python bindings) that only have the name `from_pretrained` accepts.
+pub fn base_vocab_size_by_name(name: &str) -> Result<u32, TokenizerError> {
+    resolve_vocab(name).map(base_vocab_size)
+}
+
 /// Get the special tokens map for a vocabulary.
 pub fn special_tokens(vocab: PretrainedVocab) -> FxHashMap<String, u32> {
     match vocab {
@@ -424,6 +470,16 @@ pub fn special_tokens(vocab: PretrainedVocab) -> FxHashMap<String, u32> {
 // Special token definitions for each vocabulary
 // =============================================================================
 
+/// cl100k_base's reference (`tiktoken`) vocabulary size — one past
+/// `<|endofprompt|>`, where splintr's agent tokens begin. Shared with
+/// [`base_vocab_size`] so the two cannot drift apart.
+const CL100K_BASE_BASE_VOCAB_SIZE: u32 = 100277;
+
+/// o200k_base's reference (`tiktoken`) vocabulary size — one past
+/// `<|endofprompt|>`, where splintr's agent tokens begin. Shared with
+/// [`base_vocab_size`] so the two cannot drift apart.
+const O200K_BASE_BASE_VOCAB_SIZE: u32 = 200019;
+
 /// Get the standard special tokens for cl100k_base encoding (GPT-4, GPT-3.5-turbo).
 pub fn cl100k_base_special_tokens() -> FxHashMap<String, u32> {
     let mut special = FxHashMap::default();
@@ -432,10 +488,13 @@ pub fn cl100k_base_special_tokens() -> FxHashMap<String, u32> {
     special.insert("<|fim_prefix|>".to_string(), 100258);
     special.insert("<|fim_middle|>".to_string(), 100259);
     special.insert("<|fim_suffix|>".to_string(), 100260);
-    special.insert("<|endofprompt|>".to_string(), 100276);
+    special.insert(
+        "<|endofprompt|>".to_string(),
+        CL100K_BASE_BASE_VOCAB_SIZE - 1,
+    );
 
     // Agent tokens (100277+)
-    insert_agent_tokens(&mut special, 100277);
+    insert_agent_tokens(&mut special, CL100K_BASE_BASE_VOCAB_SIZE);
 
     special
 }
@@ -445,13 +504,24 @@ pub fn o200k_base_special_tokens() -> FxHashMap<String, u32> {
     let mut special = FxHashMap::default();
     // OpenAI standard special tokens (199999-200018)
     special.insert("<|endoftext|>".to_string(), 199999);
-    special.insert("<|endofprompt|>".to_string(), 200018);
+    special.insert(
+        "<|endofprompt|>".to_string(),
+        O200K_BASE_BASE_VOCAB_SIZE - 1,
+    );
 
     // Agent tokens (200019+)
-    insert_agent_tokens(&mut special, 200019);
+    insert_agent_tokens(&mut special, O200K_BASE_BASE_VOCAB_SIZE);
 
     special
 }
+
+/// Llama 3's reference (`tokenizers`) vocabulary size: 128,000 BPE tokens +
+/// 256 reserved special-token slots (128000-128255) = 128,256. splintr only
+/// names 11 of those 256 slots (the ones below), leaving the rest as an
+/// unnamed gap in the base range; its own multimodal placeholders and agent
+/// tokens are appended starting exactly here. Shared with [`base_vocab_size`]
+/// so the two cannot drift apart.
+const LLAMA3_BASE_VOCAB_SIZE: u32 = 128256;
 
 /// Get the standard special tokens for Llama 3 encoding.
 pub fn llama3_special_tokens() -> FxHashMap<String, u32> {
@@ -471,18 +541,25 @@ pub fn llama3_special_tokens() -> FxHashMap<String, u32> {
     special.insert("<|python_tag|>".to_string(), 128010);
 
     // Multimodal tokens (128256+) - aligned with official Meta tokens
-    special.insert("<|image|>".to_string(), 128256);
-    special.insert("<|/image|>".to_string(), 128257);
-    special.insert("<|audio|>".to_string(), 128258);
-    special.insert("<|/audio|>".to_string(), 128259);
-    special.insert("<|video|>".to_string(), 128260);
-    special.insert("<|/video|>".to_string(), 128261);
+    special.insert("<|image|>".to_string(), LLAMA3_BASE_VOCAB_SIZE);
+    special.insert("<|/image|>".to_string(), LLAMA3_BASE_VOCAB_SIZE + 1);
+    special.insert("<|audio|>".to_string(), LLAMA3_BASE_VOCAB_SIZE + 2);
+    special.insert("<|/audio|>".to_string(), LLAMA3_BASE_VOCAB_SIZE + 3);
+    special.insert("<|video|>".to_string(), LLAMA3_BASE_VOCAB_SIZE + 4);
+    special.insert("<|/video|>".to_string(), LLAMA3_BASE_VOCAB_SIZE + 5);
 
     // Agent tokens (128300+)
     insert_agent_tokens_llama3(&mut special, 128300);
 
     special
 }
+
+/// DeepSeek V3's reference (`tokenizers`) vocabulary size: one past
+/// `<｜tool▁sep｜>` (128814), the highest id DeepSeek's own tokenizer defines.
+/// splintr's agent tokens start higher still, at 128900, leaving
+/// 128815-128899 as an unused gap in the base range. Shared with
+/// [`base_vocab_size`] so the two cannot drift apart.
+const DEEPSEEK_V3_BASE_VOCAB_SIZE: u32 = 128815;
 
 /// Get the standard special tokens for DeepSeek V3 encoding.
 pub fn deepseek_v3_special_tokens() -> FxHashMap<String, u32> {
@@ -516,13 +593,37 @@ pub fn deepseek_v3_special_tokens() -> FxHashMap<String, u32> {
     special.insert("<｜tool▁outputs▁end｜>".to_string(), 128811);
     special.insert("<｜tool▁output▁begin｜>".to_string(), 128812);
     special.insert("<｜tool▁output▁end｜>".to_string(), 128813);
-    special.insert("<｜tool▁sep｜>".to_string(), 128814);
+    special.insert(
+        "<｜tool▁sep｜>".to_string(),
+        DEEPSEEK_V3_BASE_VOCAB_SIZE - 1,
+    );
 
     // Agent tokens (128900+)
     insert_agent_tokens(&mut special, 128900);
 
     special
 }
+
+/// Mistral V1's reference (`sentencepiece`) piece count: the bundled
+/// `.spm` file has exactly 32,000 pieces (ids 0-31999, including the 0-2
+/// native specials below), so splintr's agent tokens start immediately
+/// after at 32,000. Shared with [`base_vocab_size`] so the two cannot drift
+/// apart.
+const MISTRAL_V1_BASE_VOCAB_SIZE: u32 = 32000;
+
+/// Mistral V2's reference (`sentencepiece`) piece count: the bundled
+/// `.spm` file has exactly 32,768 pieces (ids 0-32767, including the native
+/// specials and V2 control tokens below), so splintr's agent tokens start
+/// immediately after at 32,768. Shared with [`base_vocab_size`] so the two
+/// cannot drift apart.
+const MISTRAL_V2_BASE_VOCAB_SIZE: u32 = 32768;
+
+/// Mistral V3/Tekken's reference (`tokenizers`) vocabulary size: the bundled
+/// Tekken vocabulary file has exactly 131,072 tokens (ids 0-131071,
+/// including the native specials and control tokens below), so splintr's
+/// agent tokens start immediately after at 131,072. Shared with
+/// [`base_vocab_size`] so the two cannot drift apart.
+const MISTRAL_V3_BASE_VOCAB_SIZE: u32 = 131072;
 
 /// Get the standard special tokens for Mistral V1 encoding.
 pub fn mistral_v1_special_tokens() -> FxHashMap<String, u32> {
@@ -534,7 +635,7 @@ pub fn mistral_v1_special_tokens() -> FxHashMap<String, u32> {
     special.insert("</s>".to_string(), 2);
 
     // Agent tokens (32000+) - Mistral V1 vocab has ~32000 base tokens
-    insert_agent_tokens(&mut special, 32000);
+    insert_agent_tokens(&mut special, MISTRAL_V1_BASE_VOCAB_SIZE);
 
     special
 }
@@ -562,7 +663,7 @@ pub fn mistral_v2_special_tokens() -> FxHashMap<String, u32> {
     special.insert("[/TOOL_RESULTS]".to_string(), 9);
 
     // Agent tokens start at 32768 (after V2 control token range)
-    insert_agent_tokens(&mut special, 32768);
+    insert_agent_tokens(&mut special, MISTRAL_V2_BASE_VOCAB_SIZE);
 
     special
 }
@@ -586,7 +687,7 @@ pub fn mistral_v3_special_tokens() -> FxHashMap<String, u32> {
     special.insert("[TOOL_CALLS]".to_string(), 9);
 
     // Agent tokens start at 131072 (after base vocab)
-    insert_agent_tokens(&mut special, 131072);
+    insert_agent_tokens(&mut special, MISTRAL_V3_BASE_VOCAB_SIZE);
 
     special
 }
@@ -965,5 +1066,156 @@ mod tests {
         let text = "The quick brown fox jumps over the lazy dog.";
         let decoded = tokenizer.decode(&tokenizer.encode(text)).unwrap();
         assert_eq!(decoded, text);
+    }
+
+    /// Every bundled vocabulary's base size, pinned against the reference
+    /// implementation that defines it (`tiktoken`, `tokenizers`, or
+    /// `sentencepiece` — noted per case).
+    #[test]
+    fn test_base_vocab_size_matches_reference() {
+        assert_eq!(base_vocab_size(PretrainedVocab::Cl100kBase), 100277); // tiktoken
+        assert_eq!(base_vocab_size(PretrainedVocab::O200kBase), 200019); // tiktoken
+        assert_eq!(base_vocab_size(PretrainedVocab::Llama3), 128256); // tokenizers
+        assert_eq!(base_vocab_size(PretrainedVocab::DeepseekV3), 128815); // tokenizers
+        assert_eq!(base_vocab_size(PretrainedVocab::MistralV1), 32000); // sentencepiece piece count
+        assert_eq!(base_vocab_size(PretrainedVocab::MistralV2), 32768); // sentencepiece piece count
+        assert_eq!(base_vocab_size(PretrainedVocab::MistralV3), 131072); // tokenizers (Tekken)
+        assert_eq!(
+            base_vocab_size(PretrainedVocab::WhisperV1),
+            WhisperVariant::V1Multilingual.vocab_size() as u32
+        );
+        assert_eq!(
+            base_vocab_size(PretrainedVocab::WhisperV2),
+            WhisperVariant::V2Multilingual.vocab_size() as u32
+        );
+        assert_eq!(
+            base_vocab_size(PretrainedVocab::WhisperV3),
+            WhisperVariant::V3Multilingual.vocab_size() as u32
+        );
+    }
+
+    /// The invariant the whole design rests on: a base size can never exceed
+    /// the tokenizer's extended `vocab_size`, because agent tokens are purely
+    /// additive on top of it.
+    #[test]
+    fn test_base_vocab_size_never_exceeds_extended_vocab_size() {
+        for (name, vocab) in [
+            ("cl100k_base", PretrainedVocab::Cl100kBase),
+            ("o200k_base", PretrainedVocab::O200kBase),
+            ("llama3", PretrainedVocab::Llama3),
+            ("deepseek_v3", PretrainedVocab::DeepseekV3),
+            ("mistral_v1", PretrainedVocab::MistralV1),
+            ("mistral_v2", PretrainedVocab::MistralV2),
+            ("mistral_v3", PretrainedVocab::MistralV3),
+            ("whisper_v1", PretrainedVocab::WhisperV1),
+            ("whisper_v2", PretrainedVocab::WhisperV2),
+            ("whisper_v3", PretrainedVocab::WhisperV3),
+        ] {
+            let extended = from_vocab(vocab).unwrap().vocab_size() as u32;
+            let base = base_vocab_size(vocab);
+            assert!(
+                base <= extended,
+                "{name}: base_vocab_size {base} exceeds extended vocab_size {extended}"
+            );
+        }
+    }
+
+    /// The property the whole design rests on: no agent-token id is ever
+    /// below `base_vocab_size`. Splintr's agent tokens are safe to bundle by
+    /// default *because* they occupy ids strictly above every id the
+    /// reference vocabulary uses — this pins that directly against the
+    /// actual special-token maps rather than trusting the arithmetic that
+    /// builds them.
+    #[test]
+    fn test_no_agent_token_id_below_base_vocab_size() {
+        for (name, vocab) in [
+            ("cl100k_base", PretrainedVocab::Cl100kBase),
+            ("o200k_base", PretrainedVocab::O200kBase),
+            ("llama3", PretrainedVocab::Llama3),
+            ("deepseek_v3", PretrainedVocab::DeepseekV3),
+            ("mistral_v1", PretrainedVocab::MistralV1),
+            ("mistral_v2", PretrainedVocab::MistralV2),
+            ("mistral_v3", PretrainedVocab::MistralV3),
+        ] {
+            let base = base_vocab_size(vocab);
+            for name_and_id in agent_token_ids_in(vocab) {
+                let (token, id) = name_and_id;
+                assert!(
+                    id >= base,
+                    "{name}: agent token {token:?} has id {id}, below base_vocab_size {base}"
+                );
+            }
+        }
+    }
+
+    /// The 54 standard agent-token names, so
+    /// `test_no_agent_token_id_below_base_vocab_size` can pick just those out
+    /// of a vocabulary's full special-token map (which also holds the
+    /// vocabulary's own native specials, at legitimately low ids).
+    const AGENT_TOKEN_NAMES: [&str; 54] = [
+        "<|system|>",
+        "<|user|>",
+        "<|assistant|>",
+        "<|im_start|>",
+        "<|im_end|>",
+        "<|think|>",
+        "<|/think|>",
+        "<|plan|>",
+        "<|/plan|>",
+        "<|step|>",
+        "<|/step|>",
+        "<|act|>",
+        "<|/act|>",
+        "<|observe|>",
+        "<|/observe|>",
+        "<|function|>",
+        "<|/function|>",
+        "<|result|>",
+        "<|/result|>",
+        "<|error|>",
+        "<|/error|>",
+        "<|code|>",
+        "<|/code|>",
+        "<|output|>",
+        "<|/output|>",
+        "<|lang|>",
+        "<|/lang|>",
+        "<|context|>",
+        "<|/context|>",
+        "<|quote|>",
+        "<|/quote|>",
+        "<|cite|>",
+        "<|/cite|>",
+        "<|source|>",
+        "<|/source|>",
+        "<|memory|>",
+        "<|/memory|>",
+        "<|recall|>",
+        "<|/recall|>",
+        "<|pad|>",
+        "<|stop|>",
+        "<|sep|>",
+        "<|image|>",
+        "<|/image|>",
+        "<|audio|>",
+        "<|/audio|>",
+        "<|video|>",
+        "<|/video|>",
+        "<|title|>",
+        "<|/title|>",
+        "<|section|>",
+        "<|/section|>",
+        "<|summary|>",
+        "<|/summary|>",
+    ];
+
+    /// The subset of a vocabulary's special-token map that are agent tokens
+    /// (by name), each paired with its id.
+    fn agent_token_ids_in(vocab: PretrainedVocab) -> Vec<(String, u32)> {
+        let all = special_tokens(vocab);
+        AGENT_TOKEN_NAMES
+            .iter()
+            .filter_map(|name| all.get(*name).map(|&id| (name.to_string(), id)))
+            .collect()
     }
 }

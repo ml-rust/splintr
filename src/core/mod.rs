@@ -60,10 +60,10 @@ pub use gguf::{from_gguf_vocab, GgufVocab, GgufVocabError};
 pub use hf_json::{from_json_bytes, from_json_path, HfJsonError};
 pub use policy::{PolicyError, SpecialMode, SpecialPolicy};
 pub use pretrained::{
-    bos_token_id, bos_token_id_by_name, cl100k_base_special_tokens, deepseek_v3_special_tokens,
-    eos_token_id, eos_token_id_by_name, from_pretrained, from_vocab, llama3_special_tokens,
-    o200k_base_special_tokens, pad_token_id, patterns, special_tokens, uses_byte_level,
-    PretrainedVocab,
+    base_vocab_size, base_vocab_size_by_name, bos_token_id, bos_token_id_by_name,
+    cl100k_base_special_tokens, deepseek_v3_special_tokens, eos_token_id, eos_token_id_by_name,
+    from_pretrained, from_vocab, llama3_special_tokens, o200k_base_special_tokens, pad_token_id,
+    patterns, special_tokens, uses_byte_level, PretrainedVocab,
 };
 pub use sentencepiece::{SentencePieceError, SentencePieceTokenizer};
 pub use spm::{SpmError, SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
