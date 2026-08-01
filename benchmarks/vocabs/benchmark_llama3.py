@@ -20,8 +20,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-# Llama 3 regex pattern (same as o200k_base)
-LLAMA3_PATTERN = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+# Llama 3 regex pattern, verbatim from Meta's tokenizer.json `Split`
+# pre-tokenizer. NOT the o200k_base pattern: Llama 3 takes whole letter runs
+# with `\p{L}+` and has no upper/lower case-boundary split.
+LLAMA3_PATTERN = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
 
 # Sample texts for benchmarking
 SAMPLE_TEXTS = {

@@ -64,8 +64,28 @@ pub const CL100K_BASE_PATTERN: &str = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?
 /// o200k pattern (already greedy upstream).
 pub const O200K_BASE_PATTERN: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
-/// Default regex pattern for Llama 3/3.1/3.2/3.3 (same as o200k_base)
-pub const LLAMA3_PATTERN: &str = O200K_BASE_PATTERN;
+/// Pre-tokenizer pattern for Llama 3/3.1/3.2/3.3.
+///
+/// Transcribed verbatim from the `Split` pre-tokenizer's `Regex` in Meta's
+/// `llama-3.2-1b/tokenizer.json` — the pattern the model was actually trained
+/// with. llama.cpp records the same string byte-for-byte as the
+/// "original regex from tokenizer.json" for `LLAMA_VOCAB_PRE_TYPE_LLAMA3`
+/// (`llama-vocab.cpp:286`); the expression it feeds its own engine
+/// (`llama-vocab.cpp:289`) differs only by expanding `(?i:'s|'t|…)` into
+/// `(?:'[sS]|'[tT]|…)`, which is the same language.
+///
+/// This is NOT [`O200K_BASE_PATTERN`] and must never be re-aliased to it.
+/// o200k's two leading `[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}…]+` branches
+/// split letter runs on upper/lower case boundaries — an OpenAI convention
+/// Llama 3 does not share, since its pre-tokenizer takes whole letter runs with
+/// a plain `\p{L}+`. Aliasing the two breaks every camelCase merge: with the
+/// o200k split `XMLHttpRequest` encodes as `[10833, 2977, 1939]` instead of the
+/// correct `[10833, 27459]`.
+///
+/// Identical to [`QWEN2_PATTERN`] apart from `\p{N}{1,3}` (digit runs of up to
+/// three) versus Qwen's single-digit `\p{N}`, so the two are not
+/// interchangeable either.
+pub const LLAMA3_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 /// Regex pattern for SentencePiece-based tokenizers (Mistral V1/V2, Llama 2, Gemma).
 ///
@@ -95,10 +115,10 @@ pub const GPT2_PATTERN: &str =
 
 /// Pre-tokenizer pattern for Qwen2 / Qwen3 (llama.cpp's `qwen2` pre-tokenizer).
 ///
-/// Close to [`LLAMA3_PATTERN`] but differs in two ways that change the resulting
-/// tokens, so the two are not interchangeable:
-/// - digits split one at a time (`\p{N}`) rather than in runs of up to three;
-/// - letter runs are not split on upper/lower case boundaries.
+/// Identical to [`LLAMA3_PATTERN`] except that digits split one at a time
+/// (`\p{N}`) rather than in runs of up to three (`\p{N}{1,3}`). That single
+/// difference changes the resulting tokens, so the two are not interchangeable
+/// and must stay separate constants.
 pub const QWEN2_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 // =============================================================================

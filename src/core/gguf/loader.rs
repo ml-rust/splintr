@@ -243,12 +243,94 @@ fn boundary_policy(
 /// An unrecognised name is refused rather than defaulted: a wrong split is
 /// invisible downstream, and every id it produces is still in range.
 pub(super) fn byte_level_pattern(pre: Option<&str>) -> Result<&'static str, GgufVocabError> {
+    // Every name below was traced through llama.cpp twice: the `pre` string to a
+    // `LLAMA_VOCAB_PRE_TYPE_*` value in `llama_vocab::impl::load`, and that value
+    // to the literal `regex_exprs` list in `llm_tokenizer_bpe`'s constructor. A
+    // name is listed only when its enum value yields a SINGLE expression equal to
+    // the constant it is mapped to. Enum values that yield several expressions are
+    // deliberately absent: llama.cpp runs those passes in sequence, each one
+    // subdividing the previous pass's pieces, which no single alternation
+    // reproduces.
+    //
     // `default` is llama.cpp's fallback pre-tokenizer, which is the GPT-2 split.
     match pre.unwrap_or("default") {
-        "qwen2" => Ok(QWEN2_PATTERN),
+        // ── QWEN2_PATTERN ────────────────────────────────────────────────────
+        // All of these reach a `regex_exprs` list of one expression, at
+        // llama-vocab.cpp:371-379 (`STABLELM2`/`QWEN2`/`HUNYUAN`/`SOLAR_OPEN`
+        // share one `case` label) or llama-vocab.cpp:471-476 (`GROK_2`, whose
+        // string is byte-identical to the former's). llama.cpp writes the
+        // contraction group case-expanded as `(?:'[sS]|'[tT]|…)`; the comment
+        // directly above each list records the tokenizer.json original as
+        // `(?i:'s|'t|…)`, which is this constant character for character.
+        //
+        //   qwen2            → QWEN2       llama-vocab.cpp:1953 → :371
+        //   deepseek-r1-qwen → QWEN2       llama-vocab.cpp:1954 → :371
+        //   kormo            → QWEN2       llama-vocab.cpp:1955 → :371
+        //   megrez           → QWEN2       llama-vocab.cpp:2027 → :371
+        //   stablelm2        → STABLELM2   llama-vocab.cpp:1963 → :371
+        //   hunyuan          → HUNYUAN     llama-vocab.cpp:2062 → :371
+        //   solar-open       → SOLAR_OPEN  llama-vocab.cpp:2090 → :371
+        //   grok-2           → GROK_2      llama-vocab.cpp:2078 → :471
+        "qwen2" | "deepseek-r1-qwen" | "kormo" | "megrez" | "stablelm2" | "hunyuan"
+        | "solar-open" | "grok-2" => Ok(QWEN2_PATTERN),
+
+        // ── GPT2_PATTERN ─────────────────────────────────────────────────────
+        // `GPT2`/`MPT`/`OLMO`/`JAIS`/`TRILLION`/`GRANITE_DOCLING` share one `case`
+        // label at llama-vocab.cpp:361-369 whose list is the single expression
+        // `'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)`
+        // — this constant minus its trailing `|\s+`. That is not a difference in
+        // splitting: llama.cpp matches this exact string in
+        // `unicode_regex_split_custom` (unicode.cpp:759) and hands it to the
+        // hand-written `unicode_regex_split_custom_gpt2`, whose whitespace
+        // fallthrough (unicode.cpp:317-322, commented `// regex: \s+`) emits the
+        // bare run the written alternation would drop. The `\s+(?!\S)` branch
+        // above it (unicode.cpp:311-315) fires only for a run of >1 whitespace
+        // followed by more text, exactly as the lookahead requires.
+        //
+        //   default (and an absent key) → DEFAULT, kept from the pre-existing
+        //   mapping; llama-vocab.cpp:1883.
+        //
+        //   gpt-2           → GPT2             llama-vocab.cpp:1925 → :361
+        //   phi-2           → GPT2             llama-vocab.cpp:1926 → :361
+        //   jina-es         → GPT2             llama-vocab.cpp:1927 → :361
+        //   jina-de         → GPT2             llama-vocab.cpp:1928 → :361
+        //   gigachat        → GPT2             llama-vocab.cpp:1929 → :361
+        //   jina-v2-es      → GPT2             llama-vocab.cpp:1930 → :361
+        //   jina-v2-de      → GPT2             llama-vocab.cpp:1931 → :361
+        //   a.x-4.0         → GPT2             llama-vocab.cpp:1932 → :361
+        //   mellum          → GPT2             llama-vocab.cpp:1933 → :361
+        //   modern-bert     → GPT2             llama-vocab.cpp:1934 → :361
+        //   jina-v1-en      → GPT2             llama-vocab.cpp:1940 → :361
+        //   jina-v2-code    → GPT2             llama-vocab.cpp:1941 → :361
+        //   roberta-bpe     → GPT2             llama-vocab.cpp:1942 → :361
+        //   exaone4         → GPT2             llama-vocab.cpp:2013 → :361
+        //   mpt             → MPT              llama-vocab.cpp:1919 → :362
+        //   olmo            → OLMO             llama-vocab.cpp:1966 → :363
+        //   jais            → JAIS             llama-vocab.cpp:1988 → :364
+        //   trillion        → TRILLION         llama-vocab.cpp:2044 → :365
+        //   granite-docling → GRANITE_DOCLING  llama-vocab.cpp:2048 → :366
+        //
+        // `jina-v2-en` has no entry in llama.cpp's table; it is kept from the
+        // pre-existing mapping rather than re-derived.
         "default" | "gpt-2" | "phi-2" | "roberta-bpe" | "jina-v1-en" | "jina-v2-en"
-        | "jina-v2-es" | "jina-v2-de" | "jina-v2-code" | "jina-es" | "jina-de" => Ok(GPT2_PATTERN),
-        "llama-bpe" | "llama3" => Ok(LLAMA3_PATTERN),
+        | "jina-v2-es" | "jina-v2-de" | "jina-v2-code" | "jina-es" | "jina-de" | "gigachat"
+        | "a.x-4.0" | "mellum" | "modern-bert" | "exaone4" | "mpt" | "olmo" | "jais"
+        | "trillion" | "granite-docling" => Ok(GPT2_PATTERN),
+
+        // ── LLAMA3_PATTERN ───────────────────────────────────────────────────
+        // `LLAMA3`, `DBRX`/`SMAUG` (one `case` label) and `CHATGLM4` each reach a
+        // `regex_exprs` list of one expression, and all three strings are
+        // byte-identical to each other. llama.cpp writes the contraction group
+        // case-expanded as `(?:'[sS]|'[tT]|…)`; the comment above the `LLAMA3`
+        // list records the tokenizer.json original as `(?i:'s|'t|…)`, which is
+        // this constant character for character.
+        //
+        //   llama-bpe → LLAMA3    llama-vocab.cpp:1894 → :283
+        //   llama3    → LLAMA3    (splintr alias for the same vocabulary)
+        //   dbrx      → DBRX      llama-vocab.cpp:1970 → :301
+        //   smaug-bpe → SMAUG     llama-vocab.cpp:1973 → :302
+        //   glm4      → CHATGLM4  llama-vocab.cpp:1981 → :395
+        "llama-bpe" | "llama3" | "dbrx" | "smaug-bpe" | "glm4" => Ok(LLAMA3_PATTERN),
         other => Err(GgufVocabError::UnsupportedPreTokenizer(other.to_owned())),
     }
 }

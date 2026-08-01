@@ -62,6 +62,70 @@ fn test_llama3_emoji_tokens() {
 }
 
 // =============================================================================
+// Case-Boundary (camelCase) Exact Token ID Tests
+// =============================================================================
+//
+// Llama 3's pre-tokenizer takes whole letter runs with a plain `\p{L}+`; it has
+// no upper/lower case-boundary rule. Splitting on case — the o200k convention —
+// prevents the `UserName`/`HttpRequest` merges and silently produces more,
+// different ids. These cases are the ones that discriminate between the two
+// patterns, so they guard against `LLAMA3_PATTERN` being re-aliased to
+// `O200K_BASE_PATTERN`.
+//
+// Reference ids produced by HuggingFace `tokenizers` loading Meta's
+// `llama-3.2-1b/tokenizer.json`.
+
+/// Verify exact token IDs for "XMLHttpRequest" (uppercase run into a capitalised
+/// word — the case boundary an o200k-style split would break on).
+#[test]
+fn test_llama3_camel_case_xml_http_request_tokens() {
+    let tokenizer = create_llama3_tokenizer();
+    let tokens = tokenizer.encode("XMLHttpRequest");
+    assert_eq!(
+        tokens,
+        vec![10833, 27459],
+        "Token IDs for 'XMLHttpRequest' changed"
+    );
+}
+
+/// Verify exact token IDs for "getUserName" (lowercase into capitalised words).
+#[test]
+fn test_llama3_camel_case_get_user_name_tokens() {
+    let tokenizer = create_llama3_tokenizer();
+    let tokens = tokenizer.encode("getUserName");
+    assert_eq!(
+        tokens,
+        vec![456, 19387],
+        "Token IDs for 'getUserName' changed"
+    );
+}
+
+/// Verify exact token IDs for "camelCaseIdentifier".
+#[test]
+fn test_llama3_camel_case_identifier_tokens() {
+    let tokenizer = create_llama3_tokenizer();
+    let tokens = tokenizer.encode("camelCaseIdentifier");
+    assert_eq!(
+        tokens,
+        vec![94421, 4301, 8887],
+        "Token IDs for 'camelCaseIdentifier' changed"
+    );
+}
+
+/// Verify exact token IDs for "fooBar baz" (camelCase followed by a spaced word,
+/// so the leading-space branch is exercised alongside the case boundary).
+#[test]
+fn test_llama3_camel_case_with_following_word_tokens() {
+    let tokenizer = create_llama3_tokenizer();
+    let tokens = tokenizer.encode("fooBar baz");
+    assert_eq!(
+        tokens,
+        vec![8134, 3511, 51347],
+        "Token IDs for 'fooBar baz' changed"
+    );
+}
+
+// =============================================================================
 // General Roundtrip Tests
 // =============================================================================
 

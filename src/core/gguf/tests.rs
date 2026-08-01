@@ -7,6 +7,7 @@ use super::loader::{
     unigram_prefix_space,
 };
 use super::{from_gguf_vocab, GgufVocab, GgufVocabError};
+use crate::core::tokenizer::{GPT2_PATTERN, LLAMA3_PATTERN, QWEN2_PATTERN};
 
 fn v(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_owned()).collect()
@@ -146,6 +147,130 @@ fn pre_tokenizer_names_select_distinct_patterns() {
     assert_ne!(qwen, gpt2);
     assert_ne!(llama, gpt2);
     assert_ne!(qwen, llama);
+}
+
+/// Every `pre` name llama.cpp resolves to a single expression equal to
+/// [`GPT2_PATTERN`] must resolve here too — the names come from
+/// `LLAMA_VOCAB_PRE_TYPE_GPT2`/`MPT`/`OLMO`/`JAIS`/`TRILLION`/`GRANITE_DOCLING`,
+/// which share one `regex_exprs` list.
+#[test]
+fn gpt2_family_pre_names_all_select_the_gpt2_pattern() {
+    for name in [
+        "gpt-2",
+        "phi-2",
+        "jina-es",
+        "jina-de",
+        "gigachat",
+        "jina-v2-es",
+        "jina-v2-de",
+        "a.x-4.0",
+        "mellum",
+        "modern-bert",
+        "jina-v1-en",
+        "jina-v2-code",
+        "roberta-bpe",
+        "exaone4",
+        "mpt",
+        "olmo",
+        "jais",
+        "trillion",
+        "granite-docling",
+    ] {
+        assert_eq!(
+            byte_level_pattern(Some(name)).unwrap_or("<refused>"),
+            GPT2_PATTERN,
+            "`{name}` names llama.cpp's GPT-2 split"
+        );
+    }
+}
+
+/// The `pre` names whose enum value shares the Qwen2 `regex_exprs` list —
+/// `QWEN2`, `STABLELM2`, `HUNYUAN`, `SOLAR_OPEN` (one `case` label) and `GROK_2`
+/// (a byte-identical copy of that same expression).
+#[test]
+fn qwen2_family_pre_names_all_select_the_qwen2_pattern() {
+    for name in [
+        "qwen2",
+        "deepseek-r1-qwen",
+        "kormo",
+        "megrez",
+        "stablelm2",
+        "hunyuan",
+        "solar-open",
+        "grok-2",
+    ] {
+        assert_eq!(
+            byte_level_pattern(Some(name)).unwrap_or("<refused>"),
+            QWEN2_PATTERN,
+            "`{name}` names llama.cpp's Qwen2 split"
+        );
+    }
+}
+
+/// The `pre` names whose enum value carries llama.cpp's Llama-3 expression —
+/// `LLAMA3`, `DBRX`/`SMAUG` (one `case` label) and `CHATGLM4`, whose three
+/// single-expression lists are byte-identical to one another.
+#[test]
+fn llama3_family_pre_names_all_select_the_llama3_pattern() {
+    for name in ["llama-bpe", "llama3", "dbrx", "smaug-bpe", "glm4"] {
+        assert_eq!(
+            byte_level_pattern(Some(name)).unwrap_or("<refused>"),
+            LLAMA3_PATTERN,
+            "`{name}` names llama.cpp's Llama-3 split"
+        );
+    }
+}
+
+/// Names whose llama.cpp enum value emits SEVERAL expressions applied in
+/// sequence — each pass subdividing the previous pass's pieces — are not
+/// expressible as one alternation, so they must stay refused rather than be
+/// approximated by the nearest single pattern.
+#[test]
+fn multi_pass_and_unmatched_pre_names_stay_refused() {
+    for name in [
+        // multi-expression lists
+        "deepseek-llm",
+        "deepseek-coder",
+        "deepseek-v3",
+        "falcon",
+        "starcoder",
+        "refact",
+        "command-r",
+        "smollm",
+        "codeshell",
+        "exaone",
+        "minerva-7b",
+        "chameleon",
+        "viking",
+        "youtu",
+        "superbpe",
+        "afmoe",
+        // one expression that is only a trigger for a hand-written scanner
+        "kimi-k2",
+        // single expression, but no byte-identical splintr constant
+        "chatglm-bpe",
+        "jais-2",
+        "qwen35",
+        "tekken",
+        "gpt-4o",
+        "llama4",
+        "minimax-m2",
+        "tiny_aya",
+        "bailingmoe",
+        "seed-coder",
+        "exaone-moe",
+        "poro-chat",
+        "bloom",
+        "gpt3-finnish",
+    ] {
+        assert!(
+            matches!(
+                byte_level_pattern(Some(name)),
+                Err(GgufVocabError::UnsupportedPreTokenizer(ref got)) if got == name
+            ),
+            "`{name}` has no byte-identical splintr pattern and must be refused"
+        );
+    }
 }
 
 /// An unrecognised pre-tokenizer is refused, never defaulted: a wrong split is

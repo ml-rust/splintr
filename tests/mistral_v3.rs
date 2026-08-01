@@ -3,7 +3,8 @@
 //! Mistral V3 (Tekken) uses Tiktoken-style BPE encoding (NOT SentencePiece).
 //! Key characteristics:
 //! - Vocab size: ~131,126 (131,072 base + 54 agent tokens)
-//! - Uses Tiktoken encoding (same pattern as O200K)
+//! - Uses Tiktoken-style encoding with its own `MISTRAL_V3_PATTERN` (O200K-like,
+//!   but with no contraction branches and single-digit `\p{N}`)
 //! - Much larger vocabulary than V1/V2 (4x larger)
 //! - Used by: Mistral NeMo, Mistral Large 2, Pixtral
 

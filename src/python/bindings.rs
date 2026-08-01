@@ -151,11 +151,16 @@ impl PyTokenizer {
             }
             "deepseek_v3" | "deepseek-v3" => {
                 let special = deepseek_v3_special_tokens();
-                // DeepSeek uses ByteLevel BPE encoding
-                bpe(
-                    Tokenizer::from_bytes_byte_level(DEEPSEEK_V3_VOCAB, LLAMA3_PATTERN, special)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                // DeepSeek uses ByteLevel BPE encoding. The pattern is pinned to
+                // the o200k split explicitly (matching `pretrained::pattern`)
+                // rather than borrowed from `LLAMA3_PATTERN`: DeepSeek V3 is not
+                // a Llama 3 vocabulary and the two splits are not the same.
+                bpe(Tokenizer::from_bytes_byte_level(
+                    DEEPSEEK_V3_VOCAB,
+                    O200K_BASE_PATTERN,
+                    special,
                 )
+                .map_err(|e| PyValueError::new_err(e.to_string()))?)
             }
             // Mistral V1/V2 are SentencePiece: their pieces are merged by the
             // SPM-BPE backend, never by byte-level BPE, which cannot build the

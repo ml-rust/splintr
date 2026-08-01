@@ -3,7 +3,7 @@
 //! These tests verify that the DeepSeek V3 tokenizer correctly encodes and decodes text,
 //! handles ByteLevel BPE encoding, special tokens, and produces consistent results.
 
-use splintr::{Tokenizer, LLAMA3_PATTERN};
+use splintr::{Tokenizer, O200K_BASE_PATTERN};
 use std::sync::LazyLock;
 
 /// Shared tokenizer instance to avoid expensive re-initialization per test.
@@ -523,6 +523,9 @@ fn create_deepseek_v3_tokenizer_impl() -> Tokenizer {
     special.insert("<|output|>".to_string(), 128923);
     special.insert("<|/output|>".to_string(), 128924);
 
-    // DeepSeek uses ByteLevel BPE encoding
-    Tokenizer::from_bytes_byte_level(vocab_bytes, LLAMA3_PATTERN, special).unwrap()
+    // DeepSeek uses ByteLevel BPE encoding. Pattern pinned to the o200k split,
+    // matching `pretrained::pattern(PretrainedVocab::DeepseekV3)`; this used to
+    // read `LLAMA3_PATTERN` back when that constant was an alias of the o200k
+    // one, which it no longer is.
+    Tokenizer::from_bytes_byte_level(vocab_bytes, O200K_BASE_PATTERN, special).unwrap()
 }
