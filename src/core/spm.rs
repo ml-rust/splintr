@@ -302,6 +302,17 @@ impl SpmTokenizer {
     /// [`SpecialPolicy`](crate::core::SpecialPolicy)'s to add, so that a caller
     /// wrapping two sequences does not get a stray BOS in the middle.
     fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+        // Empty input has nothing to mark a boundary *of*: `sp.encode("")` is
+        // `[]`, and so is llama.cpp's `ggml-vocab-llama-spm` fixture. The guard
+        // belongs here rather than in `normalize`, whose unconditional prefix is
+        // correct for every non-empty input (verified 46/46 against llama.cpp).
+        // It also has to be here rather than in `encode` so that attaching an
+        // added-token matcher cannot change the answer: `encode_with` skips the
+        // gap encoder entirely for "" and would otherwise be the only path that
+        // returned `[]`.
+        if text.is_empty() {
+            return Vec::new();
+        }
         let normalized = self.normalize(text);
         let mut out = Vec::new();
         for symbol in self.merge(&normalized) {
@@ -336,6 +347,22 @@ impl Tokenize for SpmTokenizer {
         super::added::AddedTokens::dispatch(&self.added, text, |gap| self.encode_ordinary(gap))
     }
 
+    /// Render the pieces, then strip the dummy prefix.
+    ///
+    /// SentencePiece's `add_dummy_prefix` puts a boundary before the first piece
+    /// on encode, so rendering `▁` back to a space leaves one space that was
+    /// never in the input. The reference pipelines both remove exactly one:
+    /// `sp.decode`, and HuggingFace's declared decoder chain
+    /// `Replace(▁→" ") → ByteFallback → Fuse → Strip{content: " ", start: 1}`.
+    ///
+    /// Exactly one — never all leading whitespace. `"  Hello"` encodes to the
+    /// two-space piece `▁▁` plus `▁Hello`, which renders to three spaces; only
+    /// the dummy one comes off, leaving the two the caller wrote.
+    ///
+    /// And only when a dummy prefix was actually added: with
+    /// `add_dummy_prefix` off (Gemma) encoding never inserts one, so removing a
+    /// space here would eat one the caller wrote. llama.cpp gates its
+    /// detokenizer on the same flag.
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
         let mut bytes: Vec<u8> = Vec::new();
         for &id in ids {
@@ -355,7 +382,14 @@ impl Tokenize for SpmTokenizer {
                 None => bytes.extend(piece.replace(WORD_BOUNDARY, " ").as_bytes()),
             }
         }
-        String::from_utf8(bytes).map_err(|_| TokenizeError::Utf8Error)
+        let text = String::from_utf8(bytes).map_err(|_| TokenizeError::Utf8Error)?;
+        if !self.add_prefix_space {
+            return Ok(text);
+        }
+        Ok(match text.strip_prefix(' ') {
+            Some(rest) => rest.to_string(),
+            None => text,
+        })
     }
 
     fn vocab_size(&self) -> usize {
@@ -424,11 +458,29 @@ mod tests {
         assert_eq!(pieces(&t, "hell"), vec!["▁hel", "l"]);
     }
 
+    /// Spaces survive as boundary markers and come back as spaces — and the
+    /// dummy prefix does not leak into the decoded text. Reference:
+    /// `"Hello, world!"` -> `[22557, 28725, 1526, 28808]` -> `"Hello, world!"`.
     #[test]
     fn spaces_become_word_boundaries_and_round_trip() {
         let t = tok();
         let ids = t.encode("hello world");
-        assert_eq!(t.decode(&ids).unwrap(), " hello world");
+        assert_eq!(t.decode(&ids).unwrap(), "hello world");
+    }
+
+    /// Only the dummy prefix comes off, so leading spaces the caller actually
+    /// wrote are preserved. Reference rows, on the Mistral vocabulary:
+    /// `" Hello world"` -> `[28705, 22557, 1526]`, `"  Hello"` -> `[259, 22557]`
+    /// and `" "` -> `[259]` all decode back to themselves. Here `▁` (id 17) is
+    /// the standalone boundary this vocabulary emits for a leading space, so
+    /// `" hello"` renders as two spaces and keeps one.
+    #[test]
+    fn a_leading_space_survives_decoding() {
+        let t = tok();
+        let ids = t.encode(" hello");
+        assert_eq!(t.decode(&ids).unwrap(), " hello");
+        assert_eq!(t.decode(&t.encode(" hello world")).unwrap(), " hello world");
+        assert_eq!(t.decode(&t.encode("")).unwrap(), "");
     }
 
     /// `add_space_prefix = false` (Gemma) must not prepend a boundary — doing so
@@ -440,6 +492,9 @@ mod tests {
             .unwrap()
             .with_prefix_space(false);
         assert_eq!(pieces(&t, "hello"), vec!["h", "el", "lo"]);
+        // Decoding must stay symmetric: no prefix was added, so none is
+        // removed, and a space the caller wrote survives untouched.
+        assert_eq!(t.decode(&t.encode(" hello")).unwrap(), " hello");
     }
 
     /// Boundary tokens belong to the special-token policy, not to the model: a
@@ -500,12 +555,24 @@ mod tests {
         assert!(t.encode("").is_empty());
     }
 
-    /// With the dummy prefix enabled, empty input is the boundary marker alone —
-    /// SentencePiece's documented behaviour, asserted so it cannot drift.
+    /// The dummy prefix must not manufacture a token out of nothing: with it
+    /// enabled, empty input still encodes to no tokens at all. `sp.encode("")`
+    /// is `[]`, as is llama.cpp's `ggml-vocab-llama-spm` empty-string fixture.
+    ///
+    /// Asserted for both matcher states because they take different paths —
+    /// `AddedTokens::encode_with` never invokes the gap encoder for `""` — and
+    /// attaching a matcher must not change what the tokenizer means.
     #[test]
-    fn empty_input_with_prefix_space_is_the_boundary_marker() {
-        let t = tok();
-        assert_eq!(pieces(&t, ""), vec!["▁"]);
+    fn empty_input_with_prefix_space_still_produces_no_tokens() {
+        assert!(tok().encode("").is_empty());
+
+        let (tokens, scores) = rank_scored_vocab();
+        let mut map = FxHashMap::default();
+        map.insert("<bos>".to_string(), 2);
+        let with_matcher = SpmTokenizer::new(tokens, scores, None, None)
+            .unwrap()
+            .with_added_tokens(&map);
+        assert!(with_matcher.encode("").is_empty());
     }
 
     /// llama.cpp prepends the dummy prefix **unconditionally** when

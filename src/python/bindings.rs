@@ -46,14 +46,14 @@ use crate::core::hf_json::{
 };
 use crate::core::pretrained::{
     cl100k_base_special_tokens, deepseek_v3_special_tokens, llama3_special_tokens,
-    mistral_v1_special_tokens, mistral_v2_special_tokens, mistral_v3_special_tokens,
-    o200k_base_special_tokens, CL100K_BASE_VOCAB, DEEPSEEK_V3_VOCAB, LLAMA3_VOCAB,
-    MISTRAL_V2_VOCAB, MISTRAL_V3_VOCAB, MISTRAL_VOCAB, O200K_BASE_VOCAB,
+    mistral_v3_special_tokens, o200k_base_special_tokens, CL100K_BASE_VOCAB, DEEPSEEK_V3_VOCAB,
+    LLAMA3_VOCAB, MISTRAL_V3_VOCAB, O200K_BASE_VOCAB,
 };
+use crate::core::spm::SpmTokenizer;
 use crate::core::wordpiece::WordPieceTokenizer;
 use crate::core::{
     byte_level_decode_bytes, Tokenize, Tokenizer, CL100K_BASE_PATTERN, LLAMA3_PATTERN,
-    MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
+    MISTRAL_V3_PATTERN, O200K_BASE_PATTERN,
 };
 use crate::core::{AnyTokenizer, Backend, SpecialPolicy};
 
@@ -114,87 +114,67 @@ impl PyTokenizer {
     ///     name: Model name (e.g., "cl100k_base", "o200k_base", "llama3", "mistral_v3")
     ///
     /// Returns:
-    ///     Tokenizer instance
+    ///     A `Tokenizer` for byte-level BPE vocabularies, or an `SpmTokenizer`
+    ///     for the SentencePiece ones ("mistral" / "mistral_v1" / "mistral_v2"),
+    ///     which are merged as pieces rather than as bytes.
     #[staticmethod]
-    fn from_pretrained(name: &str) -> PyResult<Self> {
+    fn from_pretrained(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+        let bpe = |inner: Tokenizer| -> PyResult<Py<PyAny>> {
+            Ok(Py::new(
+                py,
+                Self {
+                    inner,
+                    policy: SpecialPolicy::default(),
+                },
+            )?
+            .into_any())
+        };
         match name {
             "cl100k_base" => {
                 let special = cl100k_base_special_tokens();
-                let inner = Tokenizer::from_bytes(CL100K_BASE_VOCAB, CL100K_BASE_PATTERN, special)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self {
-                    inner,
-                    policy: SpecialPolicy::default(),
-                })
+                bpe(
+                    Tokenizer::from_bytes(CL100K_BASE_VOCAB, CL100K_BASE_PATTERN, special)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                )
             }
             "o200k_base" => {
                 let special = o200k_base_special_tokens();
-                let inner = Tokenizer::from_bytes(O200K_BASE_VOCAB, O200K_BASE_PATTERN, special)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self {
-                    inner,
-                    policy: SpecialPolicy::default(),
-                })
+                bpe(
+                    Tokenizer::from_bytes(O200K_BASE_VOCAB, O200K_BASE_PATTERN, special)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                )
             }
             "llama3" | "llama3.1" | "llama3.2" | "llama3.3" => {
                 let special = llama3_special_tokens();
-                let inner = Tokenizer::from_bytes(LLAMA3_VOCAB, LLAMA3_PATTERN, special)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self {
-                    inner,
-                    policy: SpecialPolicy::default(),
-                })
+                bpe(Tokenizer::from_bytes(LLAMA3_VOCAB, LLAMA3_PATTERN, special)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?)
             }
             "deepseek_v3" | "deepseek-v3" => {
                 let special = deepseek_v3_special_tokens();
                 // DeepSeek uses ByteLevel BPE encoding
-                let inner =
+                bpe(
                     Tokenizer::from_bytes_byte_level(DEEPSEEK_V3_VOCAB, LLAMA3_PATTERN, special)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self {
-                    inner,
-                    policy: SpecialPolicy::default(),
-                })
-            }
-            // Mistral V1: Default "mistral" → V1
-            "mistral" | "mistral_v1" => {
-                let special = mistral_v1_special_tokens();
-                let inner = Tokenizer::from_bytes_sentencepiece(
-                    MISTRAL_VOCAB,
-                    SENTENCEPIECE_PATTERN,
-                    special,
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
                 )
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self {
-                    inner,
-                    policy: SpecialPolicy::default(),
-                })
             }
-            // Mistral V2: All 32,768 tokens in vocab file, only agent tokens are special
-            "mistral_v2" => {
-                let special = mistral_v2_special_tokens();
-                let inner = Tokenizer::from_bytes_sentencepiece(
-                    MISTRAL_V2_VOCAB,
-                    SENTENCEPIECE_PATTERN,
-                    special,
-                )
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self {
-                    inner,
-                    policy: SpecialPolicy::default(),
-                })
+            // Mistral V1/V2 are SentencePiece: their pieces are merged by the
+            // SPM-BPE backend, never by byte-level BPE, which cannot build the
+            // `▁` word-boundary marker (U+2581 = E2 96 81) because `E2 96` is
+            // not a piece any SentencePiece vocabulary was trained on. Built
+            // through the core loader so Rust and Python get the same ids.
+            "mistral" | "mistral_v1" | "mistral_v2" => {
+                let loaded = crate::core::pretrained::from_pretrained(name)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                any_tokenizer_to_py(py, loaded)
             }
             // Mistral V3: ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
             // Uses its own pattern (no contractions, single-digit numbers)
             "mistral_v3" => {
                 let special = mistral_v3_special_tokens();
-                let inner =
+                bpe(
                     Tokenizer::from_bytes_byte_level(MISTRAL_V3_VOCAB, MISTRAL_V3_PATTERN, special)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                Ok(Self {
-                    inner,
-                    policy: SpecialPolicy::default(),
-                })
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                )
             }
             // Whisper multilingual (v1/v2/v3). Base BPE is bundled; specials are
             // generated per variant. Delegates to the core name→variant mapping.
@@ -206,17 +186,13 @@ impl PyTokenizer {
                         "whisper vocabularies must load as a BPE tokenizer",
                     ));
                 };
-                // Every other arm here builds its tokenizer with added-token
+                // Every other BPE arm here builds its tokenizer with added-token
                 // matching OFF: on the Python surface `encode` treats specials
                 // as ordinary text and `encode_with_special` opts in. Leaving it
                 // on for whisper alone would make Python inconsistent with
                 // itself, so it is turned back off; the Python surface is
                 // aligned with the Rust `encode` semantics in a later change.
-                let inner = inner.with_added_token_matching(false);
-                Ok(Self {
-                    inner,
-                    policy: SpecialPolicy::default(),
-                })
+                bpe(inner.with_added_token_matching(false))
             }
             _ => Err(PyValueError::new_err(format!(
                 "Unknown pretrained model: {}. See from_pretrained docstring for supported models.",
@@ -658,6 +634,102 @@ impl PySentencePieceTokenizer {
     }
 }
 
+/// Python wrapper for the SentencePiece **BPE** tokenizer.
+///
+/// This is the llama.cpp `SPM` algorithm (`tokenizer.ggml.model = "llama"`), not
+/// the Unigram tokenizer that `SentencePieceTokenizer` implements. It merges the
+/// best-scoring adjacent *pieces* repeatedly, which is what keeps the `▁`
+/// word-boundary marker (U+2581) intact: a byte-level merger cannot build it,
+/// because its middle byte pair `E2 96` is not a piece any SentencePiece
+/// vocabulary was trained on.
+///
+/// Returned by `Tokenizer.from_pretrained("mistral" | "mistral_v1" | "mistral_v2")`.
+#[pyclass(name = "SpmTokenizer")]
+pub struct PySpmTokenizer {
+    inner: SpmTokenizer,
+    policy: SpecialPolicy,
+}
+
+#[pymethods]
+impl PySpmTokenizer {
+    /// Create a SentencePiece BPE tokenizer.
+    ///
+    /// Args:
+    ///     tokens: List of token strings, indexed by token ID (`▁` marks word
+    ///         boundaries, `<0xNN>` are the byte-fallback tokens)
+    ///     scores: Per-token merge ranks, higher merging earlier (empty list
+    ///         falls back to token-ID order, the convention these vocabularies follow)
+    ///     bos_token_id: Optional beginning-of-sequence token ID
+    ///     eos_token_id: Optional end-of-sequence token ID
+    #[new]
+    #[pyo3(signature = (tokens, scores, bos_token_id=None, eos_token_id=None))]
+    fn new(
+        tokens: Vec<String>,
+        scores: Vec<f32>,
+        bos_token_id: Option<u32>,
+        eos_token_id: Option<u32>,
+    ) -> PyResult<Self> {
+        let inner = SpmTokenizer::new(tokens, scores, bos_token_id, eos_token_id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self {
+            inner,
+            policy: SpecialPolicy::default(),
+        })
+    }
+
+    /// Encode text to token IDs.
+    ///
+    /// Control tokens present in the text (`[INST]`, `<s>`, chat markers) are
+    /// recognized as single IDs — SentencePiece merging would otherwise shred
+    /// them into ordinary pieces. Boundary tokens are not added; use
+    /// `encode_with_special_tokens` for the model's template.
+    fn encode(&self, text: &str) -> Vec<u32> {
+        Tokenize::encode(&self.inner, text)
+    }
+
+    /// Encode and apply the model's boundary template, matching HuggingFace's
+    /// default `encode`. Equals `encode` when there is none.
+    fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
+        self.policy
+            .apply_single(Tokenize::encode(&self.inner, text))
+    }
+
+    /// Decode token IDs to text, converting `▁` back to spaces, reassembling
+    /// `<0xNN>` byte-fallback runs, and dropping the single leading space that
+    /// `add_dummy_prefix` introduced on encode (matching `sp.decode`).
+    ///
+    /// Raises:
+    ///     ValueError: If a token ID is out of range or the result is not UTF-8
+    fn decode(&self, ids: Vec<u32>) -> PyResult<String> {
+        Tokenize::decode(&self.inner, &ids).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Get vocabulary size.
+    #[getter]
+    fn vocab_size(&self) -> usize {
+        Tokenize::vocab_size(&self.inner)
+    }
+
+    /// Get the EOS token ID, if the vocabulary defines one.
+    #[getter]
+    fn eos_token_id(&self) -> Option<u32> {
+        self.inner.eos_token_id()
+    }
+
+    /// Get the BOS token ID, if the vocabulary defines one.
+    #[getter]
+    fn bos_token_id(&self) -> Option<u32> {
+        self.inner.bos_token_id()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SpmTokenizer(vocab_size={})",
+            Tokenize::vocab_size(&self.inner)
+        )
+    }
+}
+
 /// WordPiece tokenizer (BERT family). Construct via [`from_json`] or directly.
 #[pyclass(name = "WordPieceTokenizer")]
 pub struct PyWordPieceTokenizer {
@@ -745,13 +817,7 @@ fn any_tokenizer_to_py(py: Python<'_>, any: AnyTokenizer) -> PyResult<Py<PyAny>>
         )?
         .into_any(),
         Backend::WordPiece(t) => Py::new(py, PyWordPieceTokenizer { inner: t, policy })?.into_any(),
-        // `tokenizer.json` has no SPM-BPE model type, so this is unreachable via
-        // this path; report it rather than panic if that ever changes.
-        Backend::Spm(_) => {
-            return Err(PyValueError::new_err(
-                "SPM-BPE tokenizers have no Python wrapper yet",
-            ))
-        }
+        Backend::Spm(t) => Py::new(py, PySpmTokenizer { inner: t, policy })?.into_any(),
     })
 }
 

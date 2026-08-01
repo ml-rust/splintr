@@ -50,6 +50,7 @@ use pyo3::prelude::*;
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<python::PyTokenizer>()?;
     m.add_class::<python::PySentencePieceTokenizer>()?;
+    m.add_class::<python::PySpmTokenizer>()?;
     m.add_class::<python::PyWordPieceTokenizer>()?;
     m.add_class::<python::PyStreamingDecoder>()?;
     m.add_class::<python::PyByteLevelStreamingDecoder>()?;

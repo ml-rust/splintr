@@ -26,10 +26,12 @@ use rustc_hash::FxHashMap;
 
 use super::any_tokenizer::{AnyTokenizer, Backend};
 use super::policy::SpecialPolicy;
+use super::spm::SpmTokenizer;
 use super::tokenizer::{
     Tokenizer, TokenizerError, CL100K_BASE_PATTERN, GPT2_PATTERN, MISTRAL_V3_PATTERN,
     O200K_BASE_PATTERN, SENTENCEPIECE_PATTERN,
 };
+use super::vocab::{load_tiktoken_spm_pieces, place_special_pieces};
 use super::whisper::{whisper_special_tokens, WhisperVariant};
 
 // Embed vocabulary files at compile time
@@ -185,14 +187,13 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
             // DeepSeek uses ByteLevel BPE encoding
             Tokenizer::from_bytes_byte_level(DEEPSEEK_V3_VOCAB, pat, special)
         }
+        // Mistral V1/V2 are SentencePiece, so they take the SPM-BPE backend and
+        // return here rather than falling through to byte-level BPE.
         PretrainedVocab::MistralV1 => {
-            // Mistral V1 uses SentencePiece - decoder converts ▁ (U+2581) to space
-            Tokenizer::from_bytes_sentencepiece(MISTRAL_VOCAB, pat, special)
+            return spm_from_tiktoken(MISTRAL_VOCAB, vocab, special, named)
         }
         PretrainedVocab::MistralV2 => {
-            // Mistral V2 vocab file has byte fallback tokens that duplicate BPE merges
-            // Use with_decoder variant to preserve all 32,768 token IDs
-            Tokenizer::from_bytes_sentencepiece_with_decoder(MISTRAL_V2_VOCAB, pat, special)
+            return spm_from_tiktoken(MISTRAL_V2_VOCAB, vocab, special, named)
         }
         PretrainedVocab::MistralV3 => {
             // V3 uses ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
@@ -210,6 +211,45 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
     Ok(AnyTokenizer::new(
         Backend::Bpe(tokenizer.with_added_token_matching(true)),
         SpecialPolicy::boundary(None, None, Some(eos_token_id(vocab)), named),
+    ))
+}
+
+/// Build an SPM-BPE tokenizer from a bundled SentencePiece `.tiktoken` file.
+///
+/// A SentencePiece vocabulary is a list of *pieces*, and its word-boundary
+/// marker `▁` is U+2581 = `E2 96 81`. Byte-level BPE builds tokens by merging
+/// adjacent **bytes**, and `E2 96` is not a piece any SentencePiece vocabulary
+/// was trained on — that intermediate pair never existed — so `▁` survives only
+/// when a whole chunk already happens to be one token, and otherwise shatters
+/// into three byte-fallback ids. The damage is invisible from the outside: the
+/// ids stay in range and decode back to the original text, while the model is
+/// fed fragments it never saw during training.
+///
+/// So the file is converted to pieces and merged by
+/// [`SpmTokenizer`](super::spm::SpmTokenizer), which reproduces llama.cpp's
+/// `llm_tokenizer_spm`.
+///
+/// Scores are left empty on purpose: `SpmTokenizer` then merges in token-id
+/// order, which is the order these vocabularies were written in and matches the
+/// merge ranks the original SentencePiece model carried.
+fn spm_from_tiktoken(
+    data: &[u8],
+    vocab: PretrainedVocab,
+    special: FxHashMap<String, u32>,
+    named: FxHashMap<String, u32>,
+) -> Result<AnyTokenizer, TokenizerError> {
+    let mut pieces = load_tiktoken_spm_pieces(data)?;
+    // Agent tokens live above the vocabulary file's last id; give them slots so
+    // they decode and count towards `vocab_size`, not just match on encode.
+    place_special_pieces(&mut pieces, &special)?;
+
+    let eos = eos_token_id(vocab);
+    let tokenizer = SpmTokenizer::new(pieces, Vec::new(), bos_token_id(vocab), Some(eos))?
+        .with_added_tokens(&special);
+
+    Ok(AnyTokenizer::new(
+        Backend::Spm(tokenizer),
+        SpecialPolicy::boundary(None, None, Some(eos), named),
     ))
 }
 
@@ -441,6 +481,14 @@ pub fn mistral_v1_special_tokens() -> FxHashMap<String, u32> {
 pub fn mistral_v2_special_tokens() -> FxHashMap<String, u32> {
     let mut special = FxHashMap::default();
 
+    // Mistral SentencePiece special tokens (0-2). They are control tokens in the
+    // vocabulary file, so they must be matched verbatim in the input: under
+    // SentencePiece a bare `<s>` is normalized to `▁<s>`, which is not a piece,
+    // and would otherwise merge into `▁<` + `s` + `>` instead of id 1.
+    special.insert("<unk>".to_string(), 0);
+    special.insert("<s>".to_string(), 1);
+    special.insert("</s>".to_string(), 2);
+
     // V2 control tokens (for Aho-Corasick matching in encode_with_special)
     // These are also in the vocab file, but adding them here allows clean matching
     special.insert("[INST]".to_string(), 3);
@@ -643,8 +691,21 @@ mod tests {
     fn bpe(tokenizer: AnyTokenizer) -> Tokenizer {
         match tokenizer.into_backend() {
             Backend::Bpe(t) => t,
-            _ => panic!("every bundled vocabulary is BPE"),
+            _ => panic!("this vocabulary does not load as byte-pair encoding"),
         }
+    }
+
+    /// The id of a piece in a bundled SentencePiece vocabulary, read from the
+    /// vocabulary *file* rather than from tokenizer output — so these tests
+    /// assert against the vocabulary, not against whatever the tokenizer
+    /// currently happens to produce.
+    fn spm_piece_id(vocab_data: &[u8], piece: &str) -> u32 {
+        let pieces = load_tiktoken_spm_pieces(vocab_data).expect("vocabulary converts to pieces");
+        let id = pieces
+            .iter()
+            .position(|p| p == piece)
+            .unwrap_or_else(|| panic!("{piece:?} is not in the vocabulary"));
+        id as u32
     }
 
     #[test]
@@ -787,5 +848,57 @@ mod tests {
         let decoded = tokenizer.decode(&tokens).unwrap();
         // Test exact roundtrip
         assert_eq!(decoded, text, "Encoding should be reversible");
+    }
+
+    /// The defect the SPM-BPE backend exists to prevent, asserted against the
+    /// vocabulary file rather than against reference ids.
+    ///
+    /// The SentencePiece word-boundary marker `▁` is U+2581 = `E2 96 81`.
+    /// Merging adjacent *bytes* can never build it, because `E2 96` is not a
+    /// piece any SentencePiece vocabulary was trained on, so under a byte-level
+    /// merger every word boundary collapses into the three byte-fallback ids
+    /// for `<0xE2> <0x96> <0x81>`. That failure is invisible from the outside —
+    /// the ids stay in range and decode back to the original text — so it is
+    /// pinned here directly.
+    #[test]
+    fn test_mistral_never_shatters_the_word_boundary_marker() {
+        for (name, data) in [("mistral", MISTRAL_VOCAB), ("mistral_v2", MISTRAL_V2_VOCAB)] {
+            let shattered = [
+                spm_piece_id(data, "<0xE2>"),
+                spm_piece_id(data, "<0x96>"),
+                spm_piece_id(data, "<0x81>"),
+            ];
+            let tokenizer = from_pretrained(name).unwrap();
+            let ids = tokenizer.encode("the sourdough starter rose overnight");
+            assert!(
+                !ids.windows(3).any(|w| w == shattered.as_slice()),
+                "{name}: word boundary shattered into byte tokens {shattered:?} in {ids:?}"
+            );
+        }
+    }
+
+    /// Whole words in the vocabulary must be reachable. `▁the` and `▁sour` are
+    /// both present in the Mistral V1 file, so encoding text that starts those
+    /// words must produce them — a byte-level merger reaches neither.
+    #[test]
+    fn test_mistral_reaches_whole_word_pieces() {
+        let the = spm_piece_id(MISTRAL_VOCAB, "▁the");
+        let sour = spm_piece_id(MISTRAL_VOCAB, "▁sour");
+        let ids = from_pretrained("mistral").unwrap().encode("the sourdough");
+        assert!(ids.contains(&the), "▁the ({the}) missing from {ids:?}");
+        assert!(ids.contains(&sour), "▁sour ({sour}) missing from {ids:?}");
+    }
+
+    /// A sentence must survive encode → decode *exactly*. `add_dummy_prefix`
+    /// puts a word boundary before the first piece on encode, and decoding
+    /// removes it again, so nothing differs at all: no leading space, no
+    /// dropped character, no replacement char, no reordering. Reference:
+    /// `sp.decode(sp.encode("Hello, world!")) == "Hello, world!"`.
+    #[test]
+    fn test_mistral_round_trips_a_sentence() {
+        let tokenizer = from_pretrained("mistral").unwrap();
+        let text = "The quick brown fox jumps over the lazy dog.";
+        let decoded = tokenizer.decode(&tokenizer.encode(text)).unwrap();
+        assert_eq!(decoded, text);
     }
 }

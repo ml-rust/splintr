@@ -95,7 +95,16 @@ fn test_v2_full_instruction_roundtrip() {
     let text = "[INST]What is the weather today?[/INST]";
     let tokens = tok.encode(text);
     let decoded = tok.decode(&tokens).expect("Failed to decode");
-    assert_eq!(decoded, text);
+
+    // encode -> decode is NOT lossless across an added-token boundary in
+    // SentencePiece, and the reference does not round-trip this string either.
+    // The input is split on the added tokens, and `add_dummy_prefix` prepends a
+    // word boundary to each remaining fragment — so "What ..." encodes as
+    // "▁What ..." and renders back with a leading space. Only ONE dummy prefix
+    // is stripped on decode, the one at the very start of the output; this one
+    // sits after "[INST]", so it stays. HuggingFace `tokenizers` on
+    // mistral-7b's tokenizer.json returns exactly this string.
+    assert_eq!(decoded, "[INST] What is the weather today?[/INST]");
 }
 
 #[test]

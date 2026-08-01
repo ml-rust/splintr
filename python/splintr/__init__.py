@@ -24,6 +24,10 @@ Supported tokenizers:
 - whisper/whisper_v1/whisper_v2/whisper_v3: OpenAI Whisper multilingual (bundled;
   bare "whisper" -> v2).
 
+from_pretrained returns a Tokenizer for byte-level BPE vocabularies, and an
+SpmTokenizer for the SentencePiece ones (mistral/mistral_v1/mistral_v2): those are
+merged as pieces, since byte-level merging cannot build the word-boundary marker.
+
 Any other model: load its HuggingFace tokenizer.json with splintr.from_json(path).
 Dispatches on model type to a Tokenizer (BPE), SentencePieceTokenizer (Unigram),
 or WordPieceTokenizer. Use this for Whisper English-only checkpoints, BERT, T5,
@@ -36,8 +40,8 @@ Usage:
     tokenizer = Tokenizer.from_pretrained("cl100k_base")  # GPT-4
     tokenizer = Tokenizer.from_pretrained("llama3")       # Llama 3
     tokenizer = Tokenizer.from_pretrained("deepseek_v3")  # DeepSeek V3
-    tokenizer = Tokenizer.from_pretrained("mistral_v1")   # Mistral 7B v0.1/v0.2
-    tokenizer = Tokenizer.from_pretrained("mistral_v2")   # Mistral 7B v0.3
+    tokenizer = Tokenizer.from_pretrained("mistral_v1")   # Mistral 7B v0.1/v0.2 -> SpmTokenizer
+    tokenizer = Tokenizer.from_pretrained("mistral_v2")   # Mistral 7B v0.3      -> SpmTokenizer
     tokenizer = Tokenizer.from_pretrained("mistral_v3")   # Mistral NeMo (Tekken)
     tokenizer = Tokenizer.from_pretrained("whisper_v3")   # Whisper large-v3 (multilingual)
 
@@ -135,6 +139,7 @@ Agent Tokens:
 from ._core import (
     Tokenizer,
     SentencePieceTokenizer,
+    SpmTokenizer,
     WordPieceTokenizer,
     from_json,
     from_json_bytes,
@@ -155,6 +160,7 @@ from ._core import (
 __all__ = [
     "Tokenizer",
     "SentencePieceTokenizer",
+    "SpmTokenizer",
     "WordPieceTokenizer",
     "from_json",
     "from_json_bytes",

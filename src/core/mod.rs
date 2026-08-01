@@ -72,7 +72,10 @@ pub use tokenizer::{
     GPT2_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
     SENTENCEPIECE_PATTERN,
 };
-pub use vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, VocabError};
+pub use vocab::{
+    build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file, load_tiktoken_spm_pieces,
+    place_special_pieces, VocabError,
+};
 pub use whisper::{
     whisper_special_tokens, WhisperVariant, WHISPER_LANGUAGES_V1V2, WHISPER_LANGUAGES_V3,
 };

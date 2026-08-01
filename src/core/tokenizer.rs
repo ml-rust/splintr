@@ -39,6 +39,8 @@ pub enum TokenizerError {
     Pcre2Error(#[from] pcre2::Error),
     #[error("Vocabulary error: {0}")]
     VocabError(#[from] VocabError),
+    #[error("SentencePiece BPE error: {0}")]
+    SpmError(#[from] crate::core::spm::SpmError),
     #[error("Decoding error: invalid UTF-8")]
     Utf8Error,
     #[error("Aho-Corasick build error: {0}")]

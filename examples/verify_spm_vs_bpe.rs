@@ -8,13 +8,15 @@
 //!   and it reproduces llama.cpp's ids for `ggml-vocab-llama-spm` exactly.
 //! * [`Tokenizer`] in SentencePiece mode (`from_bytes_sentencepiece`) —
 //!   byte-level (`Vec<u8>`), tiktoken-style pairwise merges over a regex-chunked
-//!   input. This is what the bundled MistralV1/V2 vocabularies use.
+//!   input. This is what the bundled MistralV1/V2 vocabularies used before this
+//!   experiment moved them to `SpmTokenizer`.
 //!
 //! If the byte-level path can reproduce llama.cpp's ids for the *same*
 //! vocabulary, the two are equivalent on real input and one of them is
 //! redundant. If it cannot, they are different algorithms — and the bundled
-//! Mistral vocabularies, which are SentencePiece vocabularies on the byte-level
-//! path, are on the wrong one.
+//! Mistral vocabularies, being SentencePiece vocabularies, belong on the
+//! piece-level path. (They cannot: the byte-level path scores 1/46, which is
+//! why `from_vocab` now routes MistralV1/V2 through `SpmTokenizer`.)
 //!
 //! This example runs llama.cpp's own 46 `ggml-vocab-llama-spm` cases through
 //! both paths and prints them side by side against llama.cpp's expected ids.
