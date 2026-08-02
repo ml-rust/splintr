@@ -204,10 +204,10 @@ impl PyTokenizer {
                 };
                 // Every other BPE arm here builds its tokenizer with added-token
                 // matching OFF: on the Python surface `encode` treats specials
-                // as ordinary text and `encode_with_special` opts in. Leaving it
-                // on for whisper alone would make Python inconsistent with
-                // itself, so it is turned back off; the Python surface is
-                // aligned with the Rust `encode` semantics in a later change.
+                // spelled out in the text as ordinary content and
+                // `encode_with_special` opts in. Leaving it on for whisper alone
+                // would make one bundled vocabulary answer `encode` differently
+                // from every other, so it is turned back off.
                 bpe(inner.with_added_token_matching(false))
             }
             _ => Err(PyValueError::new_err(format!(
@@ -302,10 +302,22 @@ impl PyTokenizer {
         })
     }
 
-    /// Encode text to token IDs.
+    /// Encode text to token IDs — model-ready.
     ///
-    /// Special tokens in the input are treated as regular text.
-    /// This method uses sequential encoding which is optimal for most use cases.
+    /// Applies this tokenizer's boundary template (`post_processor`: `[CLS]…[SEP]`,
+    /// `<s>…</s>`), so the result is what the model was trained to receive. This is
+    /// HuggingFace's `tokenizer.encode(text)` with its default
+    /// `add_special_tokens=True`. Use `encode_raw` for the untemplated form.
+    /// The two are identical for a tokenizer that declares no template — which is
+    /// every vocabulary `Tokenizer.from_pretrained` returns.
+    ///
+    /// Whether a special token *spelled out inside* `text` is matched is a separate
+    /// question, governed by `encode_ordinary` / `encode_with_special` /
+    /// `encode_allowed_special`; `encode` uses this tokenizer's configured default,
+    /// which for `from_pretrained` vocabularies is "do not match" (see
+    /// `encode_with_special` to opt in).
+    ///
+    /// Sequential encoding, optimal for texts under ~1MB.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -313,21 +325,32 @@ impl PyTokenizer {
     /// Returns:
     ///     List of token IDs
     fn encode(&self, text: &str) -> Vec<u32> {
-        self.inner.encode(text)
-    }
-
-    /// Encode and apply the model's `post_processor` template (e.g. `[CLS]…[SEP]`,
-    /// `<s>…</s>`), matching HuggingFace's default `encode` (add_special_tokens=True).
-    /// Equals `encode` for models without a post-processor (e.g. `from_pretrained`).
-    /// Distinct from `encode_with_special` (which recognizes special-token *strings*
-    /// embedded in the input text).
-    fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
         self.policy.apply_single(self.inner.encode(text))
     }
 
-    /// Encode text to token IDs using Rayon parallel processing.
+    /// Encode text to token IDs — content tokens only, no boundary template.
     ///
-    /// This method parallelizes the BPE encoding of individual chunks using Rayon.
+    /// The backend's own output with **no** `post_processor` template applied:
+    /// HuggingFace's `tokenizer.encode(text, add_special_tokens=False)`. Use it
+    /// when you assemble the sequence yourself (a chat template, a reranker pair)
+    /// and place the boundary tokens by hand.
+    ///
+    /// `encode` is exactly this call plus the template; any leading/trailing ids
+    /// `encode` adds and this does not *are* the template.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_raw(&self, text: &str) -> Vec<u32> {
+        self.inner.encode(text)
+    }
+
+    /// `encode` using Rayon to parallelize within a single text.
+    ///
+    /// Same semantics and same result as `encode` (boundary template applied,
+    /// HF's `add_special_tokens=True`) — only the execution strategy differs.
     /// It has higher overhead than `encode()` due to thread pool coordination,
     /// but can be faster for very large texts (typically >1MB) where the
     /// parallelization benefit outweighs the overhead.
@@ -341,12 +364,19 @@ impl PyTokenizer {
     /// Returns:
     ///     List of token IDs
     fn encode_rayon(&self, text: &str) -> Vec<u32> {
-        self.inner.encode_rayon(text)
+        self.policy.apply_single(self.inner.encode_rayon(text))
     }
 
-    /// Encode text with special token handling.
+    /// Encode text, matching **every** configured special token spelled out in it.
     ///
-    /// Special tokens in the input are encoded directly without BPE.
+    /// `<|endoftext|>` typed in `text` becomes that control token's real id rather
+    /// than ordinary bytes. This is HuggingFace's `add_special_tokens=True` applied
+    /// to *added tokens found in the text* — tiktoken's `allowed_special="all"` —
+    /// and it is what `encode` does only when the vocabulary was built with
+    /// added-token matching on (bundled `from_pretrained` vocabularies are not, so
+    /// this method is how you opt in).
+    ///
+    /// The boundary template is applied too, as in `encode`.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -354,15 +384,22 @@ impl PyTokenizer {
     /// Returns:
     ///     List of token IDs
     fn encode_with_special(&self, text: &str) -> Vec<u32> {
-        self.inner.encode_with_special(text)
+        self.policy
+            .apply_single(self.inner.encode_with_special(text))
     }
 
-    /// Encode text to token IDs, never matching special tokens.
+    /// Encode text, never matching a special token spelled out in it.
     ///
-    /// A special token spelled out literally in the input (e.g. `<|endoftext|>`)
+    /// A special token written literally in the input (e.g. `<|endoftext|>`)
     /// is encoded as ordinary text instead of being promoted to its control-token
-    /// id. Use this when tokenizing untrusted text where the caller must not be
-    /// able to forge control tokens.
+    /// id — tiktoken's `disallowed_special=()`, `allowed_special=set()`. Use this
+    /// when tokenizing untrusted text where the caller must not be able to forge
+    /// control tokens.
+    ///
+    /// The boundary template is still applied (as in `encode`): boundary tokens
+    /// come from the template, not from matching text against the vocabulary, so
+    /// locking down matching in the *content* must not strip the boundary tokens
+    /// the model was trained with. Use `encode_raw` for the untemplated form.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -370,15 +407,16 @@ impl PyTokenizer {
     /// Returns:
     ///     List of token IDs
     fn encode_ordinary(&self, text: &str) -> Vec<u32> {
-        self.inner.encode_ordinary(text)
+        self.policy.apply_single(self.inner.encode_ordinary(text))
     }
 
-    /// Encode text to token IDs, matching only the named special tokens.
+    /// Encode text, matching only the named special tokens spelled out in it.
     ///
-    /// Any other configured special token spelled out literally in the text
-    /// raises `ValueError` instead of being silently promoted to its
-    /// control-token id — use this to accept a known, bounded set of special
-    /// tokens (e.g. a chat template's own markers) from otherwise untrusted text.
+    /// tiktoken's `allowed_special={...}`: any *other* configured special token
+    /// written literally in the text raises `ValueError` instead of being silently
+    /// promoted to its control-token id — use this to accept a known, bounded set
+    /// of special tokens (e.g. a chat template's own markers) from otherwise
+    /// untrusted text. The boundary template is applied, as in `encode`.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -396,9 +434,11 @@ impl PyTokenizer {
         allowed_special: Vec<String>,
     ) -> PyResult<Vec<u32>> {
         let allowed: FxHashSet<String> = allowed_special.into_iter().collect();
-        self.inner
+        let ids = self
+            .inner
             .encode_with(text, &SpecialMode::Allow(&allowed))
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(self.policy.apply_single(ids))
     }
 
     /// Decode token IDs to a string.
@@ -439,9 +479,10 @@ impl PyTokenizer {
         self.inner.decode_lossy(&tokens)
     }
 
-    /// Batch encode multiple texts in parallel.
+    /// Batch form of `encode` — model-ready ids for each text.
     ///
-    /// Uses Rayon to parallelize encoding across texts.
+    /// Uses Rayon to parallelize encoding across texts. Each result carries the
+    /// boundary template, exactly as `encode` does (HF `add_special_tokens=True`).
     ///
     /// Args:
     ///     texts: List of texts to encode
@@ -449,10 +490,15 @@ impl PyTokenizer {
     /// Returns:
     ///     List of token ID lists
     fn encode_batch(&self, texts: Vec<String>) -> Vec<Vec<u32>> {
-        self.inner.encode_batch(&texts)
+        self.inner
+            .encode_batch(&texts)
+            .into_iter()
+            .map(|ids| self.policy.apply_single(ids))
+            .collect()
     }
 
-    /// Batch encode multiple texts with special token handling.
+    /// Batch form of `encode_with_special` — every special token spelled out in
+    /// each text is matched, and the boundary template applied.
     ///
     /// Args:
     ///     texts: List of texts to encode
@@ -460,7 +506,11 @@ impl PyTokenizer {
     /// Returns:
     ///     List of token ID lists
     fn encode_batch_with_special(&self, texts: Vec<String>) -> Vec<Vec<u32>> {
-        self.inner.encode_batch_with_special(&texts)
+        self.inner
+            .encode_batch_with_special(&texts)
+            .into_iter()
+            .map(|ids| self.policy.apply_single(ids))
+            .collect()
     }
 
     /// Batch decode multiple token lists in parallel.
@@ -600,10 +650,16 @@ impl PySentencePieceTokenizer {
         })
     }
 
-    /// Encode text to token IDs using Viterbi maximum-score Unigram segmentation.
+    /// Encode text to token IDs — model-ready.
     ///
-    /// Prepends BOS token if configured. Replaces spaces with ▁ (U+2581)
-    /// following the SentencePiece convention.
+    /// Viterbi maximum-score Unigram segmentation, with spaces replaced by ▁
+    /// (U+2581) following the SentencePiece convention. Adds the boundary tokens
+    /// this tokenizer owns — the configured BOS, plus any `post_processor`
+    /// template — so the result is HuggingFace's `tokenizer.encode(text)` with its
+    /// default `add_special_tokens=True`. Use `encode_raw` for the untemplated form.
+    ///
+    /// Special tokens spelled out inside `text` are matched; `encode_ordinary` and
+    /// `encode_allowed_special` constrain that.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -611,24 +667,54 @@ impl PySentencePieceTokenizer {
     /// Returns:
     ///     List of token IDs
     fn encode(&self, text: &str) -> Vec<u32> {
-        self.with_bos(self.inner.encode(text))
-    }
-
-    /// Encode and apply the model's `post_processor` template, matching
-    /// HuggingFace's default `encode`. Equals `encode` when there is none.
-    fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
         self.policy
             .apply_single(self.with_bos(self.inner.encode(text)))
     }
 
-    /// Encode text to token IDs, never matching special tokens.
+    /// Encode text to token IDs — content tokens only, no boundary tokens.
     ///
-    /// A special token spelled out literally in the input is encoded as
-    /// ordinary text instead of being promoted to its control-token id. BOS is
-    /// still prepended if configured — that is a boundary token this tokenizer
-    /// always adds, independent of whether special-token matching in the
-    /// content is on. Use this when tokenizing untrusted text where the caller
-    /// must not be able to forge control tokens.
+    /// HuggingFace's `tokenizer.encode(text, add_special_tokens=False)`: neither
+    /// the configured BOS nor any `post_processor` template is added. Use it when
+    /// you assemble the sequence yourself and place the boundary tokens by hand.
+    ///
+    /// `encode` is exactly this call plus those boundary tokens.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_raw(&self, text: &str) -> Vec<u32> {
+        self.inner.encode(text)
+    }
+
+    /// Encode text, matching **every** configured special token spelled out in it.
+    ///
+    /// tiktoken's `allowed_special="all"`. This backend always matches its added
+    /// tokens, so this is what `encode` already does — the name exists so the
+    /// method means the same thing on every splintr tokenizer class. Boundary
+    /// tokens are added, as in `encode`.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_with_special(&self, text: &str) -> Vec<u32> {
+        self.encode(text)
+    }
+
+    /// Encode text, never matching a special token spelled out in it.
+    ///
+    /// A special token written literally in the input is encoded as ordinary text
+    /// instead of being promoted to its control-token id — tiktoken's
+    /// `allowed_special=set()`. Use this when tokenizing untrusted text where the
+    /// caller must not be able to forge control tokens.
+    ///
+    /// Boundary tokens (the configured BOS, the template) are still added, as in
+    /// `encode`: they come from this tokenizer's own configuration, not from
+    /// matching text against the vocabulary, so locking down matching in the
+    /// *content* must not strip them. Use `encode_raw` for the untemplated form.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -636,15 +722,17 @@ impl PySentencePieceTokenizer {
     /// Returns:
     ///     List of token IDs
     fn encode_ordinary(&self, text: &str) -> Vec<u32> {
-        self.with_bos(self.inner.encode_ordinary(text))
+        self.policy
+            .apply_single(self.with_bos(self.inner.encode_ordinary(text)))
     }
 
-    /// Encode text to token IDs, matching only the named special tokens.
+    /// Encode text, matching only the named special tokens spelled out in it.
     ///
-    /// Any other configured special token spelled out literally in the text
-    /// raises `ValueError` instead of being silently promoted to its
-    /// control-token id — use this to accept a known, bounded set of special
-    /// tokens from otherwise untrusted text. BOS is still prepended if configured.
+    /// tiktoken's `allowed_special={...}`: any *other* configured special token
+    /// written literally in the text raises `ValueError` instead of being silently
+    /// promoted to its control-token id — use this to accept a known, bounded set
+    /// of special tokens from otherwise untrusted text. Boundary tokens are added,
+    /// as in `encode`.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -666,7 +754,27 @@ impl PySentencePieceTokenizer {
             .inner
             .encode_with(text, &SpecialMode::Allow(&allowed))
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(self.with_bos(ids))
+        Ok(self.policy.apply_single(self.with_bos(ids)))
+    }
+
+    /// Batch form of `encode` — model-ready ids for each text.
+    ///
+    /// Uses Rayon to parallelize encoding across texts.
+    ///
+    /// Args:
+    ///     texts: List of texts to encode
+    ///
+    /// Returns:
+    ///     List of token ID lists
+    fn encode_batch(&self, texts: Vec<String>) -> Vec<Vec<u32>> {
+        #[cfg(feature = "rayon")]
+        {
+            texts.par_iter().map(|text| self.encode(text)).collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            texts.iter().map(|text| self.encode(text)).collect()
+        }
     }
 
     /// Decode token IDs to text.
@@ -785,32 +893,45 @@ impl PySpmTokenizer {
         })
     }
 
-    /// Encode text to token IDs.
+    /// Encode text to token IDs — model-ready.
+    ///
+    /// Applies this tokenizer's boundary template, so the result is HuggingFace's
+    /// `tokenizer.encode(text)` with its default `add_special_tokens=True`. Use
+    /// `encode_raw` for the untemplated form; the two are identical when the
+    /// vocabulary declares no template.
     ///
     /// Control tokens present in the text (`[INST]`, `<s>`, chat markers) are
     /// recognized as single IDs — SentencePiece merging would otherwise shred
-    /// them into ordinary pieces. Boundary tokens are not added; use
-    /// `encode_with_special_tokens` for the model's template.
+    /// them into ordinary pieces. `encode_ordinary` and `encode_allowed_special`
+    /// constrain that.
     fn encode(&self, text: &str) -> Vec<u32> {
-        Tokenize::encode(&self.inner, text)
-    }
-
-    /// Encode and apply the model's boundary template, matching HuggingFace's
-    /// default `encode`. Equals `encode` when there is none.
-    fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
         self.policy
             .apply_single(Tokenize::encode(&self.inner, text))
     }
 
-    /// Encode text with control-token handling.
+    /// Encode text to token IDs — content tokens only, no boundary template.
     ///
-    /// Unlike the byte-level BPE `Tokenizer`, whose `encode` treats special
-    /// tokens as ordinary text unless the vocabulary was built with
-    /// added-token matching on, this SPM-BPE backend's `encode` already
-    /// recognizes control tokens (`[INST]`, `<s>`, chat markers) — see
-    /// `encode`'s docs. This method is that same behavior under the name the
-    /// BPE surface uses, so callers migrating between the two wrapper types
-    /// do not need to special-case SPM.
+    /// HuggingFace's `tokenizer.encode(text, add_special_tokens=False)`. Use it
+    /// when you assemble the sequence yourself and place the boundary tokens by
+    /// hand. `encode` is exactly this call plus the template.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_raw(&self, text: &str) -> Vec<u32> {
+        Tokenize::encode(&self.inner, text)
+    }
+
+    /// Encode text, matching **every** control token spelled out in it.
+    ///
+    /// tiktoken's `allowed_special="all"`. Unlike the byte-level BPE `Tokenizer`,
+    /// whose `encode` treats special tokens as ordinary text unless the vocabulary
+    /// was built with added-token matching on, this SPM-BPE backend's `encode`
+    /// already recognizes control tokens — so this is what `encode` does. The name
+    /// exists so the method means the same thing on every splintr tokenizer class.
+    /// The boundary template is applied, as in `encode`.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -821,7 +942,7 @@ impl PySpmTokenizer {
         self.encode(text)
     }
 
-    /// Batch encode multiple texts in parallel.
+    /// Batch form of `encode` — model-ready ids for each text.
     ///
     /// Uses Rayon to parallelize encoding across texts, mirroring
     /// `Tokenizer::encode_batch`.
@@ -842,12 +963,16 @@ impl PySpmTokenizer {
         }
     }
 
-    /// Encode text to token IDs, never matching control tokens.
+    /// Encode text, never matching a control token spelled out in it.
     ///
-    /// A control token spelled out literally in the input (`[INST]`, `<s>`,
-    /// chat markers) is encoded as ordinary text instead of being recognized as
-    /// a single id. Use this when tokenizing untrusted text where the caller
-    /// must not be able to forge control tokens.
+    /// A control token written literally in the input (`[INST]`, `<s>`, chat
+    /// markers) is encoded as ordinary text instead of being recognized as a
+    /// single id — tiktoken's `allowed_special=set()`. Use this when tokenizing
+    /// untrusted text where the caller must not be able to forge control tokens.
+    ///
+    /// The boundary template is still applied, as in `encode`: it comes from this
+    /// tokenizer's own configuration, not from matching text against the
+    /// vocabulary. Use `encode_raw` for the untemplated form.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -855,15 +980,16 @@ impl PySpmTokenizer {
     /// Returns:
     ///     List of token IDs
     fn encode_ordinary(&self, text: &str) -> Vec<u32> {
-        self.inner.encode_ordinary(text)
+        self.policy.apply_single(self.inner.encode_ordinary(text))
     }
 
-    /// Encode text to token IDs, matching only the named control tokens.
+    /// Encode text, matching only the named control tokens spelled out in it.
     ///
-    /// Any other configured control token spelled out literally in the text
-    /// raises `ValueError` instead of being silently recognized as a single
-    /// id — use this to accept a known, bounded set of control tokens from
-    /// otherwise untrusted text.
+    /// tiktoken's `allowed_special={...}`: any *other* configured control token
+    /// written literally in the text raises `ValueError` instead of being silently
+    /// recognized as a single id — use this to accept a known, bounded set of
+    /// control tokens from otherwise untrusted text. The boundary template is
+    /// applied, as in `encode`.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -881,9 +1007,11 @@ impl PySpmTokenizer {
         allowed_special: Vec<String>,
     ) -> PyResult<Vec<u32>> {
         let allowed: FxHashSet<String> = allowed_special.into_iter().collect();
-        self.inner
+        let ids = self
+            .inner
             .encode_with(text, &SpecialMode::Allow(&allowed))
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(self.policy.apply_single(ids))
     }
 
     /// Decode token IDs to text, converting `▁` back to spaces, reassembling
@@ -952,25 +1080,64 @@ impl PyWordPieceTokenizer {
         }
     }
 
-    /// Encode text to token IDs.
+    /// Encode text to token IDs — model-ready.
+    ///
+    /// Applies this tokenizer's `post_processor` template (BERT's `[CLS]…[SEP]`),
+    /// so the result is HuggingFace's `tokenizer.encode(text)` with its default
+    /// `add_special_tokens=True`. Use `encode_raw` for the untemplated form; the
+    /// two are identical when no post-processor is declared — which is the case
+    /// for this class's direct constructor, since it takes a vocabulary and no
+    /// template.
+    ///
+    /// Special tokens spelled out inside `text` are matched; `encode_ordinary` and
+    /// `encode_allowed_special` constrain that.
     fn encode(&self, text: &str) -> Vec<u32> {
-        Tokenize::encode(&self.inner, text)
-    }
-
-    /// Encode and apply the model's `post_processor` template (e.g. `[CLS]…[SEP]`),
-    /// matching HuggingFace's default `encode`. Equals `encode` when there is no
-    /// post-processor.
-    fn encode_with_special_tokens(&self, text: &str) -> Vec<u32> {
         self.policy
             .apply_single(Tokenize::encode(&self.inner, text))
     }
 
-    /// Encode text to token IDs, never matching special tokens.
+    /// Encode text to token IDs — content tokens only, no `post_processor`.
     ///
-    /// A special token spelled out literally in the input (e.g. `[CLS]`,
-    /// `[SEP]`) is encoded as ordinary text instead of being recognized as a
-    /// single id. Use this when tokenizing untrusted text where the caller
-    /// must not be able to forge control tokens.
+    /// HuggingFace's `tokenizer.encode(text, add_special_tokens=False)`: no
+    /// `[CLS]`/`[SEP]` wrapping. Use it when you assemble the sequence yourself
+    /// (a reranker pair, a custom template). `encode` is exactly this call plus
+    /// the template.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_raw(&self, text: &str) -> Vec<u32> {
+        Tokenize::encode(&self.inner, text)
+    }
+
+    /// Encode text, matching **every** configured special token spelled out in it.
+    ///
+    /// tiktoken's `allowed_special="all"`. This backend always matches its added
+    /// tokens, so this is what `encode` already does — the name exists so the
+    /// method means the same thing on every splintr tokenizer class. The
+    /// `post_processor` template is applied, as in `encode`.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_with_special(&self, text: &str) -> Vec<u32> {
+        self.encode(text)
+    }
+
+    /// Encode text, never matching a special token spelled out in it.
+    ///
+    /// A special token written literally in the input (e.g. `[CLS]`, `[SEP]`) is
+    /// encoded as ordinary text instead of being recognized as a single id —
+    /// tiktoken's `allowed_special=set()`. Use this when tokenizing untrusted text
+    /// where the caller must not be able to forge control tokens.
+    ///
+    /// The `post_processor` template is still applied, as in `encode`: its
+    /// `[CLS]`/`[SEP]` come from the template, not from matching text against the
+    /// vocabulary. Use `encode_raw` for the untemplated form.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -978,15 +1145,16 @@ impl PyWordPieceTokenizer {
     /// Returns:
     ///     List of token IDs
     fn encode_ordinary(&self, text: &str) -> Vec<u32> {
-        self.inner.encode_ordinary(text)
+        self.policy.apply_single(self.inner.encode_ordinary(text))
     }
 
-    /// Encode text to token IDs, matching only the named special tokens.
+    /// Encode text, matching only the named special tokens spelled out in it.
     ///
-    /// Any other configured special token spelled out literally in the text
-    /// raises `ValueError` instead of being silently recognized as a single
-    /// id — use this to accept a known, bounded set of special tokens from
-    /// otherwise untrusted text.
+    /// tiktoken's `allowed_special={...}`: any *other* configured special token
+    /// written literally in the text raises `ValueError` instead of being silently
+    /// recognized as a single id — use this to accept a known, bounded set of
+    /// special tokens from otherwise untrusted text. The `post_processor` template
+    /// is applied, as in `encode`.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -1004,9 +1172,31 @@ impl PyWordPieceTokenizer {
         allowed_special: Vec<String>,
     ) -> PyResult<Vec<u32>> {
         let allowed: FxHashSet<String> = allowed_special.into_iter().collect();
-        self.inner
+        let ids = self
+            .inner
             .encode_with(text, &SpecialMode::Allow(&allowed))
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(self.policy.apply_single(ids))
+    }
+
+    /// Batch form of `encode` — model-ready ids for each text.
+    ///
+    /// Uses Rayon to parallelize encoding across texts.
+    ///
+    /// Args:
+    ///     texts: List of texts to encode
+    ///
+    /// Returns:
+    ///     List of token ID lists
+    fn encode_batch(&self, texts: Vec<String>) -> Vec<Vec<u32>> {
+        #[cfg(feature = "rayon")]
+        {
+            texts.par_iter().map(|text| self.encode(text)).collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            texts.iter().map(|text| self.encode(text)).collect()
+        }
     }
 
     /// Decode token IDs to text.
@@ -1059,8 +1249,12 @@ pub struct PyAnyTokenizer {
 
 #[pymethods]
 impl PyAnyTokenizer {
-    /// Encode text and apply the model's boundary template, matching
-    /// HuggingFace's default `encode` (`add_special_tokens=True`).
+    /// Encode text to token IDs — model-ready.
+    ///
+    /// Applies the model's boundary template (`post_processor`: `[CLS]…[SEP]`,
+    /// `<s>…</s>`), matching HuggingFace's `tokenizer.encode(text)` with its
+    /// default `add_special_tokens=True`. Use `encode_raw` for the untemplated
+    /// form.
     ///
     /// Special tokens spelled out literally in `text` are matched (every loader
     /// turns added-token matching on); use `encode_ordinary` or
@@ -1075,11 +1269,13 @@ impl PyAnyTokenizer {
         self.inner.encode(text)
     }
 
-    /// Encode without applying the boundary template — the backend's content
-    /// tokens alone, matching HuggingFace's `add_special_tokens=False`.
+    /// Encode text to token IDs — content tokens only, no boundary template.
     ///
-    /// Use this when assembling your own sequence (a chat template, a reranker
-    /// pair) and placing the boundary tokens yourself.
+    /// The backend's output alone, matching HuggingFace's
+    /// `tokenizer.encode(text, add_special_tokens=False)`. Use this when
+    /// assembling your own sequence (a chat template, a reranker pair) and
+    /// placing the boundary tokens yourself. `encode` is exactly this call plus
+    /// the template.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -1090,12 +1286,13 @@ impl PyAnyTokenizer {
         self.inner.encode_raw(text)
     }
 
-    /// Encode text, matching every configured special token found in it.
+    /// Encode text, matching **every** configured special token spelled out in it.
     ///
-    /// This is what `encode` already does; the name exists so callers migrating
-    /// from the family-specific wrappers keep working. Distinct from
-    /// `encode_ordinary` (matches none) and `encode_allowed_special` (matches a
-    /// named subset).
+    /// tiktoken's `allowed_special="all"`. This is what `encode` already does —
+    /// the name exists so the method means the same thing on every splintr
+    /// tokenizer class. Distinct from `encode_ordinary` (matches none) and
+    /// `encode_allowed_special` (matches a named subset). The boundary template is
+    /// applied, as in `encode`.
     ///
     /// Args:
     ///     text: Input text to encode
@@ -1108,12 +1305,13 @@ impl PyAnyTokenizer {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
-    /// Encode text to token IDs, never matching special tokens.
+    /// Encode text, never matching a special token spelled out in it.
     ///
-    /// A special token spelled out literally in the input (e.g. `<|endoftext|>`,
+    /// A special token written literally in the input (e.g. `<|endoftext|>`,
     /// `[INST]`) is encoded as ordinary text instead of being promoted to its
-    /// control-token id. Use this when tokenizing untrusted text where the
-    /// caller must not be able to forge control tokens.
+    /// control-token id — tiktoken's `allowed_special=set()`. Use this when
+    /// tokenizing untrusted text where the caller must not be able to forge
+    /// control tokens.
     ///
     /// The model's boundary template is still applied, exactly as in
     /// `AnyTokenizer::encode_with`: boundary tokens come from the template, not
@@ -1132,13 +1330,14 @@ impl PyAnyTokenizer {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
-    /// Encode text to token IDs, matching only the named special tokens.
+    /// Encode text, matching only the named special tokens spelled out in it.
     ///
-    /// Any other configured special token spelled out literally in the text
-    /// raises `ValueError` instead of being silently promoted to its
-    /// control-token id — use this to accept a known, bounded set of special
-    /// tokens (e.g. a chat template's own markers) from otherwise untrusted
-    /// text. The boundary template is applied, as in `encode_ordinary`.
+    /// tiktoken's `allowed_special={...}`: any *other* configured special token
+    /// written literally in the text raises `ValueError` instead of being
+    /// silently promoted to its control-token id — use this to accept a known,
+    /// bounded set of special tokens (e.g. a chat template's own markers) from
+    /// otherwise untrusted text. The boundary template is applied, as in
+    /// `encode_ordinary`.
     ///
     /// Args:
     ///     text: Input text to encode

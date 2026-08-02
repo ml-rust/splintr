@@ -28,6 +28,20 @@ pub use core::{
     from_gguf_vocab, from_json_bytes, from_json_path, AnyTokenizer, Backend, GgufVocab,
     GgufVocabError, HfJsonError, PolicyError, SpecialMode, SpecialPolicy,
 };
+/// The hash map splintr's vocabulary constructors take, re-exported for the same
+/// reason as [`FxHashSet`]: [`Tokenizer::new`] takes `FxHashMap<Vec<u8>, u32>` for
+/// the encoder and `FxHashMap<String, u32>` for the special tokens, so building a
+/// tokenizer from your own vocabulary needs this type by name.
+pub use rustc_hash::FxHashMap;
+/// The hash set [`SpecialMode::Allow`] borrows, re-exported so that mode is
+/// constructible from this crate's own exports.
+///
+/// `SpecialMode::Allow(&FxHashSet<String>)` names a type from `rustc_hash`. Without
+/// this re-export a downstream caller had to add their own `rustc-hash` dependency
+/// and keep its version in lockstep with splintr's — a mismatch fails to compile on
+/// a type the caller never chose. Build the allow-list from `splintr::FxHashSet` and
+/// there is no version to match.
+pub use rustc_hash::FxHashSet;
 
 /// Splintr - Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings
 ///
