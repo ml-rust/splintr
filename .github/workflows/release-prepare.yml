@@ -1,0 +1,190 @@
+# Tag gate for a releasable build. Pushing a v* tag validates the tag against
+# `.version` and the CHANGELOG, runs the full test suite, and builds every wheel
+# plus the sdist once. Nothing is published and nothing leaves the repo.
+#
+# The manual `Release` workflow then consumes THIS run's artifacts by run ID, so
+# a failure in the publish or release stage is fixed and retried without
+# repeating the tests or rebuilding a single wheel — and the bytes that reach
+# PyPI are the bytes the test suite passed on.
+#
+# Artifacts are retained 14 days: that is the window in which a `Release` run
+# can still resume from this prepare run.
+
+name: Release Prepare
+run-name: Release Prepare ${{ github.ref_name }}
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-prepare-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate-version:
+    uses: ./.github/workflows/release-validate.yml
+    with:
+      ref: ${{ github.ref_name }}
+
+  # Full lint + cross-platform test + python + features + wasm + audit gates.
+  # Calls test.yml directly rather than ci.yml, whose PR-draft gate skips under
+  # workflow_call.
+  ci:
+    name: CI Gate
+    needs: validate-version
+    uses: ./.github/workflows/test.yml
+
+  # ── Wheels ────────────────────────────────────────────────────────────────
+  # One wheel per platform family the README claims support for. A platform
+  # dropped here silently stops receiving wheels, which is why
+  # verify_release_artifacts.sh checks the same list from the other side.
+  build-wheels:
+    name: Build wheels (${{ matrix.label }})
+    needs: [validate-version, ci]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+          - os: macos-15-intel
+            label: macos-x86_64
+          - os: macos-latest
+            label: macos-arm64
+          - os: windows-latest
+            label: windows-x86_64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Stamp version from tag
+        shell: bash
+        run: bash scripts/update_version.sh "${{ github.ref_name }}"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          # `python` for the PyO3 bindings, `pcre2` for the optional backend —
+          # regexr (the default) is always compiled in. regexr's SIMD is chosen
+          # at run time; its JIT and PCRE2's are build-time decisions, so they
+          # have to be made here.
+          args: --release --out dist --features python,pcre2
+          sccache: "true"
+          manylinux: auto
+        env:
+          PCRE2_SYS_JIT: "1"
+
+      # An importable wheel is the minimum bar for shipping one, and a wheel
+      # that fails to load is a failure the Linux-only `python` CI job cannot
+      # see — it is the platform-specific builds that break this way.
+      - name: Smoke-test the wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --no-index --find-links dist splintr-rs
+          python -c "
+          import splintr
+          tok = splintr.Tokenizer.from_pretrained('cl100k_base')
+          ids = tok.encode('Hello, world!')
+          assert tok.decode(ids) == 'Hello, world!', 'round-trip failed'
+          print('wheel ok:', splintr.__version__, ids)
+          "
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheels-${{ matrix.label }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── Source distribution ───────────────────────────────────────────────────
+  build-sdist:
+    name: Build sdist
+    needs: [validate-version, ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Stamp version from tag
+        run: bash scripts/update_version.sh "${{ github.ref_name }}"
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          command: sdist
+          args: --out dist
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheels-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── crates.io dry run ─────────────────────────────────────────────────────
+  # The crate publishes from source, so the thing that can fail at release time
+  # is packaging: the explicit `include` list in Cargo.toml omitting a vocab
+  # file, or the packaged tree not building from a clean checkout. Both are
+  # caught here, before anything is uploaded anywhere.
+  package-crate:
+    name: Package crate (dry run)
+    needs: [validate-version, ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: package
+
+      - name: Stamp version from tag
+        run: bash scripts/update_version.sh "${{ github.ref_name }}"
+
+      - name: cargo package
+        run: cargo package --allow-dirty
+
+  # ── Instructions ──────────────────────────────────────────────────────────
+  summary:
+    name: Release instructions
+    needs: [validate-version, build-wheels, build-sdist, package-crate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write summary
+        env:
+          VERSION: ${{ needs.validate-version.outputs.cargo_version }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          {
+            echo "## Prepared ${TAG}"
+            echo
+            echo "Tests passed, wheels and sdist are built, and the crate packages cleanly. Publish with:"
+            echo
+            echo '```sh'
+            echo "gh workflow run release.yml -R ${REPO} \\"
+            echo "  -f tag=${TAG} \\"
+            echo "  -f prepare_run_id=${RUN_ID}"
+            echo '```'
+            echo
+            echo "If one stage fails, re-run the same command with only the"
+            echo "remaining stages enabled (e.g. \`-f publish_crate=false\`)."
+            echo "Nothing is rebuilt."
+          } >> "$GITHUB_STEP_SUMMARY"

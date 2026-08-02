@@ -1,0 +1,18 @@
+# nextest configuration.
+#
+# The suite is CPU-bound and hermetic — every test builds its tokenizer from
+# embedded vocabularies or a fixture file, touches no shared state, and needs no
+# network — so everything runs at full parallelism with no serial groups.
+
+[profile.default]
+test-threads = "num-cpus"
+# A failing case in one vocabulary says nothing about the others, and the useful
+# CI artifact is the full list of what broke, not the first thing that did.
+fail-fast = false
+# Slow is normal for the reference-corpus tests; only report, never kill.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# Machine-readable results for the CI artifact. Written to
+# target/nextest/<profile>/junit.xml.
+[profile.default.junit]
+path = "junit.xml"

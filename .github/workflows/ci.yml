@@ -1,4 +1,8 @@
 # CI — thin wrapper that calls the reusable test workflow.
+#
+# Runs on every pull request and can be dispatched manually. Release Prepare
+# calls test.yml directly rather than this workflow, because the draft gate
+# below would skip the whole suite under `workflow_call`.
 
 name: CI
 

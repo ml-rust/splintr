@@ -1,8 +1,30 @@
-# Reusable test workflow: lint, check, and test.
+# Reusable test workflow.
 #
 # Called by:
-#   - ci.yml      (PR checks)
-#   - release.yml (pre-publish gate)
+#   - ci.yml              (PR checks + manual)
+#   - release-prepare.yml (tag gate, before anything is built for release)
+#
+# Not triggered directly — `workflow_call` only.
+#
+# Jobs:
+#   lint      — rustfmt + clippy + rustdoc + doctests, plus the release-path
+#               shell scripts (shellcheck + their self-test), so a broken
+#               verifier fails a PR instead of a publish.
+#   test      — `cargo nextest run` on Linux / macOS / Windows, default
+#               features. The optional deps (pyo3, pcre2) are off here; the
+#               jobs below cover them.
+#   pcre2     — the same suite with the PCRE2 backend enabled. Nothing in the
+#               default matrix compiles a single line of it, so without this
+#               lane the alternative regex backend ships untested.
+#   python    — builds the extension module and runs the pytest suite plus a
+#               tiktoken parity check, the only place the PyO3 layer is
+#               exercised end to end.
+#   features  — `cargo check` for every feature combination that ships,
+#               including the `--no-default-features` build the README offers.
+#   wasm      — `cargo check` for wasm32-unknown-unknown and wasm32-wasip1
+#               (`--no-default-features`: neither Rayon threads nor the regexr
+#               JIT exist on those targets).
+#   audit     — cargo-deny: advisories, licenses, sources.
 
 name: Test
 
@@ -14,150 +36,244 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────
   lint:
-    name: Lint & Format
+    name: Lint, Format & Docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt, clippy
 
-      - name: Install PCRE2
-        run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
+      # `--all-features` turns on `python`, and pyo3's build script needs an
+      # interpreter to resolve the ABI it compiles against.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           prefix-key: lint
 
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (all targets, all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # Warnings are denied because the failures that matter here are silent: a
+      # link to a crate-private item renders as plain text rather than erroring,
+      # so the published docs lose it and nothing reports why.
+      - name: Build docs
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      # The README's Rust examples are doctests; this is what keeps them from
+      # drifting away from the API they document.
+      - name: Run doctests
+        run: cargo test --doc
+
+      - name: Shellcheck CI scripts
+        run: shellcheck scripts/ci/*.sh
+
+      - name: Release verifier self-test
+        run: bash scripts/ci/test_release_verifiers.sh
+
+  # ─────────────────────────────────────────────────────────────────────────
   test:
-    name: Test (${{ matrix.target }})
-    runs-on: ${{ matrix.runs-on }}
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - runs-on: macos-latest
-            target: aarch64-apple-darwin
-          - runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          prefix-key: test-${{ matrix.target }}
+          prefix-key: test-${{ matrix.os }}
 
-      - name: Install PCRE2 (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
-
-      - name: Configure Python for PyO3 (Ubuntu)
-        if: runner.os == 'Linux'
-        run: echo "PYO3_PYTHON=$(which python3)" >> $GITHUB_ENV
-
-      - name: Install PCRE2 (macOS)
-        if: runner.os == 'macOS'
-        run: brew install pcre2
-
-      - name: Configure Python for PyO3 (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          echo "PYO3_PYTHON=$(which python3)" >> $GITHUB_ENV
-          PYTHON_PREFIX=$(python3 -c "import sys; print(sys.prefix)")
-          echo "LIBRARY_PATH=${PYTHON_PREFIX}/lib" >> $GITHUB_ENV
-          echo "DYLD_LIBRARY_PATH=${PYTHON_PREFIX}/lib" >> $GITHUB_ENV
-          echo "CARGO_BUILD_RUSTFLAGS=-C link-arg=-undefined -C link-arg=dynamic_lookup" >> $GITHUB_ENV
-
-      - name: Install PCRE2 (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          vcpkg install pcre2:x64-windows
-          echo "PCRE2_SYS_STATIC=1" >> $env:GITHUB_ENV
-
-      - name: Configure Python for PyO3 (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          $pythonPath = (Get-Command python).Source
-          echo "PYO3_PYTHON=$pythonPath" >> $env:GITHUB_ENV
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: nextest
 
       - name: Run tests
-        run: cargo test
+        run: cargo nextest run --no-fail-fast
 
+      - name: Upload nextest report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-${{ matrix.os }}
+          path: target/nextest/default/junit.xml
+          if-no-files-found: ignore
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # The PCRE2 backend is an optional feature, so the matrix above never builds
+  # it. Linux-only and single-config on purpose: the backend is pure Rust glue
+  # over a vendored C library with no platform-specific code of its own, and
+  # the point of the lane is that its code paths run at all.
+  pcre2:
+    name: Test (PCRE2 backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: pcre2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: nextest
+
+      - name: Run tests with the PCRE2 backend
+        run: cargo nextest run --features pcre2 --no-fail-fast
+        env:
+          # JIT compilation is what makes the backend worth having; build it in
+          # so the tested configuration is the shipped one.
+          PCRE2_SYS_JIT: "1"
+
+  # ─────────────────────────────────────────────────────────────────────────
   python:
     name: Python bindings
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
-      - name: Install PCRE2
-        run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           prefix-key: python
 
-      - name: Install dependencies and build
+      # The wheels ship `python,pcre2`; build the same combination here so the
+      # tested module is the one users install.
+      - name: Build the extension module
         run: |
+          set -euo pipefail
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
-          pip install maturin tiktoken
-          maturin develop --release
+          pip install maturin pytest tiktoken
+          maturin develop --release --features python,pcre2
+        env:
+          PCRE2_SYS_JIT: "1"
 
-      - name: Test Python bindings
-        run: |
-          .venv/bin/python -c "
-          import splintr
-          import tiktoken
+      - name: Run the Python test suite
+        run: .venv/bin/python -m pytest python/tests -q
 
-          # Test cl100k_base
-          tok = splintr.Tokenizer.from_pretrained('cl100k_base')
-          tik = tiktoken.get_encoding('cl100k_base')
+      # Differential, not self-consistent: the suite above fixes behaviour
+      # splintr already knows about, this asserts it still matches tiktoken.
+      - name: Check parity against tiktoken
+        run: .venv/bin/python scripts/ci/check_tiktoken_parity.py
 
-          text = 'Hello, world!'
-          assert tok.encode(text) == list(tik.encode(text)), 'cl100k_base mismatch'
+  # ─────────────────────────────────────────────────────────────────────────
+  features:
+    name: Feature matrix (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flags: ""
+            label: default
+          # The minimal build the README documents: no Rayon, no regexr
+          # JIT/SIMD. Nothing else in CI compiles the sequential fallbacks.
+          - flags: "--no-default-features"
+            label: no-default-features
+          - flags: "--no-default-features --features rayon"
+            label: rayon only
+          - flags: "--no-default-features --features regexr-jit"
+            label: regexr-jit only
+          - flags: "--features pcre2"
+            label: pcre2
+          - flags: "--all-features"
+            label: all features
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-          # Test o200k_base
-          tok2 = splintr.Tokenizer.from_pretrained('o200k_base')
-          tik2 = tiktoken.get_encoding('o200k_base')
-          assert tok2.encode(text) == list(tik2.encode(text)), 'o200k_base mismatch'
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-          # Test streaming decoder
-          decoder = tok.streaming_decoder()
-          tokens = tok.encode('Hello')
-          result = []
-          for t in tokens:
-              chunk = decoder.add_token(t)
-              if chunk:
-                  result.append(chunk)
-          result.append(decoder.flush())
-          assert ''.join(result) == 'Hello', 'Streaming decoder failed'
+      # `--all-features` enables `python`; pyo3's build script needs an
+      # interpreter present.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
 
-          print('All Python tests passed!')
-          "
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: features
+
+      - name: cargo check
+        run: cargo check --lib --tests --examples ${{ matrix.flags }}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Tokenization runs in the browser and in WASI runtimes; both are compile-only
+  # here, since running them would need a wasm host we don't gate every PR on.
+  wasm:
+    name: WASM check (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [wasm32-unknown-unknown, wasm32-wasip1]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust + target
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: wasm-${{ matrix.target }}
+
+      # Rayon's thread pool and the regexr JIT have no wasm implementation, so
+      # this is the minimal build — the same one the README documents.
+      - name: cargo check --lib
+        run: cargo check --lib --no-default-features --target ${{ matrix.target }}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-deny
+
+      - name: Run cargo-deny
+        run: cargo deny --exclude-dev check

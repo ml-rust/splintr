@@ -1,0 +1,72 @@
+# cargo-deny configuration.
+#
+# Run locally: `cargo deny --exclude-dev check`
+# CI gate:     .github/workflows/test.yml :: audit job
+
+[graph]
+# Every target splintr is built for. A vulnerable Windows-only dependency that
+# never appears on Linux still ships to users through the Windows wheel.
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "x86_64-pc-windows-msvc" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "wasm32-unknown-unknown" },
+    { triple = "wasm32-wasip1" },
+]
+# The optional features are part of the shipped surface — the wheels are built
+# with `python,pcre2` — so their dependency trees must be audited too.
+all-features = true
+
+# ────────────────────────────────────────────────────────────────────────
+# Security advisories. A tokenizer parses untrusted text and untrusted
+# vocabulary files, so any RustSec advisory against a dependency (direct or
+# transitive) fails CI.
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # proc-macro-error2 is unmaintained. It reaches us only through
+    # `dynasm`, regexr's JIT code generator, and only as a build-time proc
+    # macro: nothing it contains is compiled into the shipped library, and it
+    # never sees input from a caller. Revisit when dynasm drops it.
+    "RUSTSEC-2026-0173",
+]
+
+# ────────────────────────────────────────────────────────────────────────
+# Licenses — allow-list. Anything not on this list fails CI. splintr ships
+# under MIT, and a consumer vendoring it inherits this whole tree.
+[licenses]
+version = 2
+#
+# The list is exactly what the current tree uses, not every license we would
+# accept: an allowance nobody has reviewed is an allowance nobody is watching.
+# A dependency arriving under some other permissive license fails this gate and
+# is added here deliberately, in the PR that introduces it.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0", # weak-copyleft at file level; fine for libraries we link
+]
+confidence-threshold = 0.93
+
+# ────────────────────────────────────────────────────────────────────────
+[bans]
+multiple-versions = "warn" # warn (not deny) — common in transitive trees
+wildcards = "deny"         # no `foo = "*"` deps in our Cargo.toml
+highlight = "all"
+deny = []
+skip-tree = []
+
+# ────────────────────────────────────────────────────────────────────────
+# Where dependencies may come from. crates.io only — a git-pinned dependency
+# would make the published crate unbuildable for consumers.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # Workflows pin every third-party action to a commit SHA, which is immutable
+  # but goes stale silently. Dependabot is the update owner that makes pinning
+  # sustainable: it reads the `# vX.Y.Z` annotation beside each SHA and opens a
+  # PR moving both when a newer release ships.
+  #
+  # `dtolnay/rust-toolchain` is the exception and is maintained by hand. It
+  # publishes no version series — the workflows pin `refs/heads/stable`, whose
+  # `action.yml` defaults `toolchain: stable` and lets rustup resolve the
+  # current release at run time. Its only tag, `v1`, makes `toolchain` a
+  # required input, so switching to it would break every call site that relies
+  # on that default. Dependabot cannot track a branch pin, so bumping that SHA
+  # is a manual step.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # One PR per week for all action bumps, not one per action. Each PR costs a
+    # full matrix run, and a queue of near-identical PRs is the fastest way to
+    # turn review into rubber-stamping.
+    groups:
+      actions:
+        patterns:
+          - "*"
+    # `default-days` is the only cooldown key GitHub Actions supports; the
+    # `semver-*-days` variants are ignored for this ecosystem. Seven days keeps
+    # freshly published releases out of the queue without delaying security
+    # updates, which cooldown never applies to.
+    cooldown:
+      default-days: 7

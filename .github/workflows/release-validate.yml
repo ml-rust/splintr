@@ -1,0 +1,126 @@
+# Reusable tag/version validation. Called by release-prepare.yml (from the
+# pushed tag) and release.yml (from the dispatched tag), so the two entry points
+# can never disagree about what a tag means.
+#
+# `.version` holds the base version; the tag may add a prerelease suffix. Cargo
+# and PyPI spell prereleases differently (`0.11.0-beta.1` vs `0.11.0b1`), and
+# both spellings are derived here, once, rather than in each caller.
+
+name: Release Validate
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to validate (a v* tag)"
+        required: true
+        type: string
+    outputs:
+      cargo_version:
+        description: "Version as Cargo spells it, e.g. 0.11.0 or 0.11.0-beta.1"
+        value: ${{ jobs.validate.outputs.cargo_version }}
+      pypi_version:
+        description: "Version as PyPI spells it, e.g. 0.11.0 or 0.11.0b1"
+        value: ${{ jobs.validate.outputs.pypi_version }}
+      base_version:
+        description: "Version with any prerelease suffix stripped — the CHANGELOG heading"
+        value: ${{ jobs.validate.outputs.base_version }}
+      is_full_release:
+        description: "true when the tag carries no prerelease suffix"
+        value: ${{ jobs.validate.outputs.is_full_release }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Version Tag
+    runs-on: ubuntu-latest
+    outputs:
+      cargo_version: ${{ steps.version.outputs.cargo_version }}
+      pypi_version: ${{ steps.version.outputs.pypi_version }}
+      base_version: ${{ steps.version.outputs.base_version }}
+      is_full_release: ${{ steps.version.outputs.is_full_release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Validate tag against .version
+        id: version
+        env:
+          TAG: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          BASE_VERSION=$(tr -d '[:space:]' < .version)
+          TAG_VERSION="${TAG#v}"
+
+          echo "Tag:                 $TAG"
+          echo "Base from .version:  $BASE_VERSION"
+
+          if [[ ! "$TAG_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(-(alpha|beta|rc)\.([0-9]+))?$ ]]; then
+            echo "::error::Invalid tag format '$TAG'. Expected vX.Y.Z or vX.Y.Z-{alpha|beta|rc}.N"
+            exit 1
+          fi
+
+          TAG_BASE="${BASH_REMATCH[1]}"
+          PRERELEASE_TYPE="${BASH_REMATCH[3]}"
+          PRERELEASE_NUM="${BASH_REMATCH[4]}"
+
+          if [[ "$TAG_BASE" != "$BASE_VERSION" ]]; then
+            echo "::error::Version mismatch. Tag base '$TAG_BASE' != .version '$BASE_VERSION'."
+            echo "::error::Valid tags: v$BASE_VERSION, v$BASE_VERSION-{alpha|beta|rc}.N"
+            exit 1
+          fi
+
+          # The tag is the source of truth for what gets published; the tracked
+          # manifests are stamped from it at build time. They are still checked
+          # here, because a tag whose base disagrees with Cargo.toml means the
+          # bump commit was never made and the release would carry a version
+          # nobody wrote down.
+          CARGO_BASE=$(grep -m1 '^version = "' Cargo.toml | sed 's/.*"\(.*\)".*/\1/' | sed 's/-.*//')
+          PYPROJECT_BASE=$(grep -m1 '^version = "' pyproject.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+
+          if [[ "$CARGO_BASE" != "$BASE_VERSION" ]]; then
+            echo "::error::Cargo.toml base version '$CARGO_BASE' != .version '$BASE_VERSION'"
+            exit 1
+          fi
+          if [[ "$PYPROJECT_BASE" != "$BASE_VERSION" ]]; then
+            echo "::error::pyproject.toml base version '$PYPROJECT_BASE' != .version '$BASE_VERSION'"
+            exit 1
+          fi
+
+          if [[ -n "$PRERELEASE_TYPE" ]]; then
+            CARGO_VERSION="$BASE_VERSION-$PRERELEASE_TYPE.$PRERELEASE_NUM"
+            case "$PRERELEASE_TYPE" in
+              alpha) PYPI_VERSION="${BASE_VERSION}a${PRERELEASE_NUM}" ;;
+              beta)  PYPI_VERSION="${BASE_VERSION}b${PRERELEASE_NUM}" ;;
+              rc)    PYPI_VERSION="${BASE_VERSION}rc${PRERELEASE_NUM}" ;;
+            esac
+            IS_FULL_RELEASE=false
+          else
+            CARGO_VERSION="$BASE_VERSION"
+            PYPI_VERSION="$BASE_VERSION"
+            IS_FULL_RELEASE=true
+          fi
+
+          echo "Cargo version: $CARGO_VERSION"
+          echo "PyPI version:  $PYPI_VERSION"
+
+          {
+            echo "cargo_version=$CARGO_VERSION"
+            echo "pypi_version=$PYPI_VERSION"
+            echo "base_version=$BASE_VERSION"
+            echo "is_full_release=$IS_FULL_RELEASE"
+          } >> "$GITHUB_OUTPUT"
+
+      # A release with no changelog entry is a release nobody can read. The gate
+      # lives here, in the shared validator, so the tag push and the dispatched
+      # publish cannot disagree about whether it was satisfied — and so it fails
+      # at the tag, before the suite runs, rather than after publishing.
+      #
+      # A prerelease is checked against its base version: `v0.11.1-beta.1` needs
+      # the `## [0.11.1]` section it is a candidate for, so the notes are written
+      # once and rehearsed by every beta.
+      - name: Require a changelog section
+        run: bash scripts/ci/changelog_section.sh "${{ steps.version.outputs.base_version }}"
