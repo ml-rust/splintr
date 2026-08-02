@@ -368,6 +368,11 @@ fn build_wordpiece(root: &Value, model: &Value) -> Result<Backend, HfJsonError> 
         norm.clean_text,
         prefix,
     )
+    // Accent stripping is its own setting in the file, already resolved from
+    // `strip_accents`' tri-state by `parse_bert_norm` — passing it explicitly is
+    // what keeps a `strip_accents: false` cased checkpoint off the unaccented
+    // vocabulary entries.
+    .with_strip_accents(norm.strip_accents)
     .with_added_tokens(parse_special_tokens(root))?
     .with_special_decode_ids(parse_special_decode_ids(root));
     Ok(Backend::WordPiece(tok))

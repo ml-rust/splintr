@@ -135,6 +135,9 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
 #[derive(Debug, Clone)]
 pub(super) struct BertNorm {
     pub lowercase: bool,
+    /// Strip accents (`BertNormalizer.strip_accents`), already resolved from the
+    /// json's tri-state — see [`parse_bert_norm`]. Independent of `lowercase`.
+    pub strip_accents: bool,
     /// Isolate CJK ideographs (`handle_chinese_chars`); defaults to true.
     pub handle_chinese_chars: bool,
     /// Strip control/format chars and normalize whitespace (`clean_text`);
@@ -142,31 +145,94 @@ pub(super) struct BertNorm {
     pub clean_text: bool,
 }
 
+/// State threaded through the [`parse_bert_norm`] walk. A struct rather than a
+/// pile of `&mut` arguments because `strip_accents` is only interpretable next
+/// to the node that set it.
+struct BertNormWalk {
+    lowercase: bool,
+    /// `None` until a node settles it; `Some` once a `BertNormalizer` (or an
+    /// NFD-preceded `StripAccents`) has spoken. Resolved by the caller.
+    strip_accents: Option<bool>,
+    handle_chinese_chars: bool,
+    clean_text: bool,
+    /// Whether a decomposing normalizer (NFD/NFKD) has already run in this
+    /// sequence — see the `StripAccents` arm for why that matters.
+    decomposed: bool,
+}
+
 /// Extract the WordPiece-relevant flags from a (`BertNormalizer`-shaped)
 /// normalizer. WordPiece's `BasicTokenizer` interleaves CJK splitting with
 /// casing, so it consumes flags rather than the ordered op pipeline.
+///
+/// `strip_accents` is a **tri-state** in the json (`true` / `false` /
+/// absent-or-`null`) and is NOT a synonym for `lowercase`. HuggingFace's
+/// `BertNormalizer::normalize` computes `strip_accents.unwrap_or(lowercase)`,
+/// so the absent form merely *defaults* to `lowercase` while an explicit value
+/// wins on its own — cased multilingual BERT ships `strip_accents: false`
+/// alongside `lowercase: false`, and a checkpoint whose vocabulary keeps
+/// accented forms is mis-tokenized if the two are coupled.
+///
+/// Measured against `tokenizers` 0.22.1 on a WordPiece fixture holding both
+/// `cafe` and `café` (ids 4 and 5), the three cases are:
+///
+/// | `BertNormalizer` | `"café"` |
+/// |---|---|
+/// | `lowercase: true,  strip_accents: null`  | `[4]` (`cafe`) |
+/// | `lowercase: true,  strip_accents: false` | `[5]` (`café`) |
+/// | `lowercase: false, strip_accents: true`  | `[4]` (`cafe`) |
+///
+/// The `Sequence` walk is deliberately asymmetric about the two sibling node
+/// types, and both halves were measured on the same fixture:
+///
+/// - A standalone `Lowercase` node lowercases and says **nothing** about
+///   accents: `Sequence[BertNormalizer{lowercase: false, strip_accents: null},
+///   Lowercase]` yields `[5]` (`café` kept). So the `null` default resolves
+///   against the `BertNormalizer`'s **own** `lowercase` field, not against
+///   whatever else in the sequence happens to lowercase.
+/// - A standalone `StripAccents` node does **not** imply BERT-style accent
+///   stripping: HF's `StripAccents` only drops nonspacing marks and never
+///   decomposes, so on ordinary (NFC) text it is a no-op — `Sequence[StripAccents]`
+///   yields `[5]` (`café` kept). Honoring it as a flag would over-strip, because
+///   this backend's stripper NFD-decomposes first (as BERT's own does). It is
+///   therefore only honored when a decomposing `NFD`/`NFKD` node precedes it,
+///   which is the one arrangement HF actually strips under
+///   (`Sequence[NFD, StripAccents]` yields `[4]`).
 pub(super) fn parse_bert_norm(norm: Option<&Value>) -> BertNorm {
-    let mut lowercase = false;
-    let mut handle_chinese_chars = true;
-    let mut clean_text = true;
+    let mut state = BertNormWalk {
+        lowercase: false,
+        strip_accents: None,
+        handle_chinese_chars: true,
+        clean_text: true,
+        decomposed: false,
+    };
 
-    fn walk(v: &Value, lc: &mut bool, cjk: &mut bool, clean: &mut bool) {
+    fn walk(v: &Value, st: &mut BertNormWalk) {
         match v.get("type").and_then(Value::as_str) {
-            Some("Lowercase") => *lc = true,
+            Some("Lowercase") => st.lowercase = true,
+            Some("NFD") | Some("NFKD") => st.decomposed = true,
+            Some("StripAccents") if st.decomposed => st.strip_accents = Some(true),
             Some("BertNormalizer") => {
-                if v.get("lowercase").and_then(Value::as_bool).unwrap_or(false) {
-                    *lc = true;
+                let lc = v.get("lowercase").and_then(Value::as_bool).unwrap_or(false);
+                if lc {
+                    st.lowercase = true;
                 }
-                *cjk = v
+                // Resolved here, against this node's own `lowercase`, because
+                // `null` means "follow *my* lowercase" — not the sequence's.
+                st.strip_accents = Some(
+                    v.get("strip_accents")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(lc),
+                );
+                st.handle_chinese_chars = v
                     .get("handle_chinese_chars")
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
-                *clean = v.get("clean_text").and_then(Value::as_bool).unwrap_or(true);
+                st.clean_text = v.get("clean_text").and_then(Value::as_bool).unwrap_or(true);
             }
             Some("Sequence") => {
                 if let Some(list) = v.get("normalizers").and_then(Value::as_array) {
                     for item in list {
-                        walk(item, lc, cjk, clean);
+                        walk(item, st);
                     }
                 }
             }
@@ -174,17 +240,16 @@ pub(super) fn parse_bert_norm(norm: Option<&Value>) -> BertNorm {
         }
     }
     if let Some(norm) = norm {
-        walk(
-            norm,
-            &mut lowercase,
-            &mut handle_chinese_chars,
-            &mut clean_text,
-        );
+        walk(norm, &mut state);
     }
     BertNorm {
-        lowercase,
-        handle_chinese_chars,
-        clean_text,
+        lowercase: state.lowercase,
+        // Nothing in the file claimed accents either way: no stripping. A bare
+        // `Lowercase` normalizer (no `BertNormalizer`) lands here, and HF's
+        // `Lowercase` leaves accents intact.
+        strip_accents: state.strip_accents.unwrap_or(false),
+        handle_chinese_chars: state.handle_chinese_chars,
+        clean_text: state.clean_text,
     }
 }
 

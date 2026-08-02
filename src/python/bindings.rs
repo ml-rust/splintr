@@ -1066,16 +1066,26 @@ impl PyWordPieceTokenizer {
     ///     unk_token_id: ID of the unknown token (e.g. `[UNK]`)
     ///     max_word_len: Max characters per word before it maps to unk (default 100)
     ///     do_lower_case: Lowercase input before tokenizing (BERT-uncased style)
+    ///     strip_accents: Strip accents, independently of casing. `None` (the
+    ///         default) follows `do_lower_case`, matching HuggingFace's rule for
+    ///         a `BertNormalizer` whose `strip_accents` is absent/`null`; pass
+    ///         `True`/`False` to set it on its own (a cased multilingual BERT
+    ///         vocabulary distinguishing `café` from `cafe` needs `False`).
     #[new]
-    #[pyo3(signature = (vocab, unk_token_id, max_word_len=100, do_lower_case=false))]
+    #[pyo3(signature = (vocab, unk_token_id, max_word_len=100, do_lower_case=false, strip_accents=None))]
     fn new(
         vocab: Vec<String>,
         unk_token_id: u32,
         max_word_len: usize,
         do_lower_case: bool,
+        strip_accents: Option<bool>,
     ) -> Self {
+        let inner = WordPieceTokenizer::new(vocab, unk_token_id, max_word_len, do_lower_case);
         Self {
-            inner: WordPieceTokenizer::new(vocab, unk_token_id, max_word_len, do_lower_case),
+            inner: match strip_accents {
+                Some(strip) => inner.with_strip_accents(strip),
+                None => inner,
+            },
             policy: SpecialPolicy::default(),
         }
     }

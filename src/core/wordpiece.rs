@@ -1,7 +1,8 @@
 //! WordPiece tokenizer for BERT-family models.
 //!
 //! Implements the standard BERT tokenization pipeline:
-//! 1. **BasicTokenizer**: lowercase, strip accents, split on whitespace and punctuation
+//! 1. **BasicTokenizer**: strip accents and lowercase (two independent settings,
+//!    as in HuggingFace's `BertNormalizer`), split on whitespace and punctuation
 //! 2. **WordPiece**: greedy longest-match subword tokenization with `##` continuation prefix
 //!
 //! Handles `[CLS]`, `[SEP]`, `[PAD]`, `[UNK]` special tokens.
@@ -44,8 +45,13 @@ pub struct WordPieceTokenizer {
     unk_token_id: u32,
     /// Maximum characters in a single word before it's treated as [UNK]
     max_word_len: usize,
-    /// Whether to lowercase and strip accents (for uncased models)
+    /// Whether to lowercase the input (BERT's `lowercase`). Casing only — it does
+    /// NOT imply accent stripping; see [`WordPieceTokenizer::with_strip_accents`].
     do_lower_case: bool,
+    /// Whether to strip accents (BERT's `strip_accents`), independent of casing.
+    /// Seeded from `do_lower_case` at construction, which is HuggingFace's
+    /// default for the absent/`null` form, and overridable on its own.
+    strip_accents: bool,
     /// Continuation-subword prefix (e.g. `##`). Empty string means continuations
     /// are matched without a prefix (GGUF-stripped vocabs).
     continuation_prefix: String,
@@ -72,7 +78,10 @@ impl WordPieceTokenizer {
     /// * `vocab` - Token strings indexed by token ID
     /// * `unk_token_id` - ID to use for unknown tokens
     /// * `max_word_len` - Words longer than this are mapped to `[UNK]`
-    /// * `do_lower_case` - Whether to lowercase and strip accents (for uncased models)
+    /// * `do_lower_case` - Whether to lowercase the input (uncased models). Accent
+    ///   stripping is seeded from this flag — HuggingFace's rule for a
+    ///   `BertNormalizer` whose `strip_accents` is absent/`null` — and can then be
+    ///   set independently with [`with_strip_accents`](Self::with_strip_accents).
     pub fn new(
         vocab: Vec<String>,
         unk_token_id: u32,
@@ -125,6 +134,9 @@ impl WordPieceTokenizer {
             unk_token_id,
             max_word_len,
             do_lower_case,
+            // HuggingFace's default when `strip_accents` is absent/`null`; an
+            // explicit setting arrives via `with_strip_accents`.
+            strip_accents: do_lower_case,
             continuation_prefix,
             handle_chinese_chars,
             clean_text,
@@ -134,6 +146,25 @@ impl WordPieceTokenizer {
             added: None,
             special_decode: rustc_hash::FxHashSet::default(),
         }
+    }
+
+    /// Set accent stripping independently of lowercasing.
+    ///
+    /// Accent stripping is a setting of its own in HuggingFace's
+    /// `BertNormalizer`, which computes `strip_accents.unwrap_or(lowercase)`:
+    /// the absent/`null` form follows `lowercase` (what the constructors seed),
+    /// but an explicit value wins on its own. Cased multilingual BERT ships
+    /// `strip_accents: false`, and a vocabulary that distinguishes `café` from
+    /// `cafe` resolves to different ids depending on this flag alone, so it
+    /// cannot be inferred from casing.
+    ///
+    /// It is a builder method rather than another constructor parameter because
+    /// [`with_options`](Self::with_options) already carries a
+    /// `too_many_arguments` allowance, and because only callers that read an
+    /// explicit value out of a config need to say anything at all.
+    pub fn with_strip_accents(mut self, strip_accents: bool) -> Self {
+        self.strip_accents = strip_accents;
+        self
     }
 
     /// Attach added tokens to recognize in the input during encoding.
@@ -175,7 +206,8 @@ impl WordPieceTokenizer {
         self.unk_token_id
     }
 
-    /// Pre-tokenize: lowercase, strip accents, split on whitespace and punctuation.
+    /// Pre-tokenize: clean, isolate CJK, strip accents and lowercase (each only
+    /// if its own flag says so), then split on whitespace and punctuation.
     fn basic_tokenize(&self, text: &str) -> Vec<String> {
         // clean_text: drop NUL/replacement/control/format chars and turn every
         // whitespace char into a plain space, matching BERT's `_clean_text`.
@@ -205,9 +237,15 @@ impl WordPieceTokenizer {
             text.to_string()
         };
 
+        // Accents and casing are independent settings, applied in HuggingFace's
+        // own order (`BertNormalizer::normalize` strips first, then lowercases).
+        let text = if self.strip_accents {
+            strip_accents(&text)
+        } else {
+            text
+        };
         let text = if self.do_lower_case {
-            let lowered = text.to_lowercase();
-            strip_accents(&lowered)
+            text.to_lowercase()
         } else {
             text
         };
@@ -617,6 +655,60 @@ mod tests {
         assert_eq!(ids, vec![1]);
         let ids = tok.encode("hello");
         assert_eq!(ids, vec![2]);
+    }
+
+    /// Vocabulary that keeps every casing/accent variant apart, so which of the
+    /// two normalization flags ran is readable straight off the id.
+    fn accent_vocab() -> Vec<String> {
+        vec![
+            "[UNK]".to_string(), // 0
+            "cafe".to_string(),  // 1
+            "café".to_string(),  // 2
+            "Cafe".to_string(),  // 3
+            "Café".to_string(),  // 4
+            "naive".to_string(), // 5
+            "naïve".to_string(), // 6
+        ]
+    }
+
+    /// The `null`/absent shape: accent stripping is *seeded* from `do_lower_case`,
+    /// which is HuggingFace's `strip_accents.unwrap_or(lowercase)` default.
+    /// Reference (`tokenizers` 0.22.1, `lowercase: true, strip_accents: null`):
+    /// `"Café"` and `"café"` both reach the unaccented `cafe` entry.
+    #[test]
+    fn strip_accents_defaults_to_lowercasing() {
+        let tok = WordPieceTokenizer::new(accent_vocab(), 0, 200, true);
+        assert_eq!(tok.encode("Café"), vec![1]);
+        assert_eq!(tok.encode("café"), vec![1]);
+        assert_eq!(tok.encode("naïve"), vec![5]);
+
+        let cased = WordPieceTokenizer::new(accent_vocab(), 0, 200, false);
+        assert_eq!(cased.encode("Café"), vec![4]);
+        assert_eq!(cased.encode("naïve"), vec![6]);
+    }
+
+    /// Lowercasing with accent stripping explicitly OFF — the cased-multilingual
+    /// shape (`strip_accents: false`). Reference (`tokenizers` 0.22.1,
+    /// `lowercase: true, strip_accents: false`): `"Café"` -> `café`, not `cafe`.
+    #[test]
+    fn lowercasing_does_not_force_accent_stripping() {
+        let tok = WordPieceTokenizer::new(accent_vocab(), 0, 200, true).with_strip_accents(false);
+        assert_eq!(tok.encode("Café"), vec![2]);
+        assert_eq!(tok.encode("café"), vec![2]);
+        assert_eq!(tok.encode("naïve"), vec![6]);
+        // Lowercasing still runs — it is only accents that were turned off.
+        assert_eq!(tok.encode("Cafe"), vec![1]);
+    }
+
+    /// Accent stripping with lowercasing OFF: casing survives, accents do not.
+    /// Reference (`tokenizers` 0.22.1, `lowercase: false, strip_accents: true`):
+    /// `"Café"` -> `Cafe` and `"café"` -> `cafe`.
+    #[test]
+    fn accent_stripping_does_not_force_lowercasing() {
+        let tok = WordPieceTokenizer::new(accent_vocab(), 0, 200, false).with_strip_accents(true);
+        assert_eq!(tok.encode("Café"), vec![3]);
+        assert_eq!(tok.encode("café"), vec![1]);
+        assert_eq!(tok.encode("naïve"), vec![5]);
     }
 
     #[test]

@@ -78,6 +78,12 @@ fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
     // GGUF has no standard key for casing, so heuristic: a vocab holding
     // lowercase "the" but not "The" is uncased.
     let do_lower_case = tokens.iter().any(|t| t == "the") && !tokens.iter().any(|t| t == "The");
+    // Accent stripping is likewise absent from GGUF metadata, so it is left at
+    // the constructor's seed (= `do_lower_case`). That is exactly HuggingFace's
+    // own rule for a `BertNormalizer` whose `strip_accents` is absent/`null`
+    // (`strip_accents.unwrap_or(lowercase)`), which is the shape BERT-family
+    // checkpoints ship — so an unspecified GGUF lands on the same behavior its
+    // `tokenizer.json` would have produced.
 
     // The named map is how a caller asks for `[CLS]` by name; BERT-family models
     // need those ids to assemble the pairs their heads were trained on. These are

@@ -253,6 +253,161 @@ fn decode_drops_special_ids() {
     assert_eq!(Tokenize::decode(&*WORDPIECE, &[2, 1, 3]).unwrap(), "");
 }
 
+// =============================================================================
+// `strip_accents` is independent of `lowercase`
+// =============================================================================
+
+/// A second fixture whose vocabulary keeps every casing/accent variant of the
+/// same two words apart (`cafe`/`café`/`Cafe`/`Café`, `naive`/`naïve`), so the
+/// ids alone reveal which of the two normalizer flags actually ran. The
+/// `__NORMALIZER__` placeholder is filled in per test.
+///
+/// There is no `post_processor`, so `encode_raw` is directly comparable to
+/// `tokenizers`' `encode(..., add_special_tokens=False)`.
+const ACCENT_JSON: &str = r###"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {"id": 0, "content": "[PAD]", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 1, "content": "[UNK]", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 2, "content": "[CLS]", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 3, "content": "[SEP]", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": __NORMALIZER__,
+  "pre_tokenizer": {"type": "BertPreTokenizer"},
+  "post_processor": null,
+  "decoder": {"type": "WordPiece", "prefix": "##", "cleanup": true},
+  "model": {
+    "type": "WordPiece",
+    "unk_token": "[UNK]",
+    "continuing_subword_prefix": "##",
+    "max_input_chars_per_word": 100,
+    "vocab": {
+      "[PAD]": 0,
+      "[UNK]": 1,
+      "[CLS]": 2,
+      "[SEP]": 3,
+      "cafe": 4,
+      "café": 5,
+      "naive": 6,
+      "naïve": 7,
+      "Cafe": 8,
+      "Café": 9,
+      "the": 10
+    }
+  }
+}"###;
+
+/// Load [`ACCENT_JSON`] with `normalizer` set to `norm`.
+fn accent_tokenizer(norm: &str) -> AnyTokenizer {
+    let json = ACCENT_JSON.replace("__NORMALIZER__", norm);
+    from_json_bytes(json.as_bytes()).expect("accent fixture loads")
+}
+
+/// `strip_accents: null` is the shape BERT itself ships: HuggingFace resolves it
+/// to `lowercase`, so accents ARE stripped here.
+///
+/// Reference (`tokenizers` 0.22.1, `add_special_tokens=False`):
+/// `"café"` -> `[4]`, `"Café"` -> `[4]`, `"naïve"` -> `[6]`,
+/// `"the café"` -> `[10, 4]`.
+#[test]
+fn null_strip_accents_follows_lowercase() {
+    let tok = accent_tokenizer(
+        r#"{"type": "BertNormalizer", "clean_text": true, "handle_chinese_chars": true, "strip_accents": null, "lowercase": true}"#,
+    );
+    assert_eq!(tok.encode_raw("café"), vec![4]);
+    assert_eq!(tok.encode_raw("Café"), vec![4]);
+    assert_eq!(tok.encode_raw("naïve"), vec![6]);
+    assert_eq!(tok.encode_raw("the café"), vec![10, 4]);
+}
+
+/// `strip_accents: false` with `lowercase: true` — the cased-multilingual shape.
+/// The explicit `false` wins over the `lowercase` default, so the accented vocab
+/// entries are the ones reached; coupling the two flags would wrongly yield
+/// `[4]`/`[6]`.
+///
+/// Reference (`tokenizers` 0.22.1, `add_special_tokens=False`):
+/// `"café"` -> `[5]`, `"Café"` -> `[5]`, `"naïve"` -> `[7]`,
+/// `"the café"` -> `[10, 5]`.
+#[test]
+fn explicit_false_strip_accents_keeps_accents_while_lowercasing() {
+    let tok = accent_tokenizer(
+        r#"{"type": "BertNormalizer", "clean_text": true, "handle_chinese_chars": true, "strip_accents": false, "lowercase": true}"#,
+    );
+    assert_eq!(tok.encode_raw("café"), vec![5]);
+    assert_eq!(tok.encode_raw("Café"), vec![5]);
+    assert_eq!(tok.encode_raw("naïve"), vec![7]);
+    assert_eq!(tok.encode_raw("the café"), vec![10, 5]);
+}
+
+/// `strip_accents: true` with `lowercase: false` — the other direction. Accents
+/// go, casing stays, so `"Café"` lands on the capitalized unaccented entry `Cafe`
+/// (id 8) rather than `cafe` (id 4).
+///
+/// Reference (`tokenizers` 0.22.1, `add_special_tokens=False`):
+/// `"café"` -> `[4]`, `"Café"` -> `[8]`, `"naïve"` -> `[6]`,
+/// `"the café"` -> `[10, 4]`.
+#[test]
+fn explicit_true_strip_accents_without_lowercasing() {
+    let tok = accent_tokenizer(
+        r#"{"type": "BertNormalizer", "clean_text": true, "handle_chinese_chars": true, "strip_accents": true, "lowercase": false}"#,
+    );
+    assert_eq!(tok.encode_raw("café"), vec![4]);
+    assert_eq!(tok.encode_raw("Café"), vec![8]);
+    assert_eq!(tok.encode_raw("naïve"), vec![6]);
+    assert_eq!(tok.encode_raw("the café"), vec![10, 4]);
+}
+
+/// A `Lowercase` normalizer lowercases and nothing else — it must not be read as
+/// a licence to strip accents. That holds both standing alone and next to a
+/// `BertNormalizer` whose own `strip_accents` is `null`: the `null` defaults to
+/// *that node's* `lowercase` (here `false`), not to the sequence's.
+///
+/// Reference (`tokenizers` 0.22.1, `add_special_tokens=False`), for both
+/// `Sequence[Lowercase]` and
+/// `Sequence[BertNormalizer{lowercase: false, strip_accents: null}, Lowercase]`:
+/// `"café"` -> `[5]`, `"Café"` -> `[5]`, `"naïve"` -> `[7]`.
+#[test]
+fn lowercase_node_in_a_sequence_does_not_strip_accents() {
+    for norm in [
+        r#"{"type": "Sequence", "normalizers": [{"type": "Lowercase"}]}"#,
+        r#"{"type": "Sequence", "normalizers": [
+             {"type": "BertNormalizer", "clean_text": true, "handle_chinese_chars": true, "strip_accents": null, "lowercase": false},
+             {"type": "Lowercase"}
+           ]}"#,
+    ] {
+        let tok = accent_tokenizer(norm);
+        assert_eq!(tok.encode_raw("café"), vec![5], "normalizer {norm}");
+        assert_eq!(tok.encode_raw("Café"), vec![5], "normalizer {norm}");
+        assert_eq!(tok.encode_raw("naïve"), vec![7], "normalizer {norm}");
+    }
+}
+
+/// A bare `StripAccents` node is NOT BERT-style accent stripping: HuggingFace's
+/// `StripAccents` drops nonspacing marks without decomposing first, so on
+/// ordinary (NFC) text it changes nothing. It only bites once an `NFD` has run.
+///
+/// Reference (`tokenizers` 0.22.1, `add_special_tokens=False`):
+/// `Sequence[StripAccents]` gives `"café"` -> `[5]` and `"Café"` -> `[9]`
+/// (untouched), while `Sequence[NFD, StripAccents]` gives `"café"` -> `[4]` and
+/// `"Café"` -> `[8]`.
+#[test]
+fn strip_accents_node_only_strips_after_a_decomposition() {
+    let bare =
+        accent_tokenizer(r#"{"type": "Sequence", "normalizers": [{"type": "StripAccents"}]}"#);
+    assert_eq!(bare.encode_raw("café"), vec![5]);
+    assert_eq!(bare.encode_raw("Café"), vec![9]);
+    assert_eq!(bare.encode_raw("naïve"), vec![7]);
+
+    let decomposed = accent_tokenizer(
+        r#"{"type": "Sequence", "normalizers": [{"type": "NFD"}, {"type": "StripAccents"}]}"#,
+    );
+    assert_eq!(decomposed.encode_raw("café"), vec![4]);
+    assert_eq!(decomposed.encode_raw("Café"), vec![8]);
+    assert_eq!(decomposed.encode_raw("naïve"), vec![6]);
+}
+
 /// Round-trip over the lowercased, normalized form — which is what a BERT-family
 /// tokenizer can round-trip at all, since casing and accents are destroyed on
 /// the way in.
