@@ -543,7 +543,7 @@ impl Tokenizer {
     ///
     /// Each expression subdivides the pieces the previous one produced rather
     /// than re-reading the whole text, and the gaps a pass leaves unmatched stay
-    /// as pieces of their own — see [`subdivide`] for the exact semantics and
+    /// as pieces of their own — see `subdivide` for the exact semantics and
     /// their source. A one-element list is exactly [`Tokenizer::new_byte_level`]
     /// and keeps the single-regex fast path, so callers can pass a list
     /// unconditionally without paying for the general machinery.
@@ -1290,7 +1290,7 @@ impl Tokenizer {
     /// Encode text with special token handling.
     ///
     /// Special tokens in the input are encoded directly without BPE, via the
-    /// same [`AddedTokens`] matcher the SentencePiece/SPM/WordPiece backends
+    /// same `AddedTokens` matcher the SentencePiece/SPM/WordPiece backends
     /// use.
     pub fn encode_with_special(&self, text: &str) -> Vec<u32> {
         AddedTokens::dispatch(&self.special_matcher, text, |gap| self.encode_ordinary(gap))

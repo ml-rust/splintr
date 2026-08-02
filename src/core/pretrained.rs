@@ -434,7 +434,7 @@ pub fn pad_token_id(vocab: PretrainedVocab) -> Option<u32> {
 /// This is what a consumer needs when sizing a model's embedding or logit
 /// layer, or when identifying which vocabulary a checkpoint uses from the
 /// shape of its token-embedding tensor — both must match the checkpoint's own
-/// vocabulary, not splintr's extended one. [`Tokenize::vocab_size`] /
+/// vocabulary, not splintr's extended one. [`Tokenize::vocab_size`](crate::Tokenize::vocab_size) /
 /// [`Tokenizer::vocab_size`](super::tokenizer::Tokenizer::vocab_size) report
 /// the *extended* size (base + agent tokens); this reports the base alone.
 /// Agent tokens are always appended **above** every id the base vocabulary
