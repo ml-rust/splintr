@@ -28,7 +28,7 @@ Usage:
 Pairing a bundled vocabulary with the wrong HF `tokenizer.json` would
 silently produce a fixture that looks authoritative but diffs splintr
 against nonsense, so before writing anything this script verifies `PATH` is
-actually the tokenizer that produced `python/splintr/vocabs/<vocab>.tiktoken`
+actually the tokenizer that produced `vocabs/<vocab>.tiktoken`
 -- the exact file `splintr::pretrained::from_pretrained` embeds
 (`src/core/pretrained.rs`):
 
@@ -36,7 +36,7 @@ actually the tokenizer that produced `python/splintr/vocabs/<vocab>.tiktoken`
      `tokenizer.get_vocab_size(with_added_tokens=False)` exactly.
   2. A sample of ~256 evenly spaced ids must resolve to matching pieces.
 
-Point 2 needs care because `python/splintr/vocabs/*.tiktoken` is not one
+Point 2 needs care because `vocabs/*.tiktoken` is not one
 format: whether a bundled vocabulary loads through
 `Tokenizer::from_bytes_chain` (raw semantic bytes per line -- `cl100k_base`,
 `o200k_base`, `llama3`) or `Tokenizer::from_bytes_byte_level_chain`
@@ -88,9 +88,9 @@ from pathlib import Path
 from reference_corpus import REFERENCE_CORPUS
 
 # The repository root, so `--vocab` never needs the caller to know where
-# `python/splintr/vocabs/` lives relative to their current directory.
+# `vocabs/` lives relative to their current directory.
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VOCABS_DIR = REPO_ROOT / "python" / "splintr" / "vocabs"
+VOCABS_DIR = REPO_ROOT / "vocabs"
 
 # Bundled vocabulary name (every alias `PretrainedVocab::from_name` accepts,
 # `src/core/pretrained.rs`) -> (`.tiktoken` filename, byte_level).

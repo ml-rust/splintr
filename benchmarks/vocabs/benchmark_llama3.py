@@ -254,7 +254,7 @@ def benchmark_batch_decode(
 
 def load_llama3_vocab() -> dict[bytes, int]:
     """Load Llama 3 vocabulary from tiktoken file."""
-    vocab_path = Path(__file__).parent.parent.parent / "python/splintr/vocabs/llama3.tiktoken"
+    vocab_path = Path(__file__).parent.parent.parent / "vocabs/llama3.tiktoken"
     mergeable_ranks = {}
     with open(vocab_path, "rb") as f:
         for line in f:

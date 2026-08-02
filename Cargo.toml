@@ -9,6 +9,26 @@ homepage = "https://github.com/ml-rust/splintr"
 readme = "README.md"
 keywords = ["tokenizer", "bpe", "sentencepiece", "wordpiece", "llm"]
 categories = ["text-processing", "encoding"]
+# Everything shipped to crates.io, listed explicitly rather than left to
+# "whatever is not gitignored". `vocabs/` is mandatory: `src/core/pretrained.rs`
+# embeds those files with `include_bytes!`, so a published crate missing them
+# fails to compile on the consumer's machine. `tests/` and `examples/` are
+# carried too (184 KB against a 15 MB payload) so a vendored copy stays
+# verifiable. The Python packaging tree, benchmarks, scripts and docs are not
+# the crate's business and stay out.
+# Paths are anchored with a leading `/`: these are gitignore-style globs, so a
+# bare `README.md` matches that name at ANY depth and would drag in a vendored
+# third party's README and LICENSE from `research/`.
+include = [
+    "/src/**/*.rs",
+    "/tests/**/*.rs",
+    "/examples/**/*.rs",
+    "/vocabs/*.tiktoken",
+    "/vocabs/*.spm",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+]
 
 [lib]
 name = "splintr"

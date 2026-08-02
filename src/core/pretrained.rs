@@ -35,13 +35,10 @@ use super::vocab::{load_spm_vocab, place_special_pieces};
 use super::whisper::{whisper_special_tokens, WhisperVariant};
 
 // Embed vocabulary files at compile time
-pub const CL100K_BASE_VOCAB: &[u8] =
-    include_bytes!("../../python/splintr/vocabs/cl100k_base.tiktoken");
-pub const O200K_BASE_VOCAB: &[u8] =
-    include_bytes!("../../python/splintr/vocabs/o200k_base.tiktoken");
-pub const LLAMA3_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/llama3.tiktoken");
-pub const DEEPSEEK_V3_VOCAB: &[u8] =
-    include_bytes!("../../python/splintr/vocabs/deepseek_v3.tiktoken");
+pub const CL100K_BASE_VOCAB: &[u8] = include_bytes!("../../vocabs/cl100k_base.tiktoken");
+pub const O200K_BASE_VOCAB: &[u8] = include_bytes!("../../vocabs/o200k_base.tiktoken");
+pub const LLAMA3_VOCAB: &[u8] = include_bytes!("../../vocabs/llama3.tiktoken");
+pub const DEEPSEEK_V3_VOCAB: &[u8] = include_bytes!("../../vocabs/deepseek_v3.tiktoken");
 
 /// Mistral V1 SentencePiece vocabulary (32,000 pieces with their scores).
 ///
@@ -50,15 +47,13 @@ pub const DEEPSEEK_V3_VOCAB: &[u8] =
 /// survives — including the `-1e9` "never merge" sentinel on the 15 whitespace
 /// runs, which the `.tiktoken` form of this vocabulary silently inverted into a
 /// *preferred* merge.
-pub const MISTRAL_SPM_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/mistral.spm");
+pub const MISTRAL_SPM_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral.spm");
 
 /// Mistral V2 SentencePiece vocabulary (32,768 pieces with their scores).
-pub const MISTRAL_V2_SPM_VOCAB: &[u8] =
-    include_bytes!("../../python/splintr/vocabs/mistral_v2.spm");
+pub const MISTRAL_V2_SPM_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral_v2.spm");
 
 /// Mistral V3/Tekken vocabulary file (Tiktoken-based, ~131k tokens).
-pub const MISTRAL_V3_VOCAB: &[u8] =
-    include_bytes!("../../python/splintr/vocabs/mistral_v3_tekken.tiktoken");
+pub const MISTRAL_V3_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral_v3_tekken.tiktoken");
 
 /// Whisper base BPE vocabulary (GPT-2 byte-level, 50,257 tokens).
 ///
@@ -66,7 +61,7 @@ pub const MISTRAL_V3_VOCAB: &[u8] =
 /// programmatically-generated special tokens. The English-only checkpoints use
 /// a different base BPE and are not bundled; load those via
 /// [`crate::from_json_path`].
-pub const WHISPER_VOCAB: &[u8] = include_bytes!("../../python/splintr/vocabs/whisper.tiktoken");
+pub const WHISPER_VOCAB: &[u8] = include_bytes!("../../vocabs/whisper.tiktoken");
 
 /// Supported pretrained vocabulary types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -69,7 +69,7 @@ def extract_v3_vocab(model_name: str, output_path: str):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="mistralai/Mistral-Nemo-Instruct-2407")
-    parser.add_argument("--output", default="python/splintr/vocabs/mistral_v3_tekken.tiktoken")
+    parser.add_argument("--output", default="vocabs/mistral_v3_tekken.tiktoken")
     args = parser.parse_args()
     extract_v3_vocab(args.model, args.output)
 

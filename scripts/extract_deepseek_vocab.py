@@ -84,7 +84,7 @@ def main():
     parser = argparse.ArgumentParser(description="Extract DeepSeek vocabulary from HuggingFace")
     parser.add_argument("--model", default="deepseek-ai/deepseek-v3",
                         help="Model name on HuggingFace Hub (default: deepseek-ai/deepseek-v3)")
-    parser.add_argument("--output", default="python/splintr/vocabs/deepseek_v3.tiktoken",
+    parser.add_argument("--output", default="vocabs/deepseek_v3.tiktoken",
                         help="Output path for vocab file")
     args = parser.parse_args()
 
