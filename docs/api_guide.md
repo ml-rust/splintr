@@ -57,6 +57,13 @@ tokenizer = Tokenizer.from_pretrained("whisper_v3")   # OpenAI Whisper multiling
 
 > Whisper English-only checkpoints (`*.en`) use a different base BPE and are not bundled — load those with [`from_json`](#loading-any-model-from-tokenizerjson).
 
+`from_pretrained` returns an [`AnyTokenizer`](#anytokenizer) for **every**
+bundled vocabulary — the same universal handle `from_json` returns, and the same
+one `splintr::pretrained::from_pretrained` returns in Rust. It delegates to that
+one loader, so a vocabulary name means the same thing, and produces the same ids,
+on both sides of the binding. Query `.family` for the backend it dispatched to
+(`"BPE"` for the byte-level vocabularies, `"Spm"` for Mistral V1/V2).
+
 **Load from custom vocabulary file:**
 
 ```python
@@ -140,16 +147,16 @@ ordinary pieces.
 tokenizer = Tokenizer.from_pretrained("cl100k_base")
 text = "Start <|endoftext|> End"
 
-tokenizer.encode(text)               # [3563, 83739, 8862, 728, 428, 91, 29, 4060]
-tokenizer.encode_with_special(text)  # [3563, 220, 100257, 4060]  — 100257 is <|endoftext|>
+tokenizer.encode(text)               # [3563, 220, 100257, 4060]  — 100257 is <|endoftext|>
+tokenizer.encode_with_special(text)  # [3563, 220, 100257, 4060]  — the same
+tokenizer.encode_ordinary(text)      # [3563, 83739, 8862, 728, 428, 91, 29, 4060]
 ```
 
-`Tokenizer.from_pretrained` builds its vocabularies with added-token matching
-**off**, so their `encode` leaves a spelled-out special token as ordinary text and
-this method is how you opt in. `AnyTokenizer` (everything `from_json` returns, and
-`from_pretrained("mistral_v1"/"mistral_v2")`) matches by default, so there `encode`
-and `encode_with_special` agree. Rather than track which handle you hold, name the
-mode explicitly whenever the text is untrusted — see below.
+Every loader — `from_pretrained`, `from_json`, the GGUF loader — turns added-token
+matching **on**, so `encode` and `encode_with_special` agree on everything they
+return; the method exists so the name means the same thing on every tokenizer
+class. `encode_ordinary` is how you decline the match. Name the mode explicitly
+whenever the text is untrusted — see below.
 
 #### `encode_batch(texts: list[str]) -> list[list[int]]`
 
@@ -165,9 +172,10 @@ batch_tokens = tokenizer.encode_batch(texts)
 
 #### `encode_rayon(text: str) -> list[int]`
 
-`Tokenizer` only. Same result as `encode`, but Rayon parallelizes *within* the
-single text. This is only beneficial for very large texts (>1MB); for typical use
-cases `encode()` is faster.
+Same result as `encode`, but Rayon parallelizes *within* the single text. This is
+only beneficial for very large texts (>1MB); for typical use cases `encode()` is
+faster. A backend with no intra-text parallel path simply runs `encode`, so the
+ids never depend on which one you hold.
 
 ```python
 # Only useful for very large texts
@@ -177,7 +185,7 @@ tokens = tokenizer.encode_rayon(large_text)
 
 #### `encode_batch_with_special(texts: list[str]) -> list[list[int]]`
 
-`Tokenizer` only. The batch form of `encode_with_special`.
+The batch form of `encode_with_special`, parallel across texts.
 
 ### Special tokens in untrusted text
 
@@ -229,7 +237,11 @@ print(text)  # "Hello, world!"
 
 #### `decode_bytes(tokens: list[int]) -> bytes`
 
-Decode token IDs to raw bytes without UTF-8 validation.
+Decode token IDs to raw bytes without UTF-8 validation. Needs the byte-level BPE
+backend (`family == "BPE"`) and a source that declares no `decoder` pipeline —
+reading token bytes directly is exactly what would bypass such a pipeline — and
+raises `ValueError` otherwise. Every bundled byte-level vocabulary qualifies; use
+`decode` for the rest.
 
 ```python
 tokens = [9906, 11, 1917, 0]
@@ -239,7 +251,7 @@ print(raw_bytes)  # b'Hello, world!'
 
 #### `decode_lossy(tokens: list[int]) -> str`
 
-Decode token IDs to text, replacing any invalid UTF-8 sequences with the replacement character (�).
+Decode token IDs to text, replacing any invalid UTF-8 sequences with the replacement character (�). Same backend requirement as `decode_bytes`.
 
 ```python
 tokens = [9906, 11, 1917, 0]
@@ -262,7 +274,9 @@ or logit layer — use [`base_vocab_size`](#sizing-against-the-reference-vocabul
 
 #### `cache_len: int`
 
-The number of entries currently in the LRU cache.
+The number of entries currently in the LRU cache. The byte-level BPE backend is
+the only one that caches encoded chunks; on any other family this raises
+`ValueError`, as does `clear_cache()`.
 
 ```python
 print(tokenizer.cache_len)  # Number of cached text chunks
@@ -616,7 +630,12 @@ let text = tok.decode(&ids)?;               // via `Tokenize`
 - `encode_raw(&self, text: &str) -> Vec<u32>`: Content tokens alone (HF `add_special_tokens=False`)
 - `encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError>`: `encode` under an explicit matching mode
 - `encode_batch(&self, texts: &[&str]) -> Vec<Vec<u32>>`: Batch form of `encode`, parallel across texts
+- `encode_batch_with(&self, texts: &[&str], mode: &SpecialMode<'_>) -> Result<Vec<Vec<u32>>, PolicyError>`: Batch form of `encode_with`; fails as a whole rather than dropping an offending text
+- `encode_rayon(&self, text: &str) -> Vec<u32>`: `encode` parallelized *within* one text, where the backend supports it (same ids either way)
 - `encode_pair(&self, a: &str, b: &str) -> Result<Vec<u32>, PolicyError>`: The pair template; errors with `PolicyError::NoPairTemplate` rather than concatenating without the model's separator
+- `decode_batch(&self, token_lists: &[Vec<u32>]) -> Result<Vec<String>, TokenizeError>`: Batch form of `decode`, running the same declared pipeline
+- `set_pcre2(&mut self, use_pcre2: bool) -> Result<(), TokenizerError>` / `set_jit(&mut self, use_jit: bool)`: Reconfigure the BPE backend's regex engine in place, keeping the policy, decoder pipeline and special-id set attached; `TokenizerError::NotBpeBackend` on any other family
+- `declares_decoder(&self) -> bool`: Whether the source declared a `decoder` pipeline — consult before reaching past this handle for a backend's raw byte-level decode
 - `family(&self) -> &'static str`: `"BPE"` | `"Unigram"` | `"WordPiece"` | `"Spm"`
 - `backend(&self) -> &Backend` / `into_backend(self) -> Backend`: Reach a backend-specific API
 - `policy(&self) -> &SpecialPolicy`, `eos_token_id(&self) -> Option<u32>`, `is_eos(&self, id: u32) -> bool`, `special_token_id(&self, name: &str) -> Option<u32>`

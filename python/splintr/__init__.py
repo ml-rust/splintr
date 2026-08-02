@@ -24,9 +24,14 @@ Supported tokenizers:
 - whisper/whisper_v1/whisper_v2/whisper_v3: OpenAI Whisper multilingual (bundled;
   bare "whisper" -> v2).
 
-from_pretrained returns a Tokenizer for byte-level BPE vocabularies, and an
-AnyTokenizer for the SentencePiece ones (mistral/mistral_v1/mistral_v2): those are
-merged as pieces, since byte-level merging cannot build the word-boundary marker.
+from_pretrained returns an AnyTokenizer for every bundled vocabulary. It delegates
+to the same core loader the Rust API uses, so a name produces the same ids on both
+sides of the binding; .family names the backend it dispatched to ("BPE" for the
+byte-level vocabularies, "Spm" for the SentencePiece ones, which are merged as
+pieces since byte-level merging cannot build the word-boundary marker). Because
+every loader turns added-token matching on, encode matches a special token spelled
+out in the text -- use encode_ordinary to decline, encode_allowed_special for a
+named subset.
 
 Any other model: load its HuggingFace tokenizer.json with splintr.from_json(path).
 It returns an AnyTokenizer, the universal loaded-tokenizer handle: it dispatches
@@ -42,8 +47,8 @@ Usage:
     tokenizer = Tokenizer.from_pretrained("cl100k_base")  # GPT-4
     tokenizer = Tokenizer.from_pretrained("llama3")       # Llama 3
     tokenizer = Tokenizer.from_pretrained("deepseek_v3")  # DeepSeek V3
-    tokenizer = Tokenizer.from_pretrained("mistral_v1")   # Mistral 7B v0.1/v0.2 -> AnyTokenizer
-    tokenizer = Tokenizer.from_pretrained("mistral_v2")   # Mistral 7B v0.3      -> AnyTokenizer
+    tokenizer = Tokenizer.from_pretrained("mistral_v1")   # Mistral 7B v0.1/v0.2
+    tokenizer = Tokenizer.from_pretrained("mistral_v2")   # Mistral 7B v0.3
     tokenizer = Tokenizer.from_pretrained("mistral_v3")   # Mistral NeMo (Tekken)
     tokenizer = Tokenizer.from_pretrained("whisper_v3")   # Whisper large-v3 (multilingual)
 

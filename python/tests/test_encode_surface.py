@@ -19,6 +19,7 @@ So the surface is now uniform, and these tests pin that:
 `encode_with_special_tokens` is gone; its meaning is exactly `encode`.
 """
 
+import base64
 import json
 
 import pytest
@@ -74,6 +75,20 @@ WORDPIECE_WITH_TEMPLATE = {
 }
 
 
+#: A minimal tiktoken-format vocabulary (base64 token, space, rank per line).
+#:
+#: `Tokenizer` is built from this rather than from `Tokenizer.from_pretrained`,
+#: which now returns the loader's `AnyTokenizer` for every bundled vocabulary —
+#: using it here would test that handle twice and leave the directly-constructed
+#: `Tokenizer` class, the one this suite exists to keep in step, uncovered.
+TINY_BPE_VOCAB = b"\n".join(
+    base64.b64encode(token) + b" " + str(rank).encode()
+    for rank, token in enumerate(
+        [b"h", b"e", b"l", b"o", b"w", b"r", b"d", b" ", b"hello", b" world"]
+    )
+)
+
+
 def every_tokenizer_class():
     """One live instance of each of the five tokenizer classes.
 
@@ -82,7 +97,9 @@ def every_tokenizer_class():
     directly-constructed ones.
     """
     return {
-        "Tokenizer": Tokenizer.from_pretrained("cl100k_base"),
+        "Tokenizer": Tokenizer.from_bytes(
+            TINY_BPE_VOCAB, r"\S+|\s+", {"<|endoftext|>": 100}
+        ),
         "AnyTokenizer": from_json_bytes(json.dumps(WORDPIECE_WITH_TEMPLATE).encode()),
         "SpmTokenizer": SpmTokenizer(
             ["<unk>", "<s>", "</s>", "▁hello", "▁world"], [], 1, 2
@@ -155,7 +172,12 @@ class TestTemplateVsContent:
 
 
 class TestNoTemplateMeansIdentical:
-    """A bundled vocabulary declares no template, so the two agree there."""
+    """A bundled vocabulary declares no template, so the two agree there.
+
+    `from_pretrained` hands back the loader's `AnyTokenizer`; the point holds
+    for it because a bundled vocabulary's policy carries an EOS id and its named
+    specials but no boundary template, so `apply_single` is a passthrough.
+    """
 
     @pytest.fixture
     def tokenizer(self):

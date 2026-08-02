@@ -39,6 +39,10 @@ pub enum TokenizerError {
     UnknownPretrained(String),
     #[error("Pre-tokenizer pattern list is empty")]
     EmptyPatternList,
+    #[error(
+        "regex backend options apply only to the byte-level BPE backend; this tokenizer is {0}"
+    )]
+    NotBpeBackend(&'static str),
 }
 
 /// Default regex pattern for cl100k_base (GPT-4, GPT-3.5-turbo).

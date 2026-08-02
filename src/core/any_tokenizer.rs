@@ -4,7 +4,7 @@ use super::policy::{PolicyError, SpecialMode, SpecialPolicy};
 use super::sentencepiece::SentencePieceTokenizer;
 use super::spm::SpmTokenizer;
 use super::tokenize::{Tokenize, TokenizeError};
-use super::tokenizer::Tokenizer;
+use super::tokenizer::{Tokenizer, TokenizerError};
 use super::wordpiece::WordPieceTokenizer;
 
 /// A tokenizer loaded from a `tokenizer.json`, tagged by its backend family.
@@ -92,6 +92,60 @@ impl AnyTokenizer {
         &self.policy
     }
 
+    /// Whether the source declared a `decoder` pipeline that
+    /// [`decode`](Self::decode) drives.
+    ///
+    /// A caller reaching past this handle for a backend's *raw* byte-level
+    /// decode (a streaming decoder, `decode_bytes`) must consult this first:
+    /// when a pipeline is declared, that raw path skips it and renders the
+    /// backend's pieces (`▁hello▁world`) instead of text.
+    pub fn declares_decoder(&self) -> bool {
+        self.decoder.is_some()
+    }
+
+    /// Switch the BPE backend's regex engine in place — see
+    /// [`Tokenizer::pcre2`].
+    ///
+    /// Configures the handle rather than returning a new one, so the policy,
+    /// the declared `decoder` pipeline and the `special=true` id set travel
+    /// with it untouched; rebuilding the handle around a reconfigured backend
+    /// would have to re-derive all three.
+    ///
+    /// # Errors
+    /// [`TokenizerError::NotBpeBackend`] for any other backend family: the
+    /// option configures a regex pre-tokenizer, and Unigram/WordPiece/SPM have
+    /// none to configure.
+    pub fn set_pcre2(&mut self, use_pcre2: bool) -> Result<(), TokenizerError> {
+        self.reconfigure_bpe(|bpe| bpe.pcre2(use_pcre2))
+    }
+
+    /// Enable or disable JIT compilation for the BPE backend's regex engine in
+    /// place — see [`Tokenizer::jit`]. Errors as [`Self::set_pcre2`] does.
+    pub fn set_jit(&mut self, use_jit: bool) -> Result<(), TokenizerError> {
+        self.reconfigure_bpe(|bpe| bpe.jit(use_jit))
+    }
+
+    /// Apply one of [`Tokenizer`]'s consuming builder steps to the BPE backend
+    /// held here, leaving every other field of this handle alone.
+    ///
+    /// The clone is cheap: [`Tokenizer`]'s `Clone` shares the compiled regex
+    /// and the later pre-tokenizer passes through their `Arc`s.
+    fn reconfigure_bpe<F>(&mut self, step: F) -> Result<(), TokenizerError>
+    where
+        F: FnOnce(Tokenizer) -> Result<Tokenizer, TokenizerError>,
+    {
+        // Read the family name up front: it is `&'static str`, so the borrow it
+        // needs ends here rather than fighting the `&mut self.backend` below.
+        let family = self.family();
+        match &mut self.backend {
+            Backend::Bpe(bpe) => {
+                *bpe = step(bpe.clone())?;
+                Ok(())
+            }
+            _ => Err(TokenizerError::NotBpeBackend(family)),
+        }
+    }
+
     /// Encode one sequence and apply the policy's single-sequence template.
     pub fn encode(&self, text: &str) -> Vec<u32> {
         self.policy.apply_single(self.encode_raw(text))
@@ -150,6 +204,54 @@ impl AnyTokenizer {
         }
     }
 
+    /// Encode many sequences under an explicit [`SpecialMode`], applying the
+    /// policy's single-sequence template to each — the batch form of
+    /// [`encode_with`](Self::encode_with), as [`encode_batch`](Self::encode_batch)
+    /// is the batch form of [`encode`](Self::encode).
+    ///
+    /// Fails as a whole if any one text violates the mode's allow-list, rather
+    /// than returning a partly-encoded batch with the offending entry silently
+    /// dropped.
+    pub fn encode_batch_with(
+        &self,
+        texts: &[&str],
+        mode: &SpecialMode<'_>,
+    ) -> Result<Vec<Vec<u32>>, PolicyError> {
+        #[cfg(feature = "rayon")]
+        {
+            use rayon::prelude::*;
+            texts
+                .par_iter()
+                .map(|&text| self.encode_with(text, mode))
+                .collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            texts
+                .iter()
+                .map(|&text| self.encode_with(text, mode))
+                .collect()
+        }
+    }
+
+    /// [`encode`](Self::encode) with the work parallelized *within* the single
+    /// text, where the backend supports it.
+    ///
+    /// Same semantics and same ids as [`encode`](Self::encode) — only the
+    /// execution strategy differs, and it pays off only for very large inputs
+    /// (typically >1MB) where the split work outweighs the thread-pool
+    /// coordination. Backends with no intra-text parallel path simply run
+    /// [`encode`](Self::encode), so the result never depends on which one this
+    /// handle holds.
+    pub fn encode_rayon(&self, text: &str) -> Vec<u32> {
+        match &self.backend {
+            Backend::Bpe(t) => self.policy.apply_single(t.encode_rayon(text)),
+            // Unigram, WordPiece and SPM merge sequentially; there is no
+            // intra-text split to parallelize, so this *is* their fast path.
+            _ => self.encode(text),
+        }
+    }
+
     /// Encode two sequences into one input using the policy's pair template
     /// (a reranker's `[CLS] query [SEP] document [SEP]`).
     ///
@@ -191,6 +293,28 @@ impl AnyTokenizer {
             Backend::Unigram(t) => Tokenize::decode(t, ids),
             Backend::WordPiece(t) => Tokenize::decode(t, ids),
             Backend::Spm(t) => Tokenize::decode(t, ids),
+        }
+    }
+
+    /// Decode many id lists — the batch form of [`decode`](Self::decode),
+    /// running the same declared pipeline and the same `special = true` skip.
+    ///
+    /// Parallel across lists when the `rayon` feature is on.
+    pub fn decode_batch(&self, token_lists: &[Vec<u32>]) -> Result<Vec<String>, TokenizeError> {
+        #[cfg(feature = "rayon")]
+        {
+            use rayon::prelude::*;
+            token_lists
+                .par_iter()
+                .map(|ids| self.decode_inner(ids))
+                .collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            token_lists
+                .iter()
+                .map(|ids| self.decode_inner(ids))
+                .collect()
         }
     }
 
@@ -264,6 +388,54 @@ mod tests {
         assert_eq!(ids.first(), Some(&1000), "BOS from the policy template");
         // Content tokens should be exactly "hi" encoded byte-by-byte, unmodified.
         assert_eq!(&ids[1..], &[b'h' as u32, b'i' as u32]);
+    }
+
+    /// Reconfiguring the regex engine must keep the handle intact — same ids,
+    /// same policy — rather than quietly returning a bare backend.
+    #[test]
+    fn set_jit_reconfigures_the_bpe_backend_in_place() {
+        let mut encoder = rustc_hash::FxHashMap::default();
+        for b in 32u8..=126 {
+            encoder.insert(vec![b], b as u32);
+        }
+        let mut special_tokens = rustc_hash::FxHashMap::default();
+        special_tokens.insert("<s>".to_string(), 1000);
+
+        let tokenizer = Tokenizer::new(encoder, special_tokens.clone(), r"\S+|\s+")
+            .unwrap()
+            .with_added_token_matching(true);
+        let policy = SpecialPolicy::boundary(Some(1000), None, None, special_tokens);
+        let mut any = AnyTokenizer::new(Backend::Bpe(tokenizer), policy);
+
+        let before = any.encode("hi there");
+        any.set_jit(false).expect("BPE backend accepts the option");
+
+        assert_eq!(any.encode("hi there"), before, "ids must not depend on JIT");
+        assert_eq!(any.family(), "BPE");
+        assert_eq!(
+            any.encode("hi").first(),
+            Some(&1000),
+            "the policy's BOS template must survive the reconfiguration"
+        );
+    }
+
+    /// A backend with no regex pre-tokenizer must refuse the option rather than
+    /// report a switch that did not happen — a caller told "done" would believe
+    /// it had changed engines and never find out otherwise.
+    #[test]
+    fn set_pcre2_refuses_on_a_non_bpe_backend() {
+        let vocab = vec!["[UNK]".to_string(), "hello".to_string()];
+        let mut any = AnyTokenizer::new(
+            Backend::WordPiece(WordPieceTokenizer::new(vocab, 0, 100, false)),
+            SpecialPolicy::default(),
+        );
+
+        let err = any.set_pcre2(true).expect_err("WordPiece has no regex");
+        assert!(
+            matches!(err, TokenizerError::NotBpeBackend("WordPiece")),
+            "unexpected error: {err}"
+        );
+        assert!(any.set_jit(false).is_err());
     }
 
     /// `AnyTokenizer::decode` must run the declared `decoder` pipeline and drop

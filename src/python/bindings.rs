@@ -46,15 +46,10 @@ use crate::core::SentencePieceTokenizer;
 use crate::core::hf_json::{
     from_json_bytes as core_from_json_bytes, from_json_path as core_from_json_path,
 };
-use crate::core::pretrained::{
-    cl100k_base_special_tokens, deepseek_v3_special_tokens, llama3_special_tokens,
-    mistral_v3_special_tokens, o200k_base_special_tokens, patterns as pretrained_patterns,
-    CL100K_BASE_VOCAB, DEEPSEEK_V3_VOCAB, LLAMA3_VOCAB, MISTRAL_V3_VOCAB, O200K_BASE_VOCAB,
-};
 use crate::core::spm::SpmTokenizer;
 use crate::core::wordpiece::WordPieceTokenizer;
 use crate::core::{byte_level_decode_bytes, Tokenize, Tokenizer};
-use crate::core::{AnyTokenizer, Backend, PretrainedVocab, SpecialMode, SpecialPolicy};
+use crate::core::{AnyTokenizer, Backend, SpecialMode, SpecialPolicy};
 
 // Special tokens are defined in crate::core::pretrained module.
 // See that module for the full token documentation and implementations.
@@ -113,108 +108,30 @@ impl PyTokenizer {
     ///     name: Model name (e.g., "cl100k_base", "o200k_base", "llama3", "mistral_v3")
     ///
     /// Returns:
-    ///     A `Tokenizer` for the byte-level BPE vocabularies, or an
-    ///     `AnyTokenizer` for the SentencePiece ones ("mistral" / "mistral_v1" /
-    ///     "mistral_v2"), which are merged as pieces rather than as bytes and
-    ///     load through the universal handle so their policy and decode
-    ///     pipeline travel with them.
+    ///     An `AnyTokenizer` — the same universal loaded-tokenizer handle
+    ///     `splintr.from_json` returns, for **every** bundled vocabulary. It
+    ///     carries the vocabulary's special-token policy and decode pipeline
+    ///     with it, and `.family` reports the backend it dispatched to ("BPE"
+    ///     for the byte-level vocabularies, "Spm" for the SentencePiece ones).
+    ///
+    ///     Because this delegates to the same core loader `splintr.pretrained`
+    ///     uses in Rust, a name produces the same ids on both sides of the
+    ///     binding. In particular `encode` matches special tokens spelled out
+    ///     in the text — `encode("<|begin_of_text|>hi")` is `[128000, 6151]`,
+    ///     not the marker shattered into ordinary tokens. Use
+    ///     `encode_ordinary` to refuse those matches, or
+    ///     `encode_allowed_special` to permit a named subset.
     #[staticmethod]
     fn from_pretrained(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-        let bpe = |inner: Tokenizer| -> PyResult<Py<PyAny>> {
-            Ok(Py::new(
-                py,
-                Self {
-                    inner,
-                    policy: SpecialPolicy::default(),
-                },
-            )?
-            .into_any())
-        };
-        match name {
-            "cl100k_base" => {
-                let special = cl100k_base_special_tokens();
-                bpe(Tokenizer::from_bytes_chain(
-                    CL100K_BASE_VOCAB,
-                    pretrained_patterns(PretrainedVocab::Cl100kBase).unwrap_or(&[]),
-                    special,
-                )
-                .map_err(|e| PyValueError::new_err(e.to_string()))?)
-            }
-            "o200k_base" => {
-                let special = o200k_base_special_tokens();
-                bpe(Tokenizer::from_bytes_chain(
-                    O200K_BASE_VOCAB,
-                    pretrained_patterns(PretrainedVocab::O200kBase).unwrap_or(&[]),
-                    special,
-                )
-                .map_err(|e| PyValueError::new_err(e.to_string()))?)
-            }
-            "llama3" | "llama3.1" | "llama3.2" | "llama3.3" => {
-                let special = llama3_special_tokens();
-                bpe(Tokenizer::from_bytes_chain(
-                    LLAMA3_VOCAB,
-                    pretrained_patterns(PretrainedVocab::Llama3).unwrap_or(&[]),
-                    special,
-                )
-                .map_err(|e| PyValueError::new_err(e.to_string()))?)
-            }
-            "deepseek_v3" | "deepseek-v3" => {
-                let special = deepseek_v3_special_tokens();
-                // DeepSeek uses ByteLevel BPE encoding. The pre-tokenizer comes
-                // from `pretrained::patterns`, which returns DeepSeek's own
-                // three-pass expression list — not the o200k or Llama 3 split,
-                // neither of which produces DeepSeek's ids.
-                bpe(Tokenizer::from_bytes_byte_level_chain(
-                    DEEPSEEK_V3_VOCAB,
-                    pretrained_patterns(PretrainedVocab::DeepseekV3).unwrap_or(&[]),
-                    special,
-                )
-                .map_err(|e| PyValueError::new_err(e.to_string()))?)
-            }
-            // Mistral V1/V2 are SentencePiece: their pieces are merged by the
-            // SPM-BPE backend, never by byte-level BPE, which cannot build the
-            // `▁` word-boundary marker (U+2581 = E2 96 81) because `E2 96` is
-            // not a piece any SentencePiece vocabulary was trained on. Built
-            // through the core loader so Rust and Python get the same ids.
-            "mistral" | "mistral_v1" | "mistral_v2" => {
-                let loaded = crate::core::pretrained::from_pretrained(name)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                any_tokenizer_to_py(py, loaded)
-            }
-            // Mistral V3: ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
-            // Uses its own pattern (no contractions, single-digit numbers)
-            "mistral_v3" => {
-                let special = mistral_v3_special_tokens();
-                bpe(Tokenizer::from_bytes_byte_level_chain(
-                    MISTRAL_V3_VOCAB,
-                    pretrained_patterns(PretrainedVocab::MistralV3).unwrap_or(&[]),
-                    special,
-                )
-                .map_err(|e| PyValueError::new_err(e.to_string()))?)
-            }
-            // Whisper multilingual (v1/v2/v3). Base BPE is bundled; specials are
-            // generated per variant. Delegates to the core name→variant mapping.
-            name if name.starts_with("whisper") => {
-                let loaded = crate::core::pretrained::from_pretrained(name)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                let Backend::Bpe(inner) = loaded.into_backend() else {
-                    return Err(PyValueError::new_err(
-                        "whisper vocabularies must load as a BPE tokenizer",
-                    ));
-                };
-                // Every other BPE arm here builds its tokenizer with added-token
-                // matching OFF: on the Python surface `encode` treats specials
-                // spelled out in the text as ordinary content and
-                // `encode_with_special` opts in. Leaving it on for whisper alone
-                // would make one bundled vocabulary answer `encode` differently
-                // from every other, so it is turned back off.
-                bpe(inner.with_added_token_matching(false))
-            }
-            _ => Err(PyValueError::new_err(format!(
-                "Unknown pretrained model: {}. See from_pretrained docstring for supported models.",
-                name
-            ))),
-        }
+        // Delegate: the per-vocabulary construction (which file, which
+        // pre-tokenizer passes, which specials, byte-level or SPM, added-token
+        // matching, the policy) lives in `core::pretrained` and is not repeated
+        // here. The hand-rolled copy this replaced had drifted — it built every
+        // vocabulary with added-token matching off and a default policy, so the
+        // same name gave different ids in Python than in Rust.
+        let loaded = crate::core::pretrained::from_pretrained(name)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        any_tokenizer_to_py(py, loaded)
     }
 
     /// Create a tokenizer from raw vocabulary bytes.
@@ -257,7 +174,7 @@ impl PyTokenizer {
     ///     ValueError: If use_pcre2=True and pcre2 feature is not enabled
     ///
     /// Example:
-    ///     tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
+    ///     tokenizer = Tokenizer("vocab.tiktoken", CL100K_BASE_PATTERN).pcre2(True)
     ///     tokenizer = tokenizer.pcre2(False)
     #[pyo3(signature = (use_pcre2=true))]
     fn pcre2(&self, use_pcre2: bool) -> PyResult<Self> {
@@ -288,8 +205,8 @@ impl PyTokenizer {
     ///     New Tokenizer instance with the specified JIT preference
     ///
     /// Example:
-    ///     tokenizer = Tokenizer.from_pretrained("cl100k_base").jit(False)
-    ///     tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True).jit(True)
+    ///     tokenizer = Tokenizer("vocab.tiktoken", CL100K_BASE_PATTERN).jit(False)
+    ///     tokenizer = tokenizer.pcre2(True).jit(True)
     #[pyo3(signature = (use_jit=true))]
     fn jit(&self, use_jit: bool) -> PyResult<Self> {
         let new_inner = self.inner.clone();
@@ -309,13 +226,16 @@ impl PyTokenizer {
     /// HuggingFace's `tokenizer.encode(text)` with its default
     /// `add_special_tokens=True`. Use `encode_raw` for the untemplated form.
     /// The two are identical for a tokenizer that declares no template — which is
-    /// every vocabulary `Tokenizer.from_pretrained` returns.
+    /// every tokenizer this class's own constructors build, since they take a
+    /// vocabulary and a pattern and no template.
     ///
     /// Whether a special token *spelled out inside* `text` is matched is a separate
     /// question, governed by `encode_ordinary` / `encode_with_special` /
     /// `encode_allowed_special`; `encode` uses this tokenizer's configured default,
-    /// which for `from_pretrained` vocabularies is "do not match" (see
-    /// `encode_with_special` to opt in).
+    /// which for a directly-constructed `Tokenizer` is "do not match" — nothing has
+    /// told it which added tokens to look for (see `encode_with_special` to opt in).
+    /// The loaders (`Tokenizer.from_pretrained`, `splintr.from_json`) return an
+    /// `AnyTokenizer` with matching **on**.
     ///
     /// Sequential encoding, optimal for texts under ~1MB.
     ///
@@ -372,9 +292,9 @@ impl PyTokenizer {
     /// `<|endoftext|>` typed in `text` becomes that control token's real id rather
     /// than ordinary bytes. This is HuggingFace's `add_special_tokens=True` applied
     /// to *added tokens found in the text* — tiktoken's `allowed_special="all"` —
-    /// and it is what `encode` does only when the vocabulary was built with
-    /// added-token matching on (bundled `from_pretrained` vocabularies are not, so
-    /// this method is how you opt in).
+    /// and it is what `encode` does only when the tokenizer was built with
+    /// added-token matching on (a directly-constructed `Tokenizer` is not, so this
+    /// method is how you opt in).
     ///
     /// The boundary template is applied too, as in `encode`.
     ///
@@ -579,7 +499,7 @@ impl PyTokenizer {
     ///     ByteLevelStreamingDecoder instance
     ///
     /// Example:
-    ///     tokenizer = Tokenizer.from_pretrained("deepseek_v3")
+    ///     tokenizer = Tokenizer.from_bytes(vocab_bytes, GPT2_PATTERN)
     ///     decoder = tokenizer.byte_level_streaming_decoder()
     ///     for token_id in token_stream:
     ///         if text := decoder.add_token(token_id):
@@ -859,7 +779,10 @@ impl PySentencePieceTokenizer {
 /// because its middle byte pair `E2 96` is not a piece any SentencePiece
 /// vocabulary was trained on.
 ///
-/// Returned by `Tokenizer.from_pretrained("mistral" | "mistral_v1" | "mistral_v2")`.
+/// This is the backend behind `Tokenizer.from_pretrained("mistral" |
+/// "mistral_v1" | "mistral_v2")`, which returns it wrapped in an `AnyTokenizer`
+/// (`.family == "Spm"`) so the vocabulary's policy travels with it. Construct
+/// this class directly only when you hold the pieces and scores yourself.
 #[pyclass(name = "SpmTokenizer")]
 pub struct PySpmTokenizer {
     inner: SpmTokenizer,
@@ -1385,6 +1308,43 @@ impl PyAnyTokenizer {
         self.inner.encode_batch(&refs)
     }
 
+    /// Batch form of `encode_with_special` — every special token spelled out in
+    /// each text is matched, and the boundary template applied.
+    ///
+    /// Uses Rayon to parallelize across texts.
+    ///
+    /// Args:
+    ///     texts: List of texts to encode
+    ///
+    /// Returns:
+    ///     List of token ID lists
+    fn encode_batch_with_special(&self, texts: Vec<String>) -> PyResult<Vec<Vec<u32>>> {
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        self.inner
+            .encode_batch_with(&refs, &SpecialMode::All)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// `encode` with the work parallelized *within* the single text.
+    ///
+    /// Same semantics and same ids as `encode` (boundary template applied,
+    /// special tokens in the text matched) — only the execution strategy
+    /// differs. It carries thread-pool overhead `encode` does not, so it pays
+    /// off only for very large texts (typically >1MB). For most uses prefer
+    /// `encode` (sequential) or `encode_batch` (parallel across texts).
+    ///
+    /// A backend with no intra-text parallel path simply runs `encode`, so the
+    /// ids never depend on which one this handle holds.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     List of token IDs
+    fn encode_rayon(&self, text: &str) -> Vec<u32> {
+        self.inner.encode_rayon(text)
+    }
+
     /// Decode token IDs to a string.
     ///
     /// Runs the `decoder` pipeline declared in the source `tokenizer.json` when
@@ -1402,6 +1362,197 @@ impl PyAnyTokenizer {
     ///     ValueError: If a token ID is out of range or the bytes are not UTF-8
     fn decode(&self, ids: Vec<u32>) -> PyResult<String> {
         Tokenize::decode(&self.inner, &ids).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Batch decode multiple token lists — the batch form of `decode`, running
+    /// the same declared `decoder` pipeline and the same `special=true` skip.
+    ///
+    /// Uses Rayon to parallelize across token lists.
+    ///
+    /// Args:
+    ///     token_lists: List of token ID lists
+    ///
+    /// Returns:
+    ///     List of decoded strings
+    ///
+    /// Raises:
+    ///     ValueError: If any token ID is out of range or the bytes are not UTF-8
+    fn decode_batch(&self, token_lists: Vec<Vec<u32>>) -> PyResult<Vec<String>> {
+        self.inner
+            .decode_batch(&token_lists)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Decode token IDs to raw bytes.
+    ///
+    /// The byte-level BPE backend's own decode, without the UTF-8 validation
+    /// `decode` performs — use it when the ids may end mid-character.
+    ///
+    /// Args:
+    ///     tokens: List of token IDs
+    ///
+    /// Returns:
+    ///     Decoded bytes
+    ///
+    /// Raises:
+    ///     ValueError: If this tokenizer's backend is not byte-level BPE, or if
+    ///         its source declared a `decoder` pipeline (see `decode`, which
+    ///         runs it — bytes taken from under it would render the backend's
+    ///         raw pieces instead of text)
+    fn decode_bytes(&self, tokens: Vec<u32>) -> PyResult<Vec<u8>> {
+        Ok(self.bpe_raw()?.decode_bytes(&tokens))
+    }
+
+    /// Decode token IDs to a string, replacing invalid UTF-8.
+    ///
+    /// Args:
+    ///     tokens: List of token IDs
+    ///
+    /// Returns:
+    ///     Decoded string with replacement characters for invalid UTF-8
+    ///
+    /// Raises:
+    ///     ValueError: Under the same conditions as `decode_bytes`
+    fn decode_lossy(&self, tokens: Vec<u32>) -> PyResult<String> {
+        Ok(self.bpe_raw()?.decode_lossy(&tokens))
+    }
+
+    /// Batch form of `decode_lossy`, parallelized across token lists.
+    ///
+    /// Args:
+    ///     token_lists: List of token ID lists
+    ///
+    /// Returns:
+    ///     List of decoded strings with replacement characters for invalid UTF-8
+    ///
+    /// Raises:
+    ///     ValueError: Under the same conditions as `decode_bytes`
+    fn decode_batch_lossy(&self, token_lists: Vec<Vec<u32>>) -> PyResult<Vec<String>> {
+        Ok(self.bpe_raw()?.decode_batch_lossy(&token_lists))
+    }
+
+    /// Switch this tokenizer's regex backend between regexr and PCRE2.
+    ///
+    /// Only the byte-level BPE backend has a regex pre-tokenizer to configure;
+    /// on any other family this raises rather than silently reporting success.
+    ///
+    /// Unlike `Tokenizer.pcre2`, this configures **this** handle and returns it
+    /// (so calls still chain) rather than handing back a second tokenizer: the
+    /// policy, the declared `decoder` pipeline and the special-id set stay
+    /// attached instead of having to be re-derived.
+    ///
+    /// Args:
+    ///     use_pcre2: If True, switch to PCRE2. If False, switch to regexr (default: True)
+    ///
+    /// Returns:
+    ///     This same tokenizer, reconfigured
+    ///
+    /// Raises:
+    ///     ValueError: If use_pcre2=True and the `pcre2` feature is not enabled,
+    ///         or if this tokenizer's backend is not byte-level BPE
+    ///
+    /// Example:
+    ///     tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
+    #[pyo3(signature = (use_pcre2=true))]
+    fn pcre2<'py>(mut slf: PyRefMut<'py, Self>, use_pcre2: bool) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner
+            .set_pcre2(use_pcre2)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(slf)
+    }
+
+    /// Enable or disable JIT compilation for the regex backend.
+    ///
+    /// JIT availability depends on platform support (e.g. x86-64) and on the
+    /// crate features (regexr `jit`, pcre2 `jit`). It is enabled by default.
+    /// As with `pcre2`, this configures and returns **this** handle.
+    ///
+    /// Args:
+    ///     use_jit: Whether to try using JIT compilation (default: True)
+    ///
+    /// Returns:
+    ///     This same tokenizer, reconfigured
+    ///
+    /// Raises:
+    ///     ValueError: If this tokenizer's backend is not byte-level BPE
+    ///
+    /// Example:
+    ///     tokenizer = Tokenizer.from_pretrained("cl100k_base").jit(False)
+    #[pyo3(signature = (use_jit=true))]
+    fn jit<'py>(mut slf: PyRefMut<'py, Self>, use_jit: bool) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner
+            .set_jit(use_jit)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(slf)
+    }
+
+    /// Create a streaming decoder for UTF-8 safe token-by-token decoding.
+    ///
+    /// Useful for streaming LLM output where token boundaries may not align
+    /// with UTF-8 character boundaries.
+    ///
+    /// Returns:
+    ///     StreamingDecoder instance
+    ///
+    /// Raises:
+    ///     ValueError: Under the same conditions as `decode_bytes` — a streaming
+    ///         decoder assembles raw token bytes, so it needs the byte-level BPE
+    ///         backend and no declared `decoder` pipeline to bypass
+    ///
+    /// Example:
+    ///     decoder = tokenizer.streaming_decoder()
+    ///     for token_id in token_stream:
+    ///         if text := decoder.add_token(token_id):
+    ///             print(text, end="", flush=True)
+    ///     print(decoder.flush())
+    fn streaming_decoder(&self) -> PyResult<PyStreamingDecoder> {
+        let bpe = self.bpe_raw()?;
+        Ok(PyStreamingDecoder::new(
+            bpe.decoder().clone(),
+            bpe.special_tokens_decoder().clone(),
+        ))
+    }
+
+    /// Create a ByteLevel streaming decoder for UTF-8 safe token-by-token decoding.
+    ///
+    /// For tokenizers using ByteLevel BPE encoding (GPT-2, Llama, DeepSeek V3),
+    /// where tokens hold ByteLevel-encoded characters that must be decoded back
+    /// to raw bytes before UTF-8 assembly.
+    ///
+    /// Returns:
+    ///     ByteLevelStreamingDecoder instance
+    ///
+    /// Raises:
+    ///     ValueError: Under the same conditions as `streaming_decoder`
+    ///
+    /// Example:
+    ///     tokenizer = Tokenizer.from_pretrained("deepseek_v3")
+    ///     decoder = tokenizer.byte_level_streaming_decoder()
+    fn byte_level_streaming_decoder(&self) -> PyResult<PyByteLevelStreamingDecoder> {
+        let bpe = self.bpe_raw()?;
+        Ok(PyByteLevelStreamingDecoder::new(
+            bpe.decoder().clone(),
+            bpe.special_tokens_decoder().clone(),
+        ))
+    }
+
+    /// Clear the encoding cache.
+    ///
+    /// Raises:
+    ///     ValueError: If this tokenizer's backend is not byte-level BPE — it is
+    ///         the only one that caches encoded chunks
+    fn clear_cache(&self) -> PyResult<()> {
+        self.bpe()?.clear_cache();
+        Ok(())
+    }
+
+    /// Get the number of entries in the encoding cache.
+    ///
+    /// Raises:
+    ///     ValueError: Under the same conditions as `clear_cache`
+    #[getter]
+    fn cache_len(&self) -> PyResult<usize> {
+        Ok(self.bpe()?.cache_len())
     }
 
     /// Get the vocabulary size (including special tokens).
@@ -1439,6 +1590,43 @@ impl PyAnyTokenizer {
             self.inner.family(),
             Tokenize::vocab_size(&self.inner)
         )
+    }
+}
+
+impl PyAnyTokenizer {
+    /// Borrow the byte-level BPE backend, for the surfaces only it defines
+    /// (the chunk cache, the raw byte decodes, the streaming decoders).
+    ///
+    /// Delegating to the backend keeps those methods reachable from the
+    /// universal handle without a second construction path; a family that does
+    /// not define them says so rather than answering with a plausible-looking
+    /// substitute.
+    fn bpe(&self) -> PyResult<&Tokenizer> {
+        match self.inner.backend() {
+            Backend::Bpe(bpe) => Ok(bpe),
+            _ => Err(PyValueError::new_err(format!(
+                "this method needs the byte-level BPE backend; this tokenizer is {}",
+                self.inner.family()
+            ))),
+        }
+    }
+
+    /// As [`Self::bpe`], and additionally refuses when the source declared a
+    /// `decoder` pipeline.
+    ///
+    /// The raw byte surfaces read token bytes straight out of the backend,
+    /// which skips that pipeline — a Mistral-style `Replace ▁→" "` → `ByteFallback`
+    /// → `Fuse` → `Strip` chain would silently render `▁hello▁world` instead of
+    /// `hello world`. Bundled vocabularies declare no pipeline, so this is a
+    /// guard on json-loaded handles, not a restriction on `from_pretrained`.
+    fn bpe_raw(&self) -> PyResult<&Tokenizer> {
+        if self.inner.declares_decoder() {
+            return Err(PyValueError::new_err(
+                "this tokenizer declares a `decoder` pipeline, which raw byte-level \
+                 decoding would bypass; use `decode` / `decode_batch` instead",
+            ));
+        }
+        self.bpe()
     }
 }
 

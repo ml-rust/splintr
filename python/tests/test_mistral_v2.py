@@ -366,7 +366,9 @@ class TestMistralV2LargeScaleBatch:
 
 
 # `TestMistralV2BackendOptions` (regexr/PCRE2/JIT backend switching) was
-# removed: V2 routes through `SpmTokenizer`, which has no regex backend at
-# all (no `.pcre2()`/`.jit()`), so the concern does not apply to this
-# vocabulary. The equivalent coverage now lives on the genuinely BPE-backed
-# Mistral vocabulary in `test_mistral_v3.py::TestMistralV3BackendOptions`.
+# removed: V2 routes through `SpmTokenizer`, which segments by merging pieces
+# and has no regex pre-tokenizer to configure, so the concern does not apply to
+# this vocabulary. The equivalent coverage now lives on the genuinely BPE-backed
+# Mistral vocabulary in `test_mistral_v3.py::TestMistralV3BackendOptions`, and
+# the refusal on this backend in
+# `test_mistral_v1.py::TestMistralV1HasNoRegexBackend`.

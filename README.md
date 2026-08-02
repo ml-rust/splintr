@@ -44,6 +44,10 @@ tokenizer = Tokenizer.from_pretrained("cl100k_base")  # OpenAI GPT-4/3.5
 # tokenizer = Tokenizer.from_pretrained("mistral_v3")  # Mistral NeMo, Large 2
 # tokenizer = Tokenizer.from_pretrained("whisper_v3")  # OpenAI Whisper multilingual (v1/v2/v3)
 
+# `from_pretrained` delegates to the same loader the Rust API uses, so a name
+# means the same thing on both sides: it returns an `AnyTokenizer` for every
+# bundled vocabulary, and `.family` names the backend it dispatched to.
+
 # Encode and decode
 tokens = tokenizer.encode("Hello, world!")
 text = tokenizer.decode(tokens)
@@ -293,14 +297,13 @@ let allowed: FxHashSet<String> = ["<|eot_id|>".to_string()].into_iter().collect(
 let ids = tokenizer.encode_with(untrusted, &SpecialMode::Allow(&allowed))?;
 ```
 
-Note the defaults differ by handle. Where Python's `Tokenizer.from_pretrained`
-returns a `Tokenizer`, it is built with added-token matching **off** — its
-`encode` is already the `Ordinary` behaviour and `encode_with_special` opts in.
-`AnyTokenizer` matches special tokens by default: that is what `from_json`
-returns, what `from_pretrained` returns in Rust, and what Python's
-`Tokenizer.from_pretrained` returns for `mistral_v1`/`mistral_v2`. Rather than
-reason about which handle you hold, say `encode_ordinary` or
-`encode_allowed_special` explicitly whenever the text is untrusted.
+Every loader — `from_pretrained` in Rust *and* in Python, `from_json`, the GGUF
+loader — returns an `AnyTokenizer` that matches special tokens by default, so
+`encode` there is the `All` behaviour. (A `Tokenizer` you build yourself from a
+vocabulary file starts with matching **off**, since nothing has told it which
+added tokens exist.) Rather than reason about which handle you hold, say
+`encode_ordinary` or `encode_allowed_special` explicitly whenever the text is
+untrusted.
 
 ## Supported Vocabularies
 

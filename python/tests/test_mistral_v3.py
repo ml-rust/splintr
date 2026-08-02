@@ -353,7 +353,8 @@ class TestMistralV3BackendOptions:
 
     This coverage used to live on the V1/V2 test files, but V1/V2 route
     through `SpmTokenizer` (SentencePiece merges), which has no regex
-    backend at all — `.pcre2()`/`.jit()` are meaningless on it. V3/Tekken
+    pre-tokenizer to configure — `.pcre2()`/`.jit()` refuse on it rather
+    than report a switch that did not happen. V3/Tekken
     is the genuinely BPE-backed Mistral vocabulary (byte-level BPE, like
     cl100k/o200k), so it is the one that can actually exercise backend
     switching while still being a Mistral tokenizer.

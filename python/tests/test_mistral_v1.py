@@ -290,7 +290,34 @@ class TestMistralV1LargeScaleBatch:
 
 
 # `TestMistralV1BackendOptions` (regexr/PCRE2/JIT backend switching) was
-# removed: V1 routes through `SpmTokenizer`, which has no regex backend at
-# all (no `.pcre2()`/`.jit()`), so the concern does not apply to this
-# vocabulary. The equivalent coverage now lives on the genuinely BPE-backed
+# removed: V1 routes through `SpmTokenizer`, which segments by merging pieces
+# and has no regex pre-tokenizer to configure, so the concern does not apply to
+# this vocabulary. The equivalent coverage now lives on the genuinely BPE-backed
 # Mistral vocabulary in `test_mistral_v3.py::TestMistralV3BackendOptions`.
+# What is pinned here instead is that asking anyway *fails* rather than
+# reporting a switch that did not happen.
+
+
+class TestMistralV1HasNoRegexBackend:
+    """`.pcre2()`/`.jit()` refuse on the SPM backend instead of no-op'ing.
+
+    Both methods exist on the universal handle every loader returns, so a caller
+    can reach them on any vocabulary. Answering "done" for a backend with no
+    regex pre-tokenizer would be the worst outcome: the caller would believe it
+    had switched engines and never find out otherwise.
+    """
+
+    @pytest.fixture
+    def tokenizer(self):
+        return Tokenizer.from_pretrained("mistral_v1")
+
+    def test_family_is_spm(self, tokenizer):
+        assert tokenizer.family == "Spm"
+
+    def test_pcre2_raises(self, tokenizer):
+        with pytest.raises(ValueError):
+            tokenizer.pcre2(True)
+
+    def test_jit_raises(self, tokenizer):
+        with pytest.raises(ValueError):
+            tokenizer.jit(False)
