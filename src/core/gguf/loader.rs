@@ -57,8 +57,7 @@ pub fn from_gguf_vocab(vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
     }
 }
 
-/// `bert`: WordPiece. Boundaries come from `[CLS]`/`[SEP]` in the vocabulary, so
-/// no boundary template is synthesized.
+/// `bert`: WordPiece, wrapped in the `[CLS]`/`[SEP]` the vocabulary names.
 fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
     // Control and user-defined tokens are read from the ORIGINAL strings, before
     // normalization: `normalize_wordpiece_vocab` rewrites unbracketed pieces to
@@ -96,17 +95,31 @@ fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
         }
     }
 
+    // Read before `named` is moved into the policy below.
+    let (cls, sep) = (named.get("[CLS]").copied(), named.get("[SEP]").copied());
+
     let eos_token_id = vocab.eos_token_id.unwrap_or(0);
     let backend = Backend::WordPiece(
         WordPieceTokenizer::new(tokens, unk_token_id, 200, do_lower_case)
             .with_added_tokens(&named)?,
     );
-    // No boundary template: BERT wraps with `[CLS]`/`[SEP]`, and `add_bos_token`
-    // / `add_eos_token` are not what these files use to say so.
-    Ok(AnyTokenizer::new(
-        backend,
-        SpecialPolicy::boundary(None, None, Some(eos_token_id), named),
-    ))
+
+    // `add_bos_token` / `add_eos_token` are not how a BERT file states its
+    // boundaries — the `[CLS]`/`[SEP]` ids are — so the template is built from
+    // those two ids, through the same constructor the `tokenizer.json` path
+    // uses. Without it, `encode` on a GGUF returned bare content tokens while
+    // the *same model's* `tokenizer.json` wrapped them, and a `Pooling::Cls`
+    // consumer silently read a content token at position 0 as the sentence
+    // vector. Measured on all-MiniLM-L6-v2 (`tokenizers` 0.22.1 and llama.cpp's
+    // WPM path with `add_special` set): `"hello world"` → `[101, 7592, 2088, 102]`.
+    //
+    // A vocabulary that names neither keeps the identity policy: there is no id
+    // to place, and inventing one would be worse than placing none.
+    let policy = match (cls, sep) {
+        (Some(cls), Some(sep)) => SpecialPolicy::cls_sep(cls, sep, Some(eos_token_id), named),
+        _ => SpecialPolicy::boundary(None, None, Some(eos_token_id), named),
+    };
+    Ok(AnyTokenizer::new(backend, policy))
 }
 
 /// `t5`: true Unigram. Scores are log-probabilities and Viterbi is correct.

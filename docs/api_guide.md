@@ -625,6 +625,12 @@ The boundary template applies under **every** `SpecialMode`, including
 `Ordinary`: boundary tokens come from the template, not from matching text
 against the vocabulary, so the two concerns stay independent.
 
+To fit a sequence into a fixed model length, reserve the template's own slots
+first: `policy().single_overhead()` is how many special tokens `encode` adds
+around the content (2 for `[CLS] A [SEP]`, 1 for a lone BOS, 0 for none), so
+truncate the content to `max_len - single_overhead()` rather than truncating
+the wrapped ids and cutting off the trailing `[SEP]`/EOS.
+
 ### SpecialMode
 
 ```rust

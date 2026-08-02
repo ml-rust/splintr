@@ -183,9 +183,9 @@ impl SpecialPolicy {
     /// For sources that state their boundaries as flags plus ids rather than as
     /// a template — a GGUF's `add_bos_token` / `add_eos_token` — so the loader
     /// resolves the flags and hands over the ids that survive them. Passing
-    /// `None` for both yields the identity template, which is what a BERT-family
-    /// GGUF wants: it wraps with `[CLS]`/`[SEP]` through the vocabulary, not
-    /// through a boundary template.
+    /// `None` for both yields the identity template, for a vocabulary that
+    /// states no boundary tokens at all; a source whose boundaries are a
+    /// cls/sep pair uses [`cls_sep`](Self::cls_sep) instead.
     ///
     /// `eos_id` is the vocabulary's end-of-sequence token, which exists
     /// independently of whether one is *appended*: a generation loop must still
@@ -213,6 +213,54 @@ impl SpecialPolicy {
             eos_id,
             named,
         }
+    }
+
+    /// Build the BERT-family `[CLS] A [SEP]` / `[CLS] A [SEP] B [SEP]` policy
+    /// from the two ids directly.
+    ///
+    /// The sibling of [`boundary`](Self::boundary) for a source that states its
+    /// boundaries as a cls/sep *pair* rather than as BOS/EOS flags: a GGUF
+    /// `bert` vocabulary. llama.cpp's WPM path prepends `[CLS]` and appends
+    /// `[SEP]` whenever `add_special` is set, and HuggingFace's
+    /// `all-MiniLM-L6-v2` `tokenizer.json` declares exactly this template
+    /// (measured with `tokenizers` 0.22.1: `"hello world"` →
+    /// `[101, 7592, 2088, 102]`, and as a pair with `"goodbye moon"` →
+    /// `[101, 7592, 2088, 102, 9119, 4231, 102]`). Both containers of one
+    /// checkpoint must therefore answer `encode` identically, so both build the
+    /// template through the one `cls_sep_segments` shape.
+    ///
+    /// Both ids are required, not `Option`: a vocabulary that names no `[CLS]`
+    /// or no `[SEP]` has no boundary to place, and the caller keeps the
+    /// identity [`boundary`](Self::boundary) policy rather than having tokens
+    /// invented for it.
+    pub(super) fn cls_sep(
+        cls: u32,
+        sep: u32,
+        eos_id: Option<u32>,
+        named: FxHashMap<String, u32>,
+    ) -> Self {
+        Self {
+            template: cls_sep_segments(Some(cls), Some(sep), PairShape::Bert),
+            eos_id,
+            named,
+        }
+    }
+
+    /// How many special-token slots the single-sequence template adds around
+    /// the content — 2 for `[CLS] A [SEP]`, 1 for a lone BOS, 0 for identity.
+    ///
+    /// For a caller that must fit a sequence into a fixed model length: the
+    /// content has to be truncated to `max_len - single_overhead()` *before*
+    /// [`apply_single`](Self::apply_single) runs, because truncating after it
+    /// would cut the trailing `[SEP]`/EOS off — the exact position a
+    /// last-token-pooling model reads. The count is otherwise only obtainable
+    /// as `apply_single(vec![]).len()`, which is a trick rather than an answer.
+    pub fn single_overhead(&self) -> usize {
+        self.template
+            .single
+            .iter()
+            .filter(|s| matches!(s, Segment::Special(_)))
+            .count()
     }
 }
 
@@ -272,8 +320,19 @@ fn cls_sep_template(pp: &Value, shape: PairShape) -> Template {
             .and_then(Value::as_u64)
             .map(|n| n as u32)
     };
-    let (cls, sep) = (id("cls"), id("sep"));
+    cls_sep_segments(id("cls"), id("sep"), shape)
+}
 
+/// The `[CLS] A [SEP]` / `[CLS] A [SEP] B [SEP]` shape, built from the two ids
+/// alone.
+///
+/// Split out of [`cls_sep_template`] so a source that states its cls/sep as
+/// plain ids rather than as a json node — a GGUF `bert` vocabulary, whose
+/// boundaries llama.cpp's WPM path takes straight from `[CLS]`/`[SEP]` — lands
+/// on the *same* segments as the `tokenizer.json` of the same model. One shape,
+/// one place: the two carriers cannot drift into disagreeing about what
+/// `encode` returns for one checkpoint.
+fn cls_sep_segments(cls: Option<u32>, sep: Option<u32>, shape: PairShape) -> Template {
     let mut single = Vec::with_capacity(3);
     single.extend(cls.map(Segment::Special));
     single.push(Segment::A);
@@ -512,6 +571,47 @@ mod tests {
         assert_eq!(p.eos_token_id(), Some(2));
         assert!(p.is_eos(2));
         assert!(!p.is_eos(1));
+    }
+
+    /// The two carriers of one checkpoint's boundaries — a `tokenizer.json`
+    /// `BertProcessing` node and a GGUF's bare `[CLS]`/`[SEP]` ids — must build
+    /// the same policy. all-MiniLM-L6-v2 states cls=101/sep=102 in both, and
+    /// `tokenizers` 0.22.1 encodes `"hello world"` there as
+    /// `[101, 7592, 2088, 102]`.
+    #[test]
+    fn cls_sep_from_ids_matches_the_json_path() {
+        let from_json = policy(
+            r#"{"post_processor": {"type": "BertProcessing",
+                "cls": ["[CLS]", 101], "sep": ["[SEP]", 102]}}"#,
+        )
+        .expect("parses");
+        let from_ids = SpecialPolicy::cls_sep(101, 102, Some(102), FxHashMap::default());
+
+        assert_eq!(
+            from_ids.apply_single(vec![7592, 2088]),
+            vec![101, 7592, 2088, 102]
+        );
+        assert_eq!(
+            from_json.apply_single(vec![7592, 2088]),
+            from_ids.apply_single(vec![7592, 2088])
+        );
+        assert_eq!(
+            from_json.apply_pair(&[7592], &[9119]).expect("pair"),
+            from_ids.apply_pair(&[7592], &[9119]).expect("pair")
+        );
+    }
+
+    /// The count a caller reserves before truncating: special slots only, never
+    /// the content slot.
+    #[test]
+    fn single_overhead_counts_only_the_special_slots() {
+        assert_eq!(SpecialPolicy::default().single_overhead(), 0);
+        let bos_only = SpecialPolicy::boundary(Some(1), None, None, FxHashMap::default());
+        assert_eq!(bos_only.single_overhead(), 1);
+        assert_eq!(
+            SpecialPolicy::cls_sep(101, 102, None, FxHashMap::default()).single_overhead(),
+            2
+        );
     }
 
     /// A vocabulary with no end-of-sequence token must report `None`, not a

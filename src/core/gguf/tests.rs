@@ -518,10 +518,21 @@ fn t5_wraps_with_both_boundaries_by_default() {
     assert_eq!(ids.last(), Some(&2));
 }
 
-/// BERT wraps with `[CLS]`/`[SEP]` through its vocabulary, so the policy must
-/// add no boundary tokens at all — but must still resolve the ids by name.
+/// BERT states its boundaries as `[CLS]`/`[SEP]` in the vocabulary rather than
+/// through `add_bos_token`/`add_eos_token` — but stating them is not placing
+/// them, and a caller asking `encode` for "the sequence this model was trained
+/// on" needs them placed. Both references agree: HuggingFace's
+/// `all-MiniLM-L6-v2` `tokenizer.json` declares `[CLS] A [SEP]` (measured with
+/// `tokenizers` 0.22.1: `"hello world"` → `[101, 7592, 2088, 102]`), and
+/// llama.cpp's WPM path prepends CLS and appends SEP whenever `add_special` is
+/// set. So the two containers of one checkpoint must answer identically, and
+/// the `bos_token_id`/`eos_token_id` flags below must still contribute nothing.
+///
+/// `encode_raw` stays the bare content tokens — that is the surface
+/// `examples/verify_gguf.rs` scores against llama.cpp's `add_special = false`
+/// fixtures.
 #[test]
-fn bert_gets_no_boundary_template_but_keeps_the_named_ids() {
+fn bert_wraps_with_cls_sep_and_keeps_the_named_ids() {
     let tok = from_gguf_vocab(GgufVocab {
         model: "bert".to_owned(),
         tokens: v(&["[PAD]", "[UNK]", "[CLS]", "[SEP]", "the"]),
@@ -535,15 +546,43 @@ fn bert_gets_no_boundary_template_but_keeps_the_named_ids() {
     .expect("builds");
 
     assert_eq!(tok.family(), "WordPiece");
+    assert_eq!(tok.encode_raw("the"), vec![4]);
     assert_eq!(
         tok.encode("the"),
-        tok.encode_raw("the"),
-        "BERT's boundaries come from [CLS]/[SEP], not from a boundary template"
+        vec![2, 4, 3],
+        "[CLS] A [SEP], as both HuggingFace and llama.cpp produce"
     );
+    assert_eq!(
+        tok.encode_pair("the", "the")
+            .expect("bert defines a pair template"),
+        vec![2, 4, 3, 4, 3],
+        "[CLS] A [SEP] B [SEP] — the shape a reranker head was trained on"
+    );
+    assert_eq!(tok.policy().single_overhead(), 2);
+
     assert_eq!(tok.special_token_id("[CLS]"), Some(2));
     assert_eq!(tok.special_token_id("[SEP]"), Some(3));
     assert_eq!(tok.special_token_id("[UNK]"), Some(1));
     assert_eq!(tok.special_token_id("[PAD]"), Some(0));
+}
+
+/// The other half of the rule: a vocabulary that names no `[CLS]`/`[SEP]` gets
+/// the identity policy. Boundary tokens are placed only when the file states
+/// which ids they are — never invented from a position or a default.
+#[test]
+fn bert_without_cls_sep_keeps_the_identity_policy() {
+    let tok = from_gguf_vocab(GgufVocab {
+        model: "bert".to_owned(),
+        tokens: v(&["[PAD]", "[UNK]", "the"]),
+        add_bos_token: Some(true),
+        add_eos_token: Some(true),
+        ..GgufVocab::default()
+    })
+    .expect("builds");
+
+    assert_eq!(tok.encode("the"), tok.encode_raw("the"));
+    assert_eq!(tok.policy().single_overhead(), 0);
+    assert_eq!(tok.special_token_id("[CLS]"), None);
 }
 
 /// CONTROL-flagged tokens are the special tokens of a `gpt2` vocabulary, and
