@@ -160,6 +160,40 @@ impl AnyTokenizer {
             .apply_pair(&self.encode_raw(a), &self.encode_raw(b))
     }
 
+    /// Decode ids back to text, running whatever decode pipeline the source
+    /// declared and dropping the ids marked `special = true`.
+    ///
+    /// Inherent so the universal handle is usable without importing
+    /// [`Tokenize`] — every other entry point on this type already is, and
+    /// `decode` being trait-only made it the one method a caller had to reach
+    /// for a trait to spell. The trait impl delegates here, so the two can
+    /// never disagree.
+    pub fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
+        self.decode_inner(ids)
+    }
+
+    /// The one decode implementation, shared by the inherent [`Self::decode`]
+    /// and the [`Tokenize`] impl so neither can drift from the other.
+    fn decode_inner(&self, ids: &[u32]) -> Result<String, TokenizeError> {
+        // When the json declares a `decoder`, drive decoding from it: collect the
+        // surface strings (skipping special-flagged added tokens, matching HF's
+        // default `skip_special_tokens=true`) and run the configured pipeline.
+        if let Some(decoder) = &self.decoder {
+            let surfaces: Vec<String> = ids
+                .iter()
+                .filter(|id| !self.special_decode.contains(id))
+                .filter_map(|&id| self.backend.token_surface(id))
+                .collect();
+            return Ok(decoder.decode(surfaces));
+        }
+        match &self.backend {
+            Backend::Bpe(t) => Tokenize::decode(t, ids),
+            Backend::Unigram(t) => Tokenize::decode(t, ids),
+            Backend::WordPiece(t) => Tokenize::decode(t, ids),
+            Backend::Spm(t) => Tokenize::decode(t, ids),
+        }
+    }
+
     /// Whether `id` is the end-of-sequence token.
     pub fn is_eos(&self, id: u32) -> bool {
         self.policy.is_eos(id)
@@ -186,23 +220,7 @@ impl Tokenize for AnyTokenizer {
     }
 
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        // When the json declares a `decoder`, drive decoding from it: collect the
-        // surface strings (skipping special-flagged added tokens, matching HF's
-        // default `skip_special_tokens=true`) and run the configured pipeline.
-        if let Some(decoder) = &self.decoder {
-            let surfaces: Vec<String> = ids
-                .iter()
-                .filter(|id| !self.special_decode.contains(id))
-                .filter_map(|&id| self.backend.token_surface(id))
-                .collect();
-            return Ok(decoder.decode(surfaces));
-        }
-        match &self.backend {
-            Backend::Bpe(t) => Tokenize::decode(t, ids),
-            Backend::Unigram(t) => Tokenize::decode(t, ids),
-            Backend::WordPiece(t) => Tokenize::decode(t, ids),
-            Backend::Spm(t) => Tokenize::decode(t, ids),
-        }
+        self.decode_inner(ids)
     }
 
     fn vocab_size(&self) -> usize {
