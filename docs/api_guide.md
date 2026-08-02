@@ -82,21 +82,21 @@ Every Python tokenizer class — `Tokenizer`, `AnyTokenizer`, `SpmTokenizer`,
 `SentencePieceTokenizer`, `WordPieceTokenizer` — exposes the same six encoding
 methods, and each means the same thing on all of them:
 
-| Method                                    | Meaning                                                            | HuggingFace / tiktoken equivalent           |
-| ----------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------- |
-| `encode(text)`                            | Model-ready: boundary template applied                              | `tokenizer.encode(text)` (its default `add_special_tokens=True`) |
-| `encode_raw(text)`                        | Content tokens only, no template                                    | `tokenizer.encode(text, add_special_tokens=False)` |
-| `encode_ordinary(text)`                   | Never match a special token spelled out in `text`                   | tiktoken `allowed_special=set()`            |
-| `encode_with_special(text)`               | Match every special token spelled out in `text`                     | tiktoken `allowed_special="all"`            |
-| `encode_allowed_special(text, allowed)`   | Match only the listed ones; `ValueError` on any other               | tiktoken `allowed_special={...}`            |
-| `encode_batch(texts)`                     | Batch form of `encode`, parallel across texts                       | `tokenizer.encode_batch(texts)`             |
+| Method                                  | Meaning                                               | HuggingFace / tiktoken equivalent                                |
+| --------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------- |
+| `encode(text)`                          | Model-ready: boundary template applied                | `tokenizer.encode(text)` (its default `add_special_tokens=True`) |
+| `encode_raw(text)`                      | Content tokens only, no template                      | `tokenizer.encode(text, add_special_tokens=False)`               |
+| `encode_ordinary(text)`                 | Never match a special token spelled out in `text`     | tiktoken `allowed_special=set()`                                 |
+| `encode_with_special(text)`             | Match every special token spelled out in `text`       | tiktoken `allowed_special="all"`                                 |
+| `encode_allowed_special(text, allowed)` | Match only the listed ones; `ValueError` on any other | tiktoken `allowed_special={...}`                                 |
+| `encode_batch(texts)`                   | Batch form of `encode`, parallel across texts         | `tokenizer.encode_batch(texts)`                                  |
 
 Two independent questions are at work here, and mixing them up is the one way to
 get this wrong:
 
 1. **Boundary tokens** — the `[CLS]…[SEP]` / `<s>…</s>` wrapper the model was
    trained to receive. It comes from the tokenizer's `post_processor` template,
-   never from the text. `encode` adds it; `encode_raw` does not. Every *other*
+   never from the text. `encode` adds it; `encode_raw` does not. Every _other_
    method on the list also adds it, because refusing to match a special token
    inside untrusted content says nothing about whether the model wants a BOS.
 2. **Special tokens spelled out in the input** — a user typing `<|endoftext|>`.
@@ -129,7 +129,7 @@ tok.encode_raw("Hello, world!")  # [9906, 11, 1917, 0]
 
 Encode text to token IDs, content only — no boundary template. Use it when you
 assemble the sequence yourself (a chat template, a reranker pair) and place the
-boundary tokens by hand. Whatever `encode` adds and this does not *is* the template.
+boundary tokens by hand. Whatever `encode` adds and this does not _is_ the template.
 
 ```python
 tok = from_json("/path/to/bge-m3-tokenizer/tokenizer.json")
@@ -172,7 +172,7 @@ batch_tokens = tokenizer.encode_batch(texts)
 
 #### `encode_rayon(text: str) -> list[int]`
 
-Same result as `encode`, but Rayon parallelizes *within* the single text. This is
+Same result as `encode`, but Rayon parallelizes _within_ the single text. This is
 only beneficial for very large texts (>1MB); for typical use cases `encode()` is
 faster. A backend with no intra-text parallel path simply runs `encode`, so the
 ids never depend on which one you hold.
@@ -189,7 +189,7 @@ The batch form of `encode_with_special`, parallel across texts.
 
 ### Special tokens in untrusted text
 
-A tokenizer that matches special tokens will promote text that *spells* a control
+A tokenizer that matches special tokens will promote text that _spells_ a control
 token to that token's real id. `<|im_start|>` typed by a user becomes the same id
 the server emits when it opens a turn, and downstream nothing can tell the two
 apart — that is how a user message forges a system turn. Denylisting the spelling
@@ -295,7 +295,7 @@ tokenizer.clear_cache()
 ### Sizing against the reference vocabulary
 
 `base_vocab_size(name)` is a module-level function reporting a vocabulary's size
-*as its upstream reference defines it* — without splintr's 54 agent tokens. That
+_as its upstream reference defines it_ — without splintr's 54 agent tokens. That
 is the number to size a model's embedding or logit layer with, or to identify
 which vocabulary a checkpoint uses from the shape of its token-embedding tensor:
 both must match the checkpoint's vocabulary, not splintr's extended one. Agent
@@ -313,7 +313,7 @@ print(base_vocab_size("mistral_v3"))    # 131072
 ```
 
 It accepts the same names as `Tokenizer.from_pretrained` and raises `ValueError`
-for anything else. It is *not* `vocab_size - 54`: several reference vocabularies
+for anything else. It is _not_ `vocab_size - 54`: several reference vocabularies
 leave gaps below their nominal size, so the difference varies per vocabulary.
 (Rust: `splintr::pretrained::base_vocab_size(vocab)` taking a `PretrainedVocab`,
 or `base_vocab_size_by_name(name)` returning `Result<u32, TokenizerError>`.)
@@ -402,11 +402,11 @@ tok.encode_raw("Hello, world!")  # [35378, 4, 8999, 38]        — content only
 tok.decode(tok.encode("Hello, world!"))   # "Hello, world!"
 ```
 
-| `model.type` | `tok.family`  | Internal backend         | Example models                     |
-|--------------|---------------|--------------------------|------------------------------------|
-| `BPE`        | `"BPE"`       | `Tokenizer`              | GPT-2, RoBERTa, Qwen, Whisper.en   |
-| `Unigram`    | `"Unigram"`   | `SentencePieceTokenizer` | T5, Gemma, Albert, XLNet           |
-| `WordPiece`  | `"WordPiece"` | `WordPieceTokenizer`     | BERT, DistilBERT, Electra          |
+| `model.type` | `tok.family`  | Internal backend         | Example models                   |
+| ------------ | ------------- | ------------------------ | -------------------------------- |
+| `BPE`        | `"BPE"`       | `Tokenizer`              | GPT-2, RoBERTa, Qwen, Whisper.en |
+| `Unigram`    | `"Unigram"`   | `SentencePieceTokenizer` | T5, Gemma, Albert, XLNet         |
+| `WordPiece`  | `"WordPiece"` | `WordPieceTokenizer`     | BERT, DistilBERT, Electra        |
 
 A fourth backend, `SpmTokenizer` (`family == "Spm"`), is not reachable from
 `tokenizer.json`: it is what the bundled Mistral V1/V2 vocabularies use and what
@@ -419,7 +419,7 @@ or `None`).
 
 `decode` runs the file's declared `decoder` chain after dropping `special=true`
 ids — HuggingFace's default `skip_special_tokens=True` — so files whose decoding
-*is* that chain (Mistral, Llama, Gemma) come back as text rather than raw pieces.
+_is_ that chain (Mistral, Llama, Gemma) come back as text rather than raw pieces.
 
 **Strict by design.** Rather than silently approximate an unsupported config (which
 would produce wrong tokens with no signal), `from_json` raises:
@@ -631,7 +631,7 @@ let text = tok.decode(&ids)?;               // via `Tokenize`
 - `encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError>`: `encode` under an explicit matching mode
 - `encode_batch(&self, texts: &[&str]) -> Vec<Vec<u32>>`: Batch form of `encode`, parallel across texts
 - `encode_batch_with(&self, texts: &[&str], mode: &SpecialMode<'_>) -> Result<Vec<Vec<u32>>, PolicyError>`: Batch form of `encode_with`; fails as a whole rather than dropping an offending text
-- `encode_rayon(&self, text: &str) -> Vec<u32>`: `encode` parallelized *within* one text, where the backend supports it (same ids either way)
+- `encode_rayon(&self, text: &str) -> Vec<u32>`: `encode` parallelized _within_ one text, where the backend supports it (same ids either way)
 - `encode_pair(&self, a: &str, b: &str) -> Result<Vec<u32>, PolicyError>`: The pair template; errors with `PolicyError::NoPairTemplate` rather than concatenating without the model's separator
 - `decode_batch(&self, token_lists: &[Vec<u32>]) -> Result<Vec<String>, TokenizeError>`: Batch form of `decode`, running the same declared pipeline
 - `set_pcre2(&mut self, use_pcre2: bool) -> Result<(), TokenizerError>` / `set_jit(&mut self, use_jit: bool)`: Reconfigure the BPE backend's regex engine in place, keeping the policy, decoder pipeline and special-id set attached; `TokenizerError::NotBpeBackend` on any other family

@@ -67,7 +67,7 @@ splintr = "*"  # or pin to a specific version
 ```
 
 ```rust
-use splintr::{pretrained::from_pretrained, Tokenize};
+use splintr::pretrained::from_pretrained;
 
 // `from_pretrained` returns an `AnyTokenizer` — the universal loaded-tokenizer
 // handle — for every bundled vocabulary, so the same code works whether the
@@ -76,8 +76,13 @@ let tokenizer = from_pretrained("cl100k_base")?;
 
 let tokens = tokenizer.encode("Hello, world!");
 let batch_tokens = tokenizer.encode_batch(&["Hello, world!", "How are you?"]);
-let text = tokenizer.decode(&tokens)?; // `decode` comes from the `Tokenize` trait
+let text = tokenizer.decode(&tokens)?;
 ```
+
+`encode`, `encode_raw`, `encode_with`, `encode_batch` and `decode` are inherent
+methods on `AnyTokenizer` — no `use splintr::Tokenize` needed. The trait is still
+exported and still implemented by `AnyTokenizer`, for code generic over the
+tokenizer type.
 
 To build a tokenizer from your own vocabulary rather than a bundled one, use
 `Tokenizer::new(encoder, special_tokens, pattern)` with one of the exported
@@ -97,11 +102,13 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 **Built for production:**
 
+- **Four backends, one handle** - Byte-level/raw BPE, SentencePiece BPE, Unigram and WordPiece all load as an `AnyTokenizer`, so the calling code is the same whichever the vocabulary needs
+- **Three sources** - Bundled vocabularies (below), any HuggingFace [`tokenizer.json`](#loading-any-model-from-tokenizerjson), or a [GGUF vocabulary](#loading-a-gguf-vocabulary)
 - **Compatible vocabularies** - Supports cl100k_base, o200k_base (OpenAI), Llama 3 family (Meta), DeepSeek V3 (DeepSeek), Mistral V1/V2/V3 (Mistral AI), and Whisper multilingual (OpenAI)
 - **Streaming decoders** - Real-time LLM output display with proper UTF-8 handling ([guide](docs/api_guide.md#streaming-decoder))
 - **54 agent tokens** - Built-in support for chat, CoT reasoning, ReAct agents, tool calling, RAG citations ([docs](docs/special_tokens.md)), appended above the reference vocabulary so no original id moves
 - **Special-token policy** - `encode_ordinary` / `encode_allowed_special` so untrusted text cannot forge a control token ([details](#special-tokens-in-untrusted-text))
-- **Battle-tested algorithms** - Regexr with JIT (pure Rust), Aho-Corasick for special tokens, linked-list BPE, SentencePiece unigram, WordPiece for BERT-family models
+- **Battle-tested algorithms** - Regexr with JIT (pure Rust), Aho-Corasick for special tokens, linked-list BPE, SentencePiece BPE, SentencePiece unigram, WordPiece for BERT-family models
 
 **Cross-platform:**
 
@@ -244,8 +251,9 @@ thing that maps to the id.
 
 So encoding takes an explicit mode. Rust calls it `SpecialMode`
 (`All` | `Ordinary` | `Allow(&FxHashSet<String>)`) and passes it to
-`Tokenize::encode_with`, implemented by every backend and by `AnyTokenizer`.
-Python exposes it as methods:
+`encode_with`, which every backend and `AnyTokenizer` provide — inherently and
+through the `Tokenize` trait, which all five implement. Python exposes it as
+methods:
 
 | Mode                                              | Behaviour                                                   |
 | ------------------------------------------------- | ----------------------------------------------------------- |
@@ -352,9 +360,10 @@ it as a `Backend` enum when you need a backend-specific API):
 | `WordPiece`        | `"WordPiece"`| `WordPieceTokenizer`     | BERT, DistilBERT, Electra               |
 
 A fourth backend, `SpmTokenizer` (`family == "Spm"`), covers llama.cpp-style
-`SPM` vocabularies. It is not reachable from `tokenizer.json` — it is what the
-bundled Mistral V1/V2 vocabularies use, and what the Rust `from_gguf_vocab`
-loader produces from a GGUF file's embedded vocabulary.
+`SPM` vocabularies — SentencePiece **BPE**, merge-by-rank rather than Viterbi.
+It is not reachable from `tokenizer.json`: it is what the bundled Mistral V1/V2
+vocabularies use, and what the GGUF loader below produces for a `llama`
+vocabulary.
 
 The split regex, byte-level flag, merge order, normalizer (including SentencePiece's `Precompiled` charsmap), and special tokens are all read from the file itself. Output is verified id-for-id against HuggingFace `tokenizers` across every family — GPT-2, RoBERTa, BART, Qwen, Whisper (BPE); T5, Albert, XLNet (Unigram); BERT, DistilBERT (WordPiece). (Rust: `splintr::from_json_path` / `from_json_bytes`.)
 
@@ -378,6 +387,65 @@ The split regex, byte-level flag, merge order, normalizer (including SentencePie
 - **mistral_v1**: `<unk>`, `<s>`, `</s>` (SentencePiece native)
 - **mistral_v2**: Same as V1 + control tokens: `[INST]`, `[/INST]`, `[TOOL_CALLS]`, `[AVAILABLE_TOOLS]`, `[/AVAILABLE_TOOLS]`, `[TOOL_RESULTS]`, `[/TOOL_RESULTS]`
 - **mistral_v3**: `<unk>`, `<s>`, `</s>` + control tokens (Tekken/Tiktoken-based, NOT SentencePiece)
+
+### Loading a GGUF vocabulary
+
+Splintr **never opens a GGUF container**. Parsing the header, the metadata
+key-value block and the tensor table is the model runtime's job, and pulling a
+GGUF parser into a tokenizer crate would make every consumer pay for it. What
+splintr owns is the tokenizer half: the caller fills a `GgufVocab` — one field
+per `tokenizer.ggml.*` key — and hands it to `splintr::from_gguf_vocab`, which
+returns the same `AnyTokenizer` every other loader does. (Rust-only; there is no
+Python binding for this loader.)
+
+```rust
+use splintr::{from_gguf_vocab, GgufVocab};
+
+// Fields mirror the GGUF keys with the `tokenizer.ggml.` prefix dropped; every
+// one but `tokens` is optional exactly as the key is, and `None` means "the
+// file does not say" — never "false" or "zero", because the defaults differ per
+// dialect and the loader is the one that knows them.
+let tokenizer = from_gguf_vocab(GgufVocab {
+    model: "bert".to_string(),           // absent key ⇒ "llama", as in llama.cpp
+    tokens,                              // Vec<String>, indexed by token id
+    token_type: Some(token_type),        // 3 == CONTROL
+    cls_token_id: Some(101),
+    sep_token_id: Some(102),
+    ..Default::default()
+})?;
+```
+
+`tokenizer.ggml.model` names the *algorithm*, and the four values in circulation
+are genuinely different algorithms over superficially similar data. The loader
+dispatches on it and rejects what it cannot honour rather than guessing:
+
+| `tokenizer.ggml.model` | Backend                  | Algorithm                                         |
+| ---------------------- | ------------------------ | ------------------------------------------------- |
+| `gpt2`                 | `Tokenizer`              | byte-level BPE over the explicit `merges` list    |
+| `llama`                | `SpmTokenizer`           | SentencePiece BPE — `scores` are merge ranks      |
+| `t5`                   | `SentencePieceTokenizer` | Unigram, Viterbi — `scores` are log-probabilities |
+| `bert`                 | `WordPieceTokenizer`     | greedy longest match with `##`                    |
+
+Collapsing these is not a rounding error, and the failure is invisible
+downstream: run Unigram Viterbi over a `llama` vocabulary and its ranks maximise
+the wrong objective (`▁sourdough` → `▁s|ou|rd|ou|gh`); the ids stay in range,
+the embedding shapes stay right, and retrieval quietly degrades.
+
+Boundary tokens live in the returned `SpecialPolicy`, not in the backend, so
+`add_bos_token` / `add_eos_token` are honoured in exactly one place. A `bert`
+vocabulary is wrapped in the `[CLS] A [SEP]` template built from the ids it
+names, through the same internal cls/sep policy constructor the `tokenizer.json`
+path uses — so `encode` on a GGUF and on the *same model's* `tokenizer.json`
+agree, instead of the GGUF returning bare content tokens for a CLS-pooling
+consumer to misread a content token as the sentence vector. Measured on all-MiniLM-L6-v2:
+`"hello world"` → `[101, 7592, 2088, 102]`. A vocabulary naming neither id keeps
+the identity policy — inventing one would be worse than placing none.
+
+Because the template is applied *after* encoding, a caller enforcing a maximum
+length must truncate the content first: `SpecialPolicy::single_overhead()`
+(reachable as `tokenizer.policy().single_overhead()`) reports how many slots the
+single-sequence template adds, so the content budget is
+`max_len - single_overhead()`.
 
 ### Agent Tokens (54 per model)
 
@@ -444,7 +512,7 @@ Splintr implements several optimizations that make tokenization faster:
 - **Linked-list BPE algorithm**: Avoids O(N²) complexity on pathological inputs
 - **SentencePiece Unigram**: Viterbi maximum-score segmentation (true Unigram, not greedy) with byte fallback, for T5/Gemma-style models loaded via `from_json`
 - **SentencePiece BPE**: merge-by-score segmentation with byte fallback, for Mistral V1/V2
-- **WordPiece tokenizer**: BERT-compatible subword tokenization with `##` continuation prefix, BasicTokenizer preprocessing (lowercase, accent stripping, punctuation splitting)
+- **WordPiece tokenizer**: BERT-compatible subword tokenization with `##` continuation prefix, BasicTokenizer preprocessing (lowercase, accent stripping, punctuation splitting). Accent stripping is its own setting (`with_strip_accents`), seeded from `lowercase` and overridable independently — HuggingFace's `strip_accents.unwrap_or(lowercase)`, which is what cased multilingual BERT (`strip_accents: false`) needs
 - **FxHashMap**: Faster lookups than default SipHash for non-adversarial contexts
 - **Aho-Corasick for special tokens**: Fast multi-pattern matching without regex alternation
 - **LRU cache**: Avoids redundant BPE encoding of frequently seen chunks
@@ -506,6 +574,9 @@ chmod +x .git/hooks/pre-commit
 # Build the Rust library
 cargo build --release
 
+# Minimal build: no Rayon, no regexr JIT/SIMD
+cargo build --release --no-default-features
+
 # Build Python bindings
 pip install maturin
 maturin develop --release
@@ -546,8 +617,10 @@ cargo run --example verify_gguf -- /path/to/extracted-gguf-vocabs
 
 Measured baselines, all zero failures (totals are cases × modes): bge-m3
 25,000/25,000, Mistral V1 + V2 8,056/8,056, DeepSeek V3 8,000/8,000. The GGUF
-loader matches llama.cpp on all 13 of its bundled vocabularies, 46/46 cases
-each. A drop below any of those at the same `--seed`/`--cases` is a regression.
+loader passes every vocabulary `examples/verify_gguf.rs` covers: llama.cpp's own
+13 at 46/46 cases each, plus embeddinggemma, mistral-7b and bge-m3 at 74/74
+against `sentencepiece`/`tokenizers`. A drop below any of those at the same
+`--seed`/`--cases` is a regression.
 
 ## Acknowledgments
 
