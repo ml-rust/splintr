@@ -121,23 +121,60 @@ impl Tokenizer {
         result
     }
 
-    /// Encode text to token IDs.
+    /// Map each `(start, end)` chunk span over `text_bytes` through
+    /// [`Tokenizer::encode_chunk`] and flatten the results, in parallel via
+    /// rayon when `parallel` is true and the `rayon` feature is enabled.
     ///
-    /// By default special tokens in the input are treated as ordinary text. When
-    /// the tokenizer was built with added-token matching (HF `tokenizer.json`
-    /// loaders), `added_tokens` are recognized first.
-    pub fn encode(&self, text: &str) -> Vec<u32> {
-        if self.match_added_tokens {
-            self.encode_with_special(text)
+    /// When the `rayon` feature is disabled, `parallel` is ignored and the
+    /// map always runs sequentially — there is no rayon thread pool to use.
+    #[inline]
+    fn map_chunks(&self, text_bytes: &[u8], chunks: &[(usize, usize)], parallel: bool) -> Vec<u32> {
+        #[cfg(feature = "rayon")]
+        let results: Vec<Vec<u32>> = if parallel {
+            chunks
+                .par_iter()
+                .map(|&(start, end)| {
+                    let slice = &text_bytes[start..end];
+                    self.encode_chunk(slice)
+                })
+                .collect()
         } else {
-            self.encode_ordinary(text)
-        }
+            chunks
+                .iter()
+                .map(|&(start, end)| {
+                    let slice = &text_bytes[start..end];
+                    self.encode_chunk(slice)
+                })
+                .collect()
+        };
+
+        #[cfg(not(feature = "rayon"))]
+        let results: Vec<Vec<u32>> = {
+            let _ = parallel;
+            chunks
+                .iter()
+                .map(|&(start, end)| {
+                    let slice = &text_bytes[start..end];
+                    self.encode_chunk(slice)
+                })
+                .collect()
+        };
+
+        results.into_iter().flatten().collect()
     }
 
-    /// Encode text to token IDs, always treating special tokens as ordinary text.
+    /// Canonical content-encoding pipeline: normalizer, then the pre-tokenizer
+    /// / metaspace / plain-chunk fork.
     ///
-    /// Uses sequential processing, which is faster than parallel for texts up to ~1MB.
-    pub fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+    /// `parallel` only ever affects the plain-chunk fork (via
+    /// [`Tokenizer::map_chunks`]). The pre-tokenizer and metaspace-decoder
+    /// forks are deliberately sequential-only regardless of `parallel`: this
+    /// is a strategy choice, not an oversight. The pre-tokenizer engine owns
+    /// its own iteration over `pt.split(text)`, and the metaspace decoder
+    /// accumulates `pending_underscores` as a strictly left-to-right fold
+    /// over chunks — both are stateful across chunks and cannot be
+    /// parallelized without changing output.
+    fn encode_content(&self, text: &str, parallel: bool) -> Vec<u32> {
         // Apply the HF `normalizer` (e.g. NFC) to content before splitting. This
         // runs on content gaps (special tokens are extracted upstream), matching
         // HuggingFace's extract-then-normalize order.
@@ -229,16 +266,28 @@ impl Tokenizer {
             results
         } else {
             // No metaspace decoder: use original logic
-            let results: Vec<Vec<u32>> = chunks
-                .iter()
-                .map(|&(start, end)| {
-                    let slice = &text_bytes[start..end];
-                    self.encode_chunk(slice)
-                })
-                .collect();
-
-            results.into_iter().flatten().collect()
+            self.map_chunks(text_bytes, &chunks, parallel)
         }
+    }
+
+    /// Encode text to token IDs.
+    ///
+    /// By default special tokens in the input are treated as ordinary text. When
+    /// the tokenizer was built with added-token matching (HF `tokenizer.json`
+    /// loaders), `added_tokens` are recognized first.
+    pub fn encode(&self, text: &str) -> Vec<u32> {
+        if self.match_added_tokens {
+            self.encode_with_special(text)
+        } else {
+            self.encode_ordinary(text)
+        }
+    }
+
+    /// Encode text to token IDs, always treating special tokens as ordinary text.
+    ///
+    /// Uses sequential processing, which is faster than parallel for texts up to ~1MB.
+    pub fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+        self.encode_content(text, false)
     }
 
     /// Encode text to token IDs using Rayon parallel processing.
@@ -262,25 +311,7 @@ impl Tokenizer {
             return vec![];
         }
 
-        #[cfg(feature = "rayon")]
-        let results: Vec<Vec<u32>> = chunks
-            .par_iter()
-            .map(|&(start, end)| {
-                let slice = &text_bytes[start..end];
-                self.encode_chunk(slice)
-            })
-            .collect();
-
-        #[cfg(not(feature = "rayon"))]
-        let results: Vec<Vec<u32>> = chunks
-            .iter()
-            .map(|&(start, end)| {
-                let slice = &text_bytes[start..end];
-                self.encode_chunk(slice)
-            })
-            .collect();
-
-        results.into_iter().flatten().collect()
+        self.map_chunks(text_bytes, &chunks, true)
     }
 
     /// Encode text with special token handling.
