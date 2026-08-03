@@ -29,6 +29,99 @@ fn test_encode_decode() {
     assert_eq!(decoded, text);
 }
 
+/// D4/D19 direct repro: with a `<0xNN>` byte-fallback table configured, a byte
+/// the merge vocabulary cannot represent (here `b`, deliberately absent from
+/// the encoder) is emitted as its fallback id IN POSITION — `[a_id,
+/// byte_62_id, c_id]` — rather than silently dropped to `[a_id, c_id]`.
+#[test]
+fn byte_fallback_emits_fallback_id_for_unresolved_byte() {
+    let mut encoder = FxHashMap::default();
+    encoder.insert(b"a".to_vec(), 1);
+    encoder.insert(b"c".to_vec(), 2);
+    // `b` (0x62) is deliberately absent: BPE cannot represent it at all.
+
+    let mut table = [0u32; 256];
+    table[0x62] = 999;
+
+    let pattern = r"\S+|\s+";
+    let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), pattern)
+        .unwrap()
+        .with_byte_fallback(Some(Box::new(table)));
+
+    // "abc" is a single \S+ chunk, so this exercises one BPE call over all
+    // three bytes, not three independent per-byte encodes.
+    assert_eq!(tokenizer.encode("abc"), vec![1, 999, 2]);
+}
+
+/// A run of several consecutive unresolved bytes emits one fallback id per
+/// byte, in order — not a single id for the whole run.
+#[test]
+fn byte_fallback_emits_one_id_per_byte_for_a_multi_byte_run() {
+    let mut encoder = FxHashMap::default();
+    encoder.insert(b"a".to_vec(), 1);
+    encoder.insert(b"e".to_vec(), 2);
+    // `b`, `c`, `d` (0x62, 0x63, 0x64) are all absent from the encoder.
+
+    let mut table = [0u32; 256];
+    table[0x62] = 900;
+    table[0x63] = 901;
+    table[0x64] = 902;
+
+    let pattern = r"\S+|\s+";
+    let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), pattern)
+        .unwrap()
+        .with_byte_fallback(Some(Box::new(table)));
+
+    assert_eq!(tokenizer.encode("abcde"), vec![1, 900, 901, 902, 2]);
+}
+
+/// Byte fallback is strictly opt-in: without a table configured (`None`, the
+/// default `Tokenizer::new` gives every existing vocabulary), an unresolved
+/// byte is still silently dropped — pinning that this change cannot regress
+/// any tokenizer that never configured byte fallback.
+#[test]
+fn no_byte_fallback_still_drops_the_unresolved_byte() {
+    let mut encoder = FxHashMap::default();
+    encoder.insert(b"a".to_vec(), 1);
+    encoder.insert(b"c".to_vec(), 2);
+
+    let pattern = r"\S+|\s+";
+    let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), pattern).unwrap();
+
+    assert!(!tokenizer.has_byte_fallback());
+    assert_eq!(tokenizer.encode("abc"), vec![1, 2]);
+}
+
+/// A vocabulary with full byte coverage (every raw byte value has its own
+/// token) never needs the fallback path, even with a table configured: BPE
+/// always resolves every byte to a real token, so ordinary ASCII, CJK, and
+/// emoji text never emits a fallback id, and still round-trips through
+/// decode.
+#[test]
+fn full_coverage_vocab_never_emits_fallback_and_round_trips() {
+    let mut encoder = FxHashMap::default();
+    let mut table = [0u32; 256];
+    for b in 0u32..256 {
+        encoder.insert(vec![b as u8], b);
+        table[b as usize] = b;
+    }
+
+    let pattern = r"\S+|\s+";
+    let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), pattern)
+        .unwrap()
+        .with_byte_fallback(Some(Box::new(table)));
+
+    for text in ["hello world", "你好，世界", "emoji test 😀🎉", ""] {
+        let tokens = tokenizer.encode(text);
+        // Every byte resolves to its own single-byte token id (no fallback
+        // id is a distinguishable event here since ids alias 0..256, but the
+        // round-trip below is the behavior that actually matters).
+        assert_eq!(tokens.len(), text.len());
+        let decoded = tokenizer.decode(&tokens).unwrap();
+        assert_eq!(decoded, text);
+    }
+}
+
 /// D3 regression: an id absent from the vocab, the special-tokens decoder,
 /// and the `special=true` skip set must error, not silently render as `""`.
 #[test]

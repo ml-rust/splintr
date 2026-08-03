@@ -249,6 +249,7 @@ impl Tokenizer {
             cache_size,
             use_jit: true,
             use_pcre2: false,
+            byte_fallback_ids: None,
         })
     }
 
@@ -502,6 +503,40 @@ impl Tokenizer {
             cache_size: DEFAULT_CACHE_SIZE,
             use_jit: true,
             use_pcre2: false,
+            byte_fallback_ids: None,
         })
+    }
+
+    /// Attach the `<0xNN>` byte-fallback table (token id per byte value), so
+    /// a BPE piece the merge cannot represent is emitted as its bytes instead
+    /// of being dropped. `None` disables it — the correct choice for any
+    /// vocabulary that declares no byte fallback, notably every ByteLevel BPE
+    /// model (full 256-char alphabet coverage, so the fallback would never
+    /// fire anyway).
+    pub fn with_byte_fallback(mut self, byte_fallback_ids: Option<Box<[u32; 256]>>) -> Self {
+        self.byte_fallback_ids = byte_fallback_ids;
+        self
+    }
+
+    /// Derive a `<0xNN>` byte-fallback table (token id per byte value) from
+    /// an encoder, by looking up the 256 `<0xNN>` token spellings HuggingFace
+    /// byte-fallback vocabularies declare. Mirrors `SpmTokenizer::new`'s
+    /// identical lookup over its own vocab (see `src/core/spm.rs`) so the two
+    /// backends agree on the table's shape and construction. All-or-nothing:
+    /// returns `None` unless all 256 are present, since a partial table
+    /// cannot represent arbitrary bytes and a hole would silently corrupt
+    /// output rather than cleanly falling back to dropping (today's
+    /// behavior).
+    pub(crate) fn byte_fallback_ids_from_encoder(
+        encoder: &FxHashMap<Vec<u8>, u32>,
+    ) -> Option<Box<[u32; 256]>> {
+        let mut ids = [0u32; 256];
+        for (b, slot) in ids.iter_mut().enumerate() {
+            match encoder.get(format!("<0x{b:02X}>").as_bytes()) {
+                Some(&id) => *slot = id,
+                None => return None,
+            }
+        }
+        Some(Box::new(ids))
     }
 }

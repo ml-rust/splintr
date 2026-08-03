@@ -1,7 +1,7 @@
 use super::backend::subdivide;
 use super::types::Tokenizer;
 use crate::core::added::AddedTokens;
-use crate::core::bpe::{byte_pair_encode, byte_pair_encode_with_ranks};
+use crate::core::bpe::{byte_pair_encode_pieces, Piece};
 use crate::core::byte_level::byte_level_encode;
 use crate::core::policy::{PolicyError, SpecialMode};
 #[cfg(feature = "rayon")]
@@ -48,13 +48,49 @@ impl Tokenizer {
         spans
     }
 
-    /// Run BPE on a piece, honoring a separate merge-rank map when present.
+    /// Run BPE on a piece, honoring a separate merge-rank map when present,
+    /// and mapping any span the vocabulary could not represent through the
+    /// `<0xNN>` byte-fallback table when one is configured (instead of
+    /// silently dropping it, `byte_pair_encode_with_ranks`'s contract).
+    ///
+    /// **Byte-space note:** `bytes` is in RAW input-byte space when
+    /// `use_byte_level` is false, but is the UTF-8 of the *ByteLevel-encoded*
+    /// text when `use_byte_level` is true (see `encode_chunk`). The
+    /// `<0xNN>` table maps a raw byte value to its fallback token id, so
+    /// mapping a `Piece::Unresolved` span through it in ByteLevel space would
+    /// emit the wrong id. This is guarded explicitly below (`!self.use_byte_level`)
+    /// rather than relied on by construction: in practice every ByteLevel
+    /// vocabulary has full 256-char alphabet coverage, so `Unresolved` never
+    /// actually occurs for them today, but a future gap in one must still
+    /// drop the byte (matching prior behavior) rather than silently emit a
+    /// fallback id computed in the wrong byte space.
     #[inline]
     fn bpe(&self, bytes: &[u8]) -> Vec<u32> {
-        match &self.merge_ranks {
-            Some(ranks) => byte_pair_encode_with_ranks(bytes, ranks, &self.encoder),
-            None => byte_pair_encode(bytes, &self.encoder),
+        let table = (!self.use_byte_level)
+            .then_some(self.byte_fallback_ids.as_deref())
+            .flatten();
+
+        let pieces = match &self.merge_ranks {
+            Some(ranks) => byte_pair_encode_pieces(bytes, ranks, &self.encoder),
+            None => byte_pair_encode_pieces(bytes, &self.encoder, &self.encoder),
+        };
+
+        let mut out = Vec::with_capacity(pieces.len());
+        for piece in pieces {
+            match piece {
+                Piece::Token(id) => out.push(id),
+                Piece::Unresolved { start, len } => {
+                    if let Some(table) = table {
+                        if let Some(span) = bytes.get(start..start + len) {
+                            out.extend(span.iter().map(|&b| table[b as usize]));
+                        }
+                    }
+                    // else: dropped, matching the prior (and still preserved)
+                    // byte_pair_encode_with_ranks drop contract.
+                }
+            }
         }
+        out
     }
 
     /// Encode bytes with BPE and caching.

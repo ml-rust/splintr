@@ -562,3 +562,88 @@ fn added_token_id_disagreeing_with_the_vocab_id_errors() {
         })
     ));
 }
+
+/// Builds the 256 `"<0xNN>": id` vocab entries (uppercase hex, ids starting at
+/// `start_id`) that `build_bpe` requires, in full, for `model.byte_fallback:
+/// true` to derive a complete table. Written as a helper rather than a literal
+/// 256-entry JSON blob: `byte_fallback_ids_from_encoder` (src/core/hf_json's
+/// consumer) is all-or-nothing, so every test that wants a *complete* table
+/// needs all 256 spelled exactly right.
+fn byte_fallback_vocab_entries(start_id: u32) -> String {
+    (0u32..256)
+        .map(|b| format!(r#""<0x{b:02X}>": {}"#, start_id + b))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `model.byte_fallback: true` with a complete `<0xNN>` table: a byte the raw
+/// (non-byte-level) BPE vocabulary cannot represent — here `b` (0x62), absent
+/// from the ordinary vocab entries — is emitted through the derived table
+/// instead of being dropped, in the correct position among the surrounding
+/// resolved tokens.
+#[test]
+fn byte_fallback_true_emits_the_fallback_id_for_an_unrepresented_byte() {
+    let json = format!(
+        r#"{{
+            "model": {{"type": "BPE", "byte_fallback": true,
+                "vocab": {{"a": 0, "c": 1, {}}},
+                "merges": []}}
+        }}"#,
+        byte_fallback_vocab_entries(2)
+    );
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("loads with a complete byte_fallback table")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    // 'b' is 0x62; its fallback id is 2 (start_id) + 0x62 (98) = 100.
+    assert_eq!(t.encode("abc"), vec![0, 100, 1]);
+}
+
+/// Same vocab and text as above, but `byte_fallback` is `false` (and, in a
+/// second case, entirely absent): the unrepresented byte is dropped, pinning
+/// that byte fallback is opt-in and this file's defaults are unaffected.
+#[test]
+fn byte_fallback_false_or_absent_still_drops_the_unrepresented_byte() {
+    for model_fragment in [
+        r#""byte_fallback": false, "vocab""#,
+        // omitted entirely
+        r#""vocab""#,
+    ] {
+        let json = format!(
+            r#"{{
+                "model": {{"type": "BPE", {model_fragment}: {{"a": 0, "c": 1, {}}},
+                    "merges": []}}
+            }}"#,
+            byte_fallback_vocab_entries(2)
+        );
+        let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+            .expect("loads")
+            .into_backend()
+        else {
+            panic!("expected BPE backend");
+        };
+        // 'b' (0x62) has no vocab entry and no fallback table configured, so
+        // it is silently dropped: today's pre-existing behavior.
+        assert_eq!(t.encode("abc"), vec![0, 1]);
+    }
+}
+
+/// `model.byte_fallback: true` but the `<0xNN>` set in `model.vocab` is
+/// incomplete (only 3 of the 256 required entries): loading must fail with
+/// `MissingSpecial("byte_fallback")` rather than silently produce a
+/// tokenizer that would drop the missing bytes instead of falling back.
+#[test]
+fn byte_fallback_true_with_an_incomplete_table_errors() {
+    let json = r#"{
+        "model": {"type": "BPE", "byte_fallback": true,
+            "vocab": {"a": 0, "c": 1, "<0x00>": 2, "<0x01>": 3, "<0x02>": 4},
+            "merges": []}
+    }"#;
+    let err = from_json_bytes(json.as_bytes());
+    assert!(matches!(
+        err,
+        Err(HfJsonError::MissingSpecial("byte_fallback"))
+    ));
+}

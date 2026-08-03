@@ -148,6 +148,25 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     // map so BPE merges in the correct order regardless of id assignment.
     let merge_ranks = parse_merge_ranks(model, vocab);
 
+    // `model.byte_fallback: true` declares a full `<0xNN>` byte-fallback set in
+    // `model.vocab` (mistral-7b, embeddinggemma, ...): a piece BPE cannot
+    // represent should be emitted byte-by-byte through those ids rather than
+    // silently dropped. A declared-but-incomplete set is a malformed file, not
+    // something to silently degrade from — report it like the other backends'
+    // missing-special errors instead of continuing without fallback.
+    let byte_fallback = model
+        .get("byte_fallback")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let byte_fallback_ids = if byte_fallback {
+        Some(
+            Tokenizer::byte_fallback_ids_from_encoder(&encoder)
+                .ok_or(HfJsonError::MissingSpecial("byte_fallback"))?,
+        )
+    } else {
+        None
+    };
+
     // Use the multi-stage pre-tokenizer engine when the json declares a pipeline
     // (Digits/Punctuation/Sequence/Split/…). It emits already byte-level-encoded
     // pieces, so the tokenizer itself must not re-encode (plain `new`).
@@ -204,7 +223,8 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     let tok = tok
         .with_added_token_matching(true)
         .with_special_decode_ids(parse_special_decode_ids(root))
-        .with_normalizer(Normalizer::new(parse_norm_ops(root.get("normalizer"))?));
+        .with_normalizer(Normalizer::new(parse_norm_ops(root.get("normalizer"))?))
+        .with_byte_fallback(byte_fallback_ids);
     Ok(Backend::Bpe(tok))
 }
 

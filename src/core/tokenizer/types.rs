@@ -120,6 +120,11 @@ pub struct Tokenizer {
     pub(super) cache_size: usize,
     pub(super) use_jit: bool,
     pub(super) use_pcre2: bool,
+    /// Token id per byte value for `<0xNN>` byte-fallback vocabularies, so a
+    /// piece the merge cannot represent is emitted as its bytes instead of
+    /// being dropped. `None` when the vocabulary declares no byte fallback —
+    /// every ByteLevel BPE model, which has full alphabet coverage and needs none.
+    pub(super) byte_fallback_ids: Option<Box<[u32; 256]>>,
 }
 
 impl Clone for Tokenizer {
@@ -168,6 +173,7 @@ impl Clone for Tokenizer {
             cache_size: self.cache_size,
             use_jit: self.use_jit,
             use_pcre2: self.use_pcre2,
+            byte_fallback_ids: self.byte_fallback_ids.clone(),
         }
     }
 }
@@ -252,5 +258,12 @@ impl Tokenizer {
     /// Get the current cache size.
     pub fn cache_len(&self) -> usize {
         self.chunk_cache.lock().map(|c| c.len()).unwrap_or(0)
+    }
+
+    /// Whether this tokenizer has a `<0xNN>` byte-fallback table configured,
+    /// so a BPE piece the merge cannot represent is emitted as its bytes
+    /// instead of being dropped.
+    pub fn has_byte_fallback(&self) -> bool {
+        self.byte_fallback_ids.is_some()
     }
 }
