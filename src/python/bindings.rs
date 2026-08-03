@@ -384,8 +384,13 @@ impl PyTokenizer {
     ///
     /// Returns:
     ///     Decoded bytes
-    fn decode_bytes(&self, tokens: Vec<u32>) -> Vec<u8> {
-        self.inner.decode_bytes(&tokens)
+    ///
+    /// Raises:
+    ///     ValueError: If `tokens` contains an id not in the vocabulary
+    fn decode_bytes(&self, tokens: Vec<u32>) -> PyResult<Vec<u8>> {
+        self.inner
+            .decode_bytes(&tokens)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Decode token IDs to string, replacing invalid UTF-8.
@@ -1400,7 +1405,9 @@ impl PyAnyTokenizer {
     ///         runs it — bytes taken from under it would render the backend's
     ///         raw pieces instead of text)
     fn decode_bytes(&self, tokens: Vec<u32>) -> PyResult<Vec<u8>> {
-        Ok(self.bpe_raw()?.decode_bytes(&tokens))
+        self.bpe_raw()?
+            .decode_bytes(&tokens)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Decode token IDs to a string, replacing invalid UTF-8.

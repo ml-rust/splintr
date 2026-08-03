@@ -29,6 +29,49 @@ fn test_encode_decode() {
     assert_eq!(decoded, text);
 }
 
+/// D3 regression: an id absent from the vocab, the special-tokens decoder,
+/// and the `special=true` skip set must error, not silently render as `""`.
+#[test]
+fn decode_of_unknown_id_errors_with_invalid_token_id() {
+    let tokenizer = make_test_tokenizer();
+    let err = tokenizer.decode(&[7_000_000]).unwrap_err();
+    assert!(matches!(err, TokenizerError::InvalidTokenId(7_000_000)));
+}
+
+/// `decode_lossy` stays infallible: unknown ids are skipped, and the
+/// recognised ids around them still decode normally.
+#[test]
+fn decode_lossy_skips_unknown_ids() {
+    let tokenizer = make_test_tokenizer();
+    let mut tokens = tokenizer.encode("Hello");
+    tokens.push(7_000_000);
+    tokens.extend(tokenizer.encode(" World"));
+    let decoded = tokenizer.decode_lossy(&tokens);
+    assert_eq!(decoded, "Hello World");
+}
+
+/// `decode_batch` must propagate the error when any list in the batch
+/// contains an unknown id, not just the offending list.
+#[test]
+fn decode_batch_propagates_invalid_token_id() {
+    let tokenizer = make_test_tokenizer();
+    let good = tokenizer.encode("Hello");
+    let bad = vec![7_000_000u32];
+    let err = tokenizer.decode_batch(&[good, bad]).unwrap_err();
+    assert!(matches!(err, TokenizerError::InvalidTokenId(7_000_000)));
+}
+
+/// Guard against over-strictness: special-token ids and ordinary byte-level
+/// ids from a normal round trip must never be treated as unknown.
+#[test]
+fn decode_encode_round_trip_does_not_misclassify_known_ids() {
+    let tokenizer = make_test_tokenizer();
+    let text = "Hello<|endoftext|>World";
+    let tokens = tokenizer.encode_with_special(text);
+    let decoded = tokenizer.decode(&tokens).unwrap();
+    assert_eq!(decoded, text);
+}
+
 #[test]
 fn test_encode_with_special() {
     let tokenizer = make_test_tokenizer();

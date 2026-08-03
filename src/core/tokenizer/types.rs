@@ -184,6 +184,9 @@ impl crate::core::tokenize::Tokenize for Tokenizer {
     fn decode(&self, ids: &[u32]) -> Result<String, crate::core::tokenize::TokenizeError> {
         self.decode(ids).map_err(|e| match e {
             TokenizerError::Utf8Error => crate::core::tokenize::TokenizeError::Utf8Error,
+            TokenizerError::InvalidTokenId(id) => {
+                crate::core::tokenize::TokenizeError::InvalidTokenId(id)
+            }
             other => crate::core::tokenize::TokenizeError::Other(other.to_string()),
         })
     }
