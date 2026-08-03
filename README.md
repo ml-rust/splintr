@@ -177,7 +177,7 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 **Cross-platform:**
 
-- Python bindings via PyO3 (Linux, macOS, Windows)
+- Python bindings via PyO3 (Linux, macOS, Windows) — abi3 wheels, one per platform, CPython 3.8+
 - Native Rust library for maximum performance
 
 ## Performance Deep Dive

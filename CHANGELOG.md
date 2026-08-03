@@ -29,6 +29,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - WordPiece accent stripping is its own setting (`with_strip_accents`), seeded from `lowercase` and overridable independently — what cased multilingual BERT needs.
 - Bundled vocabulary files moved out of the Python package into a top-level `vocabs/`, and are shipped through an explicit `include` list in `Cargo.toml`.
 - The SentencePiece decode mode is named for what it does: the metaspace decoder.
+- **Python wheels are now abi3** (`cp38-abi3`), so one wheel per platform covers every CPython from 3.8 up. Previously each platform shipped a wheel for whichever single interpreter its builder happened to use — 3.9 from the manylinux container, 3.12 elsewhere — and every other version fell back to compiling the sdist.
 - Dependencies: pyo3 0.29 (closes RUSTSEC-2026-0176, RUSTSEC-2026-0177) and crossbeam-epoch 0.9.20 (closes RUSTSEC-2026-0204). A `cargo-deny` gate now fails CI on any advisory, disallowed license, or non-crates.io source.
 - Removed an unused `wasm` feature and a stray `pcre2` dev-dependency.
 

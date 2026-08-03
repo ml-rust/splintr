@@ -90,10 +90,27 @@ jobs:
       # An importable wheel is the minimum bar for shipping one, and a wheel
       # that fails to load is a failure the Linux-only `python` CI job cannot
       # see — it is the platform-specific builds that break this way.
+      #
+      # The abi3 assertion is the load-bearing half: a version-specific wheel
+      # still installs on the interpreter that built it, so without this check
+      # the smoke test passes while every other CPython version is left to
+      # compile the sdist. That is exactly what shipped before — one cp39 wheel
+      # from the manylinux container, one cp312 wheel from each other runner.
       - name: Smoke-test the wheel
         shell: bash
         run: |
           set -euo pipefail
+
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          shopt -u nullglob
+          test "${#wheels[@]}" -eq 1 ||
+            { echo "::error::expected one wheel, built ${#wheels[@]}: ${wheels[*]}"; exit 1; }
+          case "${wheels[0]}" in
+            *-abi3-*) ;;
+            *) echo "::error::not an abi3 wheel: ${wheels[0]##*/}"; exit 1 ;;
+          esac
+
           python -m pip install --upgrade pip
           python -m pip install --no-index --find-links dist splintr-rs
           python -c "
