@@ -309,7 +309,7 @@ pub mod o200k_agent_tokens {
 const DEFAULT_CACHE_SIZE: usize = 4096;
 
 /// Regex backend enum for switching between regexr (default) and PCRE2 (optional)
-enum RegexBackend {
+pub(super) enum RegexBackend {
     Regexr(Box<RegexrRegex>),
     #[cfg(feature = "pcre2")]
     Pcre2(Pcre2Regex),
@@ -317,7 +317,7 @@ enum RegexBackend {
 
 impl RegexBackend {
     /// Find all matches in the given text, returning (start, end) byte offsets
-    fn find_iter<'a>(&'a self, text: &'a str) -> Vec<(usize, usize)> {
+    pub(super) fn find_iter<'a>(&'a self, text: &'a str) -> Vec<(usize, usize)> {
         match self {
             RegexBackend::Regexr(regex) => regex
                 .find_iter(text)
@@ -338,7 +338,7 @@ impl RegexBackend {
 /// The single place that knows how each backend is configured (PCRE2 needs
 /// `utf`+`ucp` to give `\p{…}` and `\s` their Unicode meanings), so a chained
 /// pre-tokenizer's later passes are compiled exactly like its first one.
-fn compile_pattern(
+pub(super) fn compile_pattern(
     pattern: &str,
     use_pcre2: bool,
     use_jit: bool,
@@ -374,7 +374,11 @@ fn compile_pattern(
 /// later pass either — a gap left by pass 1 is an ordinary span that pass 2
 /// subdivides like any other. That is why a list of N expressions is not the
 /// alternation of those N expressions.
-fn subdivide(re: &RegexBackend, text: &str, spans: &[(usize, usize)]) -> Vec<(usize, usize)> {
+pub(super) fn subdivide(
+    re: &RegexBackend,
+    text: &str,
+    spans: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
     let mut out = Vec::with_capacity(spans.len());
     for &(span_start, span_end) in spans {
         let Some(piece) = text.get(span_start..span_end) else {
@@ -452,19 +456,19 @@ fn subdivide(re: &RegexBackend, text: &str, spans: &[(usize, usize)]) -> Vec<(us
 /// - Optional ByteLevel encoding for GPT-2/Llama/DeepSeek style tokenizers
 /// - Optional metaspace decoder for Mistral/Gemma style tokenizers (▁ → space)
 pub struct Tokenizer {
-    encoder: FxHashMap<Vec<u8>, u32>,
+    pub(super) encoder: FxHashMap<Vec<u8>, u32>,
     /// Optional separate merge-priority map (bytes → merge rank). When present,
     /// BPE merges by this rank instead of by token id — required for HuggingFace
     /// BPE models whose ids don't follow merge order (e.g. RoBERTa). `None`
     /// means tiktoken-style (id doubles as merge rank).
-    merge_ranks: Option<FxHashMap<Vec<u8>, u32>>,
-    decoder: FxHashMap<u32, Vec<u8>>,
-    special_tokens: FxHashMap<String, u32>,
-    special_tokens_decoder: FxHashMap<u32, String>,
+    pub(super) merge_ranks: Option<FxHashMap<Vec<u8>, u32>>,
+    pub(super) decoder: FxHashMap<u32, Vec<u8>>,
+    pub(super) special_tokens: FxHashMap<String, u32>,
+    pub(super) special_tokens_decoder: FxHashMap<u32, String>,
     /// Behind an `Arc` so cloning a tokenizer shares the compiled regex
     /// instead of recompiling it (and re-running JIT on the pcre2 backend).
-    regex: Arc<RegexBackend>,
-    pattern: String,
+    pub(super) regex: Arc<RegexBackend>,
+    pub(super) pattern: String,
     /// Pre-tokenizer expressions applied AFTER [`Tokenizer::regex`], in order —
     /// llama.cpp's `regex_exprs` list beyond its first entry (see [`subdivide`]).
     ///
@@ -472,39 +476,39 @@ pub struct Tokenizer {
     /// vocabulary and the throughput-critical case; [`Tokenizer::split_chunks`]
     /// then runs the untouched single-regex path. Behind an `Arc` so cloning a
     /// tokenizer shares the compiled passes instead of recompiling them.
-    chain: Arc<[RegexBackend]>,
+    pub(super) chain: Arc<[RegexBackend]>,
     /// Source expressions for [`Tokenizer::chain`], kept so switching backend or
     /// JIT recompiles the later passes the same way it recompiles the first.
-    chain_patterns: Arc<[String]>,
+    pub(super) chain_patterns: Arc<[String]>,
     /// Special-token matcher shared with the SentencePiece/SPM/WordPiece
     /// backends (see [`super::added::AddedTokens`]) — leftmost-longest
     /// Aho-Corasick over `special_tokens`, `None` when it's empty.
-    special_matcher: Option<AddedTokens>,
-    chunk_cache: Mutex<LruCache<u64, Vec<u32>>>,
-    use_byte_level: bool,
+    pub(super) special_matcher: Option<AddedTokens>,
+    pub(super) chunk_cache: Mutex<LruCache<u64, Vec<u32>>>,
+    pub(super) use_byte_level: bool,
     /// BPE with a metaspace (▁) decoder — see [`Tokenizer::new_with_metaspace_decoder`].
     /// This is NOT SentencePiece (Unigram/Viterbi); for that use
     /// [`crate::core::sentencepiece::SentencePieceTokenizer`] or
     /// [`crate::core::spm::SpmTokenizer`].
-    use_metaspace_decoder: bool,
+    pub(super) use_metaspace_decoder: bool,
     /// Prepend a space to input before tokenizing (HF ByteLevel `add_prefix_space`).
-    add_prefix_space: bool,
+    pub(super) add_prefix_space: bool,
     /// Optional multi-stage pre-tokenizer pipeline (HF `pre_tokenizer` graphs
     /// beyond a single regex, e.g. Digits/Punctuation/Sequence). When set, it
     /// produces the (already byte-level-encoded) chunks instead of the regex.
-    pre_tokenizer: Option<std::sync::Arc<super::pretokenizer::PreTokenizer>>,
+    pub(super) pre_tokenizer: Option<std::sync::Arc<super::pretokenizer::PreTokenizer>>,
     /// When true, `encode` first matches `special_tokens` (HF always recognizes
     /// added tokens in the input).
-    match_added_tokens: bool,
+    pub(super) match_added_tokens: bool,
     /// Ids of `special=true` added tokens to drop on decode (HF default
     /// skip_special_tokens=true). Non-special added tokens are still rendered.
-    special_decode_ids: rustc_hash::FxHashSet<u32>,
+    pub(super) special_decode_ids: rustc_hash::FxHashSet<u32>,
     /// Optional text normalizer (HF `normalizer`, e.g. NFC) applied to content
     /// before splitting. Applied per content gap, never to special-token matches.
-    normalizer: Option<std::sync::Arc<super::normalizer::Normalizer>>,
-    cache_size: usize,
-    use_jit: bool,
-    use_pcre2: bool,
+    pub(super) normalizer: Option<std::sync::Arc<super::normalizer::Normalizer>>,
+    pub(super) cache_size: usize,
+    pub(super) use_jit: bool,
+    pub(super) use_pcre2: bool,
 }
 
 impl Tokenizer {
@@ -1023,7 +1027,7 @@ impl Tokenizer {
     /// the chained branch is never entered by a single-expression tokenizer, so
     /// its spans are byte-identical to before.
     #[inline]
-    fn split_chunks(&self, text: &str) -> Vec<(usize, usize)> {
+    pub(super) fn split_chunks(&self, text: &str) -> Vec<(usize, usize)> {
         if self.chain.is_empty() {
             return self.regex.find_iter(text);
         }
