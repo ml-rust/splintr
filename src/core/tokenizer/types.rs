@@ -54,7 +54,7 @@ use super::error::TokenizerError;
 /// - Regexr with JIT compilation and SIMD acceleration (default)
 /// - Optional PCRE2 with JIT (industry-standard backend, via the `pcre2` feature)
 /// - Rayon parallelism for batch encoding (across texts, not within)
-/// - Linked-list BPE algorithm (avoids O(N²) on pathological inputs)
+/// - Linked-list BPE with a binary heap for merge selection (O(N log N))
 /// - FxHashMap for fast lookups
 /// - Aho-Corasick for fast multi-pattern special token matching
 /// - LRU cache for frequently encoded chunks

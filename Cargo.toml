@@ -76,6 +76,11 @@ unicode-general-category = "1.0"
 # JSON parsing for HuggingFace tokenizer.json loader (Whisper)
 serde_json = "1.0"
 
+[dev-dependencies]
+# Property-based testing: the BPE merge loop is checked against a slow,
+# obviously-correct reference implementation over generated inputs.
+proptest = "1"
+
 [profile.release]
 opt-level = 3
 lto = true
