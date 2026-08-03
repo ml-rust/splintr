@@ -130,37 +130,27 @@ impl Tokenizer {
     #[inline]
     fn map_chunks(&self, text_bytes: &[u8], chunks: &[(usize, usize)], parallel: bool) -> Vec<u32> {
         #[cfg(feature = "rayon")]
-        let results: Vec<Vec<u32>> = if parallel {
-            chunks
-                .par_iter()
-                .map(|&(start, end)| {
-                    let slice = &text_bytes[start..end];
-                    self.encode_chunk(slice)
-                })
-                .collect()
-        } else {
-            chunks
-                .iter()
-                .map(|&(start, end)| {
-                    let slice = &text_bytes[start..end];
-                    self.encode_chunk(slice)
-                })
-                .collect()
-        };
-
+        {
+            if parallel {
+                return chunks
+                    .par_iter()
+                    .flat_map(|&(start, end)| {
+                        let slice = &text_bytes[start..end];
+                        self.encode_chunk(slice)
+                    })
+                    .collect();
+            }
+        }
         #[cfg(not(feature = "rayon"))]
-        let results: Vec<Vec<u32>> = {
-            let _ = parallel;
-            chunks
-                .iter()
-                .map(|&(start, end)| {
-                    let slice = &text_bytes[start..end];
-                    self.encode_chunk(slice)
-                })
-                .collect()
-        };
+        let _ = parallel;
 
-        results.into_iter().flatten().collect()
+        chunks
+            .iter()
+            .flat_map(|&(start, end)| {
+                let slice = &text_bytes[start..end];
+                self.encode_chunk(slice)
+            })
+            .collect()
     }
 
     /// Canonical content-encoding pipeline: normalizer, then the pre-tokenizer
@@ -206,68 +196,70 @@ impl Tokenizer {
         }
 
         if self.use_metaspace_decoder {
-            // Metaspace decoder mode: convert spaces to ▁, encode newlines as bytes
-            // Rules:
-            // - Spaces → ▁ characters (may merge with following word or form ▁▁▁ tokens)
-            // - Newlines/tabs → encoded as byte tokens
-            // - Words after spaces → get ▁ prefix (as part of BPE, not explicit)
-            let mut results = Vec::new();
-            let mut pending_underscores = 0usize; // Count of ▁ to prepend to next word
-
-            for &(start, end) in chunks.iter() {
-                let slice = &text_bytes[start..end];
-
-                if slice.is_empty() {
-                    continue;
-                }
-
-                if slice[0].is_ascii_whitespace() {
-                    // Whitespace chunk - process each character
-                    for &b in slice {
-                        if b == b' ' {
-                            // Space → accumulate ▁ for next word
-                            pending_underscores += 1;
-                        } else {
-                            // Non-space whitespace (newline, tab, etc.)
-                            // First, emit any accumulated ▁ characters
-                            if pending_underscores > 0 {
-                                let underscores = "▁".repeat(pending_underscores);
-                                results
-                                    .extend(self.encode_bytes_with_cache(underscores.as_bytes()));
-                                pending_underscores = 0;
-                            }
-                            // Encode the non-space whitespace as a byte
-                            results.extend(self.encode_bytes_with_cache(&[b]));
-                        }
-                    }
-                } else {
-                    // Word chunk - prepend accumulated ▁ characters and encode together
-                    if pending_underscores > 0 {
-                        let mut with_prefix =
-                            Vec::with_capacity(pending_underscores * 3 + slice.len());
-                        for _ in 0..pending_underscores {
-                            with_prefix.extend_from_slice("▁".as_bytes());
-                        }
-                        with_prefix.extend_from_slice(slice);
-                        results.extend(self.encode_bytes_with_cache(&with_prefix));
-                        pending_underscores = 0;
-                    } else {
-                        results.extend(self.encode_bytes_with_cache(slice));
-                    }
-                }
-            }
-
-            // Handle trailing underscores (spaces at end of text)
-            if pending_underscores > 0 {
-                let underscores = "▁".repeat(pending_underscores);
-                results.extend(self.encode_bytes_with_cache(underscores.as_bytes()));
-            }
-
-            results
+            self.encode_metaspace_chunks(text_bytes, &chunks)
         } else {
             // No metaspace decoder: use original logic
             self.map_chunks(text_bytes, &chunks, parallel)
         }
+    }
+
+    /// Metaspace-decoder chunk fold: spaces accumulate into `▁` prefixes for
+    /// the next word (may merge into `▁▁▁`-style runs), non-space whitespace
+    /// is encoded as its own byte token, and words are encoded together with
+    /// any accumulated `▁` prefix. Always sequential — see
+    /// [`Tokenizer::encode_content`] for why.
+    fn encode_metaspace_chunks(&self, text_bytes: &[u8], chunks: &[(usize, usize)]) -> Vec<u32> {
+        let mut results = Vec::new();
+        let mut pending_underscores = 0usize; // Count of ▁ to prepend to next word
+
+        for &(start, end) in chunks.iter() {
+            let slice = &text_bytes[start..end];
+
+            if slice.is_empty() {
+                continue;
+            }
+
+            if slice[0].is_ascii_whitespace() {
+                // Whitespace chunk - process each character
+                for &b in slice {
+                    if b == b' ' {
+                        // Space → accumulate ▁ for next word
+                        pending_underscores += 1;
+                    } else {
+                        // Non-space whitespace (newline, tab, etc.)
+                        // First, emit any accumulated ▁ characters
+                        if pending_underscores > 0 {
+                            let underscores = "▁".repeat(pending_underscores);
+                            results.extend(self.encode_bytes_with_cache(underscores.as_bytes()));
+                            pending_underscores = 0;
+                        }
+                        // Encode the non-space whitespace as a byte
+                        results.extend(self.encode_bytes_with_cache(&[b]));
+                    }
+                }
+            } else {
+                // Word chunk - prepend accumulated ▁ characters and encode together
+                if pending_underscores > 0 {
+                    let mut with_prefix = Vec::with_capacity(pending_underscores * 3 + slice.len());
+                    for _ in 0..pending_underscores {
+                        with_prefix.extend_from_slice("▁".as_bytes());
+                    }
+                    with_prefix.extend_from_slice(slice);
+                    results.extend(self.encode_bytes_with_cache(&with_prefix));
+                    pending_underscores = 0;
+                } else {
+                    results.extend(self.encode_bytes_with_cache(slice));
+                }
+            }
+        }
+
+        // Handle trailing underscores (spaces at end of text)
+        if pending_underscores > 0 {
+            let underscores = "▁".repeat(pending_underscores);
+            results.extend(self.encode_bytes_with_cache(underscores.as_bytes()));
+        }
+
+        results
     }
 
     /// Encode text to token IDs.
@@ -292,26 +284,26 @@ impl Tokenizer {
 
     /// Encode text to token IDs using Rayon parallel processing.
     ///
-    /// Only beneficial for very large texts (>1MB).
-    /// Note: For metaspace-decoder tokenizers, this falls back to sequential
-    /// encoding because the metaspace substitution requires tracking state
-    /// between chunks.
+    /// Produces exactly the same ids as [`Tokenizer::encode`] — same
+    /// normalizer, same added-token dispatch, same pre-tokenizer/metaspace/
+    /// plain-chunk fork — and differs only in execution strategy: the
+    /// plain-chunk fork's BPE calls run in parallel via rayon rather than
+    /// sequentially. Only beneficial for very large texts (>1MB).
+    ///
+    /// Metaspace-decoder tokenizers and tokenizers with a multi-stage
+    /// pre-tokenizer still run sequentially regardless of this method,
+    /// because their per-chunk state (`pending_underscores`, the
+    /// pre-tokenizer engine's own iteration) is a left-to-right fold that
+    /// cannot be parallelized without changing output — see
+    /// [`Tokenizer::encode_content`].
     pub fn encode_rayon(&self, text: &str) -> Vec<u32> {
-        if self.use_metaspace_decoder || self.pre_tokenizer.is_some() {
-            // Metaspace decoder and the multi-stage pre-tokenizer need sequential logic.
-            return self.encode(text);
+        if self.match_added_tokens {
+            AddedTokens::dispatch(&self.special_matcher, text, |gap| {
+                self.encode_content(gap, true)
+            })
+        } else {
+            self.encode_content(text, true)
         }
-
-        let text = self.prefixed(text);
-        let text = text.as_ref();
-        let text_bytes = text.as_bytes();
-        let chunks = self.split_chunks(text);
-
-        if chunks.is_empty() {
-            return vec![];
-        }
-
-        self.map_chunks(text_bytes, &chunks, true)
     }
 
     /// Encode text with special token handling.

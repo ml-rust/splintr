@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::added::AddedTokenSet;
+use crate::core::normalizer::{NormOp, Normalizer};
 use crate::core::policy::SpecialMode;
 use rustc_hash::FxHashMap;
 
@@ -338,3 +339,107 @@ const _: () = {
     assert!(super::cl100k_agent_tokens::USER == super::cl100k_agent_tokens::SYSTEM + 1);
     assert!(super::o200k_agent_tokens::USER == super::o200k_agent_tokens::SYSTEM + 1);
 };
+
+// ── `encode_rayon` must agree with `encode` ───────────────────────────────
+//
+// `encode_rayon` is a separate dispatch path from `encode` (see
+// `Tokenizer::encode_rayon` in `encode.rs`) that historically skipped the
+// normalizer and added-token dispatch. These tests pin `encode_rayon(x) ==
+// encode(x)` across every stage that path must go through.
+
+/// A tokenizer whose encoder covers every byte 0..=255 as its own single-byte
+/// token, so BPE never silently drops a chunk to an empty result — useful for
+/// tests that want to exercise non-ASCII text meaningfully.
+fn make_full_byte_tokenizer() -> Tokenizer {
+    let mut encoder = FxHashMap::default();
+    for b in 0u16..=255 {
+        encoder.insert(vec![b as u8], b as u32);
+    }
+    let pattern = r"\S+|\s+";
+    Tokenizer::new(encoder, FxHashMap::default(), pattern).unwrap()
+}
+
+/// Direct repro of the bug report: an added token in the input must be
+/// recognized by `encode_rayon` exactly as `encode` recognizes it, not
+/// shredded into punctuation.
+#[test]
+fn encode_rayon_matches_encode_with_added_tokens_in_input() {
+    let mut encoder = FxHashMap::default();
+    for b in 32u8..=126 {
+        encoder.insert(vec![b], b as u32);
+    }
+    let mut special_tokens = FxHashMap::default();
+    special_tokens.insert("<|s|>".to_string(), 1000);
+    let tokenizer = Tokenizer::new(encoder, special_tokens, r"\S+|\s+")
+        .unwrap()
+        .with_added_token_matching(true);
+
+    let text = "a<|s|>b";
+    let expected = vec![97u32, 1000, 98];
+    assert_eq!(tokenizer.encode(text), expected);
+    assert_eq!(tokenizer.encode_rayon(text), expected);
+}
+
+/// A normalizer attached via `with_normalizer` must run on the `encode_rayon`
+/// path too, not just `encode`. NFC-normalizes `"e" + U+0301` (combining
+/// acute) into the precomposed `"é"` before splitting/BPE.
+#[test]
+fn encode_rayon_matches_encode_with_normalizer() {
+    let tokenizer = make_full_byte_tokenizer().with_normalizer(Normalizer::new(vec![NormOp::Nfc]));
+
+    let decomposed = "e\u{0301}";
+    let precomposed = "\u{e9}";
+
+    // Sanity: the normalizer actually changes the encoding — `encode` on the
+    // decomposed form must match `encode` on the already-normalized form.
+    assert_eq!(tokenizer.encode(decomposed), tokenizer.encode(precomposed));
+
+    assert_eq!(
+        tokenizer.encode_rayon(decomposed),
+        tokenizer.encode(decomposed)
+    );
+}
+
+/// Metaspace-decoder tokenizers run `encode_content` sequentially regardless
+/// of the `parallel` flag (state is a left-to-right fold), but `encode_rayon`
+/// must still reach that path and produce identical ids.
+#[test]
+fn encode_rayon_matches_encode_for_metaspace_tokenizer() {
+    let mut encoder = FxHashMap::default();
+    for b in 0u16..=255 {
+        encoder.insert(vec![b as u8], b as u32);
+    }
+    let tokenizer =
+        Tokenizer::new_with_metaspace_decoder(encoder, FxHashMap::default(), r"\S+|\s+").unwrap();
+
+    let text = "  hello   world\tfoo bar  ";
+    assert_eq!(tokenizer.encode_rayon(text), tokenizer.encode(text));
+}
+
+/// A large (>1MB) input actually exercises the `par_iter` branch of
+/// `map_chunks` under the `rayon` feature, not just the trivial single-chunk
+/// case.
+#[test]
+fn encode_rayon_matches_encode_for_large_input() {
+    let tokenizer = make_full_byte_tokenizer();
+    let sentence = "Hello World, this is a test of the rayon parallel encoding path. ";
+    let repeats = 1 + (1_048_576 / sentence.len());
+    let text = sentence.repeat(repeats);
+    assert!(text.len() > 1_048_576);
+
+    assert_eq!(tokenizer.encode_rayon(&text), tokenizer.encode(&text));
+}
+
+/// The already-working case: a plain tokenizer with no normalizer and no
+/// added-token matching, across empty, whitespace-only, CJK, and emoji input.
+#[test]
+fn encode_rayon_matches_encode_for_plain_tokenizer() {
+    let tokenizer = make_full_byte_tokenizer();
+    for text in ["", "   ", "你好世界", "😀🎉", "Hello World"] {
+        assert_eq!(
+            tokenizer.encode_rayon(text),
+            tokenizer.encode(text),
+            "mismatch for {text:?}"
+        );
+    }
+}
