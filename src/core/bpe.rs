@@ -135,18 +135,54 @@ pub fn byte_pair_encode_with_ranks(
     merge_ranks: &FxHashMap<Vec<u8>, u32>,
     id_encoder: &FxHashMap<Vec<u8>, u32>,
 ) -> Vec<u32> {
+    byte_pair_encode_pieces(piece, merge_ranks, id_encoder)
+        .into_iter()
+        .filter_map(|p| match p {
+            Piece::Token(id) => Some(id),
+            Piece::Unresolved { .. } => None,
+        })
+        .collect()
+}
+
+/// One output of the merge phase: either a resolved token, or a run of bytes
+/// the vocabulary could not represent at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Piece {
+    Token(u32),
+    /// Byte range `[start, start + len)` within the input piece that resolved
+    /// to no token — neither as a whole nor byte-by-byte.
+    Unresolved {
+        start: usize,
+        len: usize,
+    },
+}
+
+/// Same algorithm as [`byte_pair_encode_with_ranks`], but reports byte spans
+/// the vocabulary could not resolve instead of silently dropping them.
+///
+/// [`byte_pair_encode_with_ranks`] is defined in terms of this function and
+/// simply filters out the [`Piece::Unresolved`] spans, preserving its
+/// documented "drops what it cannot represent" contract exactly.
+pub(super) fn byte_pair_encode_pieces(
+    piece: &[u8],
+    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &FxHashMap<Vec<u8>, u32>,
+) -> Vec<Piece> {
     if piece.is_empty() {
         return vec![];
     }
 
     // Fast path: single byte
     if piece.len() == 1 {
-        return id_encoder.get(piece).copied().map_or(vec![], |r| vec![r]);
+        return match id_encoder.get(piece) {
+            Some(&r) => vec![Piece::Token(r)],
+            None => vec![Piece::Unresolved { start: 0, len: 1 }],
+        };
     }
 
     // Fast path: entire piece is a single token
     if let Some(&id) = id_encoder.get(piece) {
-        return vec![id];
+        return vec![Piece::Token(id)];
     }
 
     // Initialize linked list - one node per byte
@@ -221,27 +257,67 @@ pub fn byte_pair_encode_with_ranks(
         push(&mut queue, li, new_next, &nodes);
     }
 
-    // Collect final tokens by traversing the linked list. Node 0 is always the
+    // Collect final pieces by traversing the linked list. Node 0 is always the
     // head: a merge keeps the left node, so the first node is never absorbed.
-    let mut result = Vec::new();
+    // Consecutive unresolved bytes coalesce into a single `Unresolved` span:
+    // an open run is tracked and only flushed when a resolved byte or token
+    // breaks it (or the list ends), rather than pushing one span per byte.
+    // Upper bound: at most one `Piece` per input byte (worst case: no merges
+    // and nothing resolves, so every byte is its own unresolved run — the
+    // coalescing below only ever shrinks that).
+    let mut result: Vec<Piece> = Vec::with_capacity(piece.len());
     let mut curr = 0;
+    let mut unresolved_run: Option<(usize, usize)> = None; // (start, len)
 
     while curr != usize::MAX {
         let node = &nodes[curr];
         let slice = &piece[node.start..node.start + node.len];
 
         if let Some(&id) = id_encoder.get(slice) {
-            result.push(id);
+            if let Some((start, len)) = unresolved_run.take() {
+                result.push(Piece::Unresolved { start, len });
+            }
+            result.push(Piece::Token(id));
         } else {
             // Fallback: if somehow we have an unknown token, try to encode bytes individually
             // This shouldn't happen with a proper BPE vocabulary that covers all bytes
-            for &byte in slice {
+            for (offset, &byte) in slice.iter().enumerate() {
                 if let Some(&id) = id_encoder.get(&[byte][..]) {
-                    result.push(id);
+                    if let Some((start, len)) = unresolved_run.take() {
+                        result.push(Piece::Unresolved { start, len });
+                    }
+                    result.push(Piece::Token(id));
+                } else {
+                    let byte_start = node.start + offset;
+                    match &mut unresolved_run {
+                        Some((start, len)) if *start + *len == byte_start => *len += 1,
+                        // Covers two cases: no run open yet (`None`), and a
+                        // run open but not adjacent to `byte_start`. The
+                        // latter can't actually happen: traversal visits
+                        // nodes in list order and nodes partition
+                        // `0..piece.len()` with no gaps (a merge only ever
+                        // absorbs a node into its immediate left neighbour,
+                        // never creating a hole), and within one node's
+                        // fallback loop `offset` is strictly increasing. So
+                        // whenever a run is open, `byte_start` is always its
+                        // next byte. Kept as `_` rather than narrowed to
+                        // `None` — it's a correct, cheap defensive fallback
+                        // for that unreachable case, not dead code to prune.
+                        _ => {
+                            if let Some((start, len)) = unresolved_run.take() {
+                                result.push(Piece::Unresolved { start, len });
+                            }
+                            unresolved_run = Some((byte_start, 1));
+                        }
+                    }
                 }
             }
         }
         curr = nodes[curr].next;
+    }
+
+    if let Some((start, len)) = unresolved_run.take() {
+        result.push(Piece::Unresolved { start, len });
     }
 
     result
@@ -638,6 +714,87 @@ mod tests {
         }
     }
 
+    /// A vocabulary covering `a` and `c` (and nothing else, no merges) — used
+    /// to exercise `byte_pair_encode_pieces`'s `Unresolved` reporting.
+    fn ac_only_encoder() -> FxHashMap<Vec<u8>, u32> {
+        let mut encoder = FxHashMap::default();
+        encoder.insert(b"a".to_vec(), 0);
+        encoder.insert(b"c".to_vec(), 1);
+        encoder
+    }
+
+    #[test]
+    fn test_pieces_reports_unresolved_span() {
+        let encoder = ac_only_encoder();
+        assert_eq!(
+            byte_pair_encode_pieces(b"abc", &encoder, &encoder),
+            vec![
+                Piece::Token(0),
+                Piece::Unresolved { start: 1, len: 1 },
+                Piece::Token(1),
+            ]
+        );
+        // The preserved primitive still just drops the gap.
+        assert_eq!(byte_pair_encode(b"abc", &encoder), vec![0, 1]);
+    }
+
+    #[test]
+    fn test_pieces_coalesce_consecutive_unresolved() {
+        // Vocabulary missing both `b` and `c`.
+        let mut encoder = FxHashMap::default();
+        encoder.insert(b"a".to_vec(), 0);
+        encoder.insert(b"d".to_vec(), 1);
+        assert_eq!(
+            byte_pair_encode_pieces(b"abcd", &encoder, &encoder),
+            vec![
+                Piece::Token(0),
+                Piece::Unresolved { start: 1, len: 2 },
+                Piece::Token(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_pieces_unresolved_at_start_and_end() {
+        let encoder = ac_only_encoder();
+        // "bab" style: missing byte at the very start and the very end.
+        assert_eq!(
+            byte_pair_encode_pieces(b"bab", &encoder, &encoder),
+            vec![
+                Piece::Unresolved { start: 0, len: 1 },
+                Piece::Token(0),
+                Piece::Unresolved { start: 2, len: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_pieces_full_coverage_has_no_unresolved() {
+        let encoder = prop_encoder();
+        for piece in [&b""[..], b"a", b"abcd", b"aabbccdd", b"dcbadcba"] {
+            let pieces = byte_pair_encode_pieces(piece, &encoder, &encoder);
+            assert!(
+                pieces.iter().all(|p| matches!(p, Piece::Token(_))),
+                "piece {piece:?} produced {pieces:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pieces_single_byte_and_empty_fast_paths() {
+        let encoder = ac_only_encoder();
+        let empty: Vec<Piece> = vec![];
+        assert_eq!(byte_pair_encode_pieces(b"", &encoder, &encoder), empty);
+        assert_eq!(
+            byte_pair_encode_pieces(b"a", &encoder, &encoder),
+            vec![Piece::Token(0)]
+        );
+        assert_eq!(
+            byte_pair_encode_pieces(b"b", &encoder, &encoder),
+            vec![Piece::Unresolved { start: 0, len: 1 }]
+        );
+    }
+
     proptest! {
         /// Single-map (tiktoken-style) path over a dense small alphabet, where
         /// merges actually chain.
@@ -675,6 +832,29 @@ mod tests {
             prop_assert_eq!(
                 byte_pair_encode_with_ranks(&piece, &merge_ranks, &id_encoder),
                 byte_pair_encode_reference(&piece, &merge_ranks, &id_encoder)
+            );
+        }
+
+        /// `byte_pair_encode_pieces` filtered down to its `Token` ids must
+        /// agree with `byte_pair_encode_with_ranks` exactly — the latter is
+        /// now defined in terms of the former, but this pins the equivalence
+        /// as an independent property over arbitrary bytes (so the
+        /// `Unresolved`-reporting fallback path is exercised too).
+        #[test]
+        fn prop_pieces_tokens_match_with_ranks(
+            piece in prop::collection::vec(any::<u8>(), 0..48)
+        ) {
+            let encoder = prop_encoder();
+            let tokens_only: Vec<u32> = byte_pair_encode_pieces(&piece, &encoder, &encoder)
+                .into_iter()
+                .filter_map(|p| match p {
+                    Piece::Token(id) => Some(id),
+                    Piece::Unresolved { .. } => None,
+                })
+                .collect();
+            prop_assert_eq!(
+                tokens_only,
+                byte_pair_encode_with_ranks(&piece, &encoder, &encoder)
             );
         }
     }
