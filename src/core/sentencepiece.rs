@@ -396,6 +396,20 @@ impl SentencePieceTokenizer {
         result
     }
 
+    /// Whether a token id is skipped when rendering decoded text.
+    ///
+    /// Shared by `decode` and `decode_lossy` so the two paths cannot drift on
+    /// which ids they drop. Skips BOS/EOS, `<unk>`, and any `special=true`
+    /// added token (`special_decode`), matching HuggingFace's default decode
+    /// (skip_special_tokens=True). Unknown spans were unrecoverable anyway, so
+    /// the `<unk>` surface is dropped rather than rendered.
+    fn is_skipped_on_decode(&self, id: u32) -> bool {
+        Some(id) == self.bos_token_id
+            || id == self.eos_token_id
+            || Some(id) == self.unk_id
+            || self.special_decode.contains(&id)
+    }
+
     /// Decode token IDs to text.
     ///
     /// Skips BOS/EOS tokens and converts ▁ back to spaces.
@@ -408,14 +422,7 @@ impl SentencePieceTokenizer {
                 .get(id as usize)
                 .ok_or(SentencePieceError::InvalidTokenId(id))?;
 
-            // Skip special tokens (bos/eos/unk), matching HuggingFace's default
-            // decode (skip_special_tokens=True). Unknown spans were unrecoverable
-            // anyway, so the `<unk>` surface is dropped rather than rendered.
-            if Some(id) == self.bos_token_id
-                || id == self.eos_token_id
-                || Some(id) == self.unk_id
-                || self.special_decode.contains(&id)
-            {
+            if self.is_skipped_on_decode(id) {
                 continue;
             }
 
@@ -450,7 +457,7 @@ impl SentencePieceTokenizer {
 
         for &id in ids {
             if let Some(token) = self.id_to_token.get(id as usize) {
-                if Some(id) == self.bos_token_id || id == self.eos_token_id {
+                if self.is_skipped_on_decode(id) {
                     continue;
                 }
                 if let Some(byte_val) = parse_byte_fallback(token) {
@@ -733,6 +740,25 @@ mod tests {
         let tok = make_tokenizer();
         let result = tok.decode(&[1, 999]);
         assert!(result.is_err());
+    }
+
+    /// `decode` and `decode_lossy` must agree on which ids they drop: BOS/EOS,
+    /// `<unk>`, and any `special=true` added token. Only invalid ids (which
+    /// `decode` errors on and `decode_lossy` skips) and UTF-8 handling may
+    /// differ between the two paths.
+    #[test]
+    fn decode_and_decode_lossy_agree_on_skipped_ids() {
+        // id 0 is `<unk>`; mark id 6 ("H") as a `special=true` added token to
+        // drop on decode, matching the shape of `decode`'s skip set.
+        let mut special_decode = rustc_hash::FxHashSet::default();
+        special_decode.insert(6u32);
+        let tok = make_tokenizer().with_special_decode_ids(special_decode);
+
+        let ids = [1, 0, 3, 6, 4, 2]; // <s> <unk> ▁Hello H ▁world </s>
+        let strict = tok.decode(&ids).unwrap();
+        let lossy = tok.decode_lossy(&ids);
+        assert_eq!(strict, lossy);
+        assert_eq!(strict, "Hello world");
     }
 
     #[test]

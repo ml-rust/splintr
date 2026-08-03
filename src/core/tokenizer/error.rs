@@ -15,6 +15,8 @@ pub enum TokenizerError {
     SpmError(#[from] crate::core::spm::SpmError),
     #[error("Decoding error: invalid UTF-8")]
     Utf8Error,
+    #[error("Decoding error: token ID {0} is not in the vocabulary")]
+    InvalidTokenId(u32),
     #[error("Aho-Corasick build error: {0}")]
     AhoCorasickError(#[from] aho_corasick::BuildError),
     #[error("PCRE2 feature not enabled. Compile with --features pcre2")]
