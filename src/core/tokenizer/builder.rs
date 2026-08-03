@@ -5,7 +5,8 @@ use crate::core::added::{AddedTokenSet, AddedTokens};
 use crate::core::vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file};
 use lru::LruCache;
 use regexr::RegexBuilder;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHasher};
+use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
@@ -221,7 +222,10 @@ impl Tokenizer {
         // Initialize LRU cache
         // `.max(1)` already guarantees a nonzero value; the fallback is unreachable.
         let cache_size_nz = NonZeroUsize::new(cache_size.max(1)).unwrap_or(NonZeroUsize::MIN);
-        let chunk_cache = Mutex::new(LruCache::new(cache_size_nz));
+        let chunk_cache = Mutex::new(LruCache::with_hasher(
+            cache_size_nz,
+            BuildHasherDefault::<FxHasher>::default(),
+        ));
 
         Ok(Self {
             encoder,
@@ -471,7 +475,10 @@ impl Tokenizer {
         // `.max(1)` already guarantees a nonzero value; the fallback is unreachable.
         let cache_size_nz =
             NonZeroUsize::new(DEFAULT_CACHE_SIZE.max(1)).unwrap_or(NonZeroUsize::MIN);
-        let chunk_cache = Mutex::new(LruCache::new(cache_size_nz));
+        let chunk_cache = Mutex::new(LruCache::with_hasher(
+            cache_size_nz,
+            BuildHasherDefault::<FxHasher>::default(),
+        ));
 
         Ok(Self {
             encoder,

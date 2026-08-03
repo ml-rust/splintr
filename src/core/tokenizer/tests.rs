@@ -88,6 +88,48 @@ fn test_clear_cache() {
     assert_eq!(tokenizer.cache_len(), 0);
 }
 
+/// A cache hit must return the ids for the chunk that was actually queried,
+/// never another chunk's ids (guards against the old bare-hash key, where a
+/// collision would silently return a different chunk's tokens).
+#[test]
+fn cache_hit_returns_ids_for_the_queried_chunk_not_a_different_one() {
+    let tokenizer = make_test_tokenizer();
+    let texts = ["abc", "abcd", "xyz", "Hello World", "foobar", "zzz"];
+
+    // First pass populates the cache.
+    let first_pass: Vec<Vec<u32>> = texts.iter().map(|t| tokenizer.encode(t)).collect();
+
+    // Second pass should hit the cache; ids must be unchanged.
+    let second_pass: Vec<Vec<u32>> = texts.iter().map(|t| tokenizer.encode(t)).collect();
+    assert_eq!(first_pass, second_pass);
+
+    // And must match a fresh tokenizer (empty cache) encoding the same text,
+    // so a cache hit can never be substituting a different chunk's result.
+    for (text, ids) in texts.iter().zip(first_pass.iter()) {
+        let fresh = make_test_tokenizer();
+        assert_eq!(&fresh.encode(text), ids, "mismatch for {text:?}");
+    }
+}
+
+/// A chunk whose bytes are a strict prefix of another chunk's bytes must get
+/// its own cache entry — guards against any length-insensitive keying.
+#[test]
+fn prefix_chunk_gets_its_own_cache_entry() {
+    let tokenizer = make_test_tokenizer();
+
+    let short = tokenizer.encode("abc");
+    let len_after_short = tokenizer.cache_len();
+
+    let long = tokenizer.encode("abcd");
+    assert!(tokenizer.cache_len() > len_after_short);
+    assert_ne!(short, long);
+
+    // Re-encoding the short chunk must still return the short result, not
+    // whatever got cached for the longer chunk that starts with it.
+    assert_eq!(tokenizer.encode("abc"), short);
+    assert_eq!(tokenizer.encode("abcd"), long);
+}
+
 #[cfg(feature = "pcre2")]
 #[test]
 fn test_pcre2_backend() {

@@ -6,8 +6,6 @@ use crate::core::byte_level::byte_level_encode;
 use crate::core::policy::{PolicyError, SpecialMode};
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
-use rustc_hash::FxHasher;
-use std::hash::{Hash, Hasher};
 
 impl Tokenizer {
     /// Apply `add_prefix_space` to an input, borrowing when no change is needed.
@@ -59,14 +57,6 @@ impl Tokenizer {
         }
     }
 
-    /// Compute a fast hash for a byte slice to use as an LRU cache key.
-    #[inline]
-    fn hash_slice(slice: &[u8]) -> u64 {
-        let mut hasher = FxHasher::default();
-        slice.hash(&mut hasher);
-        hasher.finish()
-    }
-
     /// Encode bytes with BPE and caching.
     fn encode_bytes_with_cache(&self, bytes: &[u8]) -> Vec<u32> {
         // Fast path: check if entire chunk is a known token
@@ -74,10 +64,10 @@ impl Tokenizer {
             return vec![rank];
         }
 
-        // Check cache
-        let hash = Self::hash_slice(bytes);
+        // Check cache. Keyed by the chunk bytes themselves (via the `Vec<u8>:
+        // Borrow<[u8]>` impl, so this lookup allocates nothing on a hit).
         if let Ok(mut cache) = self.chunk_cache.lock() {
-            if let Some(cached) = cache.get(&hash) {
+            if let Some(cached) = cache.get(bytes) {
                 return cached.clone();
             }
         }
@@ -87,7 +77,7 @@ impl Tokenizer {
 
         // Store in cache
         if let Ok(mut cache) = self.chunk_cache.lock() {
-            cache.put(hash, result.clone());
+            cache.put(bytes.to_vec(), result.clone());
         }
 
         result
@@ -112,10 +102,10 @@ impl Tokenizer {
             return vec![rank];
         }
 
-        // Check cache
-        let hash = Self::hash_slice(bytes_to_encode.as_ref());
+        // Check cache. Keyed by the chunk bytes themselves (via the `Vec<u8>:
+        // Borrow<[u8]>` impl, so this lookup allocates nothing on a hit).
         if let Ok(mut cache) = self.chunk_cache.lock() {
-            if let Some(cached) = cache.get(&hash) {
+            if let Some(cached) = cache.get(bytes_to_encode.as_ref()) {
                 return cached.clone();
             }
         }
@@ -125,7 +115,7 @@ impl Tokenizer {
 
         // Store in cache
         if let Ok(mut cache) = self.chunk_cache.lock() {
-            cache.put(hash, result.clone());
+            cache.put(bytes_to_encode.as_ref().to_vec(), result.clone());
         }
 
         result

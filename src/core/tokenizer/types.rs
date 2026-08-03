@@ -1,7 +1,8 @@
 use crate::core::added::AddedTokens;
 use crate::core::policy::{PolicyError, SpecialMode};
 use lru::LruCache;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHasher};
+use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
@@ -89,7 +90,12 @@ pub struct Tokenizer {
     /// backends (see [`crate::core::added::AddedTokens`]) — leftmost-longest
     /// Aho-Corasick over `special_tokens`, `None` when it's empty.
     pub(super) special_matcher: Option<AddedTokens>,
-    pub(super) chunk_cache: Mutex<LruCache<u64, Vec<u32>>>,
+    /// Keyed by the chunk bytes themselves (not a bare hash) so a hash
+    /// collision cannot return another chunk's token ids — the `lru` crate
+    /// hashes AND compares the key, making a wrong-chunk hit structurally
+    /// impossible. FxHash stays as the hasher for throughput on this hot
+    /// path; only the key type changed.
+    pub(super) chunk_cache: Mutex<LruCache<Vec<u8>, Vec<u32>, BuildHasherDefault<FxHasher>>>,
     pub(super) use_byte_level: bool,
     /// BPE with a metaspace (▁) decoder — see [`Tokenizer::new_with_metaspace_decoder`].
     /// This is NOT SentencePiece (Unigram/Viterbi); for that use
@@ -127,7 +133,10 @@ impl Clone for Tokenizer {
         // `.max(1)` guarantees the value is already >= 1, so `new` cannot
         // fail; `unwrap_or` avoids an unwrap on the (unreachable) None arm.
         let cache_size_nz = NonZeroUsize::new(self.cache_size.max(1)).unwrap_or(NonZeroUsize::MIN);
-        let chunk_cache = Mutex::new(LruCache::new(cache_size_nz));
+        let chunk_cache = Mutex::new(LruCache::with_hasher(
+            cache_size_nz,
+            BuildHasherDefault::<FxHasher>::default(),
+        ));
 
         // Clone the already-built matcher directly: `AddedTokens` is `Clone`,
         // rebuilding here would mean this infallible `Clone` impl would need to
