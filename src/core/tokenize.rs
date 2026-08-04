@@ -74,15 +74,19 @@ pub trait Tokenize: Send + Sync {
     /// over a sequence of ids gives the bytes decoding sees before its post-ops,
     /// so a caller can align per-token spans against decoded text.
     ///
-    /// An id in the **skip** set (a special that decode drops) returns an
-    /// **empty** `Vec`, not an error. That is its true contribution to the
-    /// stream: every decode path in this crate treats a skip as a deliberate
-    /// no-op and reserves errors for ids in no table at all, and erroring here
-    /// would both conflate those two and break the concatenation property above.
+    /// An id in the **skip** set returns an **empty** `Vec`, not an error. That
+    /// is its true contribution to the stream: every decode path in this crate
+    /// treats a skip as a deliberate no-op and reserves errors for ids in no
+    /// table at all, and erroring here would both conflate those two and break
+    /// the concatenation property above. The skip set is whatever the
+    /// implementation's own [`streaming_decoder`](Self::streaming_decoder) skips
+    /// — a special that decode drops, and equally an id that *is* in the
+    /// vocabulary but carries no surface, which every stream here silently drops
+    /// rather than rejects.
     ///
     /// # Errors
-    /// [`TokenizeError::InvalidTokenId`] when `id` is in no table at all —
-    /// neither the vocabulary nor the special tokens.
+    /// [`TokenizeError::InvalidTokenId`] when `id` is outside the vocabulary
+    /// altogether — not merely absent from a table the stream would skip past.
     fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError>;
 
     /// [`decode_token_bytes`](Self::decode_token_bytes) as text.

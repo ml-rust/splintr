@@ -378,8 +378,8 @@ impl AnyTokenizer {
     /// warns about — so this method exists to be the one that does not.
     ///
     /// # Errors
-    /// [`TokenizeError::InvalidTokenId`] for an id in no table at all, and —
-    /// only on the declared branch, and for exactly the pipelines
+    /// [`TokenizeError::InvalidTokenId`] for an id outside the vocabulary
+    /// entirely, and — only on the declared branch, and for exactly the pipelines
     /// [`streaming_decoder`](Self::streaming_decoder) refuses —
     /// [`TokenizeError::UnstreamableDecoder`]: a pipeline whose steps cannot be
     /// evaluated one chunk at a time cannot be evaluated one *token* at a time
@@ -408,9 +408,22 @@ impl AnyTokenizer {
     /// single id needs a single surface, so the rules are given a one-slot
     /// vocabulary and asked about slot 0. The skip and the missing-surface
     /// decisions are therefore made here rather than folded into the rules'
-    /// tables, and they are the ones
-    /// [`Tokenize::decode_token_bytes`] states: a skipped special contributes
-    /// nothing, an id with no surface is invalid.
+    /// tables, and they are made to match what
+    /// [`streaming_decoder`](Self::streaming_decoder) folds into *its* tables
+    /// over the whole vocabulary — because
+    /// [`Tokenize::decode_token_bytes`] is documented as the bytes an id
+    /// contributes to the decoded stream, so the two must give the same answer
+    /// for the same id:
+    ///
+    /// * a skipped special contributes nothing;
+    /// * an id **inside** the vocabulary with no surface contributes nothing —
+    ///   the streaming decoder puts exactly these ids in its skip set, and
+    ///   whole-sequence [`decode`](Self::decode) drops them in `decode_declared`'s
+    ///   `filter_map`. This method used to report them invalid, which made two of
+    ///   this handle's own APIs disagree about the same id;
+    /// * an id **outside** the vocabulary is invalid — the one id the stream also
+    ///   refuses (its surface table has no slot to read), so the disagreement
+    ///   does not reappear at the other end.
     ///
     /// A `WordPiece` pipeline's declared per-token `cleanup` does not run here:
     /// the unit it cleans is the token *plus* the separator it carries, and the
@@ -437,7 +450,15 @@ impl AnyTokenizer {
             return Ok(Vec::new());
         }
         let Some(surface) = self.backend.token_surface(id) else {
-            return Err(TokenizeError::InvalidTokenId(id));
+            // The same partition `streaming_decoder` makes over `0..vocab_size`:
+            // a surface-less id inside that range goes in its skip set (so it
+            // contributes nothing), and only an id past the end has no slot at
+            // all.
+            return if (id as usize) < Tokenize::vocab_size(self) {
+                Ok(Vec::new())
+            } else {
+                Err(TokenizeError::InvalidTokenId(id))
+            };
         };
         let rules = rules.with_vocabulary(
             Surfaces::ByIndex(Arc::new(vec![surface])),
@@ -801,6 +822,47 @@ mod tests {
         assert_eq!(any.decode_token_bytes(1).unwrap(), Vec::<u8>::new());
         assert_eq!(any.decode_token(1).unwrap(), "");
 
+        assert!(matches!(
+            any.decode_token_bytes(999),
+            Err(TokenizeError::InvalidTokenId(999))
+        ));
+    }
+
+    /// An id inside the vocabulary that carries no surface must give the SAME
+    /// answer from `decode_token_bytes` and from the stream, because
+    /// `decode_token_bytes` is documented as the bytes an id contributes to the
+    /// decoded stream. `streaming_decoder` puts such an id in its skip set and
+    /// whole-sequence `decode` drops it, so nothing is the right answer;
+    /// `decode_token_bytes` used to report `InvalidTokenId` for it, which is two
+    /// of this handle's own APIs contradicting each other about one id.
+    ///
+    /// `declared_handle`'s surfaces are ids 1, 10, 11, 12, so its `vocab_size` is
+    /// 13 and id 5 is a hole inside it — while 999 is past the end, the one id
+    /// the stream also has no slot for and therefore still an error.
+    #[test]
+    fn a_surface_less_id_inside_the_vocabulary_contributes_nothing_to_both_apis() {
+        let any = declared_handle();
+        assert_eq!(Tokenize::vocab_size(&any), 13);
+
+        assert_eq!(any.decode_token_bytes(5).unwrap(), Vec::<u8>::new());
+        assert_eq!(any.decode_token(5).unwrap(), "");
+
+        // The stream agrees: the hole is skipped, not rejected, and the ids
+        // around it decode exactly as they do without it.
+        let mut streamed = any.streaming_decoder().expect("this pipeline lowers");
+        let mut out = streamed
+            .add_tokens(&[10, 5, 11])
+            .expect("the hole is skipped, not reported")
+            .unwrap_or_default();
+        out.push_str(&streamed.flush());
+        assert_eq!(out, "hello world");
+
+        // …and so does whole-sequence decoding, on both its strict and lossy forms.
+        assert_eq!(Tokenize::decode(&any, &[10, 5, 11]).unwrap(), "hello world");
+        assert_eq!(Tokenize::decode_lossy(&any, &[10, 5, 11]), "hello world");
+
+        // Past the end of the vocabulary is still an error, so the reconciliation
+        // did not simply make every unknown id silent.
         assert!(matches!(
             any.decode_token_bytes(999),
             Err(TokenizeError::InvalidTokenId(999))
