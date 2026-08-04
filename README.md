@@ -686,6 +686,13 @@ CI runs all of the above on Linux, macOS and Windows, plus a `wasm32-unknown-unk
 `Release Prepare` (tag → version and changelog validation → full suite → wheels + sdist) and
 then a manually dispatched `Release` that publishes exactly those artifacts.
 
+**Release ordering: `regexr` ships first.** `Cargo.toml` requires `regexr = "0.1.5"`, which is
+not yet on crates.io — it resolves here only through a gitignored `.cargo/config.toml`
+`[patch.crates-io]` entry pointing at a sibling checkout, and the committed `Cargo.lock`
+carries no source or checksum for it. Nothing resolves on a clean machine until that version
+is published, so splintr 0.12.0 cannot be released — and CI cannot go green on a fresh
+checkout — until `regexr` 0.1.5 is on crates.io.
+
 ### Differential testing against the reference implementations
 
 Unit tests fix the behaviour splintr already knows about; correctness against

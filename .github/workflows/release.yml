@@ -67,6 +67,14 @@ jobs:
   # (no --no-verify) is the strongest guarantee the uploaded tarball builds from
   # a clean checkout, and it is the only thing that proves the explicit
   # `include` list in Cargo.toml carried every vocabulary `include_bytes!` needs.
+  #
+  # PREREQUISITE: `regexr` 0.1.5, the version Cargo.toml requires, must already
+  # be on crates.io. It is resolved locally only through a gitignored
+  # `.cargo/config.toml` `[patch.crates-io]` entry pointing at a sibling
+  # checkout — the committed Cargo.lock carries no source or checksum for it —
+  # so on a clean runner nothing resolves until regexr 0.1.5 is released.
+  # Publish regexr first; that gates this stage, the wheel builds in Release
+  # Prepare, and CI generally.
   publish-crate:
     name: Publish to crates.io
     needs: validate-version
