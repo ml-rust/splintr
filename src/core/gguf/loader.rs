@@ -98,10 +98,33 @@ fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
     // Read before `named` is moved into the policy below.
     let (cls, sep) = (named.get("[CLS]").copied(), named.get("[SEP]").copied());
 
+    // Which ids decode drops. The backend tests ids, not surface strings, so the
+    // file's OWN declared specials go in — otherwise a vocabulary that spells
+    // them `<s>`/`</s>`/`<unk>` leaks them into decoded text purely for not
+    // being bracketed. The selection matches what the other dialects drop:
+    // `t5` and `llama` skip bos/eos/unk (`SentencePieceTokenizer` /
+    // `SpmTokenizer`), and BERT's pad/cls/sep join them because those are the
+    // ids a BERT file states its boundaries with. Deliberately NOT every
+    // `token_type == 3` CONTROL id: that array drives added-token *matching*
+    // (see `special_token_map`), and no other dialect silences everything it
+    // flags, so doing it here would invent a broader policy for one backend.
+    // The four bracketed lookups come from `named`, which the loop above filled
+    // with `lookup_special` — so an id stated only in the metadata counts too.
+    let mut special_decode: rustc_hash::FxHashSet<u32> = [vocab.bos_token_id, vocab.eos_token_id]
+        .into_iter()
+        .flatten()
+        .collect();
+    special_decode.extend(
+        ["[UNK]", "[PAD]", "[CLS]", "[SEP]"]
+            .into_iter()
+            .filter_map(|name| named.get(name).copied()),
+    );
+
     let eos_token_id = vocab.eos_token_id.unwrap_or(0);
     let backend = Backend::WordPiece(
         WordPieceTokenizer::new(tokens, unk_token_id, 200, do_lower_case)
-            .with_added_tokens(&named)?,
+            .with_added_tokens(&named)?
+            .with_special_decode_ids(special_decode),
     );
 
     // `add_bos_token` / `add_eos_token` are not how a BERT file states its

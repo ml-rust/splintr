@@ -67,7 +67,9 @@ pub struct WordPieceTokenizer {
     pad_token_id: Option<u32>,
     /// Added tokens recognized in the input (HF matches these during encoding).
     added: Option<super::added::AddedTokens>,
-    /// Ids of `special=true` added tokens dropped on decode (HF default).
+    /// Ids dropped on decode (HF's `skip_special_tokens=True` default): the
+    /// vocabulary's own bracket-named specials, resolved at construction, plus
+    /// whatever the source file declares via `with_special_decode_ids`.
     special_decode: rustc_hash::FxHashSet<u32>,
 }
 
@@ -128,6 +130,22 @@ impl WordPieceTokenizer {
         let sep_token_id = token_to_id.get("[SEP]").copied();
         let pad_token_id = token_to_id.get("[PAD]").copied();
 
+        // Decode-skipping is by id on every backend, so the names a BERT-family
+        // vocabulary spells its specials with are resolved to ids once, here,
+        // instead of re-matched against each token's surface string at decode
+        // time. A vocabulary that names its specials otherwise — a GGUF file
+        // declaring `<s>`/`</s>`/`<unk>` — contributes its own ids through
+        // [`with_special_decode_ids`](Self::with_special_decode_ids), which
+        // unions into this set rather than replacing it. Resolution walks the
+        // vocab rather than `token_to_id` so a name occupying several ids marks
+        // every one of them, as the surface test used to.
+        let mut special_decode = rustc_hash::FxHashSet::default();
+        for (id, token) in vocab.iter().enumerate() {
+            if is_special_token(token) {
+                special_decode.insert(id as u32);
+            }
+        }
+
         Self {
             token_to_id,
             id_to_token: vocab,
@@ -144,7 +162,7 @@ impl WordPieceTokenizer {
             sep_token_id,
             pad_token_id,
             added: None,
-            special_decode: rustc_hash::FxHashSet::default(),
+            special_decode,
         }
     }
 
@@ -180,9 +198,15 @@ impl WordPieceTokenizer {
         Ok(self)
     }
 
-    /// Set ids of `special=true` added tokens to drop on decode (HF default).
+    /// Add ids of `special=true` added tokens to drop on decode (HF default).
+    ///
+    /// Unions rather than replaces: the constructor has already resolved the
+    /// `[CLS]`/`[SEP]`/`[PAD]`/`[UNK]`/`[MASK]` names the vocabulary itself
+    /// carries, and a caller stating what its *file* declares is adding to that
+    /// knowledge, not correcting it. It is also the only way an `[unusedN]` id
+    /// gets dropped — its spelling never earns it that.
     pub fn with_special_decode_ids(mut self, ids: rustc_hash::FxHashSet<u32>) -> Self {
-        self.special_decode = ids;
+        self.special_decode.extend(ids);
         self
     }
 
@@ -373,7 +397,7 @@ impl WordPieceTokenizer {
                 .get(id as usize)
                 .ok_or(TokenizeError::InvalidTokenId(id))?;
 
-            if is_special_token(token) || self.special_decode.contains(&id) {
+            if self.special_decode.contains(&id) {
                 continue;
             }
 
@@ -402,7 +426,7 @@ impl WordPieceTokenizer {
                 .get(id as usize)
                 .ok_or(TokenizeError::InvalidTokenId(id))?;
 
-            if is_special_token(token) || self.special_decode.contains(&id) {
+            if self.special_decode.contains(&id) {
                 continue;
             }
 
@@ -424,9 +448,18 @@ fn cleanup_tokenization(s: &str) -> String {
         .replace(" ,", ",")
 }
 
+/// The names BERT-family vocabularies spell their special tokens with. Read
+/// once at construction to resolve them to ids — decode itself tests ids only,
+/// so a vocabulary that names its specials differently is not judged by its
+/// spelling.
+///
+/// `[unusedN]` is deliberately absent: HuggingFace does not declare those
+/// special (`all-MiniLM-L6-v2`'s `tokenizer.json` lists exactly `[CLS]`,
+/// `[MASK]`, `[PAD]`, `[SEP]`, `[UNK]`) and emits them from `decode` even under
+/// `skip_special_tokens=True`. A file that *does* declare one special states it
+/// by id, through [`WordPieceTokenizer::with_special_decode_ids`].
 fn is_special_token(token: &str) -> bool {
     matches!(token, "[CLS]" | "[SEP]" | "[PAD]" | "[UNK]" | "[MASK]")
-        || (token.starts_with("[unused") && token.ends_with(']'))
 }
 
 /// Strip accents from text, matching BERT's `BasicTokenizer._run_strip_accents`:
@@ -591,6 +624,78 @@ mod tests {
         let tok = make_tokenizer();
         let text = tok.decode(&[2, 4, 5, 3]).unwrap();
         assert_eq!(text, "hello world");
+    }
+
+    /// The byte-identical guarantee: a standard bracket-named vocabulary drops
+    /// exactly the ids the old surface-string rule dropped — `[CLS]`, `[SEP]`,
+    /// `[PAD]`, `[UNK]` and `[MASK]` — now resolved to ids at construction.
+    #[test]
+    fn standard_bracket_named_vocab_decodes_unchanged() {
+        let vocab = vec![
+            "[PAD]".to_string(),  // 0
+            "[UNK]".to_string(),  // 1
+            "[CLS]".to_string(),  // 2
+            "[SEP]".to_string(),  // 3
+            "[MASK]".to_string(), // 4
+            "hello".to_string(),  // 5
+            "world".to_string(),  // 6
+            "##ing".to_string(),  // 7
+        ];
+        let tok = WordPieceTokenizer::new(vocab, 1, 200, true);
+        assert_eq!(tok.decode(&[2, 5, 6, 3]).unwrap(), "hello world");
+        assert_eq!(tok.decode(&[0, 1, 4]).unwrap(), "");
+        assert_eq!(tok.decode(&[5, 6, 7]).unwrap(), "hello worlding");
+    }
+
+    /// Ids handed in by a loader join the names resolved at construction rather
+    /// than replacing them — a `tokenizer.json` stating its `special = true` ids
+    /// must not silently un-skip `[CLS]`.
+    #[test]
+    fn declared_special_ids_join_the_resolved_names() {
+        let tok = make_tokenizer().with_special_decode_ids([13u32].into_iter().collect());
+        // 13 is the content token "a", declared special by the caller; 2/3 are
+        // [CLS]/[SEP], resolved from the vocabulary itself.
+        assert_eq!(tok.decode(&[2, 4, 13, 5, 3]).unwrap(), "hello world");
+    }
+
+    /// A token spelled `[unusedN]` that no file declares special is ordinary
+    /// content and survives decode. Reference (`tokenizers`, on
+    /// `all-MiniLM-L6-v2/tokenizer.json`, whose declared specials are exactly
+    /// `['[CLS]', '[MASK]', '[PAD]', '[SEP]', '[UNK]']` — `[unused*]` is not
+    /// among its 994 such tokens):
+    ///
+    /// ```text
+    /// ids = [vocab["hello"], vocab["[unused0]"], vocab["world"]]  # [7592, 1, 2088]
+    /// decode(ids, skip_special_tokens=False) -> 'hello [unused0] world'
+    /// decode(ids, skip_special_tokens=True)  -> 'hello [unused0] world'
+    /// ```
+    #[test]
+    fn unused_spelled_content_token_survives_decode() {
+        let vocab = vec![
+            "[UNK]".to_string(),     // 0
+            "[unused7]".to_string(), // 1
+            "hello".to_string(),     // 2
+            "world".to_string(),     // 3
+        ];
+        let tok = WordPieceTokenizer::new(vocab, 0, 200, true);
+        assert_eq!(tok.decode(&[2, 1, 3]).unwrap(), "hello [unused7] world");
+    }
+
+    /// …and an `[unusedN]` its *file* declares special (HF-json `added_tokens`
+    /// with `"special": true`, or a GGUF declared special id) is still dropped.
+    /// The declaration decides, not the spelling — the same id-based path that
+    /// drops any other declared special.
+    #[test]
+    fn declared_special_unused_token_is_dropped() {
+        let vocab = vec![
+            "[UNK]".to_string(),     // 0
+            "[unused7]".to_string(), // 1
+            "hello".to_string(),     // 2
+            "world".to_string(),     // 3
+        ];
+        let tok = WordPieceTokenizer::new(vocab, 0, 200, true)
+            .with_special_decode_ids([1u32].into_iter().collect());
+        assert_eq!(tok.decode(&[2, 1, 3]).unwrap(), "hello world");
     }
 
     #[test]

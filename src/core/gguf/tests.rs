@@ -585,6 +585,50 @@ fn bert_without_cls_sep_keeps_the_identity_policy() {
     assert_eq!(tok.special_token_id("[CLS]"), None);
 }
 
+/// Decode drops the specials the FILE declares, whatever they are spelled.
+///
+/// The two vocabularies below are identical — same `token_type` (3 == CONTROL),
+/// same `bos`/`eos`/`unknown` ids, same content tokens — and differ only in how
+/// their special tokens are named. A surface-string skip rule kept the first
+/// one's `[CLS]`/`[SEP]` out of the text and leaked the second one's
+/// `<s>`/`</s>` into it, though the file declares exactly the same ids as
+/// special in both. Every other dialect (`t5`, `llama`) already skips by id.
+#[test]
+fn bert_decode_drops_declared_specials_whatever_they_are_named() {
+    fn decoded(cls: &str, sep: &str, unk: &str, ids: &[u32]) -> String {
+        from_gguf_vocab(GgufVocab {
+            model: "bert".to_owned(),
+            tokens: v(&[cls, sep, unk, "hello", "world", "##ing"]),
+            token_type: Some(vec![3, 3, 3, 1, 1, 1]),
+            bos_token_id: Some(0),
+            eos_token_id: Some(1),
+            unknown_token_id: Some(2),
+            ..GgufVocab::default()
+        })
+        .expect("builds")
+        .decode(ids)
+        .expect("decodes")
+    }
+
+    assert_eq!(
+        decoded("[CLS]", "[SEP]", "[UNK]", &[0, 3, 4, 1]),
+        "hello world"
+    );
+    assert_eq!(
+        decoded("<s>", "</s>", "<unk>", &[0, 3, 4, 1]),
+        "hello world",
+        "the file declares ids 0 and 1 special; their spelling is not the rule"
+    );
+
+    // The declared unknown id is dropped in both spellings too, matching what
+    // the `t5`/`llama` backends do with theirs.
+    assert_eq!(
+        decoded("[CLS]", "[SEP]", "[UNK]", &[3, 2, 4]),
+        "hello world"
+    );
+    assert_eq!(decoded("<s>", "</s>", "<unk>", &[3, 2, 4]), "hello world");
+}
+
 /// CONTROL-flagged tokens are the special tokens of a `gpt2` vocabulary, and
 /// they must be reachable by name as well as matched in the input.
 #[test]
