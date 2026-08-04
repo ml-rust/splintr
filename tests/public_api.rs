@@ -10,7 +10,9 @@
 //! uncallable no matter what its own visibility says. Each test below
 //! therefore *constructs* the argument through crate-root paths and then
 //! actually calls the method — compiling is most of the assertion.
-use splintr::{NormOp, Normalizer, PreTokStage, PreTokenizer, SplitBehavior, Tokenizer};
+use splintr::{
+    NormOp, Normalizer, PreTokStage, PreTokenizer, SplitBehavior, SplitPattern, Tokenizer,
+};
 
 /// A vocabulary that tells the two splits apart: as one chunk `"a12"` BPEs into
 /// `"a" + "12"`, but a per-digit pre-tokenizer forces `"a" + "1" + "2"`.
@@ -98,8 +100,10 @@ fn pre_tokenizer_can_be_built_and_attached_from_outside_the_crate() {
 /// change the split and the ids.
 #[test]
 fn split_stage_reports_an_invalid_pattern() {
+    // Only a regex pattern can fail to compile: a literal is escaped before
+    // compiling, so an uncompilable literal is impossible by construction.
     let err: splintr::TokenizerError = PreTokenizer::new(vec![PreTokStage::Split {
-        pattern: "(".to_string(),
+        pattern: SplitPattern::Regex("(".to_string()),
         behavior: SplitBehavior::Isolated,
         invert: false,
     }])
@@ -129,7 +133,7 @@ fn empty_pre_tokenizer_is_a_valid_no_op() {
 fn every_split_behavior_is_nameable() {
     let split = |behavior| {
         PreTokenizer::new(vec![PreTokStage::Split {
-            pattern: r"\s".to_string(),
+            pattern: SplitPattern::Regex(r"\s".to_string()),
             behavior,
             invert: false,
         }])
@@ -143,4 +147,26 @@ fn every_split_behavior_is_nameable() {
     assert_eq!(split(SplitBehavior::Contiguous), vec!["a", "  ", "b"]);
     // `Isolated` is the default, matching HuggingFace's absent-behavior case.
     assert_eq!(SplitBehavior::default(), SplitBehavior::Isolated);
+}
+
+/// Both [`SplitPattern`] variants are nameable from outside the crate and mean
+/// what HuggingFace means by them: a literal matches its characters verbatim,
+/// a regex is compiled. Describing a `Split` stage is impossible without this
+/// type, so it has to be reachable downstream.
+#[test]
+fn both_split_patterns_are_nameable() {
+    let split = |pattern| {
+        PreTokenizer::new(vec![PreTokStage::Split {
+            pattern,
+            behavior: SplitBehavior::Removed,
+            invert: false,
+        }])
+        .expect("pipeline builds")
+        .split("a.b c")
+    };
+    assert_eq!(
+        split(SplitPattern::Literal(".".to_string())),
+        vec!["a", "b c"]
+    );
+    assert!(split(SplitPattern::Regex(".".to_string())).is_empty());
 }

@@ -9,6 +9,8 @@
 //! (each byte mapped to a printable code point), ready for BPE against a
 //! byte-level vocab — so the consumer must NOT byte-level-encode again.
 
+use std::borrow::Cow;
+
 use regexr::RegexBuilder;
 use serde_json::Value;
 
@@ -49,6 +51,22 @@ impl SplitBehavior {
     }
 }
 
+/// How a [`PreTokStage::Split`] pattern is interpreted, mirroring HuggingFace's
+/// `pattern` field, which is either a literal string or a regex — the two mean
+/// different things and are not interchangeable.
+///
+/// Deliberately *not* `#[non_exhaustive]`, for the same reason as
+/// [`SplitBehavior`]: HuggingFace's set is closed at these two forms, so sealing
+/// it would only stop downstream code from matching exhaustively.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitPattern {
+    /// Matched exactly, character for character. Regex metacharacters carry no
+    /// special meaning.
+    Literal(String),
+    /// Compiled as a regular expression.
+    Regex(String),
+}
+
 /// One pre-tokenizer stage as a *description*: regexes are given as patterns and
 /// compiled by [`PreTokenizer::new`], so a caller never has to name a regex type.
 ///
@@ -63,7 +81,7 @@ pub enum PreTokStage {
     /// Split on `pattern`, combining the matched delimiters per `behavior`. With
     /// `invert`, the spans *between* matches are the delimiters instead.
     Split {
-        pattern: String,
+        pattern: SplitPattern,
         behavior: SplitBehavior,
         invert: bool,
     },
@@ -151,9 +169,11 @@ impl PreTokenizer {
     /// every `Split` pattern.
     ///
     /// # Errors
-    /// Returns [`TokenizerError::RegexrError`] if a `Split` pattern does not
-    /// compile. Dropping the stage instead would silently change the split — and
-    /// therefore the token ids — with nothing to point at.
+    /// Returns [`TokenizerError::RegexrError`] if a [`SplitPattern::Regex`] does
+    /// not compile. Dropping the stage instead would silently change the split —
+    /// and therefore the token ids — with nothing to point at. A
+    /// [`SplitPattern::Literal`] is escaped before compiling, so it always
+    /// compiles.
     pub fn new(stages: Vec<PreTokStage>) -> Result<Self, TokenizerError> {
         let mut compiled = Vec::with_capacity(stages.len());
         let mut byte_level = false;
@@ -165,7 +185,20 @@ impl PreTokenizer {
                     behavior,
                     invert,
                 } => Stage::Split {
-                    re: Box::new(RegexBuilder::new(pattern).jit(true).build()?),
+                    // A literal is compiled as an escaped regex rather than
+                    // matched by a separate code path, so both forms share the
+                    // delimiter/behavior/invert handling in `emit_segments` and
+                    // cannot drift apart. `Cow` avoids cloning the `Regex` arm's
+                    // pattern just to unify it with the `Literal` arm's owned,
+                    // escaped one.
+                    re: Box::new(
+                        RegexBuilder::new(&match pattern {
+                            SplitPattern::Literal(s) => Cow::Owned(regexr::escape(s)),
+                            SplitPattern::Regex(s) => Cow::Borrowed(s.as_str()),
+                        })
+                        .jit(true)
+                        .build()?,
+                    ),
                     behavior: (*behavior).into(),
                     invert: *invert,
                 },
@@ -506,14 +539,22 @@ pub(crate) fn parse(pre: Option<&Value>) -> Result<Option<PreTokenizer>, Tokeniz
                 add_prefix_space: v.get("add_prefix_space").and_then(Value::as_bool) == Some(true),
             }),
             Some("Split") => {
+                // HF's `pattern` is either form, and they are not
+                // interchangeable: a `String` is matched literally, so its regex
+                // metacharacters mean nothing.
                 let pat = v.get("pattern").and_then(|p| {
                     p.get("Regex")
                         .and_then(Value::as_str)
-                        .or_else(|| p.get("String").and_then(Value::as_str))
+                        .map(|s| SplitPattern::Regex(s.to_string()))
+                        .or_else(|| {
+                            p.get("String")
+                                .and_then(Value::as_str)
+                                .map(|s| SplitPattern::Literal(s.to_string()))
+                        })
                 });
                 if let Some(pat) = pat {
                     stages.push(PreTokStage::Split {
-                        pattern: pat.to_string(),
+                        pattern: pat,
                         behavior: SplitBehavior::parse(v.get("behavior").and_then(Value::as_str)),
                         invert: v.get("invert").and_then(Value::as_bool).unwrap_or(false),
                     });
@@ -636,6 +677,53 @@ mod tests {
         assert_eq!(out.concat(), "ab");
     }
 
+    /// HuggingFace's `Split` takes either a literal string or a regex, and they
+    /// are not interchangeable. Reference (`tokenizers` package, behavior
+    /// `removed`, input `"a.b c"`): `Split(pattern=".")` yields
+    /// `[('a', (0,1)), ('b c', (2,5))]`, while `Split(pattern=Regex("."))`
+    /// matches every character and yields nothing.
+    #[test]
+    fn literal_and_regex_split_patterns_are_not_interchangeable() {
+        let split = |pattern| {
+            PreTokenizer::new(vec![PreTokStage::Split {
+                pattern,
+                behavior: SplitBehavior::Removed,
+                invert: false,
+            }])
+            .expect("pipeline builds")
+            .split("a.b c")
+        };
+        assert_eq!(
+            split(SplitPattern::Literal(".".to_string())),
+            vec!["a", "b c"]
+        );
+        assert!(split(SplitPattern::Regex(".".to_string())).is_empty());
+    }
+
+    #[test]
+    fn literal_split_pattern_matches_metacharacters_verbatim() {
+        let split = |pattern, text: &str| {
+            PreTokenizer::new(vec![PreTokStage::Split {
+                pattern,
+                behavior: SplitBehavior::Removed,
+                invert: false,
+            }])
+            .expect("pipeline builds")
+            .split(text)
+        };
+        // As a regex `a+b` would need one-or-more `a`; as a literal it is the
+        // three characters, which appear only in the middle here.
+        assert_eq!(
+            split(SplitPattern::Literal("a+b".to_string()), "xa+by"),
+            vec!["x", "y"]
+        );
+        // As a regex `|` is an empty alternation matching everywhere.
+        assert_eq!(
+            split(SplitPattern::Literal("|".to_string()), "a|b"),
+            vec!["a", "b"]
+        );
+    }
+
     #[test]
     fn split_with_uncompilable_pattern_is_an_error() {
         // Previously such a stage was silently dropped, which changed the split
@@ -695,7 +783,8 @@ mod tests {
                 serde_json::json!({"type": "WhitespaceSplit"}),
                 vec![PreTokStage::WhitespaceSplit],
             ),
-            // A `String` pattern is compiled as a regex, like a `Regex` one.
+            // A `String` pattern is a literal, a `Regex` pattern is a regex —
+            // conflating them changes the split for any metacharacter.
             (
                 serde_json::json!({
                     "type": "Split",
@@ -703,7 +792,20 @@ mod tests {
                     "behavior": "Removed"
                 }),
                 vec![PreTokStage::Split {
-                    pattern: ",".to_string(),
+                    pattern: SplitPattern::Literal(",".to_string()),
+                    behavior: SplitBehavior::Removed,
+                    invert: false,
+                }],
+            ),
+            // A `String` whose text is regex-significant still matches literally.
+            (
+                serde_json::json!({
+                    "type": "Split",
+                    "pattern": {"String": "."},
+                    "behavior": "Removed"
+                }),
+                vec![PreTokStage::Split {
+                    pattern: SplitPattern::Literal(".".to_string()),
                     behavior: SplitBehavior::Removed,
                     invert: false,
                 }],
@@ -715,7 +817,7 @@ mod tests {
                     "invert": true
                 }),
                 vec![PreTokStage::Split {
-                    pattern: r"\w+".to_string(),
+                    pattern: SplitPattern::Regex(r"\w+".to_string()),
                     behavior: SplitBehavior::Isolated,
                     invert: true,
                 }],
@@ -736,7 +838,7 @@ mod tests {
                     "behavior": name
                 }),
                 vec![PreTokStage::Split {
-                    pattern: r"\s+".to_string(),
+                    pattern: SplitPattern::Regex(r"\s+".to_string()),
                     behavior,
                     invert: false,
                 }],

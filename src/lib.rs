@@ -37,9 +37,10 @@ pub use core::{NormOp, Normalizer, Precompiled};
 /// The pre-tokenizer pipeline and its stages, re-exported so
 /// [`Tokenizer::with_pre_tokenizer`] is actually callable from outside this
 /// crate: building a [`PreTokenizer`] requires naming [`PreTokStage`], and
-/// describing a `Split`/`Punctuation` stage requires naming [`SplitBehavior`].
-/// Stages carry regexes as patterns, so no regex type has to be named either.
-pub use core::{PreTokStage, PreTokenizer, SplitBehavior};
+/// describing a `Split`/`Punctuation` stage requires naming [`SplitBehavior`]
+/// and, for `Split`, [`SplitPattern`]. Stages carry regexes as patterns, so no
+/// regex type has to be named either.
+pub use core::{PreTokStage, PreTokenizer, SplitBehavior, SplitPattern};
 /// The hash map splintr's vocabulary constructors take, re-exported for the same
 /// reason as [`FxHashSet`]: [`Tokenizer::new`] takes `FxHashMap<Vec<u8>, u32>` for
 /// the encoder and `FxHashMap<String, u32>` for the special tokens, so building a

@@ -8,6 +8,10 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ## [Unreleased]
 
+### Fixed
+
+- **A HuggingFace `Split` pre-tokenizer with a string pattern now splits on that string literally**, as `tokenizers` does, instead of compiling it as a regex. Splitting `"a.b c"` on `"."` with behavior `removed` yields `["a", "b c"]`; only `Regex(".")` matches every character. `PreTokStage::Split` carries the new `SplitPattern` (`Literal` | `Regex`) to keep the two forms distinct, and a literal is escaped before compiling.
+
 ## [0.11.0] - 2026-08-03
 
 ### Added
