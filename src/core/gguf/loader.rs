@@ -164,11 +164,35 @@ fn build_unigram(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
     let prefix_space = unigram_prefix_space(&vocab);
     let normalizer = unigram_normalizer(vocab.precompiled_charsmap.as_deref());
 
+    // Which ids decode drops, chosen exactly as the `llama` arm below chooses:
+    // the three ids the FILE states, and nothing broader. The backend already
+    // skips its own BOS/EOS/`<unk>` fields, but two of those three are not the
+    // same thing as what the file declared — BOS is passed as `None` here
+    // (boundaries are the policy's), and the backend resolves `<unk>` by
+    // spelling, so a vocabulary that states an `unknown_token_id` for a piece
+    // spelled anything else is not covered. Both leaked into `decode()` output.
+    //
+    // Deliberately NOT every `token_type == 3` (CONTROL) id in `specials`: that
+    // array drives added-token *matching*, not decode skipping, and both sibling
+    // arms decline the same broadening for the same reason. The `bert` arm adds
+    // `[PAD]`/`[CLS]`/`[SEP]` on top because those are the ids a BERT file states
+    // its boundaries with; a `t5` file states none of them, so the `llama`
+    // precedent — bos/eos/unk — is the right one to follow here.
+    let special_decode: rustc_hash::FxHashSet<u32> = [
+        vocab.bos_token_id,
+        vocab.eos_token_id,
+        vocab.unknown_token_id,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
     // `None` for BOS: boundary tokens are placed by the policy, so the backend
     // must not also prepend one. The backend's `eos` is not a boundary — it only
     // drives decode-skipping and `is_eos` — so it takes the resolved id.
     let backend = Backend::Unigram(
         SentencePieceTokenizer::new(tokens, scores, None, eos_token_id)?
+            .with_special_decode_ids(special_decode)
             .with_normalizer(normalizer)
             .with_prefix_space(prefix_space)
             .with_remove_extra_whitespaces(remove_extra_whitespaces(&vocab))

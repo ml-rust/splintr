@@ -629,6 +629,54 @@ fn bert_decode_drops_declared_specials_whatever_they_are_named() {
     assert_eq!(decoded("<s>", "</s>", "<unk>", &[3, 2, 4]), "hello world");
 }
 
+/// The `t5` arm must declare the file's specials to its backend the way the
+/// `llama` arm does — it was the one arm that never called
+/// `with_special_decode_ids`, so the ids it passes `None` for leaked into
+/// `decode()`.
+///
+/// The Unigram backend skips its OWN bos/eos/unk fields, but two of the three
+/// are not the file's: `build_unigram` passes `None` for BOS (boundaries belong
+/// to the policy), and the backend resolves its unk by the spelling `<unk>` /
+/// `<UNK>`, so a vocabulary naming its unknown piece anything else has no unk to
+/// skip. This vocabulary is built to expose exactly those two — its BOS is
+/// declared, and its unknown piece is spelled `<unknown>` — so both surfaces
+/// used to survive into the decoded text.
+///
+/// The set is the same three metadata ids the `llama` arm chooses, and
+/// deliberately not every `token_type == 3` (CONTROL) id: `▁hi` below is CONTROL
+/// here purely to show that the broader rule is not the one in force, since a
+/// CONTROL token the file never names as a boundary still decodes.
+#[test]
+fn t5_decode_drops_the_specials_the_file_declares() {
+    let tok = from_gguf_vocab(GgufVocab {
+        model: "t5".to_owned(),
+        tokens: v(&["<s>", "</s>", "<unknown>", "▁hello", "▁world", "▁hi"]),
+        token_type: Some(vec![3, 3, 3, 1, 1, 3]),
+        bos_token_id: Some(0),
+        eos_token_id: Some(1),
+        unknown_token_id: Some(2),
+        ..GgufVocab::default()
+    })
+    .expect("builds");
+
+    assert_eq!(tok.family(), "Unigram");
+    assert_eq!(
+        tok.decode(&[0, 3, 4, 1]).expect("decodes"),
+        "hello world",
+        "the declared BOS/EOS must not reach the text"
+    );
+    assert_eq!(
+        tok.decode(&[3, 2, 4]).expect("decodes"),
+        "hello world",
+        "the declared unknown id must not reach the text, whatever it is spelled"
+    );
+    assert_eq!(
+        tok.decode(&[3, 5]).expect("decodes"),
+        "hello hi",
+        "a CONTROL token the file never names as a special still decodes"
+    );
+}
+
 /// CONTROL-flagged tokens are the special tokens of a `gpt2` vocabulary, and
 /// they must be reachable by name as well as matched in the input.
 #[test]
