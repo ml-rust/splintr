@@ -14,10 +14,12 @@
 //! agrees with whole-sequence decoding by construction.
 
 mod decoder;
+mod render;
 mod state;
 // Crate-internal: the Python bindings drive their own decoders off the same
 // `Utf8Buffer`. Never re-exported, so it stays out of the public API.
 pub(crate) mod utf8;
 
 pub use decoder::StreamingDecoder;
-pub(crate) use state::{DecodeState, DecodeView, Rendered};
+pub(crate) use render::{ByteFallbackRule, Lead, RenderRules, Rendered, Surfaces};
+pub(crate) use state::{DecodePost, DecodeState};

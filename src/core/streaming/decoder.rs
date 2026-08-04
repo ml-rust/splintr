@@ -1,13 +1,14 @@
 //! The streaming decoder itself.
 //!
-//! Byte rendering is not decided here: every id goes through the same
-//! [`DecodeView`](super::DecodeView) whole-sequence decoding uses, and the resulting bytes are
-//! buffered in a [`Utf8Buffer`], so the incremental UTF-8 logic lives in
-//! exactly one place too. Byte-level unmapping happens *before* the buffer —
-//! the buffer only ever sees real bytes.
+//! Nothing about decoding is decided here: the decoder is a long-lived
+//! [`DecodeCursor`](super::state::DecodeCursor) over the same
+//! [`DecodeState`] whole-sequence decoding drives, so id rendering, UTF-8
+//! reassembly and the text post-ops all live in exactly one place. This type
+//! only chooses *when* to feed it and what an unknown id means. Byte-level
+//! unmapping happens before the UTF-8 buffer — the buffer only ever sees real
+//! bytes.
 
-use super::state::{DecodeState, Rendered};
-use super::utf8::Utf8Buffer;
+use super::state::{DecodeCursor, DecodeState};
 use crate::core::tokenize::TokenizeError;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -62,10 +63,12 @@ use std::sync::Arc;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct StreamingDecoder {
-    /// Shared with the tokenizer that produced this decoder, so building one
-    /// never copies the vocabulary map.
-    state: Arc<DecodeState>,
-    bytes: Utf8Buffer,
+    /// A cursor over the state shared with the tokenizer that produced this
+    /// decoder, so building one never copies the vocabulary map — and so a
+    /// stream renders ids through exactly the code whole-sequence decoding
+    /// renders them through. The cursor is long-lived: it *is* the decoder's
+    /// position in the stream.
+    cursor: DecodeCursor<Arc<DecodeState>>,
 }
 
 impl StreamingDecoder {
@@ -74,34 +77,8 @@ impl StreamingDecoder {
     /// Crate-internal on purpose: see the type-level docs.
     pub(crate) fn new(state: Arc<DecodeState>) -> Self {
         Self {
-            state,
-            bytes: Utf8Buffer::new(),
+            cursor: DecodeCursor::new(state),
         }
-    }
-
-    /// Shared feed loop: renders `ids` into the UTF-8 buffer, deferring the "id
-    /// not in any table" decision to `on_unknown` so the strict and lossy
-    /// entry points cannot drift into two different notions of "unknown" —
-    /// mirroring the whole-sequence decode loop, which defers the same way.
-    fn feed_with<E>(
-        &mut self,
-        ids: &[u32],
-        on_unknown: impl Fn(u32) -> Result<(), E>,
-    ) -> Result<Option<String>, E> {
-        let view = self.state.view();
-
-        for &id in ids {
-            match view.render(id) {
-                Rendered::Skipped => {}
-                Rendered::Bytes(bytes) => self.bytes.push(&bytes),
-                Rendered::Unknown => on_unknown(id)?,
-            }
-        }
-
-        Ok(self
-            .bytes
-            .take_complete()
-            .map(|text| view.postprocess(text)))
     }
 
     /// Add a token and return any complete UTF-8 characters.
@@ -122,7 +99,8 @@ impl StreamingDecoder {
     /// Feeding ids in groups is indistinguishable from feeding them one by one:
     /// only the emission points differ, never the concatenated text.
     pub fn add_tokens(&mut self, ids: &[u32]) -> Result<Option<String>, TokenizeError> {
-        self.feed_with(ids, |id| Err(TokenizeError::InvalidTokenId(id)))
+        self.cursor
+            .feed(ids, |id| Err(TokenizeError::InvalidTokenId(id)))
     }
 
     /// Add a token, skipping it if it is in no table.
@@ -138,7 +116,7 @@ impl StreamingDecoder {
 
     /// Add multiple tokens at once, skipping any that are in no table.
     pub fn add_tokens_lossy(&mut self, ids: &[u32]) -> Option<String> {
-        match self.feed_with(ids, |_| Ok::<(), Infallible>(())) {
+        match self.cursor.feed(ids, |_| Ok::<(), Infallible>(())) {
             Ok(text) => text,
             // `Infallible` has no values, so this match has no arms to write.
             Err(never) => match never {},
@@ -150,25 +128,24 @@ impl StreamingDecoder {
     /// If there are incomplete UTF-8 sequences in the buffer, they will be
     /// replaced with the Unicode replacement character (U+FFFD).
     pub fn flush(&mut self) -> String {
-        let text = self.bytes.flush();
-        self.state.view().postprocess(text)
+        self.cursor.flush()
     }
 
     /// Reset the decoder state, discarding any buffered bytes.
     ///
     /// The decoder is then indistinguishable from a freshly built one.
     pub fn reset(&mut self) {
-        self.bytes.clear();
+        self.cursor.reset();
     }
 
     /// Check if there are buffered bytes waiting for completion.
     pub fn has_pending(&self) -> bool {
-        self.bytes.has_pending()
+        self.cursor.has_pending()
     }
 
     /// Get the number of pending bytes in the buffer.
     pub fn pending_bytes(&self) -> usize {
-        self.bytes.pending_len()
+        self.cursor.pending_bytes()
     }
 }
 

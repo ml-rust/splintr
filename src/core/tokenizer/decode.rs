@@ -1,6 +1,9 @@
 use super::error::TokenizerError;
 use super::types::{ByteFallback, Tokenizer};
-use crate::core::streaming::{DecodeState, DecodeView, Rendered, StreamingDecoder};
+use crate::core::streaming::{
+    ByteFallbackRule, DecodePost, DecodeState, Lead, RenderRules, Rendered, StreamingDecoder,
+    Surfaces,
+};
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use std::convert::Infallible;
@@ -9,17 +12,31 @@ use std::sync::Arc;
 impl Tokenizer {
     /// This tokenizer's decode configuration, as the streaming decoder sees it.
     ///
-    /// Whole-sequence decoding and streaming decoding render an id through the
-    /// same [`DecodeView`], so the two cannot disagree about what an id means.
-    fn decode_view(&self) -> DecodeView<'_> {
-        DecodeView {
-            decoder: &self.decoder,
-            special_tokens_decoder: &self.special_tokens_decoder,
-            special_decode_ids: &self.special_decode_ids,
-            byte_fallback: self.decode_byte_fallback().map(|f| f.id_bytes().as_ref()),
-            use_byte_level: self.use_byte_level,
-            use_metaspace_decoder: self.use_metaspace_decoder,
-        }
+    /// Whole-sequence decoding and streaming decoding drive the same
+    /// [`DecodeState`] through the same cursor, so the two cannot disagree
+    /// about what an id means or about what happens to the text it produces.
+    ///
+    /// Cheap to build — every table inside is shared with this tokenizer rather
+    /// than copied — which is what lets `decode` capture one per call instead
+    /// of the tokenizer having to cache one that could go stale.
+    pub(crate) fn decode_state(&self) -> DecodeState {
+        DecodeState::new(
+            RenderRules::new(
+                Surfaces::ById(Arc::clone(&self.decoder)),
+                Arc::clone(&self.special_tokens_decoder),
+                Arc::clone(&self.special_decode_ids),
+                match self.decode_byte_fallback() {
+                    Some(fallback) => ByteFallbackRule::Table(Arc::clone(fallback.id_bytes())),
+                    None => ByteFallbackRule::None,
+                },
+                self.use_byte_level,
+            ),
+            if self.use_metaspace_decoder {
+                vec![DecodePost::MetaspaceToSpace]
+            } else {
+                Vec::new()
+            },
+        )
     }
 
     /// The byte-fallback table decoding resolves `<0xNN>` ids through, or `None`
@@ -46,80 +63,87 @@ impl Tokenizer {
     /// Cheap to call — the vocabulary map is shared, not copied — and the
     /// result borrows nothing, so it can be moved into a generation task.
     pub fn streaming_decoder(&self) -> StreamingDecoder {
-        StreamingDecoder::new(Arc::new(DecodeState::new(
-            Arc::clone(&self.decoder),
-            self.special_tokens_decoder.clone(),
-            self.special_decode_ids.clone(),
-            self.decode_byte_fallback()
-                .map(|f| Arc::clone(f.id_bytes())),
-            self.use_byte_level,
-            self.use_metaspace_decoder,
-        )))
+        StreamingDecoder::new(Arc::new(self.decode_state()))
     }
 
-    /// Shared decode loop: renders `tokens` to bytes, deferring the "id not in
-    /// the vocabulary" decision to `on_unknown` so strict and lossy decoding
-    /// cannot drift into two different notions of "unknown".
+    /// Decode token IDs back to bytes.
     ///
-    /// `special=true` added tokens are always dropped (HF default
-    /// `skip_special_tokens`), never routed through `on_unknown` — that is a
-    /// distinct, intentional skip, not an unknown-id error.
-    fn decode_bytes_with<E>(
-        &self,
-        tokens: &[u32],
-        on_unknown: impl Fn(u32) -> Result<(), E>,
-    ) -> Result<Vec<u8>, E> {
+    /// The one decode entry point that wants bytes rather than text, so it
+    /// renders through [`RenderRules`] directly instead of through a cursor —
+    /// there is no UTF-8 reassembly and no post-op to run on raw bytes. The
+    /// rendering itself is still the same code every other decode path uses.
+    ///
+    /// `special=true` added tokens are dropped (HF default
+    /// `skip_special_tokens`) — a distinct, intentional skip, not an
+    /// unknown-id error.
+    ///
+    /// Errors with [`TokenizerError::InvalidTokenId`] if `tokens` contains an
+    /// id that is not in the vocabulary and not a known special token.
+    pub fn decode_bytes(&self, tokens: &[u32]) -> Result<Vec<u8>, TokenizerError> {
         let mut result = Vec::with_capacity(tokens.len() * 4);
-        let view = self.decode_view();
+        let state = self.decode_state();
+        let rules = state.render();
 
         for &token in tokens {
-            match view.render(token) {
+            match rules.render(token) {
                 Rendered::Skipped => {}
-                Rendered::Bytes(bytes) => result.extend_from_slice(&bytes),
-                Rendered::Unknown => on_unknown(token)?,
+                Rendered::Bytes { lead, bytes } => {
+                    match lead {
+                        Lead::None => {}
+                    }
+                    result.extend_from_slice(&bytes);
+                }
+                Rendered::Unknown => return Err(TokenizerError::InvalidTokenId(token)),
             }
         }
 
         Ok(result)
     }
 
-    /// Decode token IDs back to bytes.
-    ///
-    /// Errors with [`TokenizerError::InvalidTokenId`] if `tokens` contains an
-    /// id that is not in the vocabulary and not a known special token.
-    pub fn decode_bytes(&self, tokens: &[u32]) -> Result<Vec<u8>, TokenizerError> {
-        self.decode_bytes_with(tokens, |id| Err(TokenizerError::InvalidTokenId(id)))
-    }
-
     /// Decode token IDs to a string.
+    ///
+    /// The degenerate drive of the streaming cursor: one feed of every id, then
+    /// a flush. Strict throughout — an id in no table is
+    /// [`TokenizerError::InvalidTokenId`] and bytes that are not valid UTF-8
+    /// are [`TokenizerError::Utf8Error`], never a U+FFFD substitution — but
+    /// *what* an id renders to and what happens to the resulting text is
+    /// decided by exactly the code a stream uses.
     pub fn decode(&self, tokens: &[u32]) -> Result<String, TokenizerError> {
-        let bytes = self.decode_bytes(tokens)?;
-        let text = String::from_utf8(bytes).map_err(|_| TokenizerError::Utf8Error)?;
-        Ok(self.postprocess_decode(text))
+        let state = self.decode_state();
+        let mut cursor = state.cursor_with_capacity(tokens.len() * 4);
+
+        let emitted = cursor.feed_strict(
+            tokens,
+            |id| Err(TokenizerError::InvalidTokenId(id)),
+            || TokenizerError::Utf8Error,
+        )?;
+
+        let mut text = emitted.unwrap_or_default();
+        text.push_str(&cursor.finish_strict(|| TokenizerError::Utf8Error)?);
+
+        Ok(text)
     }
 
     /// Decode token IDs to a string, replacing invalid UTF-8 with replacement character.
     ///
-    /// Unknown ids are skipped, mirroring the internal `decode_bytes_with`'s
-    /// `special=true` skip — this method never fails, so `on_unknown` is
-    /// instantiated with [`Infallible`], letting the compiler prove the `Err`
-    /// arm away rather than a runtime assertion claiming it.
+    /// The same degenerate cursor drive as [`decode`](Self::decode), on the
+    /// lossy side: unknown ids are skipped, mirroring the `special=true` skip
+    /// [`decode_bytes`](Self::decode_bytes) makes, and undecodable bytes become
+    /// U+FFFD. This method never fails, so `on_unknown` is instantiated with
+    /// [`Infallible`], letting the compiler prove the `Err` arm away rather
+    /// than a runtime assertion claiming it.
     pub fn decode_lossy(&self, tokens: &[u32]) -> String {
-        let bytes = match self.decode_bytes_with(tokens, |_| Ok::<(), Infallible>(())) {
-            Ok(bytes) => bytes,
+        let state = self.decode_state();
+        let mut cursor = state.cursor_with_capacity(tokens.len() * 4);
+
+        let mut text = match cursor.feed(tokens, |_| Ok::<(), Infallible>(())) {
+            Ok(text) => text.unwrap_or_default(),
             // `Infallible` has no values, so this match has no arms to write.
             Err(never) => match never {},
         };
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        self.postprocess_decode(text)
-    }
+        text.push_str(&cursor.flush());
 
-    /// Post-process decoded text for metaspace-decoder tokenizers — the same
-    /// substitution the streaming decoder applies to each emitted chunk (see
-    /// [`DecodeView::postprocess`]).
-    #[inline]
-    fn postprocess_decode(&self, text: String) -> String {
-        self.decode_view().postprocess(text)
+        text
     }
 
     /// Batch decode multiple token lists.

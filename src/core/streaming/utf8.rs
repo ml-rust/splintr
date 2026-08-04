@@ -13,6 +13,22 @@
 //! sequence. Chunk boundaries affect only *when* text is emitted, never *what*
 //! is emitted. `std::str::from_utf8` is the single authority on validity here:
 //! there is no second, hand-rolled notion of what a valid sequence looks like.
+//!
+//! # Strict twins
+//!
+//! Whole-sequence decoding is strict: it reports invalid UTF-8 rather than
+//! papering over it. It drives the same buffer through
+//! [`Utf8Buffer::take_complete_strict`] and [`Utf8Buffer::flush_strict`], which
+//! differ from their lossy counterparts only in reporting [`InvalidUtf8`] where
+//! the lossy ones substitute U+FFFD. Validity is still decided by
+//! `std::str::from_utf8` alone — the strict pair adds no second notion of it.
+
+use std::convert::Infallible;
+
+/// A byte sequence `std::str::from_utf8` rejects: reported by the strict
+/// methods where the lossy ones would substitute U+FFFD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InvalidUtf8;
 
 /// A byte buffer that emits only complete, valid UTF-8.
 pub(crate) struct Utf8Buffer {
@@ -22,8 +38,14 @@ pub(crate) struct Utf8Buffer {
 impl Utf8Buffer {
     /// Create an empty buffer.
     pub(crate) fn new() -> Self {
+        Self::with_capacity(16)
+    }
+
+    /// Create an empty buffer sized for a known-length drive, so a
+    /// whole-sequence decode does not grow its buffer as it goes.
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
-            buffer: Vec::with_capacity(16),
+            buffer: Vec::with_capacity(capacity),
         }
     }
 
@@ -72,8 +94,38 @@ impl Utf8Buffer {
     ///
     /// Returns `None` when nothing could be decided yet.
     pub(crate) fn take_complete(&mut self) -> Option<String> {
+        // The lossy reading of "definitively invalid": one U+FFFD, keep going.
+        // This never fails, so the callback is instantiated with [`Infallible`],
+        // letting the compiler prove the `Err` arm away rather than a runtime
+        // assertion claiming it.
+        match self.scan(|| Ok::<char, Infallible>(char::REPLACEMENT_CHARACTER)) {
+            Ok(text) => text,
+            // `Infallible` has no values, so this match has no arms to write.
+            Err(never) => match never {},
+        }
+    }
+
+    /// The strict twin of [`take_complete`](Self::take_complete): a byte that
+    /// can never be valid UTF-8 is reported instead of being replaced with
+    /// U+FFFD.
+    ///
+    /// A trailing sequence that is merely *incomplete* is not an error here —
+    /// bytes completing it may still arrive. Only
+    /// [`flush_strict`](Self::flush_strict), where no more can, decides that.
+    ///
+    /// The buffer is left untouched when this reports an error: the caller is
+    /// abandoning the decode, and a half-drained buffer would be a worse thing
+    /// to hand back than the original.
+    pub(crate) fn take_complete_strict(&mut self) -> Result<Option<String>, InvalidUtf8> {
+        self.scan(|| Err(InvalidUtf8))
+    }
+
+    /// The shared scan behind both `take_complete` twins: `on_invalid` decides
+    /// what a definitively-invalid byte run becomes, and is the *only*
+    /// difference between them.
+    fn scan<E>(&mut self, on_invalid: impl Fn() -> Result<char, E>) -> Result<Option<String>, E> {
         if self.buffer.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         let mut out = String::new();
@@ -103,9 +155,10 @@ impl Utf8Buffer {
             match error_len {
                 // Incomplete but still possible: keep the tail for the next push.
                 None => break,
-                // Definitively invalid: one U+FFFD, skip the bad bytes, keep going.
+                // Definitively invalid: whatever `on_invalid` says it becomes,
+                // then skip the bad bytes and keep going.
                 Some(invalid_len) => {
-                    out.push(char::REPLACEMENT_CHARACTER);
+                    out.push(on_invalid()?);
                     consumed += invalid_len;
                 }
             }
@@ -114,10 +167,21 @@ impl Utf8Buffer {
         self.buffer.drain(..consumed);
 
         if out.is_empty() {
-            None
+            Ok(None)
         } else {
-            Some(out)
+            Ok(Some(out))
         }
+    }
+
+    /// The strict twin of [`flush`](Self::flush): with no further bytes coming,
+    /// a buffer that is not valid UTF-8 — incomplete tail included — is
+    /// reported rather than repaired with U+FFFD.
+    ///
+    /// `String::from_utf8` takes the buffer by value, so the valid case costs
+    /// no copy; either way the buffer is left empty, exactly as `flush` leaves
+    /// it.
+    pub(crate) fn flush_strict(&mut self) -> Result<String, InvalidUtf8> {
+        String::from_utf8(std::mem::take(&mut self.buffer)).map_err(|_| InvalidUtf8)
     }
 }
 
@@ -309,6 +373,43 @@ mod tests {
         // ...and the same byte stream matches std when driven byte by byte.
         let input = [0xFF, 0xE4, 0xB8, 0x96, 0x80, b'z'];
         assert_eq!(drive_byte_by_byte(&input), String::from_utf8_lossy(&input));
+    }
+
+    /// The strict twin reports a byte that is invalid *now* rather than
+    /// substituting U+FFFD, and leaves the buffer alone for the caller that is
+    /// abandoning the decode.
+    #[test]
+    fn test_strict_reports_a_definitively_invalid_byte() {
+        let mut buf = Utf8Buffer::new();
+
+        buf.push(&[b'o', b'k', 0xFF]);
+
+        assert_eq!(buf.take_complete_strict(), Err(InvalidUtf8));
+        assert_eq!(buf.pending_len(), 3);
+    }
+
+    /// An incomplete-but-possible tail is not an error while bytes may still
+    /// arrive; it becomes one only at `flush_strict`, where none can.
+    #[test]
+    fn test_strict_buffers_an_incomplete_tail_then_reports_it_at_flush() {
+        let mut buf = Utf8Buffer::new();
+
+        buf.push(&[b'H', 0xE4]);
+        assert_eq!(buf.take_complete_strict(), Ok(Some("H".to_string())));
+        assert!(buf.has_pending());
+
+        assert_eq!(buf.flush_strict(), Err(InvalidUtf8));
+        assert!(!buf.has_pending());
+    }
+
+    /// Valid input takes the same route and comes out unchanged.
+    #[test]
+    fn test_strict_passes_valid_utf8_through() {
+        let mut buf = Utf8Buffer::new();
+
+        buf.push("Hi 世界".as_bytes());
+        assert_eq!(buf.take_complete_strict(), Ok(Some("Hi 世界".to_string())));
+        assert_eq!(buf.flush_strict(), Ok(String::new()));
     }
 
     proptest! {

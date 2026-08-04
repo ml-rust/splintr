@@ -136,7 +136,10 @@ pub struct Tokenizer {
     /// Immutable once built: no method mutates it after construction.
     pub(super) decoder: Arc<FxHashMap<u32, Vec<u8>>>,
     pub(super) special_tokens: FxHashMap<String, u32>,
-    pub(super) special_tokens_decoder: FxHashMap<u32, String>,
+    /// Behind an `Arc` for the same reason as [`Tokenizer::decoder`]: every
+    /// decode — whole-sequence or streaming — captures the decode tables, and
+    /// capturing must not copy them. Immutable once built.
+    pub(super) special_tokens_decoder: Arc<FxHashMap<u32, String>>,
     /// Behind an `Arc` so cloning a tokenizer shares the compiled regex
     /// instead of recompiling it (and re-running JIT on the pcre2 backend).
     pub(super) regex: Arc<RegexBackend>,
@@ -179,7 +182,8 @@ pub struct Tokenizer {
     pub(super) match_added_tokens: bool,
     /// Ids of `special=true` added tokens to drop on decode (HF default
     /// skip_special_tokens=true). Non-special added tokens are still rendered.
-    pub(super) special_decode_ids: rustc_hash::FxHashSet<u32>,
+    /// Behind an `Arc` so capturing the decode tables never copies it.
+    pub(super) special_decode_ids: Arc<rustc_hash::FxHashSet<u32>>,
     /// Optional text normalizer (HF `normalizer`, e.g. NFC) applied to content
     /// before splitting. Applied per content gap, never to special-token matches.
     pub(super) normalizer: Option<std::sync::Arc<crate::core::normalizer::Normalizer>>,
@@ -222,7 +226,9 @@ impl Clone for Tokenizer {
             // duplicating it (the same reasoning as the compiled regex above).
             decoder: Arc::clone(&self.decoder),
             special_tokens: self.special_tokens.clone(),
-            special_tokens_decoder: self.special_tokens_decoder.clone(),
+            // Immutable once built, so the clone shares the table (as `decoder`
+            // above does) rather than duplicating it.
+            special_tokens_decoder: Arc::clone(&self.special_tokens_decoder),
             regex,
             pattern: self.pattern.clone(),
             // The later passes are immutable once compiled, so a clone shares
@@ -236,7 +242,7 @@ impl Clone for Tokenizer {
             add_prefix_space: self.add_prefix_space,
             pre_tokenizer: self.pre_tokenizer.clone(),
             match_added_tokens: self.match_added_tokens,
-            special_decode_ids: self.special_decode_ids.clone(),
+            special_decode_ids: Arc::clone(&self.special_decode_ids),
             normalizer: self.normalizer.clone(),
             cache_size: self.cache_size,
             use_jit: self.use_jit,
@@ -314,7 +320,8 @@ impl Tokenizer {
 
     /// Get the special tokens decoder map.
     pub fn special_tokens_decoder(&self) -> &FxHashMap<u32, String> {
-        &self.special_tokens_decoder
+        // The sharing is an implementation detail: callers still see the map.
+        self.special_tokens_decoder.as_ref()
     }
 
     /// Clear the encoding cache.

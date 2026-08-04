@@ -234,6 +234,46 @@ fn decode_lossy_skips_unknown_ids() {
     assert_eq!(decoded, "Hello World");
 }
 
+/// The strict/lossy split, pinned at both places invalid UTF-8 can be
+/// detected: a byte that is invalid the moment it arrives (`0xFF`, which begins
+/// no sequence at all) and a lead byte whose continuation never comes. `decode`
+/// must report [`TokenizerError::Utf8Error`] for either; `decode_lossy` must
+/// substitute U+FFFD for either and never fail.
+#[test]
+fn decode_is_strict_about_utf8_where_decode_lossy_substitutes() {
+    // A vocabulary of raw single bytes, so a test can name an arbitrary byte
+    // sequence by id.
+    let mut encoder = FxHashMap::default();
+    for b in 0u8..=255 {
+        encoder.insert(vec![b], b as u32);
+    }
+    let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), r".").unwrap();
+
+    // 0xFF is never valid and is decided the moment it arrives; 0xE4 is a
+    // 3-byte lead whose continuation never comes (once alone, once one byte
+    // closer to completion); the last case buries a bad byte between "a" and
+    // "b" so the valid text around it cannot mask it.
+    for ids in [
+        vec![0xFFu32],
+        vec![0xE4],
+        vec![0xE4, 0xB8],
+        vec![0x61, 0xFF, 0x62],
+    ] {
+        assert!(
+            matches!(tokenizer.decode(&ids), Err(TokenizerError::Utf8Error)),
+            "decode must stay strict for {ids:02X?}"
+        );
+
+        let bytes: Vec<u8> = ids.iter().map(|&id| id as u8).collect();
+        let lossy = tokenizer.decode_lossy(&ids);
+        assert!(
+            lossy.contains('\u{FFFD}'),
+            "decode_lossy must substitute for {ids:02X?}"
+        );
+        assert_eq!(lossy, String::from_utf8_lossy(&bytes));
+    }
+}
+
 /// `decode_batch` must propagate the error when any list in the batch
 /// contains an unknown id, not just the offending list.
 #[test]

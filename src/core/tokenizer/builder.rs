@@ -232,7 +232,7 @@ impl Tokenizer {
             merge_ranks: None,
             decoder: Arc::new(decoder),
             special_tokens,
-            special_tokens_decoder,
+            special_tokens_decoder: Arc::new(special_tokens_decoder),
             regex,
             pattern: pattern.to_string(),
             chain: Arc::from(Vec::new()),
@@ -244,7 +244,7 @@ impl Tokenizer {
             add_prefix_space: false,
             pre_tokenizer: None,
             match_added_tokens: false,
-            special_decode_ids: rustc_hash::FxHashSet::default(),
+            special_decode_ids: Arc::new(rustc_hash::FxHashSet::default()),
             normalizer: None,
             cache_size,
             use_jit: true,
@@ -288,7 +288,7 @@ impl Tokenizer {
     /// Set the ids of `special=true` added tokens to drop on decode (HF default
     /// `skip_special_tokens=true`). Non-special added tokens stay rendered.
     pub fn with_special_decode_ids(mut self, ids: rustc_hash::FxHashSet<u32>) -> Self {
-        self.special_decode_ids = ids;
+        self.special_decode_ids = Arc::new(ids);
         self
     }
 
@@ -489,7 +489,7 @@ impl Tokenizer {
             merge_ranks: None,
             decoder: Arc::new(decoder),
             special_tokens,
-            special_tokens_decoder,
+            special_tokens_decoder: Arc::new(special_tokens_decoder),
             regex: Arc::new(RegexBackend::Regexr(Box::new(regex))),
             pattern: pattern.to_string(),
             chain: Arc::from(Vec::new()),
@@ -501,7 +501,7 @@ impl Tokenizer {
             add_prefix_space: false,
             pre_tokenizer: None,
             match_added_tokens: false,
-            special_decode_ids: rustc_hash::FxHashSet::default(),
+            special_decode_ids: Arc::new(rustc_hash::FxHashSet::default()),
             normalizer: None,
             cache_size: DEFAULT_CACHE_SIZE,
             use_jit: true,
