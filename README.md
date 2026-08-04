@@ -11,7 +11,7 @@
   10-12x faster than tiktoken on batches, and verified id-for-id against
   <code>tiktoken</code>, <code>tokenizers</code> and <code>sentencepiece</code>.
 </p>
-
+ 
 <p>
   <a href="https://docs.rs/splintr"><strong>API Docs</strong></a>
   ·
@@ -54,8 +54,7 @@
 
 ## What is splintr?
 
-Splintr loads a tokenizer from **three sources** and dispatches it to **four backends**, all
-behind a single `AnyTokenizer` type — the calling code never changes with the vocabulary:
+Splintr loads a tokenizer from **three sources** and dispatches it to **four backends**, all behind a single `AnyTokenizer` type — the calling code never changes with the vocabulary:
 
 | Source                             | What it is                                                              | Backends it can produce                     |
 | ---------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------- |
@@ -63,37 +62,25 @@ behind a single `AnyTokenizer` type — the calling code never changes with the 
 | **`tokenizer.json`** (`from_json`) | Any HuggingFace file — normalizers, pre-tokenizers, decoders and all    | byte-level BPE, Unigram, WordPiece          |
 | **GGUF vocab** (`from_gguf_vocab`) | The `tokenizer.ggml.*` keys, filled by your runtime's GGUF parser       | byte-level BPE, SPM-BPE, Unigram, WordPiece |
 
-Correctness is established differentially, not by unit tests alone: every family is fuzzed
-id-for-id against its reference implementation using strings built from each vocabulary's own
-added and special tokens — the shape prose corpora never reach, and where the bugs actually
-live. See [differential testing](#differential-testing-against-the-reference-implementations).
+Correctness is established differentially, not by unit tests alone: every family is fuzzed id-for-id against its reference implementation using strings built from each vocabulary's own added and special tokens — the shape prose corpora never reach, and where the bugs actually live. See [differential testing](#differential-testing-against-the-reference-implementations).
 
 ## Why it exists
 
-Tokenization sits on the hot path of every LLM application — prompts, training corpora, RAG
-chunks, token counting for billing. Python-based tokenizers cannot use the cores you paid for,
-so batch preprocessing turns into wall-clock you wait through.
+Tokenization sits on the hot path of every LLM application — prompts, training corpora, RAG chunks, token counting for billing. Python-based tokenizers cannot use the cores you paid for, so batch preprocessing turns into wall-clock you wait through.
 
-The usual escape is one fast library per format: `tiktoken` for OpenAI, `sentencepiece` for
-Mistral and T5, `tokenizers` for everything else — three dependencies, three APIs, three sets of
-edge cases, and no answer at all for a GGUF vocabulary. Splintr's answer is **one handle over
-every format**, at Rust speed, with the reference implementations as the correctness oracle.
+The usual escape is one fast library per format: `tiktoken` for OpenAI, `sentencepiece` for Mistral and T5, `tokenizers` for everything else — three dependencies, three APIs, three sets of edge cases, and no answer at all for a GGUF vocabulary. Splintr's answer is **one handle over every format**, at Rust speed, with the reference implementations as the correctness oracle.
 
 ![Batch Encoding Throughput](images/benchmark_batch.png)
 
-| Configuration | Splintr         | Tiktoken   | HuggingFace | TokenDagger | vs tiktoken |
-| ------------- | --------------- | ---------- | ----------- | ----------- | ----------- |
-| 1,000 texts   | **56.4 MB/s**   | 5.8 MB/s   | 14.7 MB/s   | 4.7 MB/s    | 9.8x        |
-| 500 texts     | **65.1 MB/s**   | 5.5 MB/s   | 14.8 MB/s   | 5.4 MB/s    | 11.9x       |
-| 100 texts     | **50.3 MB/s**   | 4.0 MB/s   | 11.3 MB/s   | 3.8 MB/s    | 12.7x       |
+| Configuration | Splintr       | Tiktoken | HuggingFace | TokenDagger | vs tiktoken |
+| ------------- | ------------- | -------- | ----------- | ----------- | ----------- |
+| 1,000 texts   | **56.4 MB/s** | 5.8 MB/s | 14.7 MB/s   | 4.7 MB/s    | 9.8x        |
+| 500 texts     | **65.1 MB/s** | 5.5 MB/s | 14.8 MB/s   | 5.4 MB/s    | 11.9x       |
+| 100 texts     | **50.3 MB/s** | 4.0 MB/s | 11.3 MB/s   | 3.8 MB/s    | 12.7x       |
 
 **10-12x faster than tiktoken. 4x faster than HuggingFace. Built in Rust, accessible from Python.**
 
-Produced by `benchmarks/benchmark_batch.py` on the machine described under
-[Performance Deep Dive](#performance-deep-dive). The absolute MB/s move with the hardware
-and with the versions of the libraries being compared against; the ratio is the durable
-part. Re-run the script to get the figures for your own machine. The chart above is from an
-earlier run on different hardware — the table is the measured one.
+Produced by `benchmarks/benchmark_batch.py` on the machine described under [Performance Deep Dive](#performance-deep-dive). The absolute MB/s move with the hardware and with the versions of the libraries being compared against; the ratio is the durable part. Re-run the script to get the figures for your own machine. The chart above is from an earlier run on different hardware — the table is the measured one.
 
 ## Quick Start
 
@@ -150,15 +137,9 @@ let batch_tokens = tokenizer.encode_batch(&["Hello, world!", "How are you?"]);
 let text = tokenizer.decode(&tokens)?;
 ```
 
-`encode`, `encode_raw`, `encode_with`, `encode_batch` and `decode` are inherent
-methods on `AnyTokenizer` — no `use splintr::Tokenize` needed. The trait is still
-exported and still implemented by `AnyTokenizer`, for code generic over the
-tokenizer type.
+`encode`, `encode_raw`, `encode_with`, `encode_batch` and `decode` are inherent methods on `AnyTokenizer` — no `use splintr::Tokenize` needed. The trait is still exported and still implemented by `AnyTokenizer`, for code generic over the tokenizer type.
 
-To build a tokenizer from your own vocabulary rather than a bundled one, use
-`Tokenizer::new(encoder, special_tokens, pattern)` with one of the exported
-patterns (`CL100K_BASE_PATTERN`, `O200K_BASE_PATTERN`, `LLAMA3_PATTERN`,
-`MISTRAL_V3_PATTERN`, `GPT2_PATTERN`, `QWEN2_PATTERN`, …).
+To build a tokenizer from your own vocabulary rather than a bundled one, use `Tokenizer::new(encoder, special_tokens, pattern)` with one of the exported patterns (`CL100K_BASE_PATTERN`, `O200K_BASE_PATTERN`, `LLAMA3_PATTERN`, `MISTRAL_V3_PATTERN`, `GPT2_PATTERN`, `QWEN2_PATTERN`, …).
 
 See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) for complete Rust documentation.
 
@@ -188,30 +169,15 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 ## Performance Deep Dive
 
-Every number on this page was measured by the scripts in `benchmarks/` — `benchmark_batch.py`
-for the batch figures, `benchmark_single.py` for the single-text ones — on Linux
-(7.0.10-arch1-1), an AMD Ryzen 9 5900X with 24 logical cores, against tiktoken 0.8.0
-(the reference Python implementation), Hugging Face tokenizers 0.22.1, and TokenDagger 0.1.1
-on CPython 3.12. Absolute throughput moves with the hardware and with the versions of those
-libraries; the ratios are the part that carries across machines. Run the scripts yourself to
-get your own figures — see [Running Benchmarks Yourself](#running-benchmarks-yourself).
+Every number on this page was measured by the scripts in `benchmarks/` — `benchmark_batch.py` for the batch figures, `benchmark_single.py` for the single-text ones — on Linux (7.0.10-arch1-1), an AMD Ryzen 9 5900X with 24 logical cores, against tiktoken 0.8.0 (the reference Python implementation), Hugging Face tokenizers 0.22.1, and TokenDagger 0.1.1 on CPython 3.12. Absolute throughput moves with the hardware and with the versions of those libraries; the ratios are the part that carries across machines. Run the scripts yourself to get your own figures — see [Running Benchmarks Yourself](#running-benchmarks-yourself).
 
-Every figure is the **default pure-Rust `regexr` backend** — what `pip install splintr-rs`
-gives you, since the published wheels are built without the optional `pcre2` feature. The
-benchmark scripts report the optional PCRE2 backend as a separate `splintr-pcre2` row and
-skip it when the feature is absent, so a figure labelled `splintr` is never a PCRE2 one. See
-[Regex Backends](#regex-backends) for what PCRE2 changes.
+Every figure is the **default pure-Rust `regexr` backend** — what `pip install splintr-rs` gives you, since the published wheels are built without the optional `pcre2` feature. The benchmark scripts report the optional PCRE2 backend as a separate `splintr-pcre2` row and skip it when the feature is absent, so a figure labelled `splintr` is never a PCRE2 one. See [Regex Backends](#regex-backends) for what PCRE2 changes.
 
-The charts below were plotted from an earlier run, on different hardware and against
-different versions of the comparison libraries, so their absolute axes do not match the
-figures quoted in the text. Where the two disagree, the numbers in the text are the measured
-ones; the charts are kept for the shape they show, not their values.
+The charts below were plotted from an earlier run, on different hardware and against different versions of the comparison libraries, so their absolute axes do not match the figures quoted in the text. Where the two disagree, the numbers in the text are the measured ones; the charts are kept for the shape they show, not their values.
 
 ### Single Text Encoding
 
-For single texts, splintr encodes **~2-2.6x faster** than tiktoken across the five text types
-`benchmark_single.py` covers (short prose, medium prose, long prose, Python code,
-multilingual):
+For single texts, splintr encodes **~2-2.6x faster** than tiktoken across the five text types `benchmark_single.py` covers (short prose, medium prose, long prose, Python code, multilingual):
 
 ![Single Text Encoding Comparison](images/benchmark_single.png)
 
@@ -276,12 +242,7 @@ cat results/my_benchmark.md
 
 Splintr uses a pure-Rust regex engine ([`regexr`](https://crates.io/crates/regexr)) by default, with optional PCRE2 support.
 
-The two are not equally fast, and every performance figure on this page is the default one.
-Measured on the machine described above, PCRE2 encodes a **single text** about 1.1-1.5x faster
-than regexr — the gap widens on multilingual input — and is **level on batch encoding**, where
-Rayon rather than the regex engine sets the pace. Both produce identical token ids; the
-choice is a speed/dependency trade, not a correctness one. Quote a PCRE2 number only as a
-PCRE2 number: the published wheels do not carry the feature.
+The two are not equally fast, and every performance figure on this page is the default one. Measured on the machine described above, PCRE2 encodes a **single text** about 1.1-1.5x faster than regexr — the gap widens on multilingual input — and is **level on batch encoding**, where Rayon rather than the regex engine sets the pace. Both produce identical token ids; the choice is a speed/dependency trade, not a correctness one. Quote a PCRE2 number only as a PCRE2 number: the published wheels do not carry the feature.
 
 **Default Backend (regexr):**
 
@@ -307,8 +268,7 @@ To enable PCRE2, build with the feature flag:
 maturin develop --release --features python,pcre2
 ```
 
-`python` has to be listed alongside it: `--features` replaces the default set rather than
-adding to it, and dropping the PyO3 feature leaves maturin with no binding to build.
+`python` has to be listed alongside it: `--features` replaces the default set rather than adding to it, and dropping the PyO3 feature leaves maturin with no binding to build.
 
 **Benchmarking:**
 
@@ -343,18 +303,9 @@ See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, exa
 
 ## Special Tokens in Untrusted Text
 
-A tokenizer that matches special tokens will happily promote text that _spells_
-a control token to that token's real id. `<|im_start|>` typed by a user becomes
-the same id the server emits when it opens a turn — and downstream, nothing can
-tell the two apart. That is how a user message forges a system turn. Denylisting
-the literal spelling beforehand does not close it: the spelling is not the only
-thing that maps to the id.
+A tokenizer that matches special tokens will happily promote text that _spells_ a control token to that token's real id. `<|im_start|>` typed by a user becomes the same id the server emits when it opens a turn — and downstream, nothing can tell the two apart. That is how a user message forges a system turn. Denylisting the literal spelling beforehand does not close it: the spelling is not the only thing that maps to the id.
 
-So encoding takes an explicit mode. Rust calls it `SpecialMode`
-(`All` | `Ordinary` | `Allow(&FxHashSet<String>)`) and passes it to
-`encode_with`, which every backend and `AnyTokenizer` provide — inherently and
-through the `Tokenize` trait, which all five implement. Python exposes it as
-methods:
+So encoding takes an explicit mode. Rust calls it `SpecialMode` (`All` | `Ordinary` | `Allow(&FxHashSet<String>)`) and passes it to `encode_with`, which every backend and `AnyTokenizer` provide — inherently and through the `Tokenize` trait, which all five implement. Python exposes it as methods:
 
 | Mode                                              | Behaviour                                              |
 | ------------------------------------------------- | ------------------------------------------------------ |
@@ -362,12 +313,7 @@ methods:
 | `encode_ordinary(text)` / `Ordinary`              | Match none — special spellings stay ordinary content   |
 | `encode_allowed_special(text, allowed)` / `Allow` | Match only the named tokens; raise on any other        |
 
-All three are on every Python tokenizer type — `Tokenizer`, `AnyTokenizer`,
-`SpmTokenizer`, `SentencePieceTokenizer`, `WordPieceTokenizer` — alongside
-`encode` (model-ready: boundary template applied, HF's default
-`add_special_tokens=True`), `encode_raw` (content tokens only, HF's
-`add_special_tokens=False`) and `encode_batch`. The same six methods mean the
-same thing on every class.
+All three are on every Python tokenizer type — `Tokenizer`, `AnyTokenizer`, `SpmTokenizer`, `SentencePieceTokenizer`, `WordPieceTokenizer` — alongside `encode` (model-ready: boundary template applied, HF's default `add_special_tokens=True`), `encode_raw` (content tokens only, HF's `add_special_tokens=False`) and `encode_batch`. The same six methods mean the same thing on every class.
 
 ```python
 from splintr import from_json
@@ -391,10 +337,7 @@ tok.encode_allowed_special(untrusted, ["<|eot_id|>"])
 #             the caller's allow-list
 ```
 
-In Rust the same three modes, with `PolicyError::DisallowedSpecial { token, offset }`
-as the error (`SpecialMode::Allow` borrows the set, so one allow-list per
-endpoint costs no per-request allocation — it takes an `FxHashSet`, which splintr
-re-exports so you need no version-matched `rustc-hash` dependency of your own):
+In Rust the same three modes, with `PolicyError::DisallowedSpecial { token, offset }` as the error (`SpecialMode::Allow` borrows the set, so one allow-list per endpoint costs no per-request allocation — it takes an `FxHashSet`, which splintr re-exports so you need no version-matched `rustc-hash` dependency of your own):
 
 ```rust
 use splintr::{pretrained::from_pretrained, FxHashSet, SpecialMode};
@@ -406,13 +349,7 @@ let allowed: FxHashSet<String> = ["<|eot_id|>".to_string()].into_iter().collect(
 let ids = tokenizer.encode_with(untrusted, &SpecialMode::Allow(&allowed))?;
 ```
 
-Every loader — `from_pretrained` in Rust _and_ in Python, `from_json`, the GGUF
-loader — returns an `AnyTokenizer` that matches special tokens by default, so
-`encode` there is the `All` behaviour. (A `Tokenizer` you build yourself from a
-vocabulary file starts with matching **off**, since nothing has told it which
-added tokens exist.) Rather than reason about which handle you hold, say
-`encode_ordinary` or `encode_allowed_special` explicitly whenever the text is
-untrusted.
+Every loader — `from_pretrained` in Rust _and_ in Python, `from_json`, the GGUF loader — returns an `AnyTokenizer` that matches special tokens by default, so `encode` there is the `All` behaviour. (A `Tokenizer` you build yourself from a vocabulary file starts with matching **off**, since nothing has told it which added tokens exist.) Rather than reason about which handle you hold, say `encode_ordinary` or `encode_allowed_special` explicitly whenever the text is untrusted.
 
 ## Supported Vocabularies
 
@@ -427,10 +364,7 @@ untrusted.
 | `mistral_v3`                                           | Mistral NeMo, Large 2, Pixtral               | 131,072                     | 10 + 54 agent   | `MISTRAL_V3_PATTERN`                   |
 | `whisper` / `whisper_v1` / `whisper_v2` / `whisper_v3` | OpenAI Whisper multilingual (tiny..large-v3) | 51,865 (v1/v2), 51,866 (v3) | 1608 (no agent) | `GPT2_PATTERN`                         |
 
-`pretrained::patterns(vocab)` returns `Option<&'static [&'static str]>`. It is
-`None` for Mistral V1/V2 — not "unknown", but "this vocabulary does not
-pre-tokenize with a regex": both run on the SPM-BPE backend, which segments by
-merging pieces and never applies a split pattern.
+`pretrained::patterns(vocab)` returns `Option<&'static [&'static str]>`. It is `None` for Mistral V1/V2 — not "unknown", but "this vocabulary does not pre-tokenize with a regex": both run on the SPM-BPE backend, which segments by merging pieces and never applies a split pattern.
 
 > **Whisper** is a speech model, so it carries no agent tokens — its special tokens are the standard Whisper set (`<|startoftranscript|>`, language tokens, `<|transcribe|>`/`<|translate|>`, 1501 timestamp tokens). Bare `whisper` resolves to v2. The **English-only** checkpoints (`*.en`) use a different base BPE and are **not bundled**; load those with `from_json` (below).
 
@@ -450,9 +384,7 @@ tok.family                              # "BPE" | "Unigram" | "WordPiece"
 
 `encode` applies the model's `post_processor` template (HF's default `encode`); `encode_raw` returns content tokens alone (HF's `add_special_tokens=False`). `decode` runs the file's declared `decoder` chain (`Replace`, `ByteFallback`, `Fuse`, `Strip`, `Metaspace`, `ByteLevel`, `WordPiece`, `BPEDecoder`, `Sequence`) after dropping `special=true` ids, so files whose decoding _is_ that chain — Mistral, Llama, Gemma — come back as text rather than raw pieces. Honored end-to-end: the multi-stage pre-tokenizer pipeline (`ByteLevel`, `Split` incl. `invert`, `Digits`, `Punctuation`/`Contiguous`, `Sequence`, `add_prefix_space`/`prepend_scheme`), the full ordered normalizer (`Replace`, `Strip`, `Prepend`, NFC/NFD/NFKC/NFKD, `Precompiled` charsmap, …), BPE merge order, and `added_tokens` matching. Verified id-for-id (content **and** with special tokens) against GPT-2, RoBERTa, Qwen, Whisper, T5, Albert, XLNet, BERT, DistilBERT, **Falcon, StarCoder2, DeepSeek-Coder, GPT-NeoX**.
 
-Every family comes back as the same `AnyTokenizer` type; `family` names the
-backend it dispatches to internally (in Rust, `AnyTokenizer::backend()` borrows
-it as a `Backend` enum when you need a backend-specific API):
+Every family comes back as the same `AnyTokenizer` type; `family` names the backend it dispatches to internally (in Rust, `AnyTokenizer::backend()` borrows it as a `Backend` enum when you need a backend-specific API):
 
 | `model.type`       | `tok.family`  | Internal backend         | Example models                          |
 | ------------------ | ------------- | ------------------------ | --------------------------------------- |
@@ -460,11 +392,7 @@ it as a `Backend` enum when you need a backend-specific API):
 | `Unigram`          | `"Unigram"`   | `SentencePieceTokenizer` | T5, Gemma, Albert, XLNet                |
 | `WordPiece`        | `"WordPiece"` | `WordPieceTokenizer`     | BERT, DistilBERT, Electra               |
 
-A fourth backend, `SpmTokenizer` (`family == "Spm"`), covers llama.cpp-style
-`SPM` vocabularies — SentencePiece **BPE**, merge-by-rank rather than Viterbi.
-It is not reachable from `tokenizer.json`: it is what the bundled Mistral V1/V2
-vocabularies use, and what the GGUF loader below produces for a `llama`
-vocabulary.
+A fourth backend, `SpmTokenizer` (`family == "Spm"`), covers llama.cpp-style `SPM` vocabularies — SentencePiece **BPE**, merge-by-rank rather than Viterbi. It is not reachable from `tokenizer.json`: it is what the bundled Mistral V1/V2 vocabularies use, and what the GGUF loader below produces for a `llama` vocabulary.
 
 The split regex, byte-level flag, merge order, normalizer (including SentencePiece's `Precompiled` charsmap), and special tokens are all read from the file itself. Output is verified id-for-id against HuggingFace `tokenizers` across every family — GPT-2, RoBERTa, BART, Qwen, Whisper (BPE); T5, Albert, XLNet (Unigram); BERT, DistilBERT (WordPiece). (Rust: `splintr::from_json_path` / `from_json_bytes`.)
 
@@ -491,13 +419,7 @@ The split regex, byte-level flag, merge order, normalizer (including SentencePie
 
 ### Loading a GGUF vocabulary
 
-Splintr **never opens a GGUF container**. Parsing the header, the metadata
-key-value block and the tensor table is the model runtime's job, and pulling a
-GGUF parser into a tokenizer crate would make every consumer pay for it. What
-splintr owns is the tokenizer half: the caller fills a `GgufVocab` — one field
-per `tokenizer.ggml.*` key — and hands it to `splintr::from_gguf_vocab`, which
-returns the same `AnyTokenizer` every other loader does. (Rust-only; there is no
-Python binding for this loader.)
+Splintr **never opens a GGUF container**. Parsing the header, the metadata key-value block and the tensor table is the model runtime's job, and pulling a GGUF parser into a tokenizer crate would make every consumer pay for it. What splintr owns is the tokenizer half: the caller fills a `GgufVocab` — one field per `tokenizer.ggml.*` key — and hands it to `splintr::from_gguf_vocab`, which returns the same `AnyTokenizer` every other loader does. (Rust-only; there is no Python binding for this loader.)
 
 ```rust
 use splintr::{from_gguf_vocab, GgufVocab};
@@ -516,9 +438,7 @@ let tokenizer = from_gguf_vocab(GgufVocab {
 })?;
 ```
 
-`tokenizer.ggml.model` names the _algorithm_, and the four values in circulation
-are genuinely different algorithms over superficially similar data. The loader
-dispatches on it and rejects what it cannot honour rather than guessing:
+`tokenizer.ggml.model` names the _algorithm_, and the four values in circulation are genuinely different algorithms over superficially similar data. The loader dispatches on it and rejects what it cannot honour rather than guessing:
 
 | `tokenizer.ggml.model` | Backend                  | Algorithm                                         |
 | ---------------------- | ------------------------ | ------------------------------------------------- |
@@ -527,26 +447,11 @@ dispatches on it and rejects what it cannot honour rather than guessing:
 | `t5`                   | `SentencePieceTokenizer` | Unigram, Viterbi — `scores` are log-probabilities |
 | `bert`                 | `WordPieceTokenizer`     | greedy longest match with `##`                    |
 
-Collapsing these is not a rounding error, and the failure is invisible
-downstream: run Unigram Viterbi over a `llama` vocabulary and its ranks maximise
-the wrong objective (`▁sourdough` → `▁s|ou|rd|ou|gh`); the ids stay in range,
-the embedding shapes stay right, and retrieval quietly degrades.
+Collapsing these is not a rounding error, and the failure is invisible downstream: run Unigram Viterbi over a `llama` vocabulary and its ranks maximise the wrong objective (`▁sourdough` → `▁s|ou|rd|ou|gh`); the ids stay in range, the embedding shapes stay right, and retrieval quietly degrades.
 
-Boundary tokens live in the returned `SpecialPolicy`, not in the backend, so
-`add_bos_token` / `add_eos_token` are honoured in exactly one place. A `bert`
-vocabulary is wrapped in the `[CLS] A [SEP]` template built from the ids it
-names, through the same internal cls/sep policy constructor the `tokenizer.json`
-path uses — so `encode` on a GGUF and on the _same model's_ `tokenizer.json`
-agree, instead of the GGUF returning bare content tokens for a CLS-pooling
-consumer to misread a content token as the sentence vector. Measured on all-MiniLM-L6-v2:
-`"hello world"` → `[101, 7592, 2088, 102]`. A vocabulary naming neither id keeps
-the identity policy — inventing one would be worse than placing none.
+Boundary tokens live in the returned `SpecialPolicy`, not in the backend, so `add_bos_token` / `add_eos_token` are honoured in exactly one place. A `bert` vocabulary is wrapped in the `[CLS] A [SEP]` template built from the ids it names, through the same internal cls/sep policy constructor the `tokenizer.json` path uses — so `encode` on a GGUF and on the _same model's_ `tokenizer.json` agree, instead of the GGUF returning bare content tokens for a CLS-pooling consumer to misread a content token as the sentence vector. Measured on all-MiniLM-L6-v2: `"hello world"` → `[101, 7592, 2088, 102]`. A vocabulary naming neither id keeps the identity policy — inventing one would be worse than placing none.
 
-Because the template is applied _after_ encoding, a caller enforcing a maximum
-length must truncate the content first: `SpecialPolicy::single_overhead()`
-(reachable as `tokenizer.policy().single_overhead()`) reports how many slots the
-single-sequence template adds, so the content budget is
-`max_len - single_overhead()`.
+Because the template is applied _after_ encoding, a caller enforcing a maximum length must truncate the content first: `SpecialPolicy::single_overhead()` (reachable as `tokenizer.policy().single_overhead()`) reports how many slots the single-sequence template adds, so the content budget is `max_len - single_overhead()`.
 
 ### Agent Tokens (54 per model)
 
@@ -570,22 +475,11 @@ print(CL100K_AGENT_TOKENS.FUNCTION)   # 100292
 | Tools        | `function`, `result`, `error`                       | Function calling           |
 | RAG          | `context`, `quote`, `cite`, `source`                | Citations                  |
 
-**Agent tokens never disturb the original vocabulary.** They are appended
-strictly _above_ every id the reference vocabulary uses, so no original id is
-shifted and none can collide — ordinary text encodes to exactly the ids the
-reference tokenizer produces. cl100k_base's reference tops out at 100276 and
-its agent tokens occupy 100277–100330; llama3's tops out at 128255 with agent
-tokens at 128256–128353.
+**Agent tokens never disturb the original vocabulary.** They are appended strictly _above_ every id the reference vocabulary uses, so no original id is shifted and none can collide — ordinary text encodes to exactly the ids the reference tokenizer produces. cl100k_base's reference tops out at 100276 and its agent tokens occupy 100277–100330; llama3's tops out at 128255 with agent tokens at 128256–128353.
 
 ### Sizing against the reference vocabulary
 
-`base_vocab_size` reports a vocabulary's size _as its upstream reference
-defines it_ — without splintr's agent tokens. That is the number you need to
-size a model's embedding or logit layer, or to identify which vocabulary a
-checkpoint uses from the shape of its token-embedding tensor: both must match
-the checkpoint's vocabulary, not splintr's extended one. Because agent tokens
-sit above everything, it is also exactly the id at which splintr's additions
-begin.
+`base_vocab_size` reports a vocabulary's size _as its upstream reference defines it_ — without splintr's agent tokens. That is the number you need to size a model's embedding or logit layer, or to identify which vocabulary a checkpoint uses from the shape of its token-embedding tensor: both must match the checkpoint's vocabulary, not splintr's extended one. Because agent tokens sit above everything, it is also exactly the id at which splintr's additions begin.
 
 ```python
 from splintr import Tokenizer, base_vocab_size
@@ -597,10 +491,7 @@ print(base_vocab_size("llama3"))        # 128256
 print(base_vocab_size("mistral_v3"))    # 131072
 ```
 
-It is _not_ `vocab_size - 54`: several reference vocabularies leave gaps below
-their nominal size (llama3 is 128256 against an extended 128354; deepseek_v3 is
-128815 against 128954), so the difference varies per vocabulary. In Rust:
-`splintr::pretrained::base_vocab_size(vocab)` (or `base_vocab_size_by_name`).
+It is _not_ `vocab_size - 54`: several reference vocabularies leave gaps below their nominal size (llama3 is 128256 against an extended 128354; deepseek_v3 is 128815 against 128954), so the difference varies per vocabulary. In Rust: `splintr::pretrained::base_vocab_size(vocab)` (or `base_vocab_size_by_name`).
 
 See [docs/special_tokens.md](docs/special_tokens.md) for the complete list and [API Guide](docs/api_guide.md#agent-tokens-usage) for usage examples.
 
@@ -697,31 +588,15 @@ cargo deny --exclude-dev check             # advisories, licenses, sources
 
 The pre-commit hook automatically runs formatting, clippy, and tests before each commit.
 
-CI runs all of the above on Linux, macOS and Windows, plus a `wasm32-unknown-unknown` /
-`wasm32-wasip1` compile check and every feature combination that ships. Releases go through
-`Release Prepare` (tag → version and changelog validation → full suite → wheels + sdist) and
-then a manually dispatched `Release` that publishes exactly those artifacts.
+CI runs all of the above on Linux, macOS and Windows, plus a `wasm32-unknown-unknown` / `wasm32-wasip1` compile check and every feature combination that ships. Releases go through `Release Prepare` (tag → version and changelog validation → full suite → wheels + sdist) and then a manually dispatched `Release` that publishes exactly those artifacts.
 
-**Release ordering: `regexr` ships first.** `Cargo.toml` requires `regexr = "0.1.5"`, which is
-not yet on crates.io — it resolves here only through a gitignored `.cargo/config.toml`
-`[patch.crates-io]` entry pointing at a sibling checkout, and the committed `Cargo.lock`
-carries no source or checksum for it. Nothing resolves on a clean machine until that version
-is published, so splintr 0.12.0 cannot be released — and CI cannot go green on a fresh
-checkout — until `regexr` 0.1.5 is on crates.io.
+**Release ordering: `regexr` ships first.** `Cargo.toml` requires `regexr = "0.1.5"`, which is not yet on crates.io — it resolves here only through a gitignored `.cargo/config.toml` `[patch.crates-io]` entry pointing at a sibling checkout, and the committed `Cargo.lock` carries no source or checksum for it. Nothing resolves on a clean machine until that version is published, so splintr 0.12.0 cannot be released — and CI cannot go green on a fresh checkout — until `regexr` 0.1.5 is on crates.io.
 
 ### Differential testing against the reference implementations
 
-Unit tests fix the behaviour splintr already knows about; correctness against
-the real tokenizers is established differentially, on three levels.
+Unit tests fix the behaviour splintr already knows about; correctness against the real tokenizers is established differentially, on three levels.
 
-**In CI, with no model files and no Python.** `tests/reference_parity.rs` diffs
-every bundled vocabulary against committed fixtures in
-`tests/fixtures/pretrained/`, on both token ids _and_ decoded text — encode and
-decode are separate pipelines, and pinning only ids leaves byte-level
-unmapping, byte fallback and the SentencePiece dummy-prefix strip unpinned.
-Each fixture is captured by `scripts/extract_reference_cases.py` from whichever
-tool is authoritative for that vocabulary, and the script refuses to write one
-unless the reference provably _is_ the vocabulary splintr embeds:
+**In CI, with no model files and no Python.** `tests/reference_parity.rs` diffs every bundled vocabulary against committed fixtures in `tests/fixtures/pretrained/`, on both token ids _and_ decoded text — encode and decode are separate pipelines, and pinning only ids leaves byte-level unmapping, byte fallback and the SentencePiece dummy-prefix strip unpinned. Each fixture is captured by `scripts/extract_reference_cases.py` from whichever tool is authoritative for that vocabulary, and the script refuses to write one unless the reference provably _is_ the vocabulary splintr embeds:
 
 ```bash
 # OpenAI vocabularies: the `tiktoken` package, gated on every mergeable rank
@@ -737,33 +612,16 @@ python3 scripts/extract_reference_cases.py --vocab mistral_v2 \
     --reference-spm path/to/mistral-7b-v0.3/tokenizer.model --out-dir tests/fixtures/pretrained
 ```
 
-`tests/decode_agreement.rs` runs alongside it and needs no reference at all: it
-asserts that for every bundled vocabulary, every backend reachable from it and
-_every_ chunk size, streaming decode concatenated with `flush()` equals
-whole-sequence `decode`/`decode_lossy`, and that `reset()` leaves a decoder
-byte-identical to a fresh one.
+`tests/decode_agreement.rs` runs alongside it and needs no reference at all: it asserts that for every bundled vocabulary, every backend reachable from it and _every_ chunk size, streaming decode concatenated with `flush()` equals whole-sequence `decode`/`decode_lossy`, and that `reset()` leaves a decoder byte-identical to a fresh one.
 
-**Before a release, against the real models on your machine.**
-`scripts/verify_external_models.py` sweeps splintr's `from_json` loader and its
-bundled SentencePiece vocabularies across a shelf of published model
-tokenizers, printing one pass/fail row per target. It never skips: an absent
-model directory, an absent target file, or an installed `splintr` wheel that is
-not this checkout's version each abort or fail the run rather than shrinking it
-to whatever happened to be present.
+**Before a release, against the real models on your machine.** `scripts/verify_external_models.py` sweeps splintr's `from_json` loader and its bundled SentencePiece vocabularies across a shelf of published model tokenizers, printing one pass/fail row per target. It never skips: an absent model directory, an absent target file, or an installed `splintr` wheel that is not this checkout's version each abort or fail the run rather than shrinking it to whatever happened to be present.
 
 ```bash
 python3 scripts/verify_external_models.py --models-dir ~/Projects/models
 python3 scripts/verify_external_models.py --models-dir ~/Projects/models --only bge-m3 --verbose
 ```
 
-**To find new bugs.** `scripts/fuzz_reference.py`
-diffs splintr against `tokenizers`, `transformers` (slow, sentencepiece-backed)
-or `tiktoken` — auto-detected per target — using random strings assembled from
-each vocabulary's _own_ added and special tokens, joined with no separator.
-That is the shape prose corpora cannot reach and where the bugs actually live
-(`lstrip`/`rstrip` on added tokens, the SentencePiece dummy prefix, decoder
-pipelines). Runs are deterministic via `--seed`, and a failing case is shrunk
-fragment-by-fragment to a minimal reproducer before it is printed.
+**To find new bugs.** `scripts/fuzz_reference.py` diffs splintr against `tokenizers`, `transformers` (slow, sentencepiece-backed) or `tiktoken` — auto-detected per target — using random strings assembled from each vocabulary's _own_ added and special tokens, joined with no separator. That is the shape prose corpora cannot reach and where the bugs actually live (`lstrip`/`rstrip` on added tokens, the SentencePiece dummy prefix, decoder pipelines). Runs are deterministic via `--seed`, and a failing case is shrunk fragment-by-fragment to a minimal reproducer before it is printed.
 
 ```bash
 # a HuggingFace tokenizer.json (reference auto-detected as `tokenizers`)
@@ -779,12 +637,7 @@ python3 scripts/fuzz_reference.py cl100k_base o200k_base --cases 2000
 cargo run --example verify_gguf -- /path/to/extracted-gguf-vocabs
 ```
 
-Measured baselines, all zero failures (totals are cases × modes): bge-m3
-25,000/25,000, Mistral V1 + V2 8,056/8,056, DeepSeek V3 8,000/8,000. The GGUF
-loader passes every vocabulary `examples/verify_gguf.rs` covers: llama.cpp's own
-13 at 46/46 cases each, plus embeddinggemma, mistral-7b and bge-m3 at 74/74
-against `sentencepiece`/`tokenizers`. A drop below any of those at the same
-`--seed`/`--cases` is a regression.
+Measured baselines, all zero failures (totals are cases × modes): bge-m3 25,000/25,000, Mistral V1 + V2 8,056/8,056, DeepSeek V3 8,000/8,000. The GGUF loader passes every vocabulary `examples/verify_gguf.rs` covers: llama.cpp's own 13 at 46/46 cases each, plus embeddinggemma, mistral-7b and bge-m3 at 74/74 against `sentencepiece`/`tokenizers`. A drop below any of those at the same `--seed`/`--cases` is a regression.
 
 ## Acknowledgments
 
