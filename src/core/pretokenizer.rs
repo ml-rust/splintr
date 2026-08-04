@@ -13,10 +13,79 @@ use regexr::RegexBuilder;
 use serde_json::Value;
 
 use super::byte_level::byte_level_encode;
-use super::tokenizer::GPT2_PATTERN;
+use super::tokenizer::{TokenizerError, GPT2_PATTERN};
 
 /// What a `Split`/`Punctuation` stage does with the matched delimiter — the full
 /// set of HuggingFace `SplitDelimiterBehavior` variants.
+///
+/// Deliberately *not* `#[non_exhaustive]`: HuggingFace's set is closed and
+/// stable, so sealing it would only stop downstream code from matching
+/// exhaustively without buying any room to grow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SplitBehavior {
+    /// Delimiter becomes its own piece.
+    #[default]
+    Isolated,
+    /// Delimiter is dropped.
+    Removed,
+    /// Delimiter is appended to the preceding piece.
+    MergedWithPrevious,
+    /// Delimiter is prepended to the following piece.
+    MergedWithNext,
+    /// Runs of adjacent delimiters merge into a single piece.
+    Contiguous,
+}
+
+impl SplitBehavior {
+    fn parse(s: Option<&str>) -> Self {
+        match s {
+            Some("Removed") => SplitBehavior::Removed,
+            Some("MergedWithPrevious") => SplitBehavior::MergedWithPrevious,
+            Some("MergedWithNext") => SplitBehavior::MergedWithNext,
+            Some("Contiguous") => SplitBehavior::Contiguous,
+            // "Isolated" and any unknown/absent value.
+            _ => SplitBehavior::Isolated,
+        }
+    }
+}
+
+/// One pre-tokenizer stage as a *description*: regexes are given as patterns and
+/// compiled by [`PreTokenizer::new`], so a caller never has to name a regex type.
+///
+/// `#[non_exhaustive]`: this enum tracks HuggingFace's pre-tokenizer spec and
+/// grows as new pre-tokenizer types are added there, so adding a variant must
+/// not be a breaking change for downstream matchers. The attribute sits on the
+/// enum only — putting it on a variant would make that variant unconstructible
+/// downstream, defeating the point of the builder.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreTokStage {
+    /// Split on `pattern`, combining the matched delimiters per `behavior`. With
+    /// `invert`, the spans *between* matches are the delimiters instead.
+    Split {
+        pattern: String,
+        behavior: SplitBehavior,
+        invert: bool,
+    },
+    /// GPT-2 byte-level: optionally split on the GPT-2 regex, then byte-encode.
+    /// `add_prefix_space` applies to the whole pipeline, not just this stage.
+    ByteLevel {
+        use_regex: bool,
+        add_prefix_space: bool,
+    },
+    /// Split digit runs from the rest (optionally each digit individually).
+    Digits { individual: bool },
+    /// Split punctuation from the rest, honoring the HF delimiter behavior.
+    Punctuation { behavior: SplitBehavior },
+    /// Split on whitespace, dropping it.
+    WhitespaceSplit,
+    /// GPT-2 word regex (`\w+|[^\w\s]+`) without byte-encoding.
+    Whitespace,
+}
+
+/// The compiled counterpart of [`SplitBehavior`], produced by
+/// [`PreTokenizer::new`] and stored in a [`Stage`] so `apply` never has to
+/// convert on the hot path.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Behavior {
     /// Delimiter becomes its own piece.
@@ -31,15 +100,14 @@ enum Behavior {
     Contiguous,
 }
 
-impl Behavior {
-    fn parse(s: Option<&str>) -> Self {
-        match s {
-            Some("Removed") => Behavior::Removed,
-            Some("MergedWithPrevious") => Behavior::MergedWithPrevious,
-            Some("MergedWithNext") => Behavior::MergedWithNext,
-            Some("Contiguous") => Behavior::Contiguous,
-            // "Isolated" and any unknown/absent value.
-            _ => Behavior::Isolated,
+impl From<SplitBehavior> for Behavior {
+    fn from(b: SplitBehavior) -> Self {
+        match b {
+            SplitBehavior::Isolated => Behavior::Isolated,
+            SplitBehavior::Removed => Behavior::Removed,
+            SplitBehavior::MergedWithPrevious => Behavior::MergedWithPrevious,
+            SplitBehavior::MergedWithNext => Behavior::MergedWithNext,
+            SplitBehavior::Contiguous => Behavior::Contiguous,
         }
     }
 }
@@ -66,15 +134,74 @@ enum Stage {
 
 /// An ordered pre-tokenizer pipeline.
 pub struct PreTokenizer {
-    stages: Vec<Stage>,
+    /// The spec this pipeline was built from, kept so [`PreTokenizer::stages`]
+    /// can hand it back.
+    spec: Vec<PreTokStage>,
+    /// The compiled counterpart of `spec`, one entry per stage.
+    compiled: Vec<Stage>,
     /// Prepend a space to the whole input before running stages (ByteLevel
     /// `add_prefix_space`).
     add_prefix_space: bool,
     /// Whether a ByteLevel stage byte-encodes the pieces (so BPE skips encoding).
-    pub byte_level: bool,
+    byte_level: bool,
 }
 
 impl PreTokenizer {
+    /// Build a pipeline from an ordered list of stage descriptions, compiling
+    /// every `Split` pattern.
+    ///
+    /// # Errors
+    /// Returns [`TokenizerError::RegexrError`] if a `Split` pattern does not
+    /// compile. Dropping the stage instead would silently change the split — and
+    /// therefore the token ids — with nothing to point at.
+    pub fn new(stages: Vec<PreTokStage>) -> Result<Self, TokenizerError> {
+        let mut compiled = Vec::with_capacity(stages.len());
+        let mut byte_level = false;
+        let mut add_prefix_space = false;
+        for stage in &stages {
+            compiled.push(match stage {
+                PreTokStage::Split {
+                    pattern,
+                    behavior,
+                    invert,
+                } => Stage::Split {
+                    re: Box::new(RegexBuilder::new(pattern).jit(true).build()?),
+                    behavior: (*behavior).into(),
+                    invert: *invert,
+                },
+                PreTokStage::ByteLevel {
+                    use_regex,
+                    add_prefix_space: prefix,
+                } => {
+                    byte_level = true;
+                    add_prefix_space |= *prefix;
+                    Stage::ByteLevel {
+                        re: match use_regex {
+                            true => Some(Box::new(gpt2_regex()?)),
+                            false => None,
+                        },
+                    }
+                }
+                PreTokStage::Digits { individual } => Stage::Digits {
+                    individual: *individual,
+                },
+                PreTokStage::Punctuation { behavior } => Stage::Punctuation {
+                    behavior: (*behavior).into(),
+                },
+                PreTokStage::WhitespaceSplit => Stage::WhitespaceSplit,
+                PreTokStage::Whitespace => Stage::Whitespace {
+                    re: Box::new(whitespace_regex()?),
+                },
+            });
+        }
+        Ok(Self {
+            spec: stages,
+            compiled,
+            add_prefix_space,
+            byte_level,
+        })
+    }
+
     /// Pre-tokenize `text` into the final (BPE-ready) pieces.
     pub fn split(&self, text: &str) -> Vec<String> {
         let mut pieces: Vec<String> =
@@ -83,7 +210,7 @@ impl PreTokenizer {
             } else {
                 vec![text.to_string()]
             };
-        for stage in &self.stages {
+        for stage in &self.compiled {
             let mut next = Vec::with_capacity(pieces.len());
             for p in &pieces {
                 stage.apply(p, &mut next);
@@ -92,6 +219,35 @@ impl PreTokenizer {
         }
         pieces.retain(|p| !p.is_empty());
         pieces
+    }
+
+    /// Whether a ByteLevel stage byte-encodes the pieces (so BPE skips encoding).
+    ///
+    /// Derived from the stage list rather than settable: a caller who could set
+    /// it independently could desynchronize it from the pipeline.
+    pub fn byte_level(&self) -> bool {
+        self.byte_level
+    }
+
+    /// Whether the pipeline has no stages, in which case it is a no-op.
+    pub fn is_empty(&self) -> bool {
+        self.spec.is_empty()
+    }
+
+    /// The stage descriptions this pipeline was built from, in order.
+    pub fn stages(&self) -> &[PreTokStage] {
+        &self.spec
+    }
+}
+
+impl std::fmt::Debug for PreTokenizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The compiled stages hold regexes that aren't printable, so report the
+        // spec they came from plus the derived byte-level flag.
+        f.debug_struct("PreTokenizer")
+            .field("stages", &self.spec)
+            .field("byte_level", &self.byte_level)
+            .finish()
     }
 }
 
@@ -306,51 +462,49 @@ fn is_punctuation(c: char) -> bool {
     )
 }
 
-fn gpt2_regex() -> regexr::Regex {
-    RegexBuilder::new(GPT2_PATTERN)
-        .jit(true)
-        .build()
-        .expect("GPT2_PATTERN compiles")
+/// Both of these compile a pattern this crate owns, so failure would be a bug
+/// here rather than bad caller input. They still surface it as an error instead
+/// of panicking: [`PreTokenizer::new`] already returns a `Result`, so carrying
+/// it costs nothing and keeps library code panic-free.
+fn gpt2_regex() -> Result<regexr::Regex, TokenizerError> {
+    Ok(RegexBuilder::new(GPT2_PATTERN).jit(true).build()?)
 }
 
-fn whitespace_regex() -> regexr::Regex {
-    RegexBuilder::new(r"\w+|[^\w\s]+")
-        .jit(true)
-        .build()
-        .expect("whitespace regex compiles")
+fn whitespace_regex() -> Result<regexr::Regex, TokenizerError> {
+    Ok(RegexBuilder::new(r"\w+|[^\w\s]+").jit(true).build()?)
 }
 
 /// Build a [`PreTokenizer`] from a `pre_tokenizer` JSON value. Returns `None`
 /// when there is no usable pre-tokenizer.
-pub fn parse(pre: Option<&Value>) -> Option<PreTokenizer> {
-    let pre = pre?;
+///
+/// Deliberately crate-private: the shape it consumes is HuggingFace's internal
+/// JSON dialect, which must not become part of splintr's public API. Callers
+/// outside the crate build a pipeline with [`PreTokenizer::new`], or load a whole
+/// file through [`from_json_bytes`](crate::from_json_bytes) /
+/// [`from_json_path`](crate::from_json_path).
+///
+/// # Errors
+/// Returns [`TokenizerError::RegexrError`] if a declared `Split` pattern does
+/// not compile, rather than dropping the stage and tokenizing differently.
+pub(crate) fn parse(pre: Option<&Value>) -> Result<Option<PreTokenizer>, TokenizerError> {
+    let Some(pre) = pre else {
+        return Ok(None);
+    };
     let mut stages = Vec::new();
-    let mut byte_level = false;
-    let mut add_prefix_space = false;
 
-    fn walk(
-        v: &Value,
-        stages: &mut Vec<Stage>,
-        byte_level: &mut bool,
-        add_prefix_space: &mut bool,
-    ) {
+    fn walk(v: &Value, stages: &mut Vec<PreTokStage>) {
         match v.get("type").and_then(Value::as_str) {
             Some("Sequence") => {
                 if let Some(list) = v.get("pretokenizers").and_then(Value::as_array) {
                     for item in list {
-                        walk(item, stages, byte_level, add_prefix_space);
+                        walk(item, stages);
                     }
                 }
             }
-            Some("ByteLevel") => {
-                *byte_level = true;
-                if v.get("add_prefix_space").and_then(Value::as_bool) == Some(true) {
-                    *add_prefix_space = true;
-                }
-                let use_regex = v.get("use_regex").and_then(Value::as_bool).unwrap_or(true);
-                let re = use_regex.then(|| Box::new(gpt2_regex()));
-                stages.push(Stage::ByteLevel { re });
-            }
+            Some("ByteLevel") => stages.push(PreTokStage::ByteLevel {
+                use_regex: v.get("use_regex").and_then(Value::as_bool).unwrap_or(true),
+                add_prefix_space: v.get("add_prefix_space").and_then(Value::as_bool) == Some(true),
+            }),
             Some("Split") => {
                 let pat = v.get("pattern").and_then(|p| {
                     p.get("Regex")
@@ -358,41 +512,33 @@ pub fn parse(pre: Option<&Value>) -> Option<PreTokenizer> {
                         .or_else(|| p.get("String").and_then(Value::as_str))
                 });
                 if let Some(pat) = pat {
-                    if let Ok(re) = RegexBuilder::new(pat).jit(true).build() {
-                        stages.push(Stage::Split {
-                            re: Box::new(re),
-                            behavior: Behavior::parse(v.get("behavior").and_then(Value::as_str)),
-                            invert: v.get("invert").and_then(Value::as_bool).unwrap_or(false),
-                        });
-                    }
+                    stages.push(PreTokStage::Split {
+                        pattern: pat.to_string(),
+                        behavior: SplitBehavior::parse(v.get("behavior").and_then(Value::as_str)),
+                        invert: v.get("invert").and_then(Value::as_bool).unwrap_or(false),
+                    });
                 }
             }
-            Some("Digits") => stages.push(Stage::Digits {
+            Some("Digits") => stages.push(PreTokStage::Digits {
                 individual: v
                     .get("individual_digits")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             }),
-            Some("Punctuation") => stages.push(Stage::Punctuation {
-                behavior: Behavior::parse(v.get("behavior").and_then(Value::as_str)),
+            Some("Punctuation") => stages.push(PreTokStage::Punctuation {
+                behavior: SplitBehavior::parse(v.get("behavior").and_then(Value::as_str)),
             }),
-            Some("WhitespaceSplit") => stages.push(Stage::WhitespaceSplit),
-            Some("Whitespace") => stages.push(Stage::Whitespace {
-                re: Box::new(whitespace_regex()),
-            }),
+            Some("WhitespaceSplit") => stages.push(PreTokStage::WhitespaceSplit),
+            Some("Whitespace") => stages.push(PreTokStage::Whitespace),
             _ => {}
         }
     }
 
-    walk(pre, &mut stages, &mut byte_level, &mut add_prefix_space);
+    walk(pre, &mut stages);
     if stages.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(PreTokenizer {
-        stages,
-        add_prefix_space,
-        byte_level,
-    })
+    Ok(Some(PreTokenizer::new(stages)?))
 }
 
 #[cfg(test)]
@@ -471,8 +617,8 @@ mod tests {
                 {"type": "ByteLevel", "add_prefix_space": false, "use_regex": true}
             ]
         });
-        let pt = parse(Some(&json)).expect("pipeline");
-        assert!(pt.byte_level);
+        let pt = parse(Some(&json)).expect("parses").expect("pipeline");
+        assert!(pt.byte_level());
         // "a 12" → ["a"," 1","2"]? Digits first: ["a ","1","2"]; then ByteLevel
         // GPT2-splits "a " → "a"+" "? then byte-encodes. Just assert digits split.
         let pieces = pt.split("a12");
@@ -482,11 +628,127 @@ mod tests {
     #[test]
     fn split_invert_keeps_content_between_matches() {
         // invert=true: matches are content; gaps (delimiters) handled by `keep`.
-        let re = Box::new(gpt2_regex());
+        let re = Box::new(gpt2_regex().expect("GPT2_PATTERN compiles"));
         let mut out = Vec::new();
         // Using a simple digit regex via Whitespace isn't ideal; verify invert
         // path runs without panicking and partitions the string.
         super::split_regex("ab", &re, Behavior::Isolated, true, &mut out);
         assert_eq!(out.concat(), "ab");
+    }
+
+    #[test]
+    fn split_with_uncompilable_pattern_is_an_error() {
+        // Previously such a stage was silently dropped, which changed the split
+        // (and so the ids) with nothing to point at.
+        let json = serde_json::json!({
+            "type": "Split",
+            "pattern": {"Regex": "("},
+            "behavior": "Isolated"
+        });
+        assert!(parse(Some(&json)).is_err());
+    }
+
+    /// Everything the loader builds from JSON must be expressible through the
+    /// public [`PreTokStage`] builder: `parse` reports the spec it used, and
+    /// rebuilding from that spec must pre-tokenize identically. Adding a `Stage`
+    /// without a `PreTokStage` counterpart fails here.
+    #[test]
+    fn parsed_stages_round_trip_through_the_public_builder() {
+        let probe = "Hello, wörld 42 items!";
+        let mut cases: Vec<(Value, Vec<PreTokStage>)> = vec![
+            // Nested Sequence, ByteLevel with use_regex:false + add_prefix_space.
+            (
+                serde_json::json!({
+                    "type": "Sequence",
+                    "pretokenizers": [
+                        {"type": "Sequence", "pretokenizers": [
+                            {"type": "Punctuation", "behavior": "Contiguous"},
+                            {"type": "Digits", "individual_digits": true}
+                        ]},
+                        {"type": "ByteLevel", "use_regex": false, "add_prefix_space": true}
+                    ]
+                }),
+                vec![
+                    PreTokStage::Punctuation {
+                        behavior: SplitBehavior::Contiguous,
+                    },
+                    PreTokStage::Digits { individual: true },
+                    PreTokStage::ByteLevel {
+                        use_regex: false,
+                        add_prefix_space: true,
+                    },
+                ],
+            ),
+            // Bare ByteLevel: use_regex defaults to true, add_prefix_space to false.
+            (
+                serde_json::json!({"type": "ByteLevel"}),
+                vec![PreTokStage::ByteLevel {
+                    use_regex: true,
+                    add_prefix_space: false,
+                }],
+            ),
+            (
+                serde_json::json!({"type": "Whitespace"}),
+                vec![PreTokStage::Whitespace],
+            ),
+            (
+                serde_json::json!({"type": "WhitespaceSplit"}),
+                vec![PreTokStage::WhitespaceSplit],
+            ),
+            // A `String` pattern is compiled as a regex, like a `Regex` one.
+            (
+                serde_json::json!({
+                    "type": "Split",
+                    "pattern": {"String": ","},
+                    "behavior": "Removed"
+                }),
+                vec![PreTokStage::Split {
+                    pattern: ",".to_string(),
+                    behavior: SplitBehavior::Removed,
+                    invert: false,
+                }],
+            ),
+            (
+                serde_json::json!({
+                    "type": "Split",
+                    "pattern": {"Regex": r"\w+"},
+                    "invert": true
+                }),
+                vec![PreTokStage::Split {
+                    pattern: r"\w+".to_string(),
+                    behavior: SplitBehavior::Isolated,
+                    invert: true,
+                }],
+            ),
+        ];
+        // Every delimiter behavior, spelled as HuggingFace spells it.
+        for (name, behavior) in [
+            ("Isolated", SplitBehavior::Isolated),
+            ("Removed", SplitBehavior::Removed),
+            ("MergedWithPrevious", SplitBehavior::MergedWithPrevious),
+            ("MergedWithNext", SplitBehavior::MergedWithNext),
+            ("Contiguous", SplitBehavior::Contiguous),
+        ] {
+            cases.push((
+                serde_json::json!({
+                    "type": "Split",
+                    "pattern": {"Regex": r"\s+"},
+                    "behavior": name
+                }),
+                vec![PreTokStage::Split {
+                    pattern: r"\s+".to_string(),
+                    behavior,
+                    invert: false,
+                }],
+            ));
+        }
+
+        for (json, expected) in cases {
+            let parsed = parse(Some(&json)).expect("parses").expect("pipeline");
+            assert_eq!(parsed.stages(), expected.as_slice(), "spec for {json}");
+            let built = PreTokenizer::new(expected).expect("builds");
+            assert_eq!(built.byte_level(), parsed.byte_level(), "byte_level {json}");
+            assert_eq!(built.split(probe), parsed.split(probe), "split for {json}");
+        }
     }
 }

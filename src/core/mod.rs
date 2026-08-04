@@ -41,7 +41,7 @@ mod metaspace;
 pub mod normalizer;
 mod policy;
 pub mod precompiled;
-mod pretokenizer;
+pub mod pretokenizer;
 pub mod pretrained;
 pub mod sentencepiece;
 pub mod spm;
@@ -61,6 +61,7 @@ pub use hf_json::{from_json_bytes, from_json_path, HfJsonError};
 pub use normalizer::{NormOp, Normalizer};
 pub use policy::{PolicyError, SpecialMode, SpecialPolicy};
 pub use precompiled::Precompiled;
+pub use pretokenizer::{PreTokStage, PreTokenizer, SplitBehavior};
 pub use pretrained::{
     base_vocab_size, base_vocab_size_by_name, bos_token_id, bos_token_id_by_name,
     cl100k_base_special_tokens, deepseek_v3_special_tokens, eos_token_id, eos_token_id_by_name,

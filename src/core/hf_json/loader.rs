@@ -170,7 +170,7 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     // Use the multi-stage pre-tokenizer engine when the json declares a pipeline
     // (Digits/Punctuation/Sequence/Split/…). It emits already byte-level-encoded
     // pieces, so the tokenizer itself must not re-encode (plain `new`).
-    let engine = super::super::pretokenizer::parse(root.get("pre_tokenizer"));
+    let engine = super::super::pretokenizer::parse(root.get("pre_tokenizer"))?;
 
     // Guess guard: a pre_tokenizer was declared, but neither the multi-stage
     // engine recognized a stage nor the distiller anchored a splitter
@@ -192,7 +192,7 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
             // own regex is unused (pass a known-good pattern). Keep `use_byte_level`
             // matching the engine so `decode` reverses the byte-level mapping; the
             // encode side skips re-encoding because a pre_tokenizer is attached.
-            let t = if pt.byte_level {
+            let t = if pt.byte_level() {
                 Tokenizer::new_byte_level(encoder, specials, super::super::tokenizer::GPT2_PATTERN)?
             } else {
                 Tokenizer::new(encoder, specials, super::super::tokenizer::GPT2_PATTERN)?

@@ -62,7 +62,7 @@ impl Tokenizer {
 
     /// Decode token IDs to a string, replacing invalid UTF-8 with replacement character.
     ///
-    /// Unknown ids are skipped, mirroring [`decode_bytes_with`](Self::decode_bytes_with)'s
+    /// Unknown ids are skipped, mirroring the internal `decode_bytes_with`'s
     /// `special=true` skip — this method never fails, so `on_unknown` is
     /// instantiated with [`Infallible`], letting the compiler prove the `Err`
     /// arm away rather than a runtime assertion claiming it.

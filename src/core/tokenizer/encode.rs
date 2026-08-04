@@ -346,8 +346,8 @@ impl Tokenizer {
     /// pre-tokenizer still run sequentially regardless of this method,
     /// because their per-chunk state (`pending_underscores`, the
     /// pre-tokenizer engine's own iteration) is a left-to-right fold that
-    /// cannot be parallelized without changing output — see
-    /// [`Tokenizer::encode_content`].
+    /// cannot be parallelized without changing output — see the internal
+    /// `encode_content`.
     pub fn encode_rayon(&self, text: &str) -> Vec<u32> {
         if self.match_added_tokens {
             AddedTokens::dispatch(&self.special_matcher, text, |gap| {

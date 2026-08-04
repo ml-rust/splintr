@@ -268,10 +268,13 @@ impl Tokenizer {
         self
     }
 
-    /// Attach a multi-stage pre-tokenizer pipeline. Its pieces are already
-    /// byte-level-encoded, so this tokenizer must have `use_byte_level=false`.
+    /// Attach a multi-stage pre-tokenizer pipeline. When the pipeline contains a
+    /// `ByteLevel` stage the engine byte-encodes the pieces itself and `encode`
+    /// skips re-encoding, so this tokenizer's `use_byte_level` governs only
+    /// `decode` — set it to match the engine. An empty pipeline is treated as
+    /// absent.
     pub fn with_pre_tokenizer(mut self, pt: crate::core::pretokenizer::PreTokenizer) -> Self {
-        self.pre_tokenizer = Some(std::sync::Arc::new(pt));
+        self.pre_tokenizer = (!pt.is_empty()).then(|| std::sync::Arc::new(pt));
         self
     }
 
