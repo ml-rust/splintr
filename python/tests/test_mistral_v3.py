@@ -66,10 +66,19 @@ class TestMistralV3NativeSpecialTokens:
         assert tokens == [0], f"<unk> should be token 0, got {tokens}"
 
     def test_decode_bos_eos_unk(self, tokenizer):
-        """Test decoding BOS/EOS/UNK tokens."""
-        assert tokenizer.decode([0]) == "<unk>"
-        assert tokenizer.decode([1]) == "<s>"
-        assert tokenizer.decode([2]) == "</s>"
+        """BOS/EOS/UNK decode to nothing, and render on request.
+
+        `decode` implements HuggingFace's default ``skip_special_tokens=True``,
+        which V1/V2 were measured to follow; V3 follows it by family
+        consistency (no Tekken reference is installed to measure it against --
+        see `special_decode_ids` in `src/core/pretrained.rs`).
+        """
+        assert tokenizer.decode([0]) == ""
+        assert tokenizer.decode([1]) == ""
+        assert tokenizer.decode([2]) == ""
+        assert tokenizer.decode_with_special([0]) == "<unk>"
+        assert tokenizer.decode_with_special([1]) == "<s>"
+        assert tokenizer.decode_with_special([2]) == "</s>"
 
 
 class TestMistralV3AgentTokens:
@@ -162,34 +171,43 @@ class TestMistralV3AgentTokensClass:
 
 
 class TestMistralV3DecodeAgentTokens:
-    """Test decoding agent tokens."""
+    """Decoding agent tokens.
+
+    `decode` implements HuggingFace's default ``skip_special_tokens=True``, so
+    the declared markers do not come back -- V3 drops them exactly as V1/V2 do
+    (`sentencepiece` 0.2.0 and `tokenizers` 0.22.1 both decode `[3, ...]` on
+    `mistral-7b-v0.3` as plain text). No Tekken reference exists on this
+    machine to measure V3 itself against; see `special_decode_ids` in
+    `src/core/pretrained.rs` for that caveat stated in full.
+
+    `decode_with_special` is splintr's ``skip_special_tokens=False`` and still
+    spells every one of them.
+    """
 
     @pytest.fixture
     def tokenizer(self):
         return Tokenizer.from_pretrained("mistral_v3")
 
-    def test_decode_system(self, tokenizer):
-        """Test decoding system token."""
-        decoded = tokenizer.decode([131072])
-        assert decoded == "<|system|>"
+    @pytest.mark.parametrize(
+        ("token_id", "spelling"),
+        [
+            (131072, "<|system|>"),
+            (131073, "<|user|>"),
+            (131074, "<|assistant|>"),
+            (131077, "<|think|>"),
+            (131078, "<|/think|>"),
+        ],
+    )
+    def test_agent_token_drops_but_stays_reachable(self, tokenizer, token_id, spelling):
+        """Each agent token decodes to nothing, and renders on request."""
+        assert tokenizer.decode([token_id]) == ""
+        assert tokenizer.decode_with_special([token_id]) == spelling
 
-    def test_decode_user(self, tokenizer):
-        """Test decoding user token."""
-        decoded = tokenizer.decode([131073])
-        assert decoded == "<|user|>"
-
-    def test_decode_assistant(self, tokenizer):
-        """Test decoding assistant token."""
-        decoded = tokenizer.decode([131074])
-        assert decoded == "<|assistant|>"
-
-    def test_decode_think(self, tokenizer):
-        """Test decoding think tokens."""
-        decoded = tokenizer.decode([131077])
-        assert decoded == "<|think|>"
-
-        decoded = tokenizer.decode([131078])
-        assert decoded == "<|/think|>"
+    def test_control_tokens_drop(self, tokenizer):
+        """The native BOS/EOS/UNK markers follow the same rule."""
+        for token_id, spelling in ((0, "<unk>"), (1, "<s>"), (2, "</s>")):
+            assert tokenizer.decode([token_id]) == ""
+            assert tokenizer.decode_with_special([token_id]) == spelling
 
 
 class TestMistralV3SpecialTokensMixed:
@@ -208,11 +226,17 @@ class TestMistralV3SpecialTokensMixed:
         assert 131073 in tokens  # user
         assert 131074 in tokens  # assistant
 
-        # Verify we can decode back
+        # The markers are dropped by the default decode, and recovered by
+        # `decode_with_special` (splintr's `skip_special_tokens=False`).
         decoded = tokenizer.decode(tokens)
-        assert "<|system|>" in decoded
-        assert "<|user|>" in decoded
-        assert "<|assistant|>" in decoded
+        assert "<|system|>" not in decoded
+        assert "<|user|>" not in decoded
+        assert "<|assistant|>" not in decoded
+        assert "Hi" in decoded and "Hello" in decoded and "World" in decoded
+        assert (
+            tokenizer.decode_with_special(tokens)
+            == "<|system|>Hi<|user|>Hello<|assistant|>World"
+        )
 
     def test_thinking_tokens_mixed(self, tokenizer):
         """Test thinking tokens mixed with text."""
@@ -223,8 +247,10 @@ class TestMistralV3SpecialTokensMixed:
         assert 131078 in tokens  # /think
 
         decoded = tokenizer.decode(tokens)
-        assert "<|think|>" in decoded
-        assert "<|/think|>" in decoded
+        assert "<|think|>" not in decoded
+        assert "<|/think|>" not in decoded
+        assert "reasoning" in decoded
+        assert tokenizer.decode_with_special(tokens) == "<|think|>reasoning<|/think|>"
 
 
 class TestMistralV3VsOthers:

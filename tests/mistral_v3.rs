@@ -8,7 +8,7 @@
 //! - Much larger vocabulary than V1/V2 (4x larger)
 //! - Used by: Mistral NeMo, Mistral Large 2, Pixtral
 
-use splintr::{from_pretrained, Tokenize};
+use splintr::{from_pretrained, SpecialDecode, Tokenize};
 
 // =============================================================================
 // Loading Tests
@@ -51,18 +51,46 @@ fn test_v3_unk_token() {
     assert_eq!(tokens, vec![0], "<unk> should be token 0");
 }
 
+/// The declared markers do not come back from `decode`: V3 drops them, as V1
+/// and V2 do (`sentencepiece` 0.2.0 and `tokenizers` 0.22.1 both decode
+/// `[3, …]` on `mistral-7b-v0.3` as plain text). That choice is stated at
+/// `special_decode_ids` in `src/core/pretrained.rs`, including the fact that
+/// no Tekken reference exists on this machine to measure V3 itself against.
+///
+/// This used to assert `decode([1]) == "<s>"`, which pinned splintr's own
+/// output rather than a reference and made the same markers behave differently
+/// from every sibling vocabulary. The spellings are still reachable — see
+/// `test_v3_markers_are_reachable_with_specials_rendered` — and a caller that
+/// wants one asks the name→id map, not `decode`.
 #[test]
 fn test_v3_decode_bos_eos_unk() {
     let tok = from_pretrained("mistral_v3").expect("Failed to load mistral_v3");
 
-    let decoded = tok.decode(&[0]).expect("Failed to decode");
-    assert_eq!(decoded, "<unk>");
+    for id in [0, 1, 2] {
+        let decoded = tok.decode(&[id]).expect("Failed to decode");
+        assert_eq!(decoded, "", "control token {id} must decode to nothing");
+    }
+}
 
-    let decoded = tok.decode(&[1]).expect("Failed to decode");
-    assert_eq!(decoded, "<s>");
+/// The dropped markers stay reachable through the explicit
+/// [`SpecialDecode::Render`] mode, so nothing about the vocabulary became
+/// unreachable — the same contract `mistral_v2` holds.
+#[test]
+fn test_v3_markers_are_reachable_with_specials_rendered() {
+    let tok = from_pretrained("mistral_v3").expect("Failed to load mistral_v3");
 
-    let decoded = tok.decode(&[2]).expect("Failed to decode");
-    assert_eq!(decoded, "</s>");
+    for (id, spelling) in [
+        (0u32, "<unk>"),
+        (1, "<s>"),
+        (2, "</s>"),
+        (3, "[INST]"),
+        (4, "[/INST]"),
+    ] {
+        let decoded = tok
+            .decode_with(&[id], SpecialDecode::Render)
+            .expect("Failed to decode");
+        assert_eq!(decoded, spelling);
+    }
 }
 
 // =============================================================================
@@ -135,24 +163,29 @@ fn test_v3_agent_tokens_function() {
     assert_eq!(tokens, vec![131088]);
 }
 
+/// Agent tokens are markers like the control tokens above and are dropped by
+/// the same rule — they sit one id block past the vocabulary file's last id and
+/// have no reference of their own, so they follow the block below them.
+/// `SpecialDecode::Render` still spells them.
 #[test]
 fn test_v3_decode_agent_tokens() {
     let tok = from_pretrained("mistral_v3").expect("Failed to load mistral_v3");
 
-    let decoded = tok.decode(&[131072]).expect("Failed to decode");
-    assert_eq!(decoded, "<|system|>");
+    for (id, spelling) in [
+        (131072u32, "<|system|>"),
+        (131073, "<|user|>"),
+        (131074, "<|assistant|>"),
+        (131077, "<|think|>"),
+        (131078, "<|/think|>"),
+    ] {
+        let decoded = tok.decode(&[id]).expect("Failed to decode");
+        assert_eq!(decoded, "", "agent token {id} must decode to nothing");
 
-    let decoded = tok.decode(&[131073]).expect("Failed to decode");
-    assert_eq!(decoded, "<|user|>");
-
-    let decoded = tok.decode(&[131074]).expect("Failed to decode");
-    assert_eq!(decoded, "<|assistant|>");
-
-    let decoded = tok.decode(&[131077]).expect("Failed to decode");
-    assert_eq!(decoded, "<|think|>");
-
-    let decoded = tok.decode(&[131078]).expect("Failed to decode");
-    assert_eq!(decoded, "<|/think|>");
+        let rendered = tok
+            .decode_with(&[id], SpecialDecode::Render)
+            .expect("Failed to decode");
+        assert_eq!(rendered, spelling);
+    }
 }
 
 // =============================================================================
@@ -171,12 +204,19 @@ fn test_v3_special_tokens_in_mixed_text() {
     assert!(tokens.contains(&131073)); // user
     assert!(tokens.contains(&131074)); // assistant
 
-    // Verify we can decode back
+    // The markers do not come back from the default decode (they are dropped,
+    // as V1/V2's are), but the content between them does, and asking for them
+    // reproduces the whole string.
     let decoded = tok.decode(&tokens).expect("Failed to decode");
-    // Special tokens should decode correctly
-    assert!(decoded.contains("<|system|>"));
-    assert!(decoded.contains("<|user|>"));
-    assert!(decoded.contains("<|assistant|>"));
+    assert!(!decoded.contains("<|system|>"));
+    assert!(!decoded.contains("<|user|>"));
+    assert!(!decoded.contains("<|assistant|>"));
+    assert!(decoded.contains("Hi") && decoded.contains("Hello") && decoded.contains("World"));
+    assert_eq!(
+        tok.decode_with(&tokens, SpecialDecode::Render)
+            .expect("Failed to decode"),
+        "<|system|>Hi<|user|>Hello<|assistant|>World"
+    );
 }
 
 #[test]
@@ -190,8 +230,14 @@ fn test_v3_thinking_tokens_mixed() {
     assert!(tokens.contains(&131078)); // /think
 
     let decoded = tok.decode(&tokens).expect("Failed to decode");
-    assert!(decoded.contains("<|think|>"));
-    assert!(decoded.contains("<|/think|>"));
+    assert!(!decoded.contains("<|think|>"));
+    assert!(!decoded.contains("<|/think|>"));
+    assert!(decoded.contains("reasoning"));
+    assert_eq!(
+        tok.decode_with(&tokens, SpecialDecode::Render)
+            .expect("Failed to decode"),
+        "<|think|>reasoning<|/think|>"
+    );
 }
 
 // =============================================================================

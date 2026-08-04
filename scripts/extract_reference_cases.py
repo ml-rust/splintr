@@ -128,6 +128,12 @@ any *other* Mistral repo's `tokenizer.json` pairs the 131,072-token Tekken
 vocabulary with a 32k SentencePiece one, which the gate rejects. Fetch a
 Tekken checkpoint and pass its converted `tokenizer.json` via
 `--reference-hf` to produce that fixture; do not substitute a near neighbour.
+No other wiring is needed -- `mistral_v3` is already in `TIKTOKEN_VOCABS`
+below, so the sanity gate and the fixture both run the moment that file
+exists. `scripts/verify_external_models.py` carries the same gap as a
+`bjson` target that reports MISSING until one appears; the two are the reason
+`mistral_v3`'s `special_decode_ids` arm in `src/core/pretrained.rs` is an
+inference from the Mistral family rather than a measurement.
 
 Requires the `tokenizers`, `sentencepiece` and/or `tiktoken` package
 depending on which reference is asked for.

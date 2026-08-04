@@ -528,11 +528,25 @@ fn special_decode_ids(vocab: PretrainedVocab, special: &FxHashMap<String, u32>) 
         // file's last id, which have no reference and follow the same rule.
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => all(),
 
-        // No reference implementation for the Tekken vocabulary is available to
-        // measure (`mistral_common` is not installed and no Tekken
-        // `tokenizer.json` is on the shelf), so its markers are left rendered
-        // rather than changed on the strength of V2's measurement.
-        PretrainedVocab::MistralV3 => FxHashSet::default(),
+        // NOT MEASURED — inferred from the family. Every other arm here states
+        // what its own reference tool does; this one cannot, because no Tekken
+        // reference is installed or on the shelf (`mistral_common` is absent,
+        // and there is no `tekken.json` / Tekken-converted `tokenizer.json`
+        // among the model repos). What would settle it is either of those: run
+        // `mistral_common`'s `MistralTokenizer` (or `tokenizers` over a Tekken
+        // `tokenizer.json`) over `[INST]`-marked ids and see whether the
+        // default decode renders the markers. `scripts/verify_external_models.py`
+        // has the target wired up and reports MISSING until one appears.
+        //
+        // Dropping is the inference, not the measurement: V3 is the same
+        // vendor's successor to V1/V2 with the same `[INST]`/`[/INST]` chat
+        // markers, both of those were measured to drop (`sentencepiece` 0.2.0
+        // and `tokenizers` 0.22.1 agree), and every reference in this project
+        // that has an opinion about chat markers drops them. Rendering them
+        // would also make `from_pretrained("mistral_v3")` disagree with
+        // `from_json` on a Tekken file, the same split the V1/V2 change closed.
+        // `decode_with(ids, SpecialDecode::Render)` recovers them either way.
+        PretrainedVocab::MistralV3 => all(),
 
         // Reference: `tokenizers` 0.22.1 on `deepseek-v3-tokenizer/tokenizer.json`,
         // which declares 14 of its added tokens `special: false` and therefore
@@ -1046,6 +1060,42 @@ mod tests {
                 tokenizer.decode(&[id]).expect("a rendered id decodes"),
                 text,
                 "{name}: id {id} must still render, as its reference does"
+            );
+        }
+    }
+
+    /// `mistral_v3` drops its declared markers too — pinned separately from
+    /// [`pretrained_special_decode_ids_follow_the_reference`] because it is the
+    /// one arm of [`special_decode_ids`] that no reference on this machine can
+    /// answer for.
+    ///
+    /// It is NOT a measurement. `mistral_common` is not installed and no Tekken
+    /// `tokenizer.json` is on the shelf, so this pins the family-consistency
+    /// inference the table states: same vendor as V1/V2, same `[INST]`/
+    /// `[/INST]` markers, both measured to drop. If a Tekken reference ever
+    /// says otherwise, this test is what should fail and be corrected — which
+    /// is the reason it exists rather than the vocabulary simply going
+    /// unpinned.
+    #[test]
+    fn mistral_v3_drops_its_markers_by_family_consistency_not_by_measurement() {
+        let tokenizer = from_pretrained("mistral_v3").expect("bundled vocabulary loads");
+        for (id, spelling) in [
+            (3u32, "[INST]"),
+            (4, "[/INST]"),
+            (1, "<s>"),
+            (131072, "<|system|>"),
+        ] {
+            assert_eq!(
+                tokenizer.decode(&[id]).expect("a skipped id decodes"),
+                "",
+                "mistral_v3: id {id} ({spelling}) must render as nothing, as V1/V2's do"
+            );
+            assert_eq!(
+                tokenizer
+                    .decode_with(&[id], SpecialDecode::Render)
+                    .expect("a skipped id renders on request"),
+                spelling,
+                "mistral_v3: id {id} must still be reachable through Render"
             );
         }
     }

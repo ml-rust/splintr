@@ -35,7 +35,7 @@ RELATION TO THE OTHER SCRIPTS
 
 WHAT IS COMPARED
 ----------------
-Two target kinds, never mixed, because the entry-point pairing differs:
+Three target kinds, never mixed, because the entry-point pairing differs:
 
 `json`  -- splintr's own loader against the same file's reference:
     encode  ref.encode(t, add_special_tokens=False).ids == sp.encode_raw(t)
@@ -48,6 +48,13 @@ Two target kinds, never mixed, because the entry-point pairing differs:
            `tokenizer.model` that defines it:
     encode  ref.encode(t, add_bos=False, add_eos=False) == sp.encode_raw(t)
     decode  ref.decode(ids)                             == sp.decode(ids)
+
+`bjson` -- a *bundled* splintr vocabulary against a HuggingFace
+           `tokenizer.json`, for the bundled vocabularies whose reference is
+           not a SentencePiece model. Same comparison as `json`, different
+           subject: `from_pretrained(vocab)` rather than `from_json(path)`.
+           Only `mistral_v3` (Tekken) needs it, and nothing on this shelf
+           supplies its reference, so it reports MISSING until one is added.
 
 The corpus is `scripts/reference_corpus.py`'s `REFERENCE_CORPUS`, shared with
 every other reference extractor here so a divergence found by one is
@@ -101,6 +108,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #   kind == "spm"  -- a bundled splintr vocabulary named by `vocab` is the
 #     subject and the SentencePiece `tokenizer.model` at `path` is the
 #     reference.
+#   kind == "bjson" -- a bundled splintr vocabulary named by `vocab` is the
+#     subject and a HuggingFace `tokenizer.json` at `path` is the reference.
+#     The pairing "spm" makes for a SentencePiece-backed bundled vocabulary,
+#     for a `tokenizer.json`-backed one.
 #
 # A bundled vocabulary whose reference is a `tokenizer.json` (llama3,
 # deepseek_v3, whisper) is covered on the `json` side by the model directory it
@@ -127,6 +138,26 @@ TARGETS: tuple[tuple[str, str, str, str], ...] = (
     # piece-by-piece by `scripts/extract_reference_cases.py --reference-spm`.
     ("mistral (bundled V1)", "spm", "mistral-7b-awq-int4/tokenizer.model", "mistral"),
     ("mistral_v2 (bundled V2)", "spm", "mistral-7b-v0.3/tokenizer.model", "mistral_v2"),
+)
+
+# --------------------------------------------------------------------------
+# Bundled vocabularies with no reference obtainable here.
+#
+# These are NOT rows in TARGETS. A target whose reference nobody can supply
+# would make the sweep permanently non-zero, and a check that is always red is
+# a check people stop reading -- which would cost more than the gap it marks.
+# They are printed as a note instead, so the gap stays visible without
+# devaluing the exit code.
+#
+# `(vocab, what the reference would be, where to drop it)`
+# --------------------------------------------------------------------------
+UNREFERENCED: tuple[tuple[str, str, str], ...] = (
+    (
+        "mistral_v3 (Tekken)",
+        "a Mistral NeMo / Large 2 / Pixtral `tekken.json` converted to "
+        "`tokenizer.json`, or the `mistral_common` package",
+        "mistral-nemo/tokenizer.json",
+    ),
 )
 
 
@@ -209,6 +240,52 @@ def check_spm(path: Path, vocab: str) -> tuple[int, int, list[str]]:
         else:
             failures.append(problem)
 
+        expected_text = reference.decode(ids)
+        got_text = subject.decode(list(ids))
+        problem = compare(f"decode {text!r}", expected_text, got_text)
+        if problem is None:
+            decode_ok += 1
+        else:
+            failures.append(problem)
+
+    return encode_ok, decode_ok, failures
+
+
+def check_bundled_json(path: Path, vocab: str) -> tuple[int, int, list[str]]:
+    """A bundled splintr vocabulary against a HuggingFace `tokenizer.json`.
+
+    `check_json`'s reference paired with `check_spm`'s subject: the file is
+    read by `tokenizers` only, and the vocabulary under test is the one splintr
+    embeds -- so this asks "does the bundled copy still agree with the
+    published tokenizer it was extracted from?", which for `mistral_v3` is the
+    only way to answer anything about Tekken here at all.
+    """
+    from tokenizers import Tokenizer as HfTokenizer
+    import splintr
+
+    if not path.is_file():
+        raise TargetMissing(f"no such file: {path}")
+
+    reference = HfTokenizer.from_file(str(path))
+    reference.no_padding()
+    reference.no_truncation()
+    subject = splintr.Tokenizer.from_pretrained(vocab)
+
+    encode_ok = 0
+    decode_ok = 0
+    failures: list[str] = []
+    for text in REFERENCE_CORPUS:
+        ids = reference.encode(text, add_special_tokens=False).ids
+        got_ids = subject.encode_raw(text)
+        problem = compare(f"encode {text!r}", list(ids), list(got_ids))
+        if problem is None:
+            encode_ok += 1
+        else:
+            failures.append(problem)
+
+        # `skip_special_tokens` defaults to True on both sides, the same
+        # pairing `check_json` uses -- and the mode whose answer for this
+        # vocabulary is currently an inference rather than a measurement.
         expected_text = reference.decode(ids)
         got_text = subject.decode(list(ids))
         problem = compare(f"decode {text!r}", expected_text, got_text)
@@ -346,6 +423,8 @@ def main() -> int:
         try:
             if kind == "json":
                 encode_ok, decode_ok, failures = check_json(path)
+            elif kind == "bjson":
+                encode_ok, decode_ok, failures = check_bundled_json(path, vocab)
             else:
                 encode_ok, decode_ok, failures = check_spm(path, vocab)
         except TargetMissing as exc:
@@ -367,6 +446,15 @@ def main() -> int:
             print(f"    ... {len(failures) - len(shown)} more (use --verbose)")
 
     print()
+    for vocab, reference, where in UNREFERENCED:
+        print(
+            f"note: {vocab} has no reference on this machine, so it is not swept.\n"
+            f"      It needs {reference};\n"
+            f"      drop it at <models-dir>/{where} and add a TARGETS row."
+        )
+    if UNREFERENCED:
+        print()
+
     if bad:
         print(f"{bad}/{len(selected)} target(s) missing or disagreeing")
         return 1
