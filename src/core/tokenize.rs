@@ -39,6 +39,15 @@ pub enum TokenizeError {
     Utf8Error,
     #[error("Decoding error: token ID {0} out of range")]
     InvalidTokenId(u32),
+    /// The `tokenizer.json` declares a `decoder` pipeline whose named step
+    /// cannot be evaluated one chunk at a time, so no streaming decoder can
+    /// reproduce [`decode`](Tokenize::decode) for it. Refused rather than
+    /// silently answered with the backend's own decode, which renders the raw
+    /// pieces the declared pipeline exists to turn into text.
+    #[error(
+        "the declared decoder pipeline cannot be streamed: its `{0}` step is not incrementally computable — decode the whole sequence instead"
+    )]
+    UnstreamableDecoder(&'static str),
     #[error("{0}")]
     Other(String),
 }

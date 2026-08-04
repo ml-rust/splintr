@@ -12,7 +12,10 @@
 //! [`SpmTokenizer::streaming_decoder`](crate::SpmTokenizer::streaming_decoder),
 //! [`SentencePieceTokenizer::streaming_decoder`](crate::SentencePieceTokenizer::streaming_decoder)
 //! or
-//! [`WordPieceTokenizer::streaming_decoder`](crate::WordPieceTokenizer::streaming_decoder).
+//! [`WordPieceTokenizer::streaming_decoder`](crate::WordPieceTokenizer::streaming_decoder) —
+//! or, for a tokenizer loaded from a `tokenizer.json`, from
+//! [`AnyTokenizer::streaming_decoder`](crate::AnyTokenizer::streaming_decoder),
+//! which drives the file's *declared* decoder pipeline when it declares one.
 //! Everything that used to be the caller's choice — ByteLevel unmapping (GPT-2,
 //! Llama, DeepSeek V3), the `special=true` ids to drop, the metaspace ▁
 //! substitution, `<0xNN>` byte fallback, the SentencePiece dummy-prefix strip —

@@ -15,6 +15,7 @@
 
 use super::render::{ByteFallbackRule, Lead, RenderRules, Rendered, Surfaces};
 use super::utf8::{InvalidUtf8, Utf8Buffer};
+use crate::core::decoder::wordpiece_cleanup;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Borrow;
 use std::sync::Arc;
@@ -245,6 +246,42 @@ pub(crate) struct DecodeCursor<S> {
     /// Always empty on a backend that does not list that op, which is why the
     /// flush-time append costs those backends nothing.
     held_spaces: String,
+    /// The run of [`Rendered::RunByte`] bytes being accumulated for
+    /// [`ByteFallbackRule::DeclaredRun`], which is decoded as a whole the moment
+    /// the run ends — at the first token that is not one of its bytes, or at the
+    /// flush. Held here rather than pushed into the buffer because the declared
+    /// step's invalid-run rule (one U+FFFD per byte) is not the buffer's, and
+    /// only a whole run can be judged.
+    ///
+    /// The same shape as `held_spaces` above: a run's end is
+    /// simply not knowable until something else arrives, so a stream carries it
+    /// forward instead of guessing. Always empty on every backend that does not
+    /// declare that rule, which is the whole cost they pay for it existing.
+    byte_run: Vec<u8>,
+}
+
+/// End a cursor's byte-fallback run, pushing what it decodes to into the
+/// buffer: valid UTF-8 is the text it spells, and an invalid run is **one U+FFFD
+/// per byte** — HuggingFace's declared `ByteFallback` rule, which is
+/// deliberately not the buffer's maximal-subpart rule. This is the per-run
+/// decision `byte_fallback` makes in the `decoder` module, reproduced over a run
+/// that is held rather than known up front.
+///
+/// A free function over the two fields rather than a method, so it can be called
+/// while the rendering rules are borrowed out of the cursor's state.
+fn end_byte_run(run: &mut Vec<u8>, buffer: &mut Utf8Buffer) {
+    if run.is_empty() {
+        return;
+    }
+    match std::str::from_utf8(run) {
+        Ok(text) => buffer.push(text.as_bytes()),
+        Err(_) => {
+            for _ in 0..run.len() {
+                buffer.push("\u{fffd}".as_bytes());
+            }
+        }
+    }
+    run.clear();
 }
 
 impl<S: Borrow<DecodeState>> DecodeCursor<S> {
@@ -256,6 +293,7 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
             at_start: true,
             rendered_a_token: false,
             held_spaces: String::new(),
+            byte_run: Vec::new(),
         }
     }
 
@@ -267,6 +305,7 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
             at_start: true,
             rendered_a_token: false,
             held_spaces: String::new(),
+            byte_run: Vec::new(),
         }
     }
 
@@ -288,18 +327,42 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
 
         for &id in ids {
             match rules.render(id) {
+                // Neither a skipped nor an unknown id ends a byte-fallback run:
+                // the declared chain never sees them at all (its token list is
+                // already special-skipped), so a run must survive one.
                 Rendered::Skipped => {}
                 Rendered::Bytes { lead, bytes } => {
-                    match lead {
-                        Lead::None => {}
-                        // The separator goes through the same buffer the token's
-                        // own bytes do, so it is part of the text the post-ops
-                        // then see — which is what lets the cleanup op eat it.
-                        Lead::SpaceUnlessFirst if self.rendered_a_token => self.bytes.push(b" "),
-                        Lead::SpaceUnlessFirst => {}
+                    end_byte_run(&mut self.byte_run, &mut self.bytes);
+                    // The separator goes through the same buffer the token's own
+                    // bytes do, so it is part of the text the post-ops then see —
+                    // which is what lets the cleanup op eat it.
+                    let separated = match lead {
+                        Lead::None => false,
+                        Lead::SpaceUnlessFirst => self.rendered_a_token,
+                    };
+                    if rules.unit_cleanup() {
+                        // The declared WordPiece cleanup, over the token *plus*
+                        // the separator it carries — the `" {t}"` the declared
+                        // decoder cleans, which is why the separator cannot
+                        // simply be pushed ahead of it.
+                        let text = String::from_utf8_lossy(&bytes);
+                        let mut unit = String::with_capacity(text.len() + 1);
+                        if separated {
+                            unit.push(' ');
+                        }
+                        unit.push_str(&text);
+                        self.bytes.push(wordpiece_cleanup(&unit).as_bytes());
+                    } else {
+                        if separated {
+                            self.bytes.push(b" ");
+                        }
+                        self.bytes.push(&bytes);
                     }
-                    self.bytes.push(&bytes);
                     // Even when `bytes` was empty: a token rendered.
+                    self.rendered_a_token = true;
+                }
+                Rendered::RunByte(byte) => {
+                    self.byte_run.push(byte);
                     self.rendered_a_token = true;
                 }
                 Rendered::Unknown => on_unknown(id)?,
@@ -364,6 +427,9 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
     /// If there are incomplete UTF-8 sequences in the buffer, they will be
     /// replaced with the Unicode replacement character (U+FFFD).
     pub(crate) fn flush(&mut self) -> String {
+        // No further token can extend the byte-fallback run, so this is where it
+        // ends — before the buffer is drained, since it feeds that buffer.
+        end_byte_run(&mut self.byte_run, &mut self.bytes);
         let text = self.bytes.flush();
         let mut text = self.postprocess(text);
         text.push_str(&self.take_held_spaces());
@@ -382,10 +448,16 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
     /// The strict twin of [`flush`](Self::flush): a trailing sequence that is
     /// still incomplete has run out of bytes that could complete it, so it is
     /// reported through `on_invalid_utf8` rather than becoming U+FFFD.
+    ///
+    /// A byte-fallback run still ends the way the declared step says it does,
+    /// U+FFFD and all: that substitution is the declared decoder's own
+    /// output, not a UTF-8 recovery, so strictness has nothing to report about
+    /// it. No backend that declares the strict drive declares that rule.
     pub(crate) fn finish_strict<E>(
         &mut self,
         on_invalid_utf8: impl Fn() -> E,
     ) -> Result<String, E> {
+        end_byte_run(&mut self.byte_run, &mut self.bytes);
         match self.bytes.flush_strict() {
             Ok(text) => {
                 let mut text = self.postprocess(text);
@@ -404,16 +476,23 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
         self.at_start = true;
         self.rendered_a_token = false;
         self.held_spaces.clear();
+        self.byte_run.clear();
     }
 
-    /// Check if there are buffered bytes waiting for completion.
+    /// Check if there is content that has arrived but not yet been emitted.
+    ///
+    /// That is all three holds, not just the UTF-8 buffer: an unfinished
+    /// byte-fallback run, and a trailing run of spaces held back for a
+    /// punctuation mark that may still arrive, are both text the caller has
+    /// fed and cannot yet see.
     pub(crate) fn has_pending(&self) -> bool {
-        self.bytes.has_pending()
+        self.bytes.has_pending() || !self.byte_run.is_empty() || !self.held_spaces.is_empty()
     }
 
-    /// The number of pending bytes in the buffer.
+    /// The number of pending bytes, across the UTF-8 buffer, an unfinished
+    /// byte-fallback run and a held trailing space run.
     pub(crate) fn pending_bytes(&self) -> usize {
-        self.bytes.pending_len()
+        self.bytes.pending_len() + self.byte_run.len() + self.held_spaces.len()
     }
 }
 

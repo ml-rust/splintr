@@ -1,8 +1,8 @@
 use super::*;
 use crate::core::policy::PolicyError;
 // Raw backends expose `encode` only through the trait; `AnyTokenizer`'s is inherent.
-use crate::core::tokenize::Tokenize;
-use crate::core::Backend;
+use crate::core::tokenize::{Tokenize, TokenizeError};
+use crate::core::{AnyTokenizer, Backend};
 
 #[test]
 fn dispatches_bpe_byte_level() {
@@ -942,4 +942,187 @@ fn byte_fallback_ids_decode_to_bytes_agreeing_with_the_declared_decoder() {
         tok.decode(&ids).expect("the declared pipeline decodes"),
         bare
     );
+}
+
+// =============================================================================
+// `AnyTokenizer::streaming_decoder` — the same decision `decode` makes
+// =============================================================================
+
+/// Drive a loaded tokenizer's streaming decoder over `ids` in chunks of
+/// `chunk`, concatenating every emission plus the final flush.
+fn stream_in_chunks(tok: &AnyTokenizer, ids: &[u32], chunk: usize) -> String {
+    let mut decoder = tok.streaming_decoder().expect("this document streams");
+    let mut out = String::new();
+    for group in ids.chunks(chunk.max(1)) {
+        let emitted = decoder.add_tokens(group).expect("the ids are all known");
+        out.push_str(&emitted.unwrap_or_default());
+    }
+    out.push_str(&decoder.flush());
+    out
+}
+
+/// The unit's proof obligation: a streamed drive is `AnyTokenizer::decode`, at
+/// every chunking of the id list. Returns what both produced, so a caller can
+/// also pin the exact text.
+fn streams_like_decode(json: &str, ids: &[u32]) -> String {
+    let tok = from_json_bytes(json.as_bytes()).expect("the document loads");
+    let expected = tok.decode(ids).expect("whole-sequence decode succeeds");
+    for chunk in 1..=ids.len().max(1) {
+        assert_eq!(
+            stream_in_chunks(&tok, ids, chunk),
+            expected,
+            "streamed in chunks of {chunk} over {ids:?}"
+        );
+    }
+    expected
+}
+
+/// A byte-level BPE document declaring the `ByteLevel` decoder — GPT-2's shape.
+/// `é` is spelled by two separate byte-level tokens, so the character only
+/// exists once both have arrived.
+const BYTE_LEVEL_JSON: &str = r#"{
+    "added_tokens": [{"id": 5, "content": "<|end|>", "special": true}],
+    "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false},
+    "decoder": {"type": "ByteLevel"},
+    "model": {"type": "BPE",
+        "vocab": {"a": 0, "Ġ": 1, "Ã": 2, "©": 3, "b": 4},
+        "merges": []}
+}"#;
+
+/// A `▁`-marked BPE document declaring the `Metaspace` decoder.
+const METASPACE_JSON: &str = r#"{
+    "added_tokens": [{"id": 9, "content": "<s>", "special": true}],
+    "pre_tokenizer": {"type": "Metaspace", "prepend_scheme": "always"},
+    "decoder": {"type": "Metaspace", "prepend_scheme": "always"},
+    "model": {"type": "BPE",
+        "vocab": {"▁Hello": 10, "▁world": 11, "▁": 12},
+        "merges": []}
+}"#;
+
+/// A BERT-family document declaring the `WordPiece` decoder, cleanup included.
+const WORDPIECE_JSON: &str = r###"{
+    "added_tokens": [
+        {"id": 1, "content": "[CLS]", "special": true},
+        {"id": 2, "content": "[SEP]", "special": true}
+    ],
+    "normalizer": {"type": "BertNormalizer", "lowercase": false, "strip_accents": null},
+    "pre_tokenizer": {"type": "BertPreTokenizer"},
+    "decoder": {"type": "WordPiece", "prefix": "##", "cleanup": true},
+    "model": {"type": "WordPiece", "unk_token": "[UNK]",
+        "continuing_subword_prefix": "##", "max_input_chars_per_word": 100,
+        "vocab": {"[UNK]": 0, "[CLS]": 1, "[SEP]": 2,
+            "hello": 3, "##world": 4, ",": 5, "world": 6}}
+}"###;
+
+/// The Llama/Mistral SentencePiece shape:
+/// `Sequence[Replace, ByteFallback, Fuse, Strip]` over a `▁`-marked,
+/// byte-fallback BPE vocabulary. Four of the shipping `tokenizer.json` files
+/// declare exactly this chain.
+const MISTRAL_JSON: &str = r#"{
+    "added_tokens": [{"id": 1, "content": "<s>", "special": true}],
+    "pre_tokenizer": {"type": "Metaspace", "prepend_scheme": "first"},
+    "decoder": {"type": "Sequence", "decoders": [
+        {"type": "Replace", "pattern": {"String": "▁"}, "content": " "},
+        {"type": "ByteFallback"},
+        {"type": "Fuse"},
+        {"type": "Strip", "content": " ", "start": 1, "stop": 0}
+    ]},
+    "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+        "vocab": {"<unk>": 0, "<s>": 1, "▁Hi": 2,
+            "<0xE2>": 3, "<0x82>": 4, "<0xAC>": 5,
+            "▁a": 6, "<0x80>": 7, "▁b": 8, "▁": 9},
+        "merges": []}
+}"#;
+
+/// Every shipping declared pipeline, streamed at every chunking, must come out
+/// as `AnyTokenizer::decode` does — the whole point of the factory: a caller
+/// who streams and a caller who decodes the finished sequence read the same
+/// text.
+#[test]
+fn declared_pipelines_stream_exactly_as_they_decode() {
+    // ByteLevel: `é` is ids 2 and 3, so a chunk boundary can fall inside the
+    // character, and the `special = true` id 5 is dropped either way.
+    assert_eq!(streams_like_decode(BYTE_LEVEL_JSON, &[0, 1, 2, 3]), "a é");
+    assert_eq!(
+        streams_like_decode(BYTE_LEVEL_JSON, &[0, 5, 2, 3, 4]),
+        "aéb"
+    );
+
+    // Metaspace: the leading `▁` of the first token becomes the dummy prefix
+    // that `prepend_scheme` strips, and the strip must be spent on the first
+    // emission whichever chunk carries it.
+    assert_eq!(
+        streams_like_decode(METASPACE_JSON, &[10, 11]),
+        "Hello world"
+    );
+    assert_eq!(
+        streams_like_decode(METASPACE_JSON, &[9, 10, 11]),
+        "Hello world"
+    );
+    // A token that renders nothing but the space it takes still spends the
+    // strip.
+    assert_eq!(streams_like_decode(METASPACE_JSON, &[12, 10]), " Hello");
+
+    // WordPiece: `##` glues, anything else starts a word, and the per-token
+    // cleanup pulls the comma back onto the previous word — across a chunk
+    // boundary too, since the space it eats was emitted with the token before.
+    assert_eq!(streams_like_decode(WORDPIECE_JSON, &[3, 4]), "helloworld");
+    assert_eq!(
+        streams_like_decode(WORDPIECE_JSON, &[1, 3, 5, 6, 2]),
+        "hello, world"
+    );
+
+    // Mistral: a `<0xNN>` run reassembles into one character, an invalid run
+    // becomes one U+FFFD per byte, and the leading-space strip is spent once.
+    assert_eq!(streams_like_decode(MISTRAL_JSON, &[1, 2, 3, 4, 5]), "Hi€");
+    assert_eq!(streams_like_decode(MISTRAL_JSON, &[6, 7, 8]), "a\u{fffd} b");
+    assert_eq!(streams_like_decode(MISTRAL_JSON, &[9, 6]), " a");
+}
+
+/// A declared pipeline that cannot be evaluated incrementally is refused, and
+/// the refusal names the step. Silently falling back to the backend's own
+/// decode would stream `hello</w>world</w>` while `decode` returned
+/// `hello world` — exactly the drift the shared machinery exists to eliminate.
+#[test]
+fn a_pipeline_that_cannot_stream_is_refused_rather_than_approximated() {
+    let json = r#"{
+        "decoder": {"type": "BPEDecoder", "suffix": "</w>"},
+        "model": {"type": "BPE", "vocab": {"hello</w>": 0, "world</w>": 1}, "merges": []}
+    }"#;
+    let tok = from_json_bytes(json.as_bytes()).expect("the document loads");
+    assert!(tok.declares_decoder());
+
+    let err = tok
+        .streaming_decoder()
+        .err()
+        .expect("BPEDecoder cannot stream");
+    assert!(
+        matches!(err, TokenizeError::UnstreamableDecoder("BPEDecoder")),
+        "unexpected error: {err}"
+    );
+    // ...and whole-sequence decoding still handles it.
+    assert_eq!(tok.decode(&[0, 1]).expect("decodes"), "hello world");
+}
+
+/// With no declared pipeline the factory delegates to the backend's own, which
+/// is the same delegation `decode` makes — so the two still agree.
+#[test]
+fn a_document_with_no_declared_decoder_delegates_to_the_backend() {
+    // The WordPiece document above with its `decoder` removed.
+    let json = r###"{
+        "added_tokens": [
+            {"id": 1, "content": "[CLS]", "special": true},
+            {"id": 2, "content": "[SEP]", "special": true}
+        ],
+        "pre_tokenizer": {"type": "BertPreTokenizer"},
+        "model": {"type": "WordPiece", "unk_token": "[UNK]",
+            "continuing_subword_prefix": "##", "max_input_chars_per_word": 100,
+            "vocab": {"[UNK]": 0, "[CLS]": 1, "[SEP]": 2,
+                "hello": 3, "##world": 4, ",": 5, "world": 6}}
+    }"###;
+    let tok = from_json_bytes(json.as_bytes()).expect("the document loads");
+    assert!(!tok.declares_decoder());
+
+    assert_eq!(streams_like_decode(json, &[3, 4]), "helloworld");
+    assert_eq!(streams_like_decode(json, &[1, 3, 5, 6, 2]), "hello, world");
 }

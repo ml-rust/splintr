@@ -105,6 +105,14 @@ impl Tokenizer {
                     result.extend_from_slice(&bytes);
                     rendered_a_token = true;
                 }
+                // A caller that wants bytes wants the byte, not the run: the
+                // declared step's U+FFFD-per-byte rule is about text, and there
+                // is no text here to substitute into. Unreachable on this
+                // backend, whose rules never declare that fallback.
+                Rendered::RunByte(byte) => {
+                    result.push(byte);
+                    rendered_a_token = true;
+                }
                 Rendered::Unknown => return Err(TokenizerError::InvalidTokenId(token)),
             }
         }

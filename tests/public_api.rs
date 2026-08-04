@@ -11,8 +11,9 @@
 //! therefore *constructs* the argument through crate-root paths and then
 //! actually calls the method — compiling is most of the assertion.
 use splintr::{
-    ByteFallback, NormOp, Normalizer, PreTokStage, PreTokenizer, SentencePieceTokenizer,
-    SplitBehavior, SplitPattern, SpmTokenizer, StreamingDecoder, Tokenizer, WordPieceTokenizer,
+    from_json_bytes, AnyTokenizer, ByteFallback, NormOp, Normalizer, PreTokStage, PreTokenizer,
+    SentencePieceTokenizer, SplitBehavior, SplitPattern, SpmTokenizer, StreamingDecoder,
+    TokenizeError, Tokenizer, WordPieceTokenizer,
 };
 
 /// A vocabulary that tells the two splits apart: as one chunk `"a12"` BPEs into
@@ -390,6 +391,69 @@ fn wordpiece_streaming_decoder_outlives_its_tokenizer_and_keeps_the_word_separat
         decoder.add_token(4).expect("known id"),
         Some("hello".to_string())
     );
+}
+
+/// [`AnyTokenizer::streaming_decoder`] is callable from outside the crate, and
+/// so is the error it can return: a caller that has to handle the refusal must
+/// be able to *name* [`splintr::TokenizeError`] and match its variant, or the
+/// refusal is only readable as a string. Both halves are asserted here, where
+/// `pub(crate)` items are genuinely unreachable.
+///
+/// The two documents are the two answers the factory gives: a declared
+/// pipeline that lowers streams, and one that cannot is refused rather than
+/// silently answered with the backend's raw pieces.
+#[test]
+fn any_tokenizer_streaming_decoder_and_its_error_are_reachable_downstream() {
+    // The Llama/Mistral chain, over a `▁`-marked byte-fallback vocabulary.
+    let streamable = r#"{
+        "added_tokens": [{"id": 1, "content": "<s>", "special": true}],
+        "pre_tokenizer": {"type": "Metaspace", "prepend_scheme": "first"},
+        "decoder": {"type": "Sequence", "decoders": [
+            {"type": "Replace", "pattern": {"String": "▁"}, "content": " "},
+            {"type": "ByteFallback"},
+            {"type": "Fuse"},
+            {"type": "Strip", "content": " ", "start": 1, "stop": 0}
+        ]},
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "<s>": 1, "▁Hi": 2,
+                "<0xE2>": 3, "<0x82>": 4, "<0xAC>": 5},
+            "merges": []}
+    }"#;
+    let tok: AnyTokenizer = from_json_bytes(streamable.as_bytes()).expect("the document loads");
+
+    let ids = [1u32, 2, 3, 4, 5];
+    let mut decoder: StreamingDecoder = tok
+        .streaming_decoder()
+        .expect("this pipeline is incrementally computable");
+    let mut streamed = String::new();
+    for id in ids {
+        if let Some(text) = decoder.add_token(id).expect("ids are in the vocabulary") {
+            streamed.push_str(&text);
+        }
+    }
+    streamed.push_str(&decoder.flush());
+
+    // The whole point of the factory: the stream says what `decode` says.
+    assert_eq!(streamed, "Hi\u{20ac}");
+    assert_eq!(streamed, tok.decode(&ids).expect("the ids decode"));
+
+    // A pipeline that branches on the last token cannot be streamed at all, and
+    // the refusal names the step.
+    let refused = r#"{
+        "decoder": {"type": "BPEDecoder", "suffix": "</w>"},
+        "model": {"type": "BPE", "vocab": {"hello</w>": 0, "world</w>": 1}, "merges": []}
+    }"#;
+    let tok = from_json_bytes(refused.as_bytes()).expect("the document loads");
+    let err: TokenizeError = tok
+        .streaming_decoder()
+        .err()
+        .expect("a BPEDecoder pipeline cannot stream");
+    assert!(
+        matches!(err, TokenizeError::UnstreamableDecoder("BPEDecoder")),
+        "unexpected error: {err}"
+    );
+    // ...and whole-sequence decoding still handles it.
+    assert_eq!(tok.decode(&[0, 1]).expect("decodes"), "hello world");
 }
 
 /// A decoder owns its configuration, so it outlives the tokenizer that built

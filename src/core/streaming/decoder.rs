@@ -36,6 +36,12 @@ use std::sync::Arc;
 /// vocabulary — the mistake that used to turn a byte-level stream into mojibake
 /// is not expressible.
 ///
+/// A tokenizer loaded from a `tokenizer.json` has one more factory,
+/// [`AnyTokenizer::streaming_decoder`](crate::AnyTokenizer::streaming_decoder):
+/// it takes those same rules from the file's *declared* `decoder` pipeline when
+/// one is declared, and delegates to the backend factory above when none is —
+/// the same choice `AnyTokenizer::decode` makes.
+///
 /// # Agreement with whole-sequence decoding
 ///
 /// For any ids, concatenating every emission plus the final [`flush`](Self::flush)

@@ -13,7 +13,8 @@
 //! and WordPiece backends can adopt the same shape by adding a variant rather
 //! than by growing a second, drifting description of "ids → text".
 
-use crate::core::byte_level::byte_level_decode_bytes;
+use crate::core::byte_level::{byte_level_decode, byte_level_decode_bytes};
+use crate::core::decoder::parse_byte_token;
 use crate::core::metaspace::WORD_BOUNDARY;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
@@ -51,6 +52,25 @@ pub(crate) enum ByteFallbackRule {
     /// that means the text `<0x41>` — the references would not decode it that
     /// way either.
     ParseSurface,
+    /// HuggingFace's *declared* `ByteFallback` decoder step, as lowered by
+    /// [`Decoder::lower`](crate::core::decoder::Decoder::lower).
+    ///
+    /// Reads the byte off the surface exactly as
+    /// [`ParseSurface`](Self::ParseSurface) does — but only from a two-hex-digit
+    /// `<0xNN>`, which is the parse the declared step itself uses — and renders
+    /// it as [`Rendered::RunByte`] rather than as bytes, because the declared
+    /// step does *not* decode its bytes the way the UTF-8 buffer does: a run
+    /// that is not valid UTF-8 becomes one U+FFFD **per byte**, not one per
+    /// maximal subpart. Measured against `tokenizers` 0.22.1 on Mistral's
+    /// `tokenizer.json`: `<0xE2> <0x41>` is `"\u{FFFD}\u{FFFD}"` (std's lossy
+    /// rule would give `"\u{FFFD}A"`) and `<0xF0> <0x9F>` is
+    /// `"\u{FFFD}\u{FFFD}"` (std's would give a single `"\u{FFFD}"`).
+    ///
+    /// The run itself is held by [`DecodeCursor`](super::state::DecodeCursor),
+    /// which is the only thing allowed to know where in the sequence it is — a
+    /// run ends at the first non-byte token or at the flush, and neither is
+    /// knowable from one id.
+    DeclaredRun,
 }
 
 /// A separator a rendered token carries *before* its own bytes.
@@ -120,6 +140,11 @@ pub(crate) enum Rendered<'a> {
     /// The token's bytes, with any ByteLevel alphabet already unmapped — these
     /// are real bytes, ready for the UTF-8 buffer.
     Bytes { lead: Lead, bytes: Cow<'a, [u8]> },
+    /// One byte of a [`ByteFallbackRule::DeclaredRun`] run: it joins the run the
+    /// cursor is accumulating instead of going into the UTF-8 buffer, because
+    /// the declared step decodes a whole run at once. Never produced by any
+    /// other rule.
+    RunByte(u8),
     /// In no table at all: neither the vocabulary nor the special tokens.
     Unknown,
 }
@@ -160,8 +185,11 @@ pub(crate) struct RenderRules {
     skip: Arc<FxHashSet<u32>>,
     byte_fallback: ByteFallbackRule,
     use_byte_level: bool,
-    /// Whether a [`Surfaces::ByIndex`] piece spells word boundaries with ▁
-    /// (U+2581), so that the marker becomes a space as the surface is rendered.
+    /// Literal substitutions applied, in order, to a [`Surfaces::ByIndex`]
+    /// surface as it is rendered — the ▁ (U+2581) → space substitution every
+    /// SentencePiece-shaped backend declares through
+    /// [`new`](Self::new)'s `use_metaspace`, and any further per-token `Replace`
+    /// a declared `tokenizer.json` decoder pipeline lowers onto here.
     ///
     /// Deliberately a *rendering* rule rather than a
     /// [`DecodePost`](super::state::DecodePost), and deliberately consulted only
@@ -170,13 +198,33 @@ pub(crate) struct RenderRules {
     /// `sentencepiece` package 0.2.0 on Mistral's own `tokenizer.model`,
     /// `decode` of the ids for `<0xE2>`, `<0x96>`, `<0x81>` is `'▁'` — the
     /// literal character — while `decode` of the `▁` piece is `''`. A post-op
-    /// over reassembled text cannot tell those two apart; this can.
+    /// over reassembled text cannot tell those two apart; this can. It is also
+    /// the order HuggingFace's declared chains use, where `Replace` precedes
+    /// `ByteFallback`.
     ///
-    /// Exactly parallel to `use_byte_level`, which is likewise a spelling rule
-    /// only one of the surface arms consults. The BPE backend keeps its own
-    /// metaspace substitution as a post-op: its vocabulary is byte-keyed, so a ▁
-    /// can be split across two of its pieces and only reassembled text sees it.
-    use_metaspace: bool,
+    /// Exactly parallel to `use_byte_level`, which is likewise a spelling rule.
+    /// The BPE backend keeps its own metaspace substitution as a post-op: its
+    /// vocabulary is byte-keyed, so a ▁ can be split across two of its pieces
+    /// and only reassembled text sees it — which is also why this list is not
+    /// consulted in the [`Surfaces::ById`] arm.
+    surface_replace: Vec<(String, String)>,
+    /// Whether a rendered token is cleaned *as a token* with
+    /// [`wordpiece_cleanup`](crate::core::decoder::wordpiece_cleanup) — the
+    /// declared `WordPiece` decoder's `cleanup`, which HuggingFace applies per
+    /// token and not to the joined text.
+    ///
+    /// Per token is not a detail: the joined text contains `" ' "` wherever a
+    /// bare apostrophe token sits between two others, and cleaning the join
+    /// would collapse it, while HuggingFace — which never sees the following
+    /// token's leading space — leaves `"don ' t"` alone. So the unit cleaned is
+    /// the token's own text *plus* the separator it carries, which is exactly
+    /// what the declared decoder's `" {t}"` is; the cursor applies it, because
+    /// only the cursor knows whether the separator is emitted.
+    ///
+    /// The GGUF WordPiece backend does not set this: it declares
+    /// [`DecodePost::CleanupTokenization`](super::state::DecodePost::CleanupTokenization)
+    /// instead, which is the punctuation half over joined text.
+    unit_cleanup: bool,
     /// Whether a [`Surfaces::ByIndex`] surface has to be given back the word
     /// spacing its vocabulary does not spell — see [`WordSeparator`], which only
     /// the WordPiece backend sets to anything but [`None`](WordSeparator::None).
@@ -197,15 +245,75 @@ impl RenderRules {
         use_byte_level: bool,
         use_metaspace: bool,
     ) -> Self {
-        Self {
+        let mut rules = Self {
             surfaces,
             special_tokens_decoder,
             skip,
             byte_fallback,
             use_byte_level,
-            use_metaspace,
+            surface_replace: Vec::new(),
+            unit_cleanup: false,
+            word_separator: WordSeparator::None,
+        };
+        if use_metaspace {
+            rules = rules.with_surface_replace(WORD_BOUNDARY.to_string(), " ".to_string());
+        }
+        rules
+    }
+
+    /// The rendering knobs a declared `tokenizer.json` decoder pipeline states,
+    /// over an *empty* vocabulary.
+    ///
+    /// [`Decoder::lower`](crate::core::decoder::Decoder::lower) knows the
+    /// pipeline but not the tokenizer it will run against, so the tables are
+    /// supplied afterwards by [`with_vocabulary`](Self::with_vocabulary).
+    /// Until they are, every id renders [`Rendered::Unknown`].
+    pub(crate) fn declared(byte_fallback: ByteFallbackRule, use_byte_level: bool) -> Self {
+        Self {
+            surfaces: Surfaces::ByIndex(Arc::new(Vec::new())),
+            special_tokens_decoder: Arc::new(FxHashMap::default()),
+            skip: Arc::new(FxHashSet::default()),
+            byte_fallback,
+            use_byte_level,
+            surface_replace: Vec::new(),
+            unit_cleanup: false,
             word_separator: WordSeparator::None,
         }
+    }
+
+    /// Give [`declared`](Self::declared) rules the tokenizer tables they render
+    /// against. Every table is shared rather than copied, as in [`new`](Self::new).
+    pub(crate) fn with_vocabulary(
+        mut self,
+        surfaces: Surfaces,
+        special_tokens_decoder: Arc<FxHashMap<u32, String>>,
+        skip: Arc<FxHashSet<u32>>,
+    ) -> Self {
+        self.surfaces = surfaces;
+        self.special_tokens_decoder = special_tokens_decoder;
+        self.skip = skip;
+        self
+    }
+
+    /// Append a literal substitution applied to a surface as it is rendered —
+    /// see `surface_replace`. Order is declaration order, which is the order the
+    /// declared chain applies its `Replace` steps in.
+    pub(crate) fn with_surface_replace(mut self, from: String, to: String) -> Self {
+        self.surface_replace.push((from, to));
+        self
+    }
+
+    /// Declare the per-token WordPiece cleanup — see `unit_cleanup`.
+    pub(crate) fn with_unit_cleanup(mut self) -> Self {
+        self.unit_cleanup = true;
+        self
+    }
+
+    /// Whether a rendered token is cleaned as a token, for the cursor — which
+    /// applies it, because the separator that is part of the cleaned unit is the
+    /// cursor's decision.
+    pub(crate) fn unit_cleanup(&self) -> bool {
+        self.unit_cleanup
     }
 
     /// Declare that this vocabulary's surfaces carry no word spacing of their
@@ -217,6 +325,33 @@ impl RenderRules {
     pub(crate) fn with_word_separator(mut self, word_separator: WordSeparator) -> Self {
         self.word_separator = word_separator;
         self
+    }
+
+    /// The byte a surface denotes under [`ByteFallbackRule::DeclaredRun`], or
+    /// `None` under every other rule and for every other spelling.
+    ///
+    /// Parses with the declared step's own
+    /// [`parse_byte_token`], not with [`byte_fallback_surface`]: the declared
+    /// step requires exactly two hex digits, so `<0x5>` is text to it, and
+    /// reproducing `Decoder::decode` means reproducing that.
+    fn declared_run_byte(&self, surface: &[u8]) -> Option<u8> {
+        match self.byte_fallback {
+            ByteFallbackRule::DeclaredRun => {
+                std::str::from_utf8(surface).ok().and_then(parse_byte_token)
+            }
+            ByteFallbackRule::ParseSurface
+            | ByteFallbackRule::Table(_)
+            | ByteFallbackRule::None => None,
+        }
+    }
+
+    /// Whether any declared substitution has anything to do to this surface —
+    /// checked first so that the pieces that carry no pattern (nearly all of
+    /// them) are rendered without allocating.
+    fn surface_replace_applies(&self, piece: &str) -> bool {
+        self.surface_replace
+            .iter()
+            .any(|(from, _)| piece.contains(from.as_str()))
     }
 
     /// Render one id, deferring the "not in any table" decision to the caller
@@ -253,6 +388,12 @@ impl RenderRules {
         match &self.surfaces {
             Surfaces::ById(map) => {
                 if let Some(bytes) = map.get(&id) {
+                    // The declared `ByteFallback` step parses the surface, so —
+                    // exactly as in the `ByIndex` arm — it resolves here, with
+                    // the surface in hand and ahead of it being rendered.
+                    if let Some(byte) = self.declared_run_byte(bytes) {
+                        return Rendered::RunByte(byte);
+                    }
                     let bytes = if self.use_byte_level {
                         match byte_level_decode_bytes(bytes) {
                             Some(decoded) => Cow::Owned(decoded),
@@ -278,7 +419,9 @@ impl RenderRules {
                     // then never emitted.
                     let parsed = match self.byte_fallback {
                         ByteFallbackRule::ParseSurface => byte_fallback_surface(piece),
-                        ByteFallbackRule::Table(_) | ByteFallbackRule::None => None,
+                        ByteFallbackRule::DeclaredRun
+                        | ByteFallbackRule::Table(_)
+                        | ByteFallbackRule::None => None,
                     };
                     if let Some(byte) = parsed {
                         let b = byte as usize;
@@ -287,21 +430,45 @@ impl RenderRules {
                             bytes: Cow::Borrowed(&BYTE_VALUES[b..b + 1]),
                         };
                     }
+                    // The declared step's own byte fallback, which is a *run*
+                    // rather than a byte in the buffer — see
+                    // [`ByteFallbackRule::DeclaredRun`].
+                    if let Some(byte) = self.declared_run_byte(piece.as_bytes()) {
+                        return Rendered::RunByte(byte);
+                    }
                     // The word separator is read off the surface, and the marker
                     // that decides it comes off with it — after the
                     // byte-fallback arm above, so a `<0xNN>` token is a byte and
                     // never a word start. Positionless: whether the separator is
                     // emitted is the cursor's call.
                     let (lead, piece) = self.word_separator.split(piece);
-                    // No ByteLevel arm: these vocabularies spell their pieces as
-                    // text. The marker they do use (▁) is substituted here,
-                    // where the text being rendered is known to be a *surface* —
-                    // the byte-fallback arm above has already returned, so a ▁
-                    // spelled out as `<0xE2><0x96><0x81>` keeps its own
-                    // character, exactly as `sp.decode` renders it. Allocates
-                    // only for the pieces that actually carry the marker.
-                    let bytes = if self.use_metaspace && piece.contains(WORD_BOUNDARY) {
-                        Cow::Owned(piece.replace(WORD_BOUNDARY, " ").into_bytes())
+                    // These vocabularies spell their pieces as text, so the
+                    // substitutions run here, where the text being rendered is
+                    // known to be a *surface* — the byte-fallback arms above have
+                    // already returned, so a ▁ spelled out as
+                    // `<0xE2><0x96><0x81>` keeps its own character, exactly as
+                    // `sp.decode` renders it. Allocates only for the pieces that
+                    // actually carry one of the patterns.
+                    //
+                    // The ByteLevel unmapping is the alternative spelling rule,
+                    // never a companion to the substitutions: a declared chain
+                    // that mixes the two is not lowered at all (see
+                    // `Decoder::lower`), so their order never has to be decided.
+                    let bytes = if self.use_byte_level {
+                        match byte_level_decode(piece) {
+                            Some(decoded) => Cow::Owned(decoded),
+                            // Fallback: a surface the ByteLevel alphabet cannot
+                            // explain is passed through as raw bytes.
+                            None => Cow::Borrowed(piece.as_bytes()),
+                        }
+                    } else if self.surface_replace_applies(piece) {
+                        let replaced = self
+                            .surface_replace
+                            .iter()
+                            .fold(piece.to_string(), |text, (from, to)| {
+                                text.replace(from.as_str(), to.as_str())
+                            });
+                        Cow::Owned(replaced.into_bytes())
                     } else {
                         Cow::Borrowed(piece.as_bytes())
                     };

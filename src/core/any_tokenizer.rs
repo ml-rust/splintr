@@ -3,9 +3,11 @@
 use super::policy::{PolicyError, SpecialMode, SpecialPolicy};
 use super::sentencepiece::SentencePieceTokenizer;
 use super::spm::SpmTokenizer;
+use super::streaming::{DecodeState, StreamingDecoder, Surfaces};
 use super::tokenize::{Tokenize, TokenizeError};
 use super::tokenizer::{Tokenizer, TokenizerError};
 use super::wordpiece::WordPieceTokenizer;
+use std::sync::Arc;
 
 /// A tokenizer loaded from a `tokenizer.json`, tagged by its backend family.
 ///
@@ -31,6 +33,20 @@ impl Backend {
             Backend::Unigram(t) => t.token_surface(id),
             Backend::WordPiece(t) => t.token_surface(id),
             Backend::Spm(t) => t.token_surface(id),
+        }
+    }
+
+    /// The backend's own streaming decoder, configured from its own vocabulary.
+    ///
+    /// Only ever reached when the json declared no `decoder` pipeline — the same
+    /// condition under which `AnyTokenizer::decode_inner` delegates to that
+    /// backend's whole-sequence decode.
+    fn streaming_decoder(&self) -> StreamingDecoder {
+        match self {
+            Backend::Bpe(t) => t.streaming_decoder(),
+            Backend::Unigram(t) => t.streaming_decoder(),
+            Backend::WordPiece(t) => t.streaming_decoder(),
+            Backend::Spm(t) => t.streaming_decoder(),
         }
     }
 }
@@ -95,10 +111,14 @@ impl AnyTokenizer {
     /// Whether the source declared a `decoder` pipeline that
     /// [`decode`](Self::decode) drives.
     ///
-    /// A caller reaching past this handle for a backend's *raw* byte-level
-    /// decode (a streaming decoder, `decode_bytes`) must consult this first:
-    /// when a pipeline is declared, that raw path skips it and renders the
-    /// backend's pieces (`▁hello▁world`) instead of text.
+    /// A caller reaching *past* this handle for a backend's own decode (that
+    /// backend's `streaming_decoder`, `decode_bytes`) must consult this first:
+    /// when a pipeline is declared, those paths skip it and render the
+    /// backend's pieces (`▁hello▁world`) instead of text. Streaming through
+    /// this handle's own [`streaming_decoder`](Self::streaming_decoder) does
+    /// run the declared pipeline — except for the shapes that cannot be
+    /// evaluated incrementally at all, which it refuses rather than answers
+    /// wrongly.
     pub fn declares_decoder(&self) -> bool {
         self.decoder.is_some()
     }
@@ -316,6 +336,84 @@ impl AnyTokenizer {
                 .map(|ids| self.decode_inner(ids))
                 .collect()
         }
+    }
+
+    /// A [`StreamingDecoder`] that reproduces this handle's
+    /// [`decode`](Self::decode).
+    ///
+    /// The decision mirrors [`decode`](Self::decode) exactly, because the two
+    /// must never disagree about what a sequence of ids says:
+    ///
+    /// * A declared `decoder` pipeline drives the stream, over this handle's
+    ///   token surfaces and with the same `special = true` ids dropped.
+    /// * With no pipeline declared, the backend's own factory answers — the
+    ///   same delegation whole-sequence decoding does.
+    ///
+    /// # Errors
+    /// [`TokenizeError::UnstreamableDecoder`], naming the step, when a pipeline
+    /// *is* declared but one of its ops cannot be evaluated one chunk at a time
+    /// (a `BPEDecoder`, a trailing `Strip`, a `Replace` over the fused text —
+    /// see `Decoder::lower`). Falling back to the backend's own decode would
+    /// answer with the raw pieces (`▁hello▁world`) the declared pipeline exists
+    /// to turn into text, so this refuses instead. Whole-sequence
+    /// [`decode`](Self::decode) still handles those pipelines.
+    ///
+    /// Unlike a backend's own factory, this one materializes the surface table
+    /// it renders through — a pipeline is declared over surface *strings*, and
+    /// only the whole vocabulary as strings can be rendered that way — so it
+    /// costs one pass over the vocabulary. Build the decoder once per stream,
+    /// not once per token.
+    ///
+    /// One id is treated differently from whole-sequence decoding, and in the
+    /// direction every other stream in this crate already takes: an id outside
+    /// the vocabulary entirely, which [`decode`](Self::decode) drops silently,
+    /// is reported by [`StreamingDecoder::add_token`] and skipped by
+    /// [`add_token_lossy`](StreamingDecoder::add_token_lossy) — the same strict
+    /// and lossy pair every backend's stream offers.
+    pub fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
+        let Some(decoder) = &self.decoder else {
+            return Ok(self.backend.streaming_decoder());
+        };
+        let Some((rules, post)) = decoder.lower() else {
+            // The two are exact complements of one lowering pass, so the
+            // fallback spelling below is unreachable; it exists only because the
+            // type system cannot say so.
+            return Err(TokenizeError::UnstreamableDecoder(
+                decoder.unstreamable_op().unwrap_or("declared"),
+            ));
+        };
+
+        // The surfaces the declared pipeline runs over, exactly as
+        // `decode_inner` collects them: `token_surface` per id, `special_decode`
+        // dropped ahead of it. An id with no surface at all is dropped too —
+        // which is a *skip* here, since a rendering rule reads a dense table and
+        // an empty slot would otherwise render as an empty surface (and, on a
+        // WordPiece pipeline, carry a word separator with it).
+        let vocab_size = Tokenize::vocab_size(self);
+        let mut surfaces = Vec::with_capacity(vocab_size);
+        let mut skip = self.special_decode.clone();
+        for id in 0..vocab_size {
+            let id = id as u32;
+            match self.backend.token_surface(id) {
+                Some(surface) => surfaces.push(surface),
+                None => {
+                    skip.insert(id);
+                    surfaces.push(String::new());
+                }
+            }
+        }
+
+        let rules = rules.with_vocabulary(
+            Surfaces::ByIndex(Arc::new(surfaces)),
+            // No separate special-token table: `token_surface` already answers
+            // for the special ids the backend knows, so every id the declared
+            // pipeline can see has a slot above.
+            Arc::new(rustc_hash::FxHashMap::default()),
+            Arc::new(skip),
+        );
+        Ok(StreamingDecoder::new(Arc::new(DecodeState::new(
+            rules, post,
+        ))))
     }
 
     /// Whether `id` is the end-of-sequence token.
