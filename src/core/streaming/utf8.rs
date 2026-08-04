@@ -4,37 +4,46 @@
 //! character in half. `Utf8Buffer` accumulates those bytes and hands back only
 //! the complete, valid UTF-8 prefix, keeping the incomplete tail for the next
 //! push.
+//!
+//! # Contract
+//!
+//! For any byte sequence, feeding it to a `Utf8Buffer` in *any* chunking and
+//! concatenating everything [`Utf8Buffer::take_complete`] emits plus a final
+//! [`Utf8Buffer::flush`] equals `String::from_utf8_lossy` of the whole
+//! sequence. Chunk boundaries affect only *when* text is emitted, never *what*
+//! is emitted. `std::str::from_utf8` is the single authority on validity here:
+//! there is no second, hand-rolled notion of what a valid sequence looks like.
 
 /// A byte buffer that emits only complete, valid UTF-8.
-pub(super) struct Utf8Buffer {
+pub(crate) struct Utf8Buffer {
     buffer: Vec<u8>,
 }
 
 impl Utf8Buffer {
     /// Create an empty buffer.
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             buffer: Vec::with_capacity(16),
         }
     }
 
     /// Append raw bytes to the buffer.
-    pub(super) fn push(&mut self, bytes: &[u8]) {
+    pub(crate) fn push(&mut self, bytes: &[u8]) {
         self.buffer.extend_from_slice(bytes);
     }
 
     /// Clear the buffer, discarding any buffered bytes.
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.buffer.clear();
     }
 
     /// Check if there are buffered bytes waiting for completion.
-    pub(super) fn has_pending(&self) -> bool {
+    pub(crate) fn has_pending(&self) -> bool {
         !self.buffer.is_empty()
     }
 
     /// Get the number of pending bytes in the buffer.
-    pub(super) fn pending_len(&self) -> usize {
+    pub(crate) fn pending_len(&self) -> usize {
         self.buffer.len()
     }
 
@@ -42,7 +51,7 @@ impl Utf8Buffer {
     ///
     /// If there are incomplete UTF-8 sequences in the buffer, they will be
     /// replaced with the Unicode replacement character (U+FFFD).
-    pub(super) fn flush(&mut self) -> String {
+    pub(crate) fn flush(&mut self) -> String {
         if self.buffer.is_empty() {
             return String::new();
         }
@@ -52,108 +61,102 @@ impl Utf8Buffer {
         result
     }
 
-    /// Extract complete UTF-8 characters from the buffer.
+    /// Extract every character the buffer can already decide on.
     ///
-    /// This function finds the longest valid UTF-8 prefix of the buffer,
-    /// returns it as a string, and keeps any incomplete trailing bytes.
-    pub(super) fn take_complete(&mut self) -> Option<String> {
+    /// Valid text is emitted as-is. A byte that can never begin (or continue)
+    /// a valid sequence is definitively invalid *now*, no matter what arrives
+    /// later, so it is replaced with U+FFFD and scanning continues past it —
+    /// otherwise a single bad byte at the head would stall the buffer until
+    /// [`flush`](Self::flush). Only a trailing sequence that is incomplete but
+    /// still *possible* stays buffered.
+    ///
+    /// Returns `None` when nothing could be decided yet.
+    pub(crate) fn take_complete(&mut self) -> Option<String> {
         if self.buffer.is_empty() {
             return None;
         }
 
-        // Find the longest valid UTF-8 prefix
-        let valid_len = self.find_valid_utf8_len();
+        let mut out = String::new();
+        let mut consumed = 0;
 
-        if valid_len == 0 {
-            return None;
-        }
-
-        // Extract the valid portion
-        let valid_bytes: Vec<u8> = self.buffer.drain(..valid_len).collect();
-
-        // SAFETY: We've verified this is valid UTF-8
-        let result = unsafe { String::from_utf8_unchecked(valid_bytes) };
-
-        Some(result)
-    }
-
-    /// Find the length of the longest valid UTF-8 prefix.
-    ///
-    /// This accounts for incomplete multi-byte sequences at the end.
-    fn find_valid_utf8_len(&self) -> usize {
-        let bytes = &self.buffer;
-        let len = bytes.len();
-
-        if len == 0 {
-            return 0;
-        }
-
-        // First, try to validate the entire buffer
-        if std::str::from_utf8(bytes).is_ok() {
-            return len;
-        }
-
-        // Find how many bytes at the end might be an incomplete sequence
-        // UTF-8 sequences can be 1-4 bytes long
-        // We need to check if the last 1-3 bytes could be the start of an incomplete sequence
-
-        for incomplete_len in 1..=3.min(len) {
-            let check_len = len - incomplete_len;
-            if check_len == 0 {
-                continue;
+        loop {
+            let rest = &self.buffer[consumed..];
+            if rest.is_empty() {
+                break;
             }
 
-            // Check if prefix is valid UTF-8
-            if std::str::from_utf8(&bytes[..check_len]).is_ok()
-                && could_be_incomplete_sequence(&bytes[check_len..])
-            {
-                // The trailing bytes could be an incomplete sequence
-                return check_len;
+            let (valid_up_to, error_len) = match std::str::from_utf8(rest) {
+                // The whole remainder is valid: emit it and stop.
+                Ok(valid) => {
+                    out.push_str(valid);
+                    consumed += valid.len();
+                    break;
+                }
+                Err(e) => (e.valid_up_to(), e.error_len()),
+            };
+
+            // `Utf8Error` guarantees the prefix is valid, so the lossy
+            // conversion borrows it unchanged rather than replacing anything.
+            out.push_str(&String::from_utf8_lossy(&rest[..valid_up_to]));
+            consumed += valid_up_to;
+
+            match error_len {
+                // Incomplete but still possible: keep the tail for the next push.
+                None => break,
+                // Definitively invalid: one U+FFFD, skip the bad bytes, keep going.
+                Some(invalid_len) => {
+                    out.push(char::REPLACEMENT_CHARACTER);
+                    consumed += invalid_len;
+                }
             }
         }
 
-        // If nothing works, find the last position that's valid
-        // This handles cases with invalid bytes in the middle
-        for i in (0..len).rev() {
-            if std::str::from_utf8(&bytes[..=i]).is_ok() {
-                return i + 1;
-            }
+        self.buffer.drain(..consumed);
+
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
         }
-
-        0
-    }
-}
-
-/// Check if bytes could be the start of an incomplete UTF-8 sequence.
-fn could_be_incomplete_sequence(bytes: &[u8]) -> bool {
-    if bytes.is_empty() {
-        return false;
-    }
-
-    let first = bytes[0];
-
-    // Check if first byte indicates a multi-byte sequence
-    // and we don't have all the continuation bytes
-    match first {
-        // 2-byte sequence: 110xxxxx
-        0xC0..=0xDF => bytes.len() < 2,
-        // 3-byte sequence: 1110xxxx
-        0xE0..=0xEF => bytes.len() < 3,
-        // 4-byte sequence: 11110xxx
-        0xF0..=0xF7 => bytes.len() < 4,
-        // Continuation byte or invalid - not the start of an incomplete sequence
-        _ => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     /// Push bytes and immediately take whatever became complete.
     fn push_take(buf: &mut Utf8Buffer, bytes: &[u8]) -> Option<String> {
         buf.push(bytes);
         buf.take_complete()
+    }
+
+    /// Feed `input` in the given chunks and concatenate every emission plus the
+    /// final flush — the left-hand side of the lossy-decoding contract.
+    fn drive_chunks(input: &[u8], chunks: &[&[u8]]) -> String {
+        let mut buf = Utf8Buffer::new();
+        let mut out = String::new();
+
+        debug_assert_eq!(
+            chunks.concat(),
+            input,
+            "chunks must reassemble the input exactly"
+        );
+
+        for chunk in chunks {
+            if let Some(text) = push_take(&mut buf, chunk) {
+                out.push_str(&text);
+            }
+        }
+        out.push_str(&buf.flush());
+        out
+    }
+
+    /// Feed `input` one byte at a time through [`drive_chunks`].
+    fn drive_byte_by_byte(input: &[u8]) -> String {
+        let chunks: Vec<&[u8]> = input.chunks(1).collect();
+        drive_chunks(input, &chunks)
     }
 
     #[test]
@@ -217,5 +220,120 @@ mod tests {
 
         buf.clear();
         assert!(!buf.has_pending());
+    }
+
+    #[test]
+    fn test_truncated_lead_recovers_on_next_byte() {
+        let mut buf = Utf8Buffer::new();
+
+        // A 3-byte lead that is never completed must not withhold the ASCII
+        // that follows it: the lead is invalid the moment 'A' arrives.
+        assert_eq!(push_take(&mut buf, &[0xE4]), None);
+        assert_eq!(push_take(&mut buf, b"A"), Some("\u{FFFD}A".to_string()));
+        assert_eq!(push_take(&mut buf, b"B"), Some("B".to_string()));
+        assert_eq!(push_take(&mut buf, b"C"), Some("C".to_string()));
+        assert!(!buf.has_pending());
+    }
+
+    #[test]
+    fn test_stray_continuation_byte_recovers() {
+        let mut buf = Utf8Buffer::new();
+
+        // 0x80 can never start a sequence, so it is invalid on arrival.
+        assert_eq!(push_take(&mut buf, &[0x80]), Some("\u{FFFD}".to_string()));
+        assert!(!buf.has_pending());
+        assert_eq!(push_take(&mut buf, b"ok"), Some("ok".to_string()));
+    }
+
+    #[test]
+    fn test_never_valid_byte_recovers() {
+        let mut buf = Utf8Buffer::new();
+
+        // 0xFF appears in no valid UTF-8 sequence at all.
+        assert_eq!(push_take(&mut buf, &[0xFF]), Some("\u{FFFD}".to_string()));
+        assert!(!buf.has_pending());
+        assert_eq!(push_take(&mut buf, b"ok"), Some("ok".to_string()));
+    }
+
+    #[test]
+    fn test_invalid_lead_bytes_are_not_buffered_as_possible_leads() {
+        // 0xC0/0xC1 would only ever encode overlong 2-byte forms and 0xF5 is
+        // beyond U+10FFFF, so none of them can begin a sequence.
+        for &lead in &[0xC0u8, 0xC1, 0xF5] {
+            let mut buf = Utf8Buffer::new();
+
+            assert_eq!(
+                push_take(&mut buf, &[lead]),
+                Some("\u{FFFD}".to_string()),
+                "0x{lead:02X} must be rejected immediately"
+            );
+            assert!(!buf.has_pending(), "0x{lead:02X} must not stay buffered");
+        }
+    }
+
+    #[test]
+    fn test_overlong_encoding_is_rejected() {
+        // 0xE0 0x80 0xAF is an overlong encoding of '/' (U+002F).
+        let input = [0xE0, 0x80, 0xAF];
+        let decoded = drive_byte_by_byte(&input);
+
+        assert!(!decoded.contains('/'), "overlong form must not decode");
+        assert_eq!(decoded, String::from_utf8_lossy(&input));
+    }
+
+    #[test]
+    fn test_surrogate_encoding_is_rejected() {
+        // 0xED 0xA0 0x80 is the CESU-8 style encoding of the surrogate U+D800.
+        let input = [0xED, 0xA0, 0x80];
+        let decoded = drive_byte_by_byte(&input);
+
+        assert!(decoded.chars().all(|c| c == '\u{FFFD}'));
+        assert_eq!(decoded, String::from_utf8_lossy(&input));
+    }
+
+    #[test]
+    fn test_invalid_bytes_interleaved_with_split_multi_byte_char() {
+        let mut buf = Utf8Buffer::new();
+
+        // Bad byte, then "世" (0xE4 0xB8 0x96) split across two pushes, then a
+        // second bad byte followed by ASCII.
+        assert_eq!(push_take(&mut buf, &[0xFF]), Some("\u{FFFD}".to_string()));
+        assert_eq!(push_take(&mut buf, &[0xE4, 0xB8]), None);
+        assert_eq!(push_take(&mut buf, &[0x96]), Some("世".to_string()));
+        assert_eq!(
+            push_take(&mut buf, &[0x80, b'z']),
+            Some("\u{FFFD}z".to_string())
+        );
+        assert!(!buf.has_pending());
+
+        // ...and the same byte stream matches std when driven byte by byte.
+        let input = [0xFF, 0xE4, 0xB8, 0x96, 0x80, b'z'];
+        assert_eq!(drive_byte_by_byte(&input), String::from_utf8_lossy(&input));
+    }
+
+    proptest! {
+        /// The oracle: byte-at-a-time feeding reproduces `from_utf8_lossy`.
+        #[test]
+        fn prop_byte_at_a_time_matches_lossy(input in prop::collection::vec(any::<u8>(), 0..64)) {
+            prop_assert_eq!(
+                drive_byte_by_byte(&input),
+                String::from_utf8_lossy(&input).into_owned()
+            );
+        }
+
+        /// Same oracle under arbitrary chunking, which is what proves chunk
+        /// boundaries cannot change the decoded result.
+        #[test]
+        fn prop_arbitrary_chunking_matches_lossy(
+            chunks in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..8), 0..16)
+        ) {
+            let input: Vec<u8> = chunks.concat();
+            let chunk_refs: Vec<&[u8]> = chunks.iter().map(|c| c.as_slice()).collect();
+
+            prop_assert_eq!(
+                drive_chunks(&input, &chunk_refs),
+                String::from_utf8_lossy(&input).into_owned()
+            );
+        }
     }
 }

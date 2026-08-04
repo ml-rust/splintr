@@ -11,6 +11,8 @@
 //! ByteLevel-to-bytes conversion before UTF-8 assembly.
 
 mod decoder;
-mod utf8;
+// Crate-internal: the Python bindings drive their own decoders off the same
+// `Utf8Buffer`. Never re-exported, so it stays out of the public API.
+pub(crate) mod utf8;
 
 pub use decoder::{ByteLevelStreamingDecoder, StreamingDecoder};

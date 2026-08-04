@@ -363,6 +363,29 @@ class TestCl100kStreamingDecoder:
 
         assert result == text
 
+    def test_streaming_decoder_recovers_from_invalid_byte(self, tokenizer):
+        """An undecodable byte yields one U+FFFD and streaming continues.
+
+        A lone 0xE4 opens a 3-byte sequence that never completes, so it is
+        definitively invalid the moment plain ASCII follows it. The decoder
+        must emit the replacement character and keep going rather than
+        buffering every later character until flush().
+        """
+        # cl100k token ids 0..255 are the 256 single-byte tokens.
+        byte_tokens = {tokenizer.decode_bytes([tid]): tid for tid in range(256)}
+
+        decoder = tokenizer.streaming_decoder()
+
+        assert decoder.add_token(byte_tokens[b"\xe4"]) is None
+        assert decoder.has_pending
+
+        assert decoder.add_token(byte_tokens[b"A"]) == "�A"
+        assert decoder.add_token(byte_tokens[b"B"]) == "B"
+        assert decoder.add_token(byte_tokens[b"C"]) == "C"
+
+        assert not decoder.has_pending
+        assert decoder.flush() == ""
+
 
 class TestCl100kBackendOptions:
     """Test regex backend options (pcre2, jit)."""

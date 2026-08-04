@@ -45,7 +45,7 @@ pub mod pretokenizer;
 pub mod pretrained;
 pub mod sentencepiece;
 pub mod spm;
-mod streaming;
+pub(crate) mod streaming;
 pub mod tokenize;
 mod tokenizer;
 mod vocab;

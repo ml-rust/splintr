@@ -47,6 +47,7 @@ use crate::core::hf_json::{
     from_json_bytes as core_from_json_bytes, from_json_path as core_from_json_path,
 };
 use crate::core::spm::SpmTokenizer;
+use crate::core::streaming::utf8::Utf8Buffer;
 use crate::core::wordpiece::WordPieceTokenizer;
 use crate::core::{byte_level_decode_bytes, Tokenize, Tokenizer};
 use crate::core::{AnyTokenizer, Backend, SpecialMode, SpecialPolicy};
@@ -1718,7 +1719,9 @@ fn parse_special_tokens(
 pub struct PyStreamingDecoder {
     decoder: FxHashMap<u32, Vec<u8>>,
     special_decoder: FxHashMap<u32, String>,
-    buffer: Vec<u8>,
+    /// Shared incremental UTF-8 buffering — the same one the Rust
+    /// `StreamingDecoder` uses, so both sides decode identically.
+    buffer: Utf8Buffer,
 }
 
 #[pymethods]
@@ -1739,10 +1742,10 @@ impl PyStreamingDecoder {
         };
 
         // Add to buffer
-        self.buffer.extend_from_slice(bytes);
+        self.buffer.push(bytes);
 
         // Try to extract complete UTF-8 characters
-        self.extract_complete_utf8()
+        self.buffer.take_complete()
     }
 
     /// Add multiple tokens at once and return complete UTF-8 characters.
@@ -1762,10 +1765,10 @@ impl PyStreamingDecoder {
                 continue;
             };
 
-            self.buffer.extend_from_slice(bytes);
+            self.buffer.push(bytes);
         }
 
-        self.extract_complete_utf8()
+        self.buffer.take_complete()
     }
 
     /// Flush any remaining buffered bytes.
@@ -1776,13 +1779,7 @@ impl PyStreamingDecoder {
     /// Returns:
     ///     Any remaining buffered content
     fn flush(&mut self) -> String {
-        if self.buffer.is_empty() {
-            return String::new();
-        }
-
-        let result = String::from_utf8_lossy(&self.buffer).into_owned();
-        self.buffer.clear();
-        result
+        self.buffer.flush()
     }
 
     /// Reset the decoder state, discarding any buffered bytes.
@@ -1793,17 +1790,20 @@ impl PyStreamingDecoder {
     /// Check if there are buffered bytes waiting for completion.
     #[getter]
     fn has_pending(&self) -> bool {
-        !self.buffer.is_empty()
+        self.buffer.has_pending()
     }
 
     /// Get the number of pending bytes in the buffer.
     #[getter]
     fn pending_bytes(&self) -> usize {
-        self.buffer.len()
+        self.buffer.pending_len()
     }
 
     fn __repr__(&self) -> String {
-        format!("StreamingDecoder(pending_bytes={})", self.buffer.len())
+        format!(
+            "StreamingDecoder(pending_bytes={})",
+            self.buffer.pending_len()
+        )
     }
 }
 
@@ -1812,81 +1812,7 @@ impl PyStreamingDecoder {
         Self {
             decoder,
             special_decoder,
-            buffer: Vec::with_capacity(16),
-        }
-    }
-
-    fn extract_complete_utf8(&mut self) -> Option<String> {
-        if self.buffer.is_empty() {
-            return None;
-        }
-
-        let valid_len = self.find_valid_utf8_len();
-
-        if valid_len == 0 {
-            return None;
-        }
-
-        let valid_bytes: Vec<u8> = self.buffer.drain(..valid_len).collect();
-        // SAFETY: We've verified this is valid UTF-8
-        let result = unsafe { String::from_utf8_unchecked(valid_bytes) };
-
-        Some(result)
-    }
-
-    fn find_valid_utf8_len(&self) -> usize {
-        let bytes = &self.buffer;
-        let len = bytes.len();
-
-        if len == 0 {
-            return 0;
-        }
-
-        // First, try to validate the entire buffer
-        if std::str::from_utf8(bytes).is_ok() {
-            return len;
-        }
-
-        // Find how many bytes at the end might be an incomplete sequence
-        for incomplete_len in 1..=3.min(len) {
-            let check_len = len - incomplete_len;
-            if check_len == 0 {
-                continue;
-            }
-
-            if std::str::from_utf8(&bytes[..check_len]).is_ok()
-                && Self::could_be_incomplete_sequence(&bytes[check_len..])
-            {
-                return check_len;
-            }
-        }
-
-        // If nothing works, find the last position that's valid
-        for i in (0..len).rev() {
-            if std::str::from_utf8(&bytes[..=i]).is_ok() {
-                return i + 1;
-            }
-        }
-
-        0
-    }
-
-    fn could_be_incomplete_sequence(bytes: &[u8]) -> bool {
-        if bytes.is_empty() {
-            return false;
-        }
-
-        let first = bytes[0];
-
-        match first {
-            // 2-byte sequence: 110xxxxx
-            0xC0..=0xDF => bytes.len() < 2,
-            // 3-byte sequence: 1110xxxx
-            0xE0..=0xEF => bytes.len() < 3,
-            // 4-byte sequence: 11110xxx
-            0xF0..=0xF7 => bytes.len() < 4,
-            // Continuation byte or invalid
-            _ => false,
+            buffer: Utf8Buffer::new(),
         }
     }
 }
@@ -1900,7 +1826,9 @@ impl PyStreamingDecoder {
 pub struct PyByteLevelStreamingDecoder {
     decoder: FxHashMap<u32, Vec<u8>>,
     special_decoder: FxHashMap<u32, String>,
-    buffer: Vec<u8>,
+    /// Shared incremental UTF-8 buffering — the same one the Rust
+    /// `ByteLevelStreamingDecoder` uses, so both sides decode identically.
+    buffer: Utf8Buffer,
 }
 
 #[pymethods]
@@ -1920,20 +1848,20 @@ impl PyByteLevelStreamingDecoder {
             Some(encoded_bytes) => {
                 // Decode ByteLevel encoding to raw bytes
                 if let Some(raw_bytes) = byte_level_decode_bytes(encoded_bytes) {
-                    self.buffer.extend_from_slice(&raw_bytes);
+                    self.buffer.push(&raw_bytes);
                 } else {
                     // Fallback: treat as raw bytes if ByteLevel decode fails
-                    self.buffer.extend_from_slice(encoded_bytes);
+                    self.buffer.push(encoded_bytes);
                 }
             }
             // Special tokens are NOT ByteLevel-encoded, add directly. An id in
             // neither table is unknown; buffer nothing and yield nothing.
             None => self
                 .buffer
-                .extend_from_slice(self.special_decoder.get(&token_id)?.as_bytes()),
+                .push(self.special_decoder.get(&token_id)?.as_bytes()),
         }
 
-        self.extract_complete_utf8()
+        self.buffer.take_complete()
     }
 
     /// Add multiple tokens at once and return complete UTF-8 characters.
@@ -1947,16 +1875,16 @@ impl PyByteLevelStreamingDecoder {
         for token_id in token_ids {
             if let Some(encoded_bytes) = self.decoder.get(&token_id) {
                 if let Some(raw_bytes) = byte_level_decode_bytes(encoded_bytes) {
-                    self.buffer.extend_from_slice(&raw_bytes);
+                    self.buffer.push(&raw_bytes);
                 } else {
-                    self.buffer.extend_from_slice(encoded_bytes);
+                    self.buffer.push(encoded_bytes);
                 }
             } else if let Some(special) = self.special_decoder.get(&token_id) {
-                self.buffer.extend_from_slice(special.as_bytes());
+                self.buffer.push(special.as_bytes());
             }
         }
 
-        self.extract_complete_utf8()
+        self.buffer.take_complete()
     }
 
     /// Flush any remaining buffered bytes.
@@ -1967,13 +1895,7 @@ impl PyByteLevelStreamingDecoder {
     /// Returns:
     ///     Any remaining buffered content
     fn flush(&mut self) -> String {
-        if self.buffer.is_empty() {
-            return String::new();
-        }
-
-        let result = String::from_utf8_lossy(&self.buffer).into_owned();
-        self.buffer.clear();
-        result
+        self.buffer.flush()
     }
 
     /// Reset the decoder state, discarding any buffered bytes.
@@ -1984,19 +1906,19 @@ impl PyByteLevelStreamingDecoder {
     /// Check if there are buffered bytes waiting for completion.
     #[getter]
     fn has_pending(&self) -> bool {
-        !self.buffer.is_empty()
+        self.buffer.has_pending()
     }
 
     /// Get the number of pending bytes in the buffer.
     #[getter]
     fn pending_bytes(&self) -> usize {
-        self.buffer.len()
+        self.buffer.pending_len()
     }
 
     fn __repr__(&self) -> String {
         format!(
             "ByteLevelStreamingDecoder(pending_bytes={})",
-            self.buffer.len()
+            self.buffer.pending_len()
         )
     }
 }
@@ -2006,77 +1928,7 @@ impl PyByteLevelStreamingDecoder {
         Self {
             decoder,
             special_decoder,
-            buffer: Vec::with_capacity(16),
-        }
-    }
-
-    fn extract_complete_utf8(&mut self) -> Option<String> {
-        if self.buffer.is_empty() {
-            return None;
-        }
-
-        let valid_len = self.find_valid_utf8_len();
-
-        if valid_len == 0 {
-            return None;
-        }
-
-        let valid_bytes: Vec<u8> = self.buffer.drain(..valid_len).collect();
-        // SAFETY: We've verified this is valid UTF-8
-        let result = unsafe { String::from_utf8_unchecked(valid_bytes) };
-
-        Some(result)
-    }
-
-    fn find_valid_utf8_len(&self) -> usize {
-        let bytes = &self.buffer;
-        let len = bytes.len();
-
-        if len == 0 {
-            return 0;
-        }
-
-        // First, try to validate the entire buffer
-        if std::str::from_utf8(bytes).is_ok() {
-            return len;
-        }
-
-        // Find how many bytes at the end might be an incomplete sequence
-        for incomplete_len in 1..=3.min(len) {
-            let check_len = len - incomplete_len;
-            if check_len == 0 {
-                continue;
-            }
-
-            if std::str::from_utf8(&bytes[..check_len]).is_ok()
-                && Self::could_be_incomplete_sequence(&bytes[check_len..])
-            {
-                return check_len;
-            }
-        }
-
-        // If nothing works, find the last position that's valid
-        for i in (0..len).rev() {
-            if std::str::from_utf8(&bytes[..=i]).is_ok() {
-                return i + 1;
-            }
-        }
-
-        0
-    }
-
-    fn could_be_incomplete_sequence(bytes: &[u8]) -> bool {
-        if bytes.is_empty() {
-            return false;
-        }
-
-        let first = bytes[0];
-
-        match first {
-            0xC0..=0xDF => bytes.len() < 2,
-            0xE0..=0xEF => bytes.len() < 3,
-            0xF0..=0xF7 => bytes.len() < 4,
-            _ => false,
+            buffer: Utf8Buffer::new(),
         }
     }
 }

@@ -655,6 +655,36 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
         assert not decoder.has_pending
         assert decoder.pending_bytes == 0
 
+    def test_byte_level_streaming_decoder_recovers_from_invalid_byte(self, tokenizer):
+        """An undecodable byte yields one U+FFFD and streaming continues.
+
+        A lone multi-byte lead that is never completed is definitively invalid
+        the moment plain ASCII follows it. The decoder must emit the
+        replacement character and keep going rather than buffering every later
+        character until flush().
+        """
+        lead = self._lone_lead_byte_token(tokenizer)
+        (a_token,) = tokenizer.encode("A")
+
+        decoder = tokenizer.byte_level_streaming_decoder()
+
+        assert decoder.add_token(lead) is None
+        assert decoder.has_pending
+
+        assert decoder.add_token(a_token) == "�A"
+        assert not decoder.has_pending
+        assert decoder.flush() == ""
+
+    @staticmethod
+    def _lone_lead_byte_token(tokenizer):
+        """Find a token whose raw bytes are a single multi-byte UTF-8 lead."""
+        probe = tokenizer.byte_level_streaming_decoder()
+        for token_id in range(512):
+            probe.reset()
+            if probe.add_token(token_id) is None and probe.pending_bytes == 1:
+                return token_id
+        pytest.fail("no single lead-byte token found in the vocabulary")
+
     def test_byte_level_streaming_decoder_repr(self, tokenizer):
         """Test ByteLevel streaming decoder __repr__."""
         decoder = tokenizer.byte_level_streaming_decoder()
