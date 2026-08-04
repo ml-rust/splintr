@@ -148,25 +148,6 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     // map so BPE merges in the correct order regardless of id assignment.
     let merge_ranks = parse_merge_ranks(model, vocab);
 
-    // `model.byte_fallback: true` declares a `<0xNN>` byte-fallback set in
-    // `model.vocab` (mistral-7b, embeddinggemma, ...): a piece BPE cannot
-    // represent should be emitted through those ids rather than silently
-    // dropped. The set need NOT be complete — HuggingFace resolves fallback per
-    // character, using `<0xNN>` where the entry exists and `model.unk_token`
-    // where it does not, so a file declaring only some of the 256 entries loads
-    // and tokenizes fine there (measured against `tokenizers` 0.22.1). Hence the
-    // unk id is resolved alongside, and neither half being present is not an
-    // error: with nothing to fall back to, `byte_fallback_from_encoder` yields
-    // `None` and the unrepresentable piece is dropped, exactly as HF does.
-    let declares_byte_fallback = model
-        .get("byte_fallback")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let unk_id = parse_unk_id(model, vocab, None);
-    let byte_fallback = declares_byte_fallback
-        .then(|| Tokenizer::byte_fallback_from_encoder(&encoder, unk_id))
-        .flatten();
-
     // Use the multi-stage pre-tokenizer engine when the json declares a pipeline
     // (Digits/Punctuation/Sequence/Split/…). It emits already byte-level-encoded
     // pieces, so the tokenizer itself must not re-encode (plain `new`).
@@ -185,6 +166,48 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     {
         return Err(HfJsonError::UnsupportedPreTokenizer(pre.unknown.join(", ")));
     }
+
+    // Whether the tokenizer this call builds will be ByteLevel — either via the
+    // multi-stage engine's own `ByteLevel` stage or the single-regex `pre.byte_level`
+    // path below. `Tokenizer::bpe` discards `byte_fallback` whenever
+    // `use_byte_level` is true (the `<0xNN>` table maps RAW byte values, which is
+    // the wrong space once input has been byte-level-encoded — see the doc on
+    // `Tokenizer::bpe`), so a ByteLevel model's fallback can never fire. Skip
+    // building it there entirely rather than constructing a 256-entry `Box` that
+    // `has_byte_fallback()` would then report as active despite never being
+    // consulted.
+    let is_byte_level = engine.as_ref().map_or(pre.byte_level, |pt| pt.byte_level());
+
+    // `model.byte_fallback: true` declares a `<0xNN>` byte-fallback set in
+    // `model.vocab` (mistral-7b, embeddinggemma, ...): a piece BPE cannot
+    // represent should be emitted through those ids rather than silently
+    // dropped. The set need NOT be complete — HuggingFace resolves fallback per
+    // character, using `<0xNN>` where the entry exists and `model.unk_token`
+    // where it does not, so a file declaring only some of the 256 entries loads
+    // and tokenizes fine there (measured against `tokenizers` 0.22.1).
+    //
+    // The flag governs the `<0xNN>` half ONLY. `model.unk_token` is honored
+    // regardless of it: HF's BPE model emits the unk for any piece it cannot
+    // represent whether or not `byte_fallback` is set, and consults the
+    // `<0xNN>` tokens only when it is — measured against `tokenizers` 0.22.1
+    // on a `{"<unk>": 0, "a": 1, "<0x7A>": 2}` vocab with `unk_token: "<unk>"`,
+    // where `encode("az")` gives `['a', '<0x7A>']` under `byte_fallback: true`
+    // and `['a', '<unk>']` under `byte_fallback: false`, despite `<0x7A>`
+    // existing in the vocab both times. So gating construction on the flag
+    // would silently DROP unrepresentable pieces in the (common) file that
+    // declares an unk without the flag.
+    //
+    // Neither half being present is still not an error: with nothing to fall
+    // back to, `byte_fallback_from_encoder` yields `None` and the
+    // unrepresentable piece is dropped, exactly as HF does.
+    let declares_byte_fallback = model
+        .get("byte_fallback")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let unk_id = parse_unk_id(model, vocab, None);
+    let byte_fallback = (!is_byte_level)
+        .then(|| Tokenizer::byte_fallback_from_encoder(&encoder, unk_id, declares_byte_fallback))
+        .flatten();
 
     let tok = match engine {
         Some(pt) => {

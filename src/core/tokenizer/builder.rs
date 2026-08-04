@@ -513,8 +513,12 @@ impl Tokenizer {
     /// Attach the [`ByteFallback`] resolution, so a BPE piece the merge cannot
     /// represent is emitted through its `<0xNN>`/`<unk>` ids instead of being
     /// dropped. `None` disables it — the correct choice for any vocabulary that
-    /// declares no byte fallback, notably every ByteLevel BPE model (full
-    /// 256-char alphabet coverage, so the fallback would never fire anyway).
+    /// declares no byte fallback, and *required* for every ByteLevel BPE model:
+    /// `Tokenizer::bpe` discards `byte_fallback` outright whenever
+    /// `use_byte_level` is true (the `<0xNN>` table is keyed by RAW byte value,
+    /// the wrong space once input has already been byte-level-encoded), so a
+    /// `Some` here would never fire and callers should not build one (see
+    /// `build_bpe` in `src/core/hf_json/loader.rs`, which skips the call).
     pub fn with_byte_fallback(mut self, byte_fallback: Option<ByteFallback>) -> Self {
         self.byte_fallback = byte_fallback;
         self
@@ -532,15 +536,25 @@ impl Tokenizer {
     /// is a valid file. Returns `None` only when neither half exists (no byte
     /// entries and no unk id), where there is nothing to fall back *to* and
     /// dropping — the no-fallback behavior — is already the answer.
+    ///
+    /// `declares_byte_fallback` is the model's own `byte_fallback` flag and
+    /// gates the `<0xNN>` table ONLY. When it is false the table is left empty
+    /// even if the vocabulary spells `<0xNN>` tokens — HuggingFace's BPE model
+    /// consults them only under the flag — while `unk_id` still applies, since
+    /// the unk branch is not gated on the flag at all (measured against
+    /// `tokenizers` 0.22.1; see `build_bpe` in `src/core/hf_json/loader.rs`).
     pub(crate) fn byte_fallback_from_encoder(
         encoder: &FxHashMap<Vec<u8>, u32>,
         unk_id: Option<u32>,
+        declares_byte_fallback: bool,
     ) -> Option<ByteFallback> {
         let mut byte_ids = [None; 256];
         let mut any = false;
-        for (b, slot) in byte_ids.iter_mut().enumerate() {
-            *slot = encoder.get(format!("<0x{b:02X}>").as_bytes()).copied();
-            any |= slot.is_some();
+        if declares_byte_fallback {
+            for (b, slot) in byte_ids.iter_mut().enumerate() {
+                *slot = encoder.get(format!("<0x{b:02X}>").as_bytes()).copied();
+                any |= slot.is_some();
+            }
         }
         (any || unk_id.is_some()).then(|| ByteFallback::new(byte_ids, unk_id))
     }

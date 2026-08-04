@@ -679,7 +679,13 @@ fn byte_fallback_true_emits_the_fallback_id_for_an_unrepresented_byte() {
 
 /// Same vocab and text as above, but `byte_fallback` is `false` (and, in a
 /// second case, entirely absent): the unrepresented byte is dropped, pinning
-/// that byte fallback is opt-in and this file's defaults are unaffected.
+/// that the `<0xNN>` branch is opt-in and this file's defaults are unaffected.
+///
+/// The document declares no `model.unk_token`, which is what makes the *drop*
+/// the answer rather than an unk — the unk branch is not gated on the flag (see
+/// `unk_fallback_is_not_gated_on_the_byte_fallback_flag`), so this test pins the
+/// flag-off half only in the absence of an unk. `tokenizers` 0.22.1 agrees:
+/// with neither an unk nor the flag, `encode('abc')` → `['a', 'c']`.
 #[test]
 fn byte_fallback_false_or_absent_still_drops_the_unrepresented_byte() {
     for model_fragment in [
@@ -700,9 +706,106 @@ fn byte_fallback_false_or_absent_still_drops_the_unrepresented_byte() {
         else {
             panic!("expected BPE backend");
         };
-        // 'b' (0x62) has no vocab entry and no fallback table configured, so
-        // it is silently dropped: today's pre-existing behavior.
+        // 'b' (0x62) has no vocab entry, no `<0xNN>` table (the flag is off)
+        // and no unk to fall back to, so it is silently dropped: today's
+        // pre-existing behavior. With nothing on either half, no fallback is
+        // configured at all.
+        assert!(!t.has_byte_fallback());
         assert_eq!(t.encode("abc"), vec![0, 1]);
+    }
+}
+
+/// The unk branch is NOT gated on `model.byte_fallback`. A file declaring a
+/// resolvable `model.unk_token` renders an unrepresentable piece as that unk
+/// whether the flag is `true`, `false`, or absent — so all three spellings of
+/// this document must agree.
+///
+/// Ground truth from `tokenizers` 0.22.1, not from splintr's own output: on a
+/// `{"<unk>": 0, "▁": 1, "▁hello": 2}` vocab with `unk_token: "<unk>"`, the two
+/// flag settings encode the same input to the *identical* token sequence
+/// (`['▁', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '▁', '<unk>']` both
+/// times), while dropping `unk_token` from the same document collapses it to
+/// `['▁', '▁']`. Here that rule shows as `encode('abc')` → `['a', '<unk>',
+/// 'c']` = `[1, 0, 2]` in all three cases — before this was fixed, the
+/// flag-off cases dropped the `b` entirely.
+#[test]
+fn unk_fallback_is_not_gated_on_the_byte_fallback_flag() {
+    for model_fragment in [
+        r#""byte_fallback": true,"#,
+        r#""byte_fallback": false,"#,
+        // omitted entirely
+        "",
+    ] {
+        let json = format!(
+            r#"{{
+                "model": {{"type": "BPE", {model_fragment} "unk_token": "<unk>",
+                    "vocab": {{"<unk>": 0, "a": 1, "c": 2}},
+                    "merges": []}}
+            }}"#
+        );
+        let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+            .expect("loads")
+            .into_backend()
+        else {
+            panic!("expected BPE backend");
+        };
+        assert!(t.has_byte_fallback());
+        assert_eq!(t.encode("abc"), vec![1, 0, 2]);
+    }
+}
+
+/// A ByteLevel BPE model (GPT-2 style) with a resolvable `model.unk_token`
+/// must NOT report a fallback: `Tokenizer::bpe` discards `byte_fallback`
+/// outright whenever `use_byte_level` is true (the `<0xNN>` table is keyed by
+/// RAW byte value, the wrong space once input has been byte-level-encoded),
+/// so a `Some` here would be dead weight that `has_byte_fallback()` reports as
+/// live despite never firing. Pins that `build_bpe` skips constructing it for
+/// this shape rather than only relying on the encode-time gate.
+#[test]
+fn byte_level_bpe_never_reports_a_fallback_even_with_a_resolvable_unk() {
+    let json = r#"{
+        "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false},
+        "model": {"type": "BPE", "unk_token": "<|endoftext|>",
+            "vocab": {"<|endoftext|>": 0, "a": 1, "Ġa": 2},
+            "merges": []}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    assert!(!t.has_byte_fallback());
+}
+
+/// The `<0xNN>` branch, by contrast, IS gated on the flag — and the gate is on
+/// the flag alone, not on whether the vocabulary happens to spell `<0xNN>`
+/// tokens. With `<0x7A>` present in the vocab, `byte_fallback: false` still
+/// resolves `z` to the *unk* id; only `byte_fallback: true` reaches the byte
+/// token. Both directions are asserted here, in one place, so the flag cannot
+/// be ignored either way.
+///
+/// Ground truth from `tokenizers` 0.22.1, not from splintr's own output: on the
+/// `{"<unk>": 0, "a": 1, "<0x7A>": 2}` vocab below with `unk_token: "<unk>"`,
+/// `encode("az")` → `['a', '<0x7A>']` = `[1, 2]` with the flag true, and
+/// `['a', '<unk>']` = `[1, 0]` with the flag false.
+#[test]
+fn byte_fallback_flag_gates_only_the_byte_token_branch() {
+    for (flag, expected) in [(true, vec![1, 2]), (false, vec![1, 0])] {
+        let json = format!(
+            r#"{{
+                "model": {{"type": "BPE", "byte_fallback": {flag}, "unk_token": "<unk>",
+                    "vocab": {{"<unk>": 0, "a": 1, "<0x7A>": 2}},
+                    "merges": []}}
+            }}"#
+        );
+        let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+            .expect("loads")
+            .into_backend()
+        else {
+            panic!("expected BPE backend");
+        };
+        assert_eq!(t.encode("az"), expected, "byte_fallback: {flag}");
     }
 }
 

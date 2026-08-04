@@ -18,6 +18,11 @@ use super::error::TokenizerError;
 /// with only some `<0xNN>` entries is a valid file, not a malformed one — so
 /// both are optional here and a character neither half can render is dropped,
 /// which is `byte_pair_encode_pieces`' behavior without any fallback at all.
+///
+/// An entirely empty `byte_ids` with a `Some(unk_id)` is the ordinary shape for
+/// a `tokenizer.json` that declares `model.unk_token` without
+/// `model.byte_fallback`: HuggingFace gates the `<0xNN>` branch on that flag but
+/// never gates the unk branch on it.
 #[derive(Clone, Debug)]
 pub struct ByteFallback {
     /// Token id per byte value, `None` where the vocabulary declares no
