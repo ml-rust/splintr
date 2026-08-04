@@ -28,6 +28,12 @@ pub use core::{
     from_gguf_vocab, from_json_bytes, from_json_path, AnyTokenizer, Backend, GgufVocab,
     GgufVocabError, HfJsonError, PolicyError, SpecialMode, SpecialPolicy,
 };
+/// The normalizer pipeline and its steps, re-exported so the
+/// `with_normalizer` builder methods on [`Tokenizer`] and
+/// [`SentencePieceTokenizer`] are actually callable from outside this crate:
+/// building a [`Normalizer`] requires naming [`NormOp`], and applying a
+/// SentencePiece charsmap step requires naming [`Precompiled`].
+pub use core::{NormOp, Normalizer, Precompiled};
 /// The hash map splintr's vocabulary constructors take, re-exported for the same
 /// reason as [`FxHashSet`]: [`Tokenizer::new`] takes `FxHashMap<Vec<u8>, u32>` for
 /// the encoder and `FxHashMap<String, u32>` for the special tokens, so building a

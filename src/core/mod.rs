@@ -38,9 +38,9 @@ mod decoder;
 pub mod gguf;
 pub mod hf_json;
 mod metaspace;
-mod normalizer;
+pub mod normalizer;
 mod policy;
-mod precompiled;
+pub mod precompiled;
 mod pretokenizer;
 pub mod pretrained;
 pub mod sentencepiece;
@@ -58,7 +58,9 @@ pub use bpe::byte_pair_encode;
 pub use byte_level::{byte_level_decode, byte_level_decode_bytes, byte_level_encode};
 pub use gguf::{from_gguf_vocab, GgufVocab, GgufVocabError};
 pub use hf_json::{from_json_bytes, from_json_path, HfJsonError};
+pub use normalizer::{NormOp, Normalizer};
 pub use policy::{PolicyError, SpecialMode, SpecialPolicy};
+pub use precompiled::Precompiled;
 pub use pretrained::{
     base_vocab_size, base_vocab_size_by_name, bos_token_id, bos_token_id_by_name,
     cl100k_base_special_tokens, deepseek_v3_special_tokens, eos_token_id, eos_token_id_by_name,

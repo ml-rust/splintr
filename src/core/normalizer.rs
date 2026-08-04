@@ -13,6 +13,11 @@ use unicode_normalization::UnicodeNormalization;
 use super::precompiled::Precompiled;
 
 /// A single normalization step, matching one HuggingFace normalizer type.
+///
+/// `#[non_exhaustive]`: this enum tracks HuggingFace's normalizer spec and
+/// grows as new normalizer types are added there, so adding a variant must
+/// not be a breaking change for downstream matchers.
+#[non_exhaustive]
 pub enum NormOp {
     Nfc,
     Nfd,
