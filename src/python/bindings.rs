@@ -47,10 +47,9 @@ use crate::core::hf_json::{
     from_json_bytes as core_from_json_bytes, from_json_path as core_from_json_path,
 };
 use crate::core::spm::SpmTokenizer;
-use crate::core::streaming::utf8::Utf8Buffer;
 use crate::core::wordpiece::WordPieceTokenizer;
-use crate::core::{byte_level_decode_bytes, Tokenize, Tokenizer};
 use crate::core::{AnyTokenizer, Backend, SpecialMode, SpecialPolicy};
+use crate::core::{StreamingDecoder, Tokenize, Tokenizer};
 
 // Special tokens are defined in crate::core::pretrained module.
 // See that module for the full token documentation and implementations.
@@ -479,6 +478,12 @@ impl PyTokenizer {
     /// Useful for streaming LLM output where token boundaries may not
     /// align with UTF-8 character boundaries.
     ///
+    /// The decoder takes every spelling rule (ByteLevel alphabet, `<0xNN>` byte
+    /// fallback, metaspace, the specials `decode` drops) from **this**
+    /// tokenizer's own configuration, so `"".join(chunks) + flush()` reproduces
+    /// `decode` for any ids — there is no second decoder class to pick between
+    /// and therefore no way to pick the wrong one.
+    ///
     /// Returns:
     ///     StreamingDecoder instance
     ///
@@ -489,33 +494,7 @@ impl PyTokenizer {
     ///             print(text, end="", flush=True)
     ///     print(decoder.flush())
     fn streaming_decoder(&self) -> PyStreamingDecoder {
-        PyStreamingDecoder::new(
-            self.inner.decoder().clone(),
-            self.inner.special_tokens_decoder().clone(),
-        )
-    }
-
-    /// Create a ByteLevel streaming decoder for UTF-8 safe token-by-token decoding.
-    ///
-    /// This decoder is designed for tokenizers using ByteLevel BPE encoding
-    /// (GPT-2, Llama, DeepSeek V3) where tokens represent ByteLevel-encoded
-    /// characters that need to be decoded back to raw bytes before UTF-8 assembly.
-    ///
-    /// Returns:
-    ///     ByteLevelStreamingDecoder instance
-    ///
-    /// Example:
-    ///     tokenizer = Tokenizer.from_bytes(vocab_bytes, GPT2_PATTERN)
-    ///     decoder = tokenizer.byte_level_streaming_decoder()
-    ///     for token_id in token_stream:
-    ///         if text := decoder.add_token(token_id):
-    ///             print(text, end="", flush=True)
-    ///     print(decoder.flush())
-    fn byte_level_streaming_decoder(&self) -> PyByteLevelStreamingDecoder {
-        PyByteLevelStreamingDecoder::new(
-            self.inner.decoder().clone(),
-            self.inner.special_tokens_decoder().clone(),
-        )
+        PyStreamingDecoder::new(self.inner.streaming_decoder())
     }
 
     /// Clear the encoding cache.
@@ -755,6 +734,18 @@ impl PySentencePieceTokenizer {
         self.inner.bos_token_id()
     }
 
+    /// Create a streaming decoder for UTF-8 safe token-by-token decoding.
+    ///
+    /// Built from this tokenizer's own decode configuration — `▁` word
+    /// separator, `<0xNN>` byte fallback and all — so `"".join(chunks) +
+    /// flush()` reproduces `decode`.
+    ///
+    /// Returns:
+    ///     StreamingDecoder instance
+    fn streaming_decoder(&self) -> PyStreamingDecoder {
+        PyStreamingDecoder::new(self.inner.streaming_decoder())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "SentencePieceTokenizer(vocab_size={})",
@@ -971,6 +962,18 @@ impl PySpmTokenizer {
         self.inner.bos_token_id()
     }
 
+    /// Create a streaming decoder for UTF-8 safe token-by-token decoding.
+    ///
+    /// Built from this tokenizer's own decode configuration — `▁` word
+    /// separator, `<0xNN>` byte fallback and all — so `"".join(chunks) +
+    /// flush()` reproduces `decode`.
+    ///
+    /// Returns:
+    ///     StreamingDecoder instance
+    fn streaming_decoder(&self) -> PyStreamingDecoder {
+        PyStreamingDecoder::new(self.inner.streaming_decoder())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "SpmTokenizer(vocab_size={})",
@@ -1163,6 +1166,18 @@ impl PyWordPieceTokenizer {
     #[getter]
     fn pad_token_id(&self) -> Option<u32> {
         self.inner.pad_token_id()
+    }
+
+    /// Create a streaming decoder for UTF-8 safe token-by-token decoding.
+    ///
+    /// Built from this tokenizer's own decode configuration — the `##`
+    /// continuation prefix and the word separator included — so
+    /// `"".join(chunks) + flush()` reproduces `decode`.
+    ///
+    /// Returns:
+    ///     StreamingDecoder instance
+    fn streaming_decoder(&self) -> PyStreamingDecoder {
+        PyStreamingDecoder::new(self.inner.streaming_decoder())
     }
 }
 
@@ -1499,13 +1514,22 @@ impl PyAnyTokenizer {
     /// Useful for streaming LLM output where token boundaries may not align
     /// with UTF-8 character boundaries.
     ///
+    /// The decision mirrors `decode` exactly, so the two can never disagree
+    /// about what a sequence of ids says: a declared `decoder` pipeline drives
+    /// the stream, and with none declared the backend's own decoder does. Every
+    /// family is served, not just byte-level BPE.
+    ///
     /// Returns:
     ///     StreamingDecoder instance
     ///
     /// Raises:
-    ///     ValueError: Under the same conditions as `decode_bytes` — a streaming
-    ///         decoder assembles raw token bytes, so it needs the byte-level BPE
-    ///         backend and no declared `decoder` pipeline to bypass
+    ///     ValueError: If this tokenizer declares a `decoder` pipeline holding a
+    ///         step that cannot be evaluated one chunk at a time (a
+    ///         `BPEDecoder`, a trailing `Strip`, a `Replace` over the fused
+    ///         text). The message names the step. Falling back to the backend's
+    ///         own decode would render the raw pieces (`▁hello▁world`) the
+    ///         pipeline exists to turn into text, so this refuses instead —
+    ///         whole-sequence `decode` still handles those files.
     ///
     /// Example:
     ///     decoder = tokenizer.streaming_decoder()
@@ -1514,34 +1538,10 @@ impl PyAnyTokenizer {
     ///             print(text, end="", flush=True)
     ///     print(decoder.flush())
     fn streaming_decoder(&self) -> PyResult<PyStreamingDecoder> {
-        let bpe = self.bpe_raw()?;
-        Ok(PyStreamingDecoder::new(
-            bpe.decoder().clone(),
-            bpe.special_tokens_decoder().clone(),
-        ))
-    }
-
-    /// Create a ByteLevel streaming decoder for UTF-8 safe token-by-token decoding.
-    ///
-    /// For tokenizers using ByteLevel BPE encoding (GPT-2, Llama, DeepSeek V3),
-    /// where tokens hold ByteLevel-encoded characters that must be decoded back
-    /// to raw bytes before UTF-8 assembly.
-    ///
-    /// Returns:
-    ///     ByteLevelStreamingDecoder instance
-    ///
-    /// Raises:
-    ///     ValueError: Under the same conditions as `streaming_decoder`
-    ///
-    /// Example:
-    ///     tokenizer = Tokenizer.from_pretrained("deepseek_v3")
-    ///     decoder = tokenizer.byte_level_streaming_decoder()
-    fn byte_level_streaming_decoder(&self) -> PyResult<PyByteLevelStreamingDecoder> {
-        let bpe = self.bpe_raw()?;
-        Ok(PyByteLevelStreamingDecoder::new(
-            bpe.decoder().clone(),
-            bpe.special_tokens_decoder().clone(),
-        ))
+        self.inner
+            .streaming_decoder()
+            .map(PyStreamingDecoder::new)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Clear the encoding cache.
@@ -1603,7 +1603,7 @@ impl PyAnyTokenizer {
 
 impl PyAnyTokenizer {
     /// Borrow the byte-level BPE backend, for the surfaces only it defines
-    /// (the chunk cache, the raw byte decodes, the streaming decoders).
+    /// (the chunk cache and the raw byte decodes).
     ///
     /// Delegating to the backend keeps those methods reachable from the
     /// universal handle without a second construction path; a family that does
@@ -1711,22 +1711,31 @@ fn parse_special_tokens(
     Ok(result)
 }
 
-/// Python wrapper for streaming decoder.
+/// Python wrapper for the Rust [`StreamingDecoder`].
 ///
-/// Handles UTF-8 safe streaming decode for token-by-token LLM output.
-/// Buffers incomplete UTF-8 sequences and only emits complete characters.
+/// Handles UTF-8 safe streaming decode for token-by-token LLM output: it
+/// buffers incomplete UTF-8 sequences and only emits complete characters, and
+/// it renders each id through exactly the code whole-sequence `decode` renders
+/// it through — ByteLevel alphabet unmapped, `<0xNN>` byte fallback resolved,
+/// metaspace substituted, `special=true` ids dropped.
+///
+/// There is one such class, and no constructor: a decoder comes only from a
+/// tokenizer's own `streaming_decoder()`, which takes every one of those rules
+/// from that tokenizer's configuration. Pairing a decoder with the wrong kind
+/// of vocabulary — the mistake that used to turn a byte-level stream into
+/// mojibake — is therefore not expressible from Python either.
 #[pyclass(name = "StreamingDecoder")]
 pub struct PyStreamingDecoder {
-    decoder: FxHashMap<u32, Vec<u8>>,
-    special_decoder: FxHashMap<u32, String>,
-    /// Shared incremental UTF-8 buffering — the same one the Rust
-    /// `StreamingDecoder` uses, so both sides decode identically.
-    buffer: Utf8Buffer,
+    inner: StreamingDecoder,
 }
 
 #[pymethods]
 impl PyStreamingDecoder {
     /// Add a token and return any complete UTF-8 characters.
+    ///
+    /// An id in no table at all is skipped rather than raised, matching
+    /// `decode_lossy` — a stream is fed by a running model and must survive one
+    /// stray id rather than abort the generation.
     ///
     /// Args:
     ///     token_id: The token ID to decode
@@ -1734,21 +1743,13 @@ impl PyStreamingDecoder {
     /// Returns:
     ///     String of complete characters, or None if still buffering
     fn add_token(&mut self, token_id: u32) -> Option<String> {
-        // Get bytes for this token
-        let bytes = match self.decoder.get(&token_id) {
-            Some(b) => b.as_slice(),
-            // An id in neither table is unknown; buffer nothing and yield nothing.
-            None => self.special_decoder.get(&token_id)?.as_bytes(),
-        };
-
-        // Add to buffer
-        self.buffer.push(bytes);
-
-        // Try to extract complete UTF-8 characters
-        self.buffer.take_complete()
+        self.inner.add_token_lossy(token_id)
     }
 
     /// Add multiple tokens at once and return complete UTF-8 characters.
+    ///
+    /// Feeding ids in groups is indistinguishable from feeding them one by one:
+    /// only the emission points differ, never the concatenated text.
     ///
     /// Args:
     ///     token_ids: List of token IDs to decode
@@ -1756,19 +1757,7 @@ impl PyStreamingDecoder {
     /// Returns:
     ///     String of complete characters, or None if still buffering
     fn add_tokens(&mut self, token_ids: Vec<u32>) -> Option<String> {
-        for token_id in token_ids {
-            let bytes = if let Some(b) = self.decoder.get(&token_id) {
-                b.as_slice()
-            } else if let Some(s) = self.special_decoder.get(&token_id) {
-                s.as_bytes()
-            } else {
-                continue;
-            };
-
-            self.buffer.push(bytes);
-        }
-
-        self.buffer.take_complete()
+        self.inner.add_tokens_lossy(&token_ids)
     }
 
     /// Flush any remaining buffered bytes.
@@ -1779,157 +1768,39 @@ impl PyStreamingDecoder {
     /// Returns:
     ///     Any remaining buffered content
     fn flush(&mut self) -> String {
-        self.buffer.flush()
+        self.inner.flush()
     }
 
     /// Reset the decoder state, discarding any buffered bytes.
     fn reset(&mut self) {
-        self.buffer.clear();
+        self.inner.reset();
     }
 
     /// Check if there are buffered bytes waiting for completion.
     #[getter]
     fn has_pending(&self) -> bool {
-        self.buffer.has_pending()
+        self.inner.has_pending()
     }
 
     /// Get the number of pending bytes in the buffer.
     #[getter]
     fn pending_bytes(&self) -> usize {
-        self.buffer.pending_len()
+        self.inner.pending_bytes()
     }
 
     fn __repr__(&self) -> String {
         format!(
             "StreamingDecoder(pending_bytes={})",
-            self.buffer.pending_len()
+            self.inner.pending_bytes()
         )
     }
 }
 
 impl PyStreamingDecoder {
-    fn new(decoder: FxHashMap<u32, Vec<u8>>, special_decoder: FxHashMap<u32, String>) -> Self {
-        Self {
-            decoder,
-            special_decoder,
-            buffer: Utf8Buffer::new(),
-        }
-    }
-}
-
-/// Python wrapper for ByteLevel streaming decoder.
-///
-/// Handles UTF-8 safe streaming decode for token-by-token LLM output from
-/// ByteLevel-encoded tokenizers (GPT-2, Llama, DeepSeek V3). First decodes
-/// ByteLevel encoding to raw bytes, then assembles into valid UTF-8 strings.
-#[pyclass(name = "ByteLevelStreamingDecoder")]
-pub struct PyByteLevelStreamingDecoder {
-    decoder: FxHashMap<u32, Vec<u8>>,
-    special_decoder: FxHashMap<u32, String>,
-    /// Shared incremental UTF-8 buffering — the same one the Rust
-    /// `ByteLevelStreamingDecoder` uses, so both sides decode identically.
-    buffer: Utf8Buffer,
-}
-
-#[pymethods]
-impl PyByteLevelStreamingDecoder {
-    /// Add a token and return any complete UTF-8 characters.
-    ///
-    /// The token's ByteLevel-encoded bytes are first decoded to raw bytes,
-    /// then assembled into valid UTF-8 strings.
-    ///
-    /// Args:
-    ///     token_id: The token ID to decode
-    ///
-    /// Returns:
-    ///     String of complete characters, or None if still buffering
-    fn add_token(&mut self, token_id: u32) -> Option<String> {
-        match self.decoder.get(&token_id) {
-            Some(encoded_bytes) => {
-                // Decode ByteLevel encoding to raw bytes
-                if let Some(raw_bytes) = byte_level_decode_bytes(encoded_bytes) {
-                    self.buffer.push(&raw_bytes);
-                } else {
-                    // Fallback: treat as raw bytes if ByteLevel decode fails
-                    self.buffer.push(encoded_bytes);
-                }
-            }
-            // Special tokens are NOT ByteLevel-encoded, add directly. An id in
-            // neither table is unknown; buffer nothing and yield nothing.
-            None => self
-                .buffer
-                .push(self.special_decoder.get(&token_id)?.as_bytes()),
-        }
-
-        self.buffer.take_complete()
-    }
-
-    /// Add multiple tokens at once and return complete UTF-8 characters.
-    ///
-    /// Args:
-    ///     token_ids: List of token IDs to decode
-    ///
-    /// Returns:
-    ///     String of complete characters, or None if still buffering
-    fn add_tokens(&mut self, token_ids: Vec<u32>) -> Option<String> {
-        for token_id in token_ids {
-            if let Some(encoded_bytes) = self.decoder.get(&token_id) {
-                if let Some(raw_bytes) = byte_level_decode_bytes(encoded_bytes) {
-                    self.buffer.push(&raw_bytes);
-                } else {
-                    self.buffer.push(encoded_bytes);
-                }
-            } else if let Some(special) = self.special_decoder.get(&token_id) {
-                self.buffer.push(special.as_bytes());
-            }
-        }
-
-        self.buffer.take_complete()
-    }
-
-    /// Flush any remaining buffered bytes.
-    ///
-    /// If there are incomplete UTF-8 sequences in the buffer, they will be
-    /// replaced with the Unicode replacement character (U+FFFD).
-    ///
-    /// Returns:
-    ///     Any remaining buffered content
-    fn flush(&mut self) -> String {
-        self.buffer.flush()
-    }
-
-    /// Reset the decoder state, discarding any buffered bytes.
-    fn reset(&mut self) {
-        self.buffer.clear();
-    }
-
-    /// Check if there are buffered bytes waiting for completion.
-    #[getter]
-    fn has_pending(&self) -> bool {
-        self.buffer.has_pending()
-    }
-
-    /// Get the number of pending bytes in the buffer.
-    #[getter]
-    fn pending_bytes(&self) -> usize {
-        self.buffer.pending_len()
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "ByteLevelStreamingDecoder(pending_bytes={})",
-            self.buffer.pending_len()
-        )
-    }
-}
-
-impl PyByteLevelStreamingDecoder {
-    fn new(decoder: FxHashMap<u32, Vec<u8>>, special_decoder: FxHashMap<u32, String>) -> Self {
-        Self {
-            decoder,
-            special_decoder,
-            buffer: Utf8Buffer::new(),
-        }
+    /// Wrap a decoder a tokenizer's own factory built. Not exposed to Python:
+    /// the pyclass has no `__init__`, for the reason the type-level docs give.
+    fn new(inner: StreamingDecoder) -> Self {
+        Self { inner }
     }
 }
 

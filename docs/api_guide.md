@@ -14,8 +14,10 @@ This guide provides comprehensive documentation for using Splintr's Python and R
   - [SentencePiece Tokenizer Class](#sentencepiece-tokenizer-class) (Unigram)
   - [Loading any model from `tokenizer.json`](#loading-any-model-from-tokenizerjson)
 - [Streaming Decoder](#streaming-decoder)
-  - [Regular Streaming Decoder](#regular-streaming-decoder)
-  - [ByteLevel Streaming Decoder](#bytelevel-streaming-decoder)
+  - [Basic Usage](#basic-usage)
+  - [ByteLevel Vocabularies](#bytelevel-vocabularies)
+  - [API Methods](#api-methods)
+  - [When Streaming Is Refused](#when-streaming-is-refused)
 - [Rust API Reference](#rust-api-reference)
   - [Loading a bundled vocabulary](#loading-a-bundled-vocabulary)
   - [Tokenize Trait](#tokenize-trait)
@@ -434,13 +436,17 @@ families. (Rust: `splintr::from_json_path` / `from_json_bytes`.)
 
 ## Streaming Decoder
 
-Streaming decoders are essential for real-time LLM applications where tokens arrive one at a time. They handle the critical problem of BPE tokens not aligning with UTF-8 character boundaries.
+A streaming decoder is essential for real-time LLM applications where tokens arrive one at a time. It handles the critical problem of BPE tokens not aligning with UTF-8 character boundaries.
 
-### Regular Streaming Decoder
+There is exactly one decoder class, `StreamingDecoder`, and exactly one way to get it: `streaming_decoder()` on the tokenizer whose stream you are decoding. Every tokenizer class has it — `Tokenizer`, `SentencePieceTokenizer`, `SpmTokenizer`, `WordPieceTokenizer` and `AnyTokenizer` — and the decoder it hands back carries that tokenizer's own decode rules: the ByteLevel alphabet (DeepSeek V3, GPT-2), `<0xNN>` byte fallback, the `▁` metaspace substitution, and the `special=true` ids `decode` drops.
 
-Use `streaming_decoder()` for standard tokenizers (cl100k_base, o200k_base, llama3).
+That is what makes the guarantee below hold on every vocabulary, and it is why there is nothing to choose:
 
-#### Why You Need This
+```python
+"".join(chunks) + decoder.flush() == tokenizer.decode(ids)
+```
+
+### Why You Need This
 
 BPE tokens don't align with UTF-8 character boundaries. A multi-byte Unicode character like "世" (3 bytes: `0xE4 0xB8 0x96`) might split across tokens. The streaming decoder:
 
@@ -449,7 +455,7 @@ BPE tokens don't align with UTF-8 character boundaries. A multi-byte Unicode cha
 3. Prevents display corruption in streaming LLM output
 4. Handles edge cases automatically
 
-#### Basic Usage
+### Basic Usage
 
 ```python
 # Create a streaming decoder
@@ -465,7 +471,7 @@ for token_id in token_stream:
 print(decoder.flush())
 ```
 
-#### Real-World Example
+### Real-World Example
 
 ```python
 import openai
@@ -493,12 +499,32 @@ for chunk in response:
 print(decoder.flush())
 ```
 
-#### API Methods
+### ByteLevel Vocabularies
+
+A ByteLevel BPE vocabulary (DeepSeek V3, GPT-2) encodes raw bytes (0-255) as printable Unicode characters — space `0x20` becomes `Ġ` — so its tokens need one extra unmapping step before UTF-8 assembly. That step is part of the tokenizer's configuration, so the same call serves it:
+
+```python
+from splintr import Tokenizer
+
+# DeepSeek V3 uses ByteLevel BPE encoding — same call, no second class
+tokenizer = Tokenizer.from_pretrained("deepseek_v3")
+decoder = tokenizer.streaming_decoder()
+
+for token_id in token_stream:
+    if text := decoder.add_token(token_id):
+        print(text, end="", flush=True)
+
+print(decoder.flush())
+```
+
+See [bytelevel_bpe.md](bytelevel_bpe.md) for details on ByteLevel encoding.
+
+### API Methods
 
 **Core operations:**
 
-- `add_token(token_id: int) -> str | None`: Add a token, return complete characters or None if buffering
-- `add_tokens(token_ids: list[int]) -> str | None`: Add multiple tokens at once
+- `add_token(token_id: int) -> str | None`: Add a token, return complete characters or None if buffering. An id in no table at all is skipped, matching `decode_lossy` — one stray id must not abort a generation
+- `add_tokens(token_ids: list[int]) -> str | None`: Add multiple tokens at once. Grouping changes only *when* text is emitted, never *what*
 - `flush() -> str`: Flush buffered bytes (incomplete sequences become �)
 - `reset()`: Clear the buffer and start fresh
 
@@ -507,47 +533,20 @@ print(decoder.flush())
 - `has_pending: bool`: Whether there are buffered bytes waiting
 - `pending_bytes: int`: Number of bytes currently buffered
 
-### ByteLevel Streaming Decoder
+### When Streaming Is Refused
 
-For tokenizers using **ByteLevel BPE encoding** (DeepSeek V3, GPT-2), use `byte_level_streaming_decoder()` instead.
-
-#### Why ByteLevel?
-
-ByteLevel BPE encodes raw bytes (0-255) as printable Unicode characters (e.g., space `0x20` becomes `Ġ`). The ByteLevel streaming decoder handles this extra decoding step automatically:
-
-1. Decodes ByteLevel-encoded token bytes back to raw bytes
-2. Buffers incomplete UTF-8 sequences across token boundaries
-3. Only outputs text when complete UTF-8 characters are available
-
-See [bytelevel_bpe.md](bytelevel_bpe.md) for details on ByteLevel encoding.
-
-#### Basic Usage
+`AnyTokenizer.streaming_decoder()` is the one form that can raise. A `tokenizer.json` may declare a `decoder` pipeline holding a step that cannot be evaluated one chunk at a time (a `BPEDecoder`, a trailing `Strip`, a `Replace` over the fused text). Answering with the backend's own decode would render the raw pieces (`▁hello▁world`) the pipeline exists to turn into text, so it raises `ValueError` naming the step instead:
 
 ```python
-from splintr import Tokenizer
-
-# DeepSeek V3 uses ByteLevel BPE encoding
-tokenizer = Tokenizer.from_pretrained("deepseek_v3")
-decoder = tokenizer.byte_level_streaming_decoder()
-
-# Process tokens one at a time
-for token_id in token_stream:
-    if text := decoder.add_token(token_id):
-        print(text, end="", flush=True)
-
-print(decoder.flush())
+tokenizer = from_json("path/to/tokenizer.json")
+try:
+    decoder = tokenizer.streaming_decoder()
+except ValueError as e:
+    # ... its `Strip` step is not incrementally computable — decode the whole sequence instead
+    text = tokenizer.decode(ids)
 ```
 
-#### API Methods
-
-The ByteLevel streaming decoder has the same API as the regular streaming decoder:
-
-- `add_token(token_id: int) -> str | None`
-- `add_tokens(token_ids: list[int]) -> str | None`
-- `flush() -> str`
-- `reset()`
-- `has_pending: bool`
-- `pending_bytes: int`
+Whole-sequence `decode` handles those files. Every other tokenizer class always returns a decoder.
 
 ## Rust API Reference
 
@@ -968,7 +967,7 @@ print(f"Encoded tool calling pattern with {len(tokens)} tokens")
 
 ### Streaming Examples
 
-#### Streaming Decoder for Regular Tokenizers
+#### Streaming a Raw Vocabulary
 
 ```python
 from splintr import Tokenizer
@@ -999,7 +998,7 @@ if remaining := decoder.flush():
 print("\n\nStreaming complete!")
 ```
 
-#### ByteLevel Streaming Decoder for DeepSeek V3
+#### Streaming a ByteLevel Vocabulary (DeepSeek V3)
 
 ```python
 from splintr import Tokenizer
@@ -1011,8 +1010,8 @@ tokenizer = Tokenizer.from_pretrained("deepseek_v3")
 text = "DeepSeek V3 supports ByteLevel BPE! 中文测试"
 tokens = tokenizer.encode(text)
 
-# Create ByteLevel streaming decoder
-decoder = tokenizer.byte_level_streaming_decoder()
+# Same call as above: the ByteLevel unmapping comes from the tokenizer
+decoder = tokenizer.streaming_decoder()
 
 print("ByteLevel streaming output:")
 for token in tokens:
@@ -1086,7 +1085,7 @@ print("\nDone!")
 
 4. **Clear cache if memory is tight**: Use `clear_cache()` if you're processing millions of unique texts and memory becomes a concern.
 
-5. **Use streaming decoders for real-time output**: Don't decode each token individually. Use `streaming_decoder()` or `byte_level_streaming_decoder()` to handle UTF-8 boundaries correctly.
+5. **Use streaming decoders for real-time output**: Don't decode each token individually. Use `streaming_decoder()` to handle UTF-8 boundaries correctly.
 
 6. **Choose the right special token encoding**: Use `encode_with_special()` only when your text actually contains special tokens. For regular text, `encode()` is faster.
 

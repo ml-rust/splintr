@@ -70,16 +70,10 @@ Usage:
     # Batch encode (parallel)
     batch_tokens = tokenizer.encode_batch(["Hello", "World"])
 
-    # Streaming decode (for LLM output)
+    # Streaming decode (for LLM output). One decoder serves every vocabulary:
+    # it is built from the tokenizer's own decode rules, so a ByteLevel
+    # vocabulary (DeepSeek V3, GPT-2) needs no different call.
     decoder = tokenizer.streaming_decoder()
-    for token_id in token_stream:
-        if text := decoder.add_token(token_id):
-            print(text, end="", flush=True)
-    print(decoder.flush())
-
-    # ByteLevel streaming decode (for DeepSeek V3, GPT-2)
-    tokenizer = Tokenizer.from_pretrained("deepseek_v3")
-    decoder = tokenizer.byte_level_streaming_decoder()
     for token_id in token_stream:
         if text := decoder.add_token(token_id):
             print(text, end="", flush=True)
@@ -153,7 +147,6 @@ from ._core import (
     from_json_bytes,
     base_vocab_size,
     StreamingDecoder,
-    ByteLevelStreamingDecoder,
     CL100K_BASE_PATTERN,
     O200K_BASE_PATTERN,
     LLAMA3_PATTERN,
@@ -176,7 +169,6 @@ __all__ = [
     "from_json_bytes",
     "base_vocab_size",
     "StreamingDecoder",
-    "ByteLevelStreamingDecoder",
     "CL100K_BASE_PATTERN",
     "O200K_BASE_PATTERN",
     "LLAMA3_PATTERN",

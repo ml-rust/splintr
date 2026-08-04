@@ -283,16 +283,13 @@ python benchmarks/benchmark_regexr_comparison.py --model cl100k_base
 python benchmarks/benchmark_regexr_viz.py --model cl100k_base
 ```
 
-## Streaming Decoders
+## Streaming Decoder
 
-For real-time LLM applications where tokens arrive one at a time, Splintr provides streaming decoders that handle UTF-8 boundary alignment:
+For real-time LLM applications where tokens arrive one at a time, Splintr provides a streaming decoder that handles UTF-8 boundary alignment:
 
 ```python
-# Regular streaming decoder (cl100k_base, o200k_base, llama3)
+# One decoder, built by the tokenizer itself — every vocabulary, every backend
 decoder = tokenizer.streaming_decoder()
-
-# ByteLevel streaming decoder (deepseek_v3, GPT-2)
-decoder = tokenizer.byte_level_streaming_decoder()
 
 # Process tokens as they arrive
 for token_id in token_stream:
@@ -302,6 +299,8 @@ print(decoder.flush())
 ```
 
 **Why streaming decoders?** BPE tokens don't align with UTF-8 character boundaries. A multi-byte character like "世" might split across tokens. The streaming decoder buffers incomplete sequences and only outputs complete characters.
+
+**Why only one?** There is no decoder to choose. `streaming_decoder()` takes every spelling rule from the tokenizer that built it — the ByteLevel alphabet (deepseek_v3, GPT-2), `<0xNN>` byte fallback, the `▁` metaspace substitution, and the `special=true` ids `decode` drops — so `"".join(chunks) + flush()` equals `decode(ids)` for any tokenizer. Pairing a decoder with the wrong kind of vocabulary, which used to yield mojibake silently, is not expressible.
 
 See the [API Guide](docs/api_guide.md#streaming-decoder) for detailed usage, examples, and best practices.
 

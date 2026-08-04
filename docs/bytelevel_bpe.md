@@ -146,7 +146,7 @@ This convention allows the tokenizer to distinguish between word-initial and wor
 
 ## Streaming Decoder
 
-When streaming LLM output token-by-token, ByteLevel tokenizers require special handling. The `ByteLevelStreamingDecoder` handles this automatically:
+When streaming LLM output token-by-token, a ByteLevel vocabulary needs one decoding step more than a raw one. `streaming_decoder()` handles it automatically.
 
 ### The Problem
 
@@ -158,7 +158,7 @@ BPE tokens don't align with UTF-8 character boundaries. For ByteLevel tokenizers
 
 ### The Solution
 
-Use `byte_level_streaming_decoder()` instead of `streaming_decoder()` for ByteLevel tokenizers:
+There is one decoder class and one call, on every tokenizer class. It is built from the tokenizer's own configuration, so a ByteLevel vocabulary gets the ByteLevel unmapping without the caller asking for it:
 
 ```python
 from splintr import Tokenizer
@@ -166,8 +166,8 @@ from splintr import Tokenizer
 # DeepSeek V3 uses ByteLevel BPE
 tokenizer = Tokenizer.from_pretrained("deepseek_v3")
 
-# Create ByteLevel streaming decoder
-decoder = tokenizer.byte_level_streaming_decoder()
+# Same call as for cl100k_base — the tokenizer supplies the ByteLevel rule
+decoder = tokenizer.streaming_decoder()
 
 # Process tokens as they arrive from LLM
 for token_id in token_stream:
@@ -178,9 +178,11 @@ for token_id in token_stream:
 print(decoder.flush())
 ```
 
+This is why there is no decoder to choose. A decoder paired with the wrong kind of vocabulary produced mojibake silently — running UTF-8 assembly over `Ġ`-spelled bytes, or ByteLevel unmapping over raw ones — and that pairing is no longer expressible, in Rust or in Python.
+
 ### How It Works
 
-The `ByteLevelStreamingDecoder` performs two-stage decoding:
+On a ByteLevel vocabulary the decoder performs two-stage decoding:
 
 1. **ByteLevel Decode**: Converts ByteLevel-encoded token bytes back to raw bytes
    - `Ġ` (U+0120) → `0x20` (space)
@@ -191,10 +193,12 @@ The `ByteLevelStreamingDecoder` performs two-stage decoding:
    - Handles multi-byte characters split across token boundaries
    - Only outputs when valid UTF-8 characters can be formed
 
+The first stage is skipped for a raw vocabulary (cl100k_base, o200k_base), and the same machinery additionally resolves `<0xNN>` byte fallback and the `▁` metaspace substitution where the tokenizer declares them. Whichever rules apply, `"".join(chunks) + flush()` equals `decode(ids)`.
+
 ### API
 
 ```python
-decoder = tokenizer.byte_level_streaming_decoder()
+decoder = tokenizer.streaming_decoder()
 
 # Add single token
 text = decoder.add_token(token_id)  # Returns str or None
@@ -212,16 +216,6 @@ decoder.reset()
 decoder.has_pending    # bool: True if bytes are buffered
 decoder.pending_bytes  # int: Number of buffered bytes
 ```
-
-### When to Use Which Decoder
-
-| Tokenizer           | Decoder                          |
-| ------------------- | -------------------------------- |
-| DeepSeek V3         | `byte_level_streaming_decoder()` |
-| GPT-2               | `byte_level_streaming_decoder()` |
-| cl100k_base (GPT-4) | `streaming_decoder()`            |
-| o200k_base (GPT-4o) | `streaming_decoder()`            |
-| Llama 3             | `streaming_decoder()`            |
 
 ## See Also
 

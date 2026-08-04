@@ -512,24 +512,26 @@ class TestDeepSeekV3MixedSpecialTokens:
         assert decoded == chat
 
 
-class TestDeepSeekV3ByteLevelStreamingDecoder:
-    """Test ByteLevel streaming decoder with DeepSeek V3.
+class TestDeepSeekV3StreamingDecoder:
+    """Test the streaming decoder with DeepSeek V3.
 
-    The ByteLevelStreamingDecoder properly handles ByteLevel BPE encoding
-    by first decoding token bytes from ByteLevel representation to raw bytes,
-    then assembling into valid UTF-8 strings.
+    DeepSeek V3 is a ByteLevel BPE vocabulary, so its stream needs token bytes
+    decoded from ByteLevel representation to raw bytes before they are assembled
+    into valid UTF-8 strings. That rule comes from the tokenizer itself, so this
+    is the same `streaming_decoder()` every other vocabulary uses — there is no
+    ByteLevel-specific decoder to pick, and therefore no way to pick wrong.
     """
 
     @pytest.fixture
     def tokenizer(self):
         return Tokenizer.from_pretrained("deepseek_v3")
 
-    def test_byte_level_streaming_decoder_ascii(self, tokenizer):
-        """Test ByteLevel streaming decoder with ASCII text."""
+    def test_streaming_decoder_ascii(self, tokenizer):
+        """Test streaming decoder with ASCII text."""
         text = "Hello, world!"
         tokens = tokenizer.encode(text)
 
-        decoder = tokenizer.byte_level_streaming_decoder()
+        decoder = tokenizer.streaming_decoder()
         result = ""
         for token in tokens:
             chunk = decoder.add_token(token)
@@ -539,12 +541,12 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
 
         assert result == text
 
-    def test_byte_level_streaming_decoder_chinese(self, tokenizer):
-        """Test ByteLevel streaming decoder with Chinese text."""
+    def test_streaming_decoder_chinese(self, tokenizer):
+        """Test streaming decoder with Chinese text."""
         text = "你好世界"
         tokens = tokenizer.encode(text)
 
-        decoder = tokenizer.byte_level_streaming_decoder()
+        decoder = tokenizer.streaming_decoder()
         result = ""
         for token in tokens:
             chunk = decoder.add_token(token)
@@ -554,12 +556,12 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
 
         assert result == text
 
-    def test_byte_level_streaming_decoder_mixed(self, tokenizer):
-        """Test ByteLevel streaming decoder with mixed content."""
+    def test_streaming_decoder_mixed(self, tokenizer):
+        """Test streaming decoder with mixed content."""
         text = "Hello 你好 World 世界!"
         tokens = tokenizer.encode(text)
 
-        decoder = tokenizer.byte_level_streaming_decoder()
+        decoder = tokenizer.streaming_decoder()
         result = ""
         for token in tokens:
             chunk = decoder.add_token(token)
@@ -569,12 +571,12 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
 
         assert result == text
 
-    def test_byte_level_streaming_decoder_emoji(self, tokenizer):
-        """Test ByteLevel streaming decoder with emoji."""
+    def test_streaming_decoder_emoji(self, tokenizer):
+        """Test streaming decoder with emoji."""
         text = "Hello 🌍 World!"
         tokens = tokenizer.encode(text)
 
-        decoder = tokenizer.byte_level_streaming_decoder()
+        decoder = tokenizer.streaming_decoder()
         result = ""
         for token in tokens:
             chunk = decoder.add_token(token)
@@ -584,12 +586,12 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
 
         assert result == text
 
-    def test_byte_level_streaming_decoder_spaces(self, tokenizer):
-        """Test ByteLevel streaming decoder with spaces."""
+    def test_streaming_decoder_spaces(self, tokenizer):
+        """Test streaming decoder with spaces."""
         text = " hello world "
         tokens = tokenizer.encode(text)
 
-        decoder = tokenizer.byte_level_streaming_decoder()
+        decoder = tokenizer.streaming_decoder()
         result = ""
         for token in tokens:
             chunk = decoder.add_token(token)
@@ -599,12 +601,12 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
 
         assert result == text
 
-    def test_byte_level_streaming_decoder_special_tokens(self, tokenizer):
-        """Test ByteLevel streaming decoder with special tokens."""
+    def test_streaming_decoder_special_tokens(self, tokenizer):
+        """Test streaming decoder with special tokens."""
         text = "<｜begin▁of▁sentence｜>Hello<|EOT|>"
         tokens = tokenizer.encode_with_special(text)
 
-        decoder = tokenizer.byte_level_streaming_decoder()
+        decoder = tokenizer.streaming_decoder()
         result = ""
         for token in tokens:
             chunk = decoder.add_token(token)
@@ -614,12 +616,12 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
 
         assert result == text
 
-    def test_byte_level_streaming_decoder_mixed_special(self, tokenizer):
-        """Test ByteLevel streaming decoder with mixed content and special tokens."""
+    def test_streaming_decoder_mixed_special(self, tokenizer):
+        """Test streaming decoder with mixed content and special tokens."""
         text = "<｜User｜>你好!<|think|>Let me think...<|/think|><｜Assistant｜>Hello!"
         tokens = tokenizer.encode_with_special(text)
 
-        decoder = tokenizer.byte_level_streaming_decoder()
+        decoder = tokenizer.streaming_decoder()
         result = ""
         for token in tokens:
             chunk = decoder.add_token(token)
@@ -629,23 +631,23 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
 
         assert result == text
 
-    def test_byte_level_streaming_decoder_add_tokens(self, tokenizer):
-        """Test ByteLevel streaming decoder add_tokens method."""
+    def test_streaming_decoder_add_tokens(self, tokenizer):
+        """Test streaming decoder add_tokens method."""
         text = "Hello, world!"
         tokens = tokenizer.encode(text)
 
-        decoder = tokenizer.byte_level_streaming_decoder()
+        decoder = tokenizer.streaming_decoder()
         result = decoder.add_tokens(tokens) or ""
         result += decoder.flush()
 
         assert result == text
 
-    def test_byte_level_streaming_decoder_reset(self, tokenizer):
-        """Test ByteLevel streaming decoder reset method."""
+    def test_streaming_decoder_reset(self, tokenizer):
+        """Test streaming decoder reset method."""
         text = "Hello"
         tokens = tokenizer.encode(text)
 
-        decoder = tokenizer.byte_level_streaming_decoder()
+        decoder = tokenizer.streaming_decoder()
         # Add first token, should have pending
         decoder.add_token(tokens[0])
         assert decoder.pending_bytes >= 0  # May or may not have pending
@@ -655,7 +657,7 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
         assert not decoder.has_pending
         assert decoder.pending_bytes == 0
 
-    def test_byte_level_streaming_decoder_recovers_from_invalid_byte(self, tokenizer):
+    def test_streaming_decoder_recovers_from_invalid_byte(self, tokenizer):
         """An undecodable byte yields one U+FFFD and streaming continues.
 
         A lone multi-byte lead that is never completed is definitively invalid
@@ -666,7 +668,7 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
         lead = self._lone_lead_byte_token(tokenizer)
         (a_token,) = tokenizer.encode("A")
 
-        decoder = tokenizer.byte_level_streaming_decoder()
+        decoder = tokenizer.streaming_decoder()
 
         assert decoder.add_token(lead) is None
         assert decoder.has_pending
@@ -678,16 +680,16 @@ class TestDeepSeekV3ByteLevelStreamingDecoder:
     @staticmethod
     def _lone_lead_byte_token(tokenizer):
         """Find a token whose raw bytes are a single multi-byte UTF-8 lead."""
-        probe = tokenizer.byte_level_streaming_decoder()
+        probe = tokenizer.streaming_decoder()
         for token_id in range(512):
             probe.reset()
             if probe.add_token(token_id) is None and probe.pending_bytes == 1:
                 return token_id
         pytest.fail("no single lead-byte token found in the vocabulary")
 
-    def test_byte_level_streaming_decoder_repr(self, tokenizer):
-        """Test ByteLevel streaming decoder __repr__."""
-        decoder = tokenizer.byte_level_streaming_decoder()
+    def test_streaming_decoder_repr(self, tokenizer):
+        """Test streaming decoder __repr__."""
+        decoder = tokenizer.streaming_decoder()
         repr_str = repr(decoder)
-        assert "ByteLevelStreamingDecoder" in repr_str
+        assert "StreamingDecoder" in repr_str
         assert "pending_bytes" in repr_str
