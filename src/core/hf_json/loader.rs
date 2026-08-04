@@ -245,8 +245,12 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
 ///
 /// The map covers two groups, ranked so the first group always wins:
 /// 1. **Base alphabet** — vocab tokens that are never a merge *result* (the
-///    byte-level single chars). Their multi-byte UTF-8 must coalesce before any
-///    real merge, so they take the lowest ranks `0..b`.
+///    byte-level single chars). They take the lowest ranks `0..b` so that a base
+///    entry reachable as a merge of two adjacent pieces forms before any real
+///    merge. That only reassembles 2-byte UTF-8 characters, whose two bytes
+///    concatenate to the whole character; a ≥3-byte character has no rank for
+///    its partial prefix, so it is instead never split in the first place —
+///    these vocabularies seed BPE by character (see `byte_pair_encode_pieces_seeded`).
 /// 2. **Merges** — each merged token (`a ++ b`) at rank `b + merge_index`.
 ///
 /// A merge entry is either `[a, b]` or the string `"a b"`. Returns `None` when

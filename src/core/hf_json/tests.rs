@@ -126,6 +126,45 @@ fn bpe_metaspace_pretokenizer_omits_prefix_when_prepend_scheme_never() {
 }
 
 #[test]
+fn bpe_metaspace_merges_multibyte_underscore_instead_of_byte_fallback() {
+    // Mistral/Llama-SPM shape: a `▁`-marked BPE vocab with `byte_fallback`, and
+    // a merge that joins `▁` onto the following word. `▁` is 3 UTF-8 bytes
+    // (E2 96 81), and reassembling it from bytes would need a rank for the
+    // partial prefix `E2 96`, which is never a vocab entry — so a byte-seeded
+    // BPE strands it and emits `<0xE2> <0x96> <0x81>` instead of merging.
+    // Character-seeded BPE (what HuggingFace `merges` operate over) merges it.
+    let mut vocab = String::new();
+    for b in 0..256u32 {
+        // `<0x00>`..`<0xFF>` take ids 0..255, so a fallback id IS its byte value.
+        vocab.push_str(&format!("\"<0x{b:02X}>\": {b}, "));
+    }
+    vocab.push_str(
+        r#""h": 256, "e": 257, "l": 258, "o": 259, "▁": 260,
+           "he": 261, "▁he": 262, "ll": 263, "llo": 264"#,
+    );
+    let json = format!(
+        r#"{{
+            "pre_tokenizer": {{"type": "Metaspace", "prepend_scheme": "first"}},
+            "model": {{"type": "BPE", "byte_fallback": true,
+                "vocab": {{{vocab}}},
+                "merges": [["h","e"], ["▁","he"], ["l","l"], ["ll","o"]]}}
+        }}"#
+    );
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes()).unwrap().into_backend() else {
+        panic!("expected BPE backend");
+    };
+
+    let ids = t.encode("hello");
+    assert_eq!(ids, vec![262, 264], "expected [▁he, llo], got {ids:?}");
+    // The regression guard proper: the failure mode is `▁` shattering into its
+    // three byte fallbacks, so assert those ids are absent, not just that the
+    // value is right.
+    for byte in [0xE2u32, 0x96, 0x81] {
+        assert!(!ids.contains(&byte), "`▁` shattered into <0x{byte:02X}>");
+    }
+}
+
+#[test]
 fn unigram_uses_viterbi_not_greedy() {
     // Tokens: "ab"(-5), "abc"(-1), "c"(-1), plus single chars. Greedy-longest at
     // ▁? no ▁ here — use a vocab with the relevant pieces. For "abc": greedy

@@ -63,7 +63,8 @@ struct Node {
 
 /// A candidate merge of two adjacent nodes, queued in the selection heap.
 ///
-/// Node indices are assigned by initial byte offset and never reassigned — a
+/// Node indices are assigned in initial list order (by byte offset, or by
+/// character offset under character seeding) and never reassigned — a
 /// merge keeps the LEFT node and tombstones the right — so `left` is a sound
 /// proxy for position in the list, and ordering by it orders left-to-right.
 #[derive(Debug, Clone, Copy)]
@@ -168,6 +169,36 @@ pub(super) fn byte_pair_encode_pieces(
     merge_ranks: &FxHashMap<Vec<u8>, u32>,
     id_encoder: &FxHashMap<Vec<u8>, u32>,
 ) -> Vec<Piece> {
+    byte_pair_encode_pieces_seeded(piece, merge_ranks, id_encoder, false)
+}
+
+/// [`byte_pair_encode_pieces`] with the merge granularity made explicit.
+///
+/// `char_granular` selects what a merge starts from:
+///
+/// - `false` — one node per **byte**, which is what tiktoken-style
+///   vocabularies merge over. Their merges genuinely operate on bytes, and
+///   they contain tokens that are not valid UTF-8 at all (cl100k_base alone
+///   has 773), so nothing else can reproduce them.
+/// - `true` — one node per whole **UTF-8 character**, which is what
+///   HuggingFace-style `merges` operate over. Seeding those by byte strands
+///   every character of 3 bytes or more: reassembling `▁` (U+2581 = E2 96 81)
+///   would need a rank for the partial prefix `E2 96`, which is never a
+///   vocabulary entry, so the chain stalls and the character shatters into
+///   `<0xNN>` byte fallbacks. (2-byte characters survive byte seeding because
+///   the concatenation of their two bytes *is* the whole character, which does
+///   have a base rank — which is also why ByteLevel vocabularies, whose
+///   alphabet is entirely ≤2 UTF-8 bytes, are safe either way.)
+///
+/// Only the seeding differs; everything downstream is granularity-agnostic.
+/// In particular the unresolved-run traversal still walks a node's slice one
+/// byte at a time, which is exactly HuggingFace's ByteFallback behavior.
+pub(super) fn byte_pair_encode_pieces_seeded(
+    piece: &[u8],
+    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    char_granular: bool,
+) -> Vec<Piece> {
     if piece.is_empty() {
         return vec![];
     }
@@ -185,19 +216,37 @@ pub(super) fn byte_pair_encode_pieces(
         return vec![Piece::Token(id)];
     }
 
-    // Initialize linked list - one node per byte
-    let mut nodes: Vec<Node> = Vec::with_capacity(piece.len());
-    for i in 0..piece.len() {
-        nodes.push(Node {
-            prev: if i == 0 { usize::MAX } else { i - 1 },
-            next: if i == piece.len() - 1 {
-                usize::MAX
-            } else {
-                i + 1
-            },
-            start: i,
+    // Seed the linked list: one node per byte, or one node per whole UTF-8
+    // character when `char_granular`. Invalid UTF-8 has no character
+    // boundaries to walk, so it falls back to byte seeding — `piece` comes
+    // from a `&str` in practice, but this function takes bytes and must not
+    // panic on ones that are not. `start`/`len` are collected directly into
+    // `nodes` (capacity `piece.len()`, an exact bound for byte seeding and an
+    // upper bound for char seeding, since a UTF-8 char is never longer than
+    // its own byte count) so no separate spans buffer is allocated; `prev`/
+    // `next` only depend on final list length, so they're filled in a second
+    // pass over the same allocation once that length is known.
+    let mut nodes: Vec<Node> = match char_granular
+        .then(|| std::str::from_utf8(piece).ok())
+        .flatten()
+    {
+        Some(text) => Vec::from_iter(text.char_indices().map(|(start, c)| Node {
+            prev: 0,
+            next: 0,
+            start,
+            len: c.len_utf8(),
+        })),
+        None => Vec::from_iter((0..piece.len()).map(|start| Node {
+            prev: 0,
+            next: 0,
+            start,
             len: 1,
-        });
+        })),
+    };
+    let count = nodes.len();
+    for (i, node) in nodes.iter_mut().enumerate() {
+        node.prev = if i == 0 { usize::MAX } else { i - 1 };
+        node.next = if i + 1 == count { usize::MAX } else { i + 1 };
     }
 
     // Queue a pair as a merge candidate, if the vocabulary can merge it.
@@ -332,8 +381,14 @@ pub(super) fn byte_pair_encode_pieces(
 /// groups, ranked so the first always wins:
 ///
 /// 1. **Base alphabet** — vocabulary entries that are never a merge *result*
-///    (the byte-level single chars). Their multi-byte UTF-8 has to coalesce
-///    before any real merge runs, so they take the lowest ranks `0..b`.
+///    (the byte-level single chars). They take the lowest ranks `0..b` so that
+///    wherever a base entry is reachable as a merge of two adjacent pieces it
+///    forms before any real merge runs. Under byte seeding that only rescues
+///    2-byte characters, whose two bytes concatenate to the whole character;
+///    a ≥3-byte character has no rank for its partial prefix and can never
+///    coalesce from bytes at all, which is why HuggingFace-style vocabularies
+///    seed by character instead (`char_granular` in
+///    [`byte_pair_encode_pieces_seeded`]).
 /// 2. **Merges** — each merged token (`a ++ b`) at rank `b + merge_index`.
 ///
 /// `merged` holds the already-concatenated result of each merge, in list order.
@@ -391,6 +446,19 @@ mod tests {
         merge_ranks: &FxHashMap<Vec<u8>, u32>,
         id_encoder: &FxHashMap<Vec<u8>, u32>,
     ) -> Vec<u32> {
+        byte_pair_encode_reference_seeded(piece, merge_ranks, id_encoder, false)
+    }
+
+    /// The oracle with the same seeding switch as
+    /// [`byte_pair_encode_pieces_seeded`], so character granularity is checked
+    /// against an independently-written implementation too. Byte granularity
+    /// stays exactly as pinned.
+    fn byte_pair_encode_reference_seeded(
+        piece: &[u8],
+        merge_ranks: &FxHashMap<Vec<u8>, u32>,
+        id_encoder: &FxHashMap<Vec<u8>, u32>,
+        char_granular: bool,
+    ) -> Vec<u32> {
         if piece.is_empty() {
             return vec![];
         }
@@ -405,19 +473,31 @@ mod tests {
             return vec![id];
         }
 
-        // Initialize linked list - one node per byte
-        let mut nodes: Vec<RefNode> = Vec::with_capacity(piece.len());
-        for i in 0..piece.len() {
+        // Initialize linked list - one node per byte, or per whole UTF-8
+        // character when `char_granular` (byte seeding on invalid UTF-8).
+        let spans: Vec<(usize, usize)> = match char_granular
+            .then(|| std::str::from_utf8(piece).ok())
+            .flatten()
+        {
+            Some(text) => text
+                .char_indices()
+                .map(|(start, c)| (start, c.len_utf8()))
+                .collect(),
+            None => (0..piece.len()).map(|start| (start, 1)).collect(),
+        };
+
+        let mut nodes: Vec<RefNode> = Vec::with_capacity(spans.len());
+        for (i, &(start, len)) in spans.iter().enumerate() {
             nodes.push(RefNode {
                 prev: if i == 0 { usize::MAX } else { i - 1 },
-                next: if i == piece.len() - 1 {
+                next: if i + 1 == spans.len() {
                     usize::MAX
                 } else {
                     i + 1
                 },
                 rank: u32::MAX,
-                start: i,
-                len: 1,
+                start,
+                len,
             });
         }
 
@@ -607,6 +687,44 @@ mod tests {
         );
     }
 
+    /// The `Token` ids of a piece list, dropping the unresolved spans — the
+    /// same projection [`byte_pair_encode_with_ranks`] applies, so results can
+    /// be compared against the oracle's token vector.
+    fn tokens_only(pieces: Vec<Piece>) -> Vec<u32> {
+        pieces
+            .into_iter()
+            .filter_map(|p| match p {
+                Piece::Token(id) => Some(id),
+                Piece::Unresolved { .. } => None,
+            })
+            .collect()
+    }
+
+    /// The same leftmost tiebreak as [`test_tiebreak_leftmost_wins`], over a
+    /// multi-byte alphabet under character seeding.
+    ///
+    /// There a node index is a *character* index rather than a byte index, so
+    /// this pins that ordering too: `"▁▁▁"` must resolve `[▁▁][▁]`, not
+    /// `[▁][▁▁]`, exactly as `"aaa"` does.
+    #[test]
+    fn test_tiebreak_leftmost_wins_multibyte_chars() {
+        let mut encoder = FxHashMap::default();
+        encoder.insert("▁".as_bytes().to_vec(), 0);
+        encoder.insert("▁▁".as_bytes().to_vec(), 1);
+
+        let piece = "▁▁▁".as_bytes();
+        assert_eq!(
+            tokens_only(byte_pair_encode_pieces_seeded(
+                piece, &encoder, &encoder, true
+            )),
+            vec![1, 0]
+        );
+        assert_eq!(
+            byte_pair_encode_reference_seeded(piece, &encoder, &encoder, true),
+            vec![1, 0]
+        );
+    }
+
     /// tiktoken-style vocabulary: the id doubles as the merge rank.
     fn prop_encoder() -> FxHashMap<Vec<u8>, u32> {
         let mut encoder = FxHashMap::default();
@@ -653,6 +771,53 @@ mod tests {
         let mut id_encoder = FxHashMap::default();
         for (i, token) in ids.iter().enumerate() {
             id_encoder.insert(token.to_vec(), i as u32);
+        }
+        (merge_ranks, id_encoder)
+    }
+
+    /// HuggingFace-style vocabulary over a deliberately mixed-width alphabet:
+    /// ASCII (1 byte), `▁` (3 bytes), a CJK character (3 bytes) and an emoji
+    /// (4 bytes) — the widths that byte seeding cannot reassemble. Ranks tie so
+    /// the leftmost tiebreak is exercised, and `中😀` is deliberately given a
+    /// merge rank but NO id so the unresolved fallback path is covered too.
+    fn char_prop_maps() -> (FxHashMap<Vec<u8>, u32>, FxHashMap<Vec<u8>, u32>) {
+        let ranked: [(&str, u32); 10] = [
+            ("aa", 1),
+            ("ab", 1),
+            ("▁a", 1),
+            ("b▁", 2),
+            ("中😀", 2),
+            ("😀😀", 2),
+            ("aab", 3),
+            ("ab▁", 3),
+            ("中😀中", 4),
+            ("aaaa", 5),
+        ];
+        let mut merge_ranks = FxHashMap::default();
+        for (token, rank) in ranked {
+            merge_ranks.insert(token.as_bytes().to_vec(), rank);
+        }
+
+        // Ids in an order unrelated to the merge ranks, and missing `中😀`.
+        let ids: [&str; 14] = [
+            "a",
+            "b",
+            "▁",
+            "中",
+            "😀",
+            "aaaa",
+            "中😀中",
+            "ab▁",
+            "aab",
+            "😀😀",
+            "b▁",
+            "▁a",
+            "ab",
+            "aa",
+        ];
+        let mut id_encoder = FxHashMap::default();
+        for (i, token) in ids.iter().enumerate() {
+            id_encoder.insert(token.as_bytes().to_vec(), i as u32);
         }
         (merge_ranks, id_encoder)
     }
@@ -855,6 +1020,23 @@ mod tests {
             prop_assert_eq!(
                 tokens_only,
                 byte_pair_encode_with_ranks(&piece, &encoder, &encoder)
+            );
+        }
+
+        /// Character-granular counterpart of the three properties above, over
+        /// valid UTF-8 drawn from a mixed-width alphabet (1, 3 and 4 byte
+        /// characters), against the character-seeded oracle.
+        #[test]
+        fn prop_char_seeded_matches_reference(
+            chars in prop::collection::vec(
+                prop::sample::select(vec!['a', 'b', '▁', '中', '😀']), 0..32)
+        ) {
+            let (merge_ranks, id_encoder) = char_prop_maps();
+            let text: String = chars.into_iter().collect();
+            let piece = text.as_bytes();
+            prop_assert_eq!(
+                tokens_only(byte_pair_encode_pieces_seeded(piece, &merge_ranks, &id_encoder, true)),
+                byte_pair_encode_reference_seeded(piece, &merge_ranks, &id_encoder, true)
             );
         }
     }

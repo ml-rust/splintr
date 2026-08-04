@@ -1,7 +1,7 @@
 use super::backend::subdivide;
 use super::types::Tokenizer;
 use crate::core::added::AddedTokens;
-use crate::core::bpe::{byte_pair_encode_pieces, Piece};
+use crate::core::bpe::{byte_pair_encode_pieces, byte_pair_encode_pieces_seeded, Piece};
 use crate::core::byte_level::byte_level_encode;
 use crate::core::policy::{PolicyError, SpecialMode};
 #[cfg(feature = "rayon")]
@@ -70,8 +70,24 @@ impl Tokenizer {
             .then_some(self.byte_fallback_ids.as_deref())
             .flatten();
 
+        // Seed BPE by character when and only when this vocabulary has its own
+        // merge list AND is not ByteLevel. Both conjuncts are load-bearing:
+        //
+        // - `merge_ranks.is_some()` alone would not do: `!use_byte_level` is
+        //   also true of the bundled tiktoken vocabularies (cl100k_base,
+        //   o200k_base, llama3, deepseek_v3), whose merges genuinely operate on
+        //   bytes and whose vocabularies contain tokens that are not valid
+        //   UTF-8 at all — character seeding could never produce those. They
+        //   all have `merge_ranks == None`, so the first conjunct excludes them.
+        // - `!use_byte_level` is required because the ByteLevel HF-json and
+        //   GGUF-gpt2 routes DO carry merge ranks, but `bytes` is then in
+        //   ByteLevel space (see the byte-space note above), whose alphabet is
+        //   entirely ≤2 UTF-8 bytes and therefore unaffected by the ≥3-byte
+        //   stranding character seeding exists to fix.
         let pieces = match &self.merge_ranks {
-            Some(ranks) => byte_pair_encode_pieces(bytes, ranks, &self.encoder),
+            Some(ranks) => {
+                byte_pair_encode_pieces_seeded(bytes, ranks, &self.encoder, !self.use_byte_level)
+            }
             None => byte_pair_encode_pieces(bytes, &self.encoder, &self.encoder),
         };
 
