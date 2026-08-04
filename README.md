@@ -196,6 +196,12 @@ on CPython 3.12. Absolute throughput moves with the hardware and with the versio
 libraries; the ratios are the part that carries across machines. Run the scripts yourself to
 get your own figures — see [Running Benchmarks Yourself](#running-benchmarks-yourself).
 
+Every figure is the **default pure-Rust `regexr` backend** — what `pip install splintr-rs`
+gives you, since the published wheels are built without the optional `pcre2` feature. The
+benchmark scripts report the optional PCRE2 backend as a separate `splintr-pcre2` row and
+skip it when the feature is absent, so a figure labelled `splintr` is never a PCRE2 one. See
+[Regex Backends](#regex-backends) for what PCRE2 changes.
+
 The charts below were plotted from an earlier run, on different hardware and against
 different versions of the comparison libraries, so their absolute axes do not match the
 figures quoted in the text. Where the two disagree, the numbers in the text are the measured
@@ -268,7 +274,14 @@ cat results/my_benchmark.md
 
 ### Regex Backends
 
-Splintr uses a pure-Rust regex engine ([`regexr`](https://crates.io/crates/regexr)) by default, with optional PCRE2 support for compatibility.
+Splintr uses a pure-Rust regex engine ([`regexr`](https://crates.io/crates/regexr)) by default, with optional PCRE2 support.
+
+The two are not equally fast, and every performance figure on this page is the default one.
+Measured on the machine described above, PCRE2 encodes a **single text** about 1.1-1.5x faster
+than regexr — the gap widens on multilingual input — and is **level on batch encoding**, where
+Rayon rather than the regex engine sets the pace. Both produce identical token ids; the
+choice is a speed/dependency trade, not a correctness one. Quote a PCRE2 number only as a
+PCRE2 number: the published wheels do not carry the feature.
 
 **Default Backend (regexr):**
 
@@ -291,8 +304,11 @@ tokenizer = Tokenizer.from_pretrained("cl100k_base").pcre2(True)
 To enable PCRE2, build with the feature flag:
 
 ```bash
-maturin develop --release --features pcre2
+maturin develop --release --features python,pcre2
 ```
+
+`python` has to be listed alongside it: `--features` replaces the default set rather than
+adding to it, and dropping the PyO3 feature leaves maturin with no binding to build.
 
 **Benchmarking:**
 
