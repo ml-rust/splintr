@@ -40,13 +40,13 @@ fn byte_fallback_emits_fallback_id_for_unresolved_byte() {
     encoder.insert(b"c".to_vec(), 2);
     // `b` (0x62) is deliberately absent: BPE cannot represent it at all.
 
-    let mut table = [0u32; 256];
-    table[0x62] = 999;
+    let mut byte_ids = [None; 256];
+    byte_ids[0x62] = Some(999);
 
     let pattern = r"\S+|\s+";
     let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), pattern)
         .unwrap()
-        .with_byte_fallback(Some(Box::new(table)));
+        .with_byte_fallback(Some(ByteFallback::new(byte_ids, None)));
 
     // "abc" is a single \S+ chunk, so this exercises one BPE call over all
     // three bytes, not three independent per-byte encodes.
@@ -62,15 +62,15 @@ fn byte_fallback_emits_one_id_per_byte_for_a_multi_byte_run() {
     encoder.insert(b"e".to_vec(), 2);
     // `b`, `c`, `d` (0x62, 0x63, 0x64) are all absent from the encoder.
 
-    let mut table = [0u32; 256];
-    table[0x62] = 900;
-    table[0x63] = 901;
-    table[0x64] = 902;
+    let mut byte_ids = [None; 256];
+    byte_ids[0x62] = Some(900);
+    byte_ids[0x63] = Some(901);
+    byte_ids[0x64] = Some(902);
 
     let pattern = r"\S+|\s+";
     let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), pattern)
         .unwrap()
-        .with_byte_fallback(Some(Box::new(table)));
+        .with_byte_fallback(Some(ByteFallback::new(byte_ids, None)));
 
     assert_eq!(tokenizer.encode("abcde"), vec![1, 900, 901, 902, 2]);
 }
@@ -96,20 +96,21 @@ fn no_byte_fallback_still_drops_the_unresolved_byte() {
 /// token) never needs the fallback path, even with a table configured: BPE
 /// always resolves every byte to a real token, so ordinary ASCII, CJK, and
 /// emoji text never emits a fallback id, and still round-trips through
-/// decode.
+/// decode. The unk id is deliberately one no vocab entry carries, so a
+/// spurious unk would fail the round-trip rather than pass unnoticed.
 #[test]
 fn full_coverage_vocab_never_emits_fallback_and_round_trips() {
     let mut encoder = FxHashMap::default();
-    let mut table = [0u32; 256];
+    let mut byte_ids = [None; 256];
     for b in 0u32..256 {
         encoder.insert(vec![b as u8], b);
-        table[b as usize] = b;
+        byte_ids[b as usize] = Some(b);
     }
 
     let pattern = r"\S+|\s+";
     let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), pattern)
         .unwrap()
-        .with_byte_fallback(Some(Box::new(table)));
+        .with_byte_fallback(Some(ByteFallback::new(byte_ids, Some(7777))));
 
     for text in ["hello world", "你好，世界", "emoji test 😀🎉", ""] {
         let tokens = tokenizer.encode(text);
@@ -120,6 +121,96 @@ fn full_coverage_vocab_never_emits_fallback_and_round_trips() {
         let decoded = tokenizer.decode(&tokens).unwrap();
         assert_eq!(decoded, text);
     }
+}
+
+/// Encoder + fallback for the partial-coverage cases below: `a`/`c` are real
+/// vocabulary entries, `x` (0x78) is representable only through its `<0xNN>`
+/// id, and `b` (0x62) is representable only through `unk_id` unless
+/// `byte_62` supplies one.
+fn partial_fallback_tokenizer(byte_62: Option<u32>, unk_id: Option<u32>) -> Tokenizer {
+    let mut encoder = FxHashMap::default();
+    encoder.insert(b"a".to_vec(), 1);
+    encoder.insert(b"c".to_vec(), 2);
+
+    let mut byte_ids = [None; 256];
+    byte_ids[0x78] = Some(3);
+    byte_ids[0x62] = byte_62;
+
+    let pattern = r"\S+|\s+";
+    Tokenizer::new(encoder, FxHashMap::default(), pattern)
+        .expect("the test pattern compiles")
+        .with_byte_fallback(Some(ByteFallback::new(byte_ids, unk_id)))
+}
+
+/// Byte fallback resolves PER BYTE, not all-or-nothing: with only `<0x78>`
+/// declared, `x` comes out as that id while `b` — which has no `<0x62>` — comes
+/// out as the unk id, in one and the same word.
+///
+/// Ground truth from `tokenizers` 0.22.1 on the equivalent vocabulary:
+/// `encode('abxbc')` → `['a', '<0x78>', '<unk>', '<unk>', 'c']`. Note the
+/// ordering: HuggingFace's `merge_word` flushes a pending unk on a *vocabulary*
+/// hit only, so the `<0x78>` overtakes the unk for `b` that precedes it.
+#[test]
+fn byte_fallback_resolves_each_byte_separately_falling_back_to_unk() {
+    let tokenizer = partial_fallback_tokenizer(None, Some(0));
+    assert_eq!(tokenizer.encode("abxbc"), vec![1, 3, 0, 0, 2]);
+    // Without the interleaved `<0x78>` there is nothing to overtake, so the
+    // single unresolvable byte lands exactly where it stands.
+    assert_eq!(tokenizer.encode("abc"), vec![1, 0, 2]);
+}
+
+/// Adding the byte's own `<0xNN>` entry flips it from unk to that id, and
+/// nothing else about the encoding changes — this is what "per byte" means as
+/// opposed to "all 256 or nothing".
+///
+/// Ground truth from `tokenizers` 0.22.1: with `<0x62>` added to the same
+/// vocabulary, `encode('abxbc')` → `['a', '<0x62>', '<0x78>', '<0x62>', 'c']`.
+#[test]
+fn declaring_the_byte_token_flips_that_byte_from_unk_to_its_own_id() {
+    let tokenizer = partial_fallback_tokenizer(Some(4), Some(0));
+    assert_eq!(tokenizer.encode("abxbc"), vec![1, 4, 3, 4, 2]);
+    assert_eq!(tokenizer.encode("abc"), vec![1, 4, 2]);
+}
+
+/// With neither a `<0xNN>` entry nor an unk id there is nothing to fall back
+/// to, so the byte is dropped — the documented no-fallback contract, and what
+/// `tokenizers` 0.22.1 does with the same vocabulary (`encode('abxbc')` →
+/// `['a', '<0x78>', 'c']`). It is defined behavior, not a silently wrong id.
+#[test]
+fn byte_with_neither_a_byte_token_nor_an_unk_is_dropped() {
+    let tokenizer = partial_fallback_tokenizer(None, None);
+    assert_eq!(tokenizer.encode("abxbc"), vec![1, 3, 2]);
+    assert_eq!(tokenizer.encode("abc"), vec![1, 2]);
+}
+
+/// Coverage is decided per CHARACTER, not per byte: a multi-byte character
+/// falls back to a single unk unless EVERY one of its bytes has a `<0xNN>`
+/// entry — emitting the declared half plus an unk for the rest would corrupt
+/// the byte stream.
+///
+/// Ground truth from `tokenizers` 0.22.1: with only `<0xC3>` declared,
+/// `encode('aéc')` → `['a', '<unk>', 'c']`; with `<0xA9>` added it becomes
+/// `['a', '<0xC3>', '<0xA9>', 'c']`.
+#[test]
+fn multi_byte_char_falls_back_whole_unless_all_its_bytes_are_declared() {
+    let mut encoder = FxHashMap::default();
+    encoder.insert(b"a".to_vec(), 1);
+    encoder.insert(b"c".to_vec(), 2);
+
+    let pattern = r"\S+|\s+";
+    let build = |byte_ids: [Option<u32>; 256]| {
+        Tokenizer::new(encoder.clone(), FxHashMap::default(), pattern)
+            .expect("the test pattern compiles")
+            .with_byte_fallback(Some(ByteFallback::new(byte_ids, Some(0))))
+    };
+
+    // 'é' is 0xC3 0xA9; only its lead byte is declared.
+    let mut byte_ids = [None; 256];
+    byte_ids[0xC3] = Some(5);
+    assert_eq!(build(byte_ids).encode("aéc"), vec![1, 0, 2]);
+
+    byte_ids[0xA9] = Some(6);
+    assert_eq!(build(byte_ids).encode("aéc"), vec![1, 5, 6, 2]);
 }
 
 /// D3 regression: an id absent from the vocab, the special-tokens decoder,

@@ -11,7 +11,8 @@
 //! therefore *constructs* the argument through crate-root paths and then
 //! actually calls the method — compiling is most of the assertion.
 use splintr::{
-    NormOp, Normalizer, PreTokStage, PreTokenizer, SplitBehavior, SplitPattern, Tokenizer,
+    ByteFallback, NormOp, Normalizer, PreTokStage, PreTokenizer, SplitBehavior, SplitPattern,
+    Tokenizer,
 };
 
 /// A vocabulary that tells the two splits apart: as one chunk `"a12"` BPEs into
@@ -92,6 +93,27 @@ fn pre_tokenizer_can_be_built_and_attached_from_outside_the_crate() {
         digit_tokenizer().with_pre_tokenizer(pt).encode("a12"),
         vec![0, 1, 2]
     );
+}
+
+/// [`ByteFallback`] is nameable and constructible from outside the crate via
+/// [`ByteFallback::new`] — its fields are private — and
+/// [`Tokenizer::with_byte_fallback`] accepts what it produces.
+#[test]
+fn byte_fallback_can_be_built_and_attached_from_outside_the_crate() {
+    let mut byte_ids = [None; 256];
+    byte_ids[0x62] = Some(999);
+    let fallback = ByteFallback::new(byte_ids, None);
+
+    let mut encoder = splintr::FxHashMap::default();
+    encoder.insert(b"a".to_vec(), 1u32);
+    encoder.insert(b"c".to_vec(), 2u32);
+    // `b` (0x62) is deliberately absent: BPE cannot represent it at all.
+    let tokenizer = Tokenizer::new(encoder, splintr::FxHashMap::default(), r"\S+|\s+")
+        .expect("tokenizer construction")
+        .with_byte_fallback(Some(fallback));
+
+    assert!(tokenizer.has_byte_fallback());
+    assert_eq!(tokenizer.encode("abc"), vec![1, 999, 2]);
 }
 
 /// A `Split` pattern that does not compile is reported through the crate-root

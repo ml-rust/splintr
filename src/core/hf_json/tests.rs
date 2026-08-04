@@ -640,11 +640,11 @@ fn added_token_id_disagreeing_with_the_vocab_id_errors() {
 }
 
 /// Builds the 256 `"<0xNN>": id` vocab entries (uppercase hex, ids starting at
-/// `start_id`) that `build_bpe` requires, in full, for `model.byte_fallback:
-/// true` to derive a complete table. Written as a helper rather than a literal
-/// 256-entry JSON blob: `byte_fallback_ids_from_encoder` (src/core/hf_json's
-/// consumer) is all-or-nothing, so every test that wants a *complete* table
-/// needs all 256 spelled exactly right.
+/// `start_id`) that spell a *complete* byte-fallback set. A complete set is no
+/// longer required — `byte_fallback_from_encoder` keeps a partial one — but it
+/// is what the real full-coverage vocabularies (mistral-7b, embeddinggemma)
+/// declare, so the tests that pin their behavior need all 256 spelled exactly
+/// right, which is easier to get right here than in a literal JSON blob.
 fn byte_fallback_vocab_entries(start_id: u32) -> String {
     (0u32..256)
         .map(|b| format!(r#""<0x{b:02X}>": {}"#, start_id + b))
@@ -706,20 +706,91 @@ fn byte_fallback_false_or_absent_still_drops_the_unrepresented_byte() {
     }
 }
 
-/// `model.byte_fallback: true` but the `<0xNN>` set in `model.vocab` is
-/// incomplete (only 3 of the 256 required entries): loading must fail with
-/// `MissingSpecial("byte_fallback")` rather than silently produce a
-/// tokenizer that would drop the missing bytes instead of falling back.
+/// `model.byte_fallback: true` with only *some* of the 256 `<0xNN>` entries is
+/// a valid file, not a malformed one: HuggingFace resolves fallback per
+/// character, so it loads and each byte is resolved on its own — `<0x78>` for
+/// `x`, which is declared, and `model.unk_token`'s id for `b`, which is not.
+///
+/// Ground truth from `tokenizers` 0.22.1 on this same document:
+/// `encode('abxbc')` → `['a', '<0x78>', '<unk>', '<unk>', 'c']` = `[1, 3, 0, 0,
+/// 2]`. (An earlier revision rejected the whole file here with
+/// `MissingSpecial("byte_fallback")`, which refused files HuggingFace accepts.)
 #[test]
-fn byte_fallback_true_with_an_incomplete_table_errors() {
+fn byte_fallback_true_with_a_partial_table_loads_and_resolves_per_byte() {
     let json = r#"{
-        "model": {"type": "BPE", "byte_fallback": true,
-            "vocab": {"a": 0, "c": 1, "<0x00>": 2, "<0x01>": 3, "<0x02>": 4},
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "a": 1, "c": 2, "<0x78>": 3},
             "merges": []}
     }"#;
-    let err = from_json_bytes(json.as_bytes());
-    assert!(matches!(
-        err,
-        Err(HfJsonError::MissingSpecial("byte_fallback"))
-    ));
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("a partial byte_fallback set is not a load failure")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    assert!(t.has_byte_fallback());
+    assert_eq!(t.encode("abxbc"), vec![1, 3, 0, 0, 2]);
+}
+
+/// The same partial document with `<0x62>` added: that one byte flips from the
+/// unk id to its own `<0xNN>` id and nothing else moves. This is what pins
+/// per-byte resolution as opposed to an all-or-nothing table — a 256-entry set
+/// is just the case where the `<0xNN>` branch always wins.
+///
+/// Ground truth from `tokenizers` 0.22.1: `encode('abxbc')` → `['a', '<0x62>',
+/// '<0x78>', '<0x62>', 'c']` = `[1, 4, 3, 4, 2]`.
+#[test]
+fn declaring_one_more_byte_token_flips_only_that_byte() {
+    let json = r#"{
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "a": 1, "c": 2, "<0x78>": 3, "<0x62>": 4},
+            "merges": []}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    assert_eq!(t.encode("abxbc"), vec![1, 4, 3, 4, 2]);
+}
+
+/// `model.byte_fallback: true` with neither any `<0xNN>` entry nor a resolvable
+/// `model.unk_token`: there is nothing to fall back to, so no fallback is
+/// configured at all and the unrepresentable byte is dropped — the documented
+/// no-fallback contract rather than a silently wrong id. `tokenizers` 0.22.1
+/// agrees: `encode('abc')` → `['a', 'c']`.
+#[test]
+fn byte_fallback_true_without_byte_tokens_or_unk_drops_the_byte() {
+    let json = r#"{
+        "model": {"type": "BPE", "byte_fallback": true,
+            "vocab": {"a": 1, "c": 2}, "merges": []}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    assert!(!t.has_byte_fallback());
+    assert_eq!(t.encode("abc"), vec![1, 2]);
+}
+
+/// D18: `build_bpe` reads `model.unk_token`, so a declared unk that is NOT the
+/// conventional `<unk>` spelling still resolves — the fallback id follows the
+/// declaration rather than a hardcoded name.
+#[test]
+fn byte_fallback_honors_a_non_default_unk_token_spelling() {
+    let json = r#"{
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "[MISSING]",
+            "vocab": {"[MISSING]": 9, "a": 1, "c": 2},
+            "merges": []}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    assert_eq!(t.encode("abc"), vec![1, 9, 2]);
 }

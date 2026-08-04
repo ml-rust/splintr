@@ -127,8 +127,11 @@ impl Precompiled {
 }
 
 /// Byte length of the UTF-8 character starting with `first`.
+///
+/// Shared with the BPE byte-fallback path, which walks an unresolved span a
+/// character at a time (see `Tokenizer::bpe`).
 #[inline]
-fn utf8_len(first: u8) -> usize {
+pub(super) fn utf8_len(first: u8) -> usize {
     if first < 0x80 {
         1
     } else if first >> 5 == 0b110 {

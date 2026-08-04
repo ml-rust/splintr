@@ -9,6 +9,34 @@ use std::sync::{Arc, Mutex};
 use super::backend::RegexBackend;
 use super::error::TokenizerError;
 
+/// How a character the BPE merge vocabulary cannot represent is rendered.
+///
+/// HuggingFace resolves this **per character**, not through an all-or-nothing
+/// 256-entry table: a character whose every byte has a `<0xNN>` entry is
+/// emitted as those byte tokens, and otherwise the whole character collapses to
+/// a single `model.unk_token` id. Either half may be missing — a vocabulary
+/// with only some `<0xNN>` entries is a valid file, not a malformed one — so
+/// both are optional here and a character neither half can render is dropped,
+/// which is `byte_pair_encode_pieces`' behavior without any fallback at all.
+#[derive(Clone, Debug)]
+pub struct ByteFallback {
+    /// Token id per byte value, `None` where the vocabulary declares no
+    /// `<0xNN>` entry for that byte.
+    pub(super) byte_ids: Box<[Option<u32>; 256]>,
+    /// `model.unk_token`'s id, for a character the byte entries cannot cover.
+    pub(super) unk_id: Option<u32>,
+}
+
+impl ByteFallback {
+    /// Build a fallback from a per-byte `<0xNN>` id table and an unk id.
+    pub fn new(byte_ids: [Option<u32>; 256], unk_id: Option<u32>) -> Self {
+        Self {
+            byte_ids: Box::new(byte_ids),
+            unk_id,
+        }
+    }
+}
+
 /// High-performance BPE tokenizer with regexr backend (default) or PCRE2 (optional).
 ///
 /// # Performance Characteristics
@@ -120,11 +148,11 @@ pub struct Tokenizer {
     pub(super) cache_size: usize,
     pub(super) use_jit: bool,
     pub(super) use_pcre2: bool,
-    /// Token id per byte value for `<0xNN>` byte-fallback vocabularies, so a
-    /// piece the merge cannot represent is emitted as its bytes instead of
-    /// being dropped. `None` when the vocabulary declares no byte fallback —
-    /// every ByteLevel BPE model, which has full alphabet coverage and needs none.
-    pub(super) byte_fallback_ids: Option<Box<[u32; 256]>>,
+    /// `<0xNN>`/`<unk>` resolution for a piece the merge cannot represent, so
+    /// it is emitted through those ids instead of being dropped. `None` when
+    /// the vocabulary declares no byte fallback — every ByteLevel BPE model,
+    /// which has full alphabet coverage and needs none.
+    pub(super) byte_fallback: Option<ByteFallback>,
 }
 
 impl Clone for Tokenizer {
@@ -173,7 +201,7 @@ impl Clone for Tokenizer {
             cache_size: self.cache_size,
             use_jit: self.use_jit,
             use_pcre2: self.use_pcre2,
-            byte_fallback_ids: self.byte_fallback_ids.clone(),
+            byte_fallback: self.byte_fallback.clone(),
         }
     }
 }
@@ -260,10 +288,10 @@ impl Tokenizer {
         self.chunk_cache.lock().map(|c| c.len()).unwrap_or(0)
     }
 
-    /// Whether this tokenizer has a `<0xNN>` byte-fallback table configured,
-    /// so a BPE piece the merge cannot represent is emitted as its bytes
+    /// Whether this tokenizer has a [`ByteFallback`] configured, so a piece the
+    /// BPE merge cannot represent is emitted through its `<0xNN>`/`<unk>` ids
     /// instead of being dropped.
     pub fn has_byte_fallback(&self) -> bool {
-        self.byte_fallback_ids.is_some()
+        self.byte_fallback.is_some()
     }
 }

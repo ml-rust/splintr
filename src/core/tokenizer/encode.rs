@@ -4,6 +4,7 @@ use crate::core::added::AddedTokens;
 use crate::core::bpe::{byte_pair_encode_pieces, byte_pair_encode_pieces_seeded, Piece};
 use crate::core::byte_level::byte_level_encode;
 use crate::core::policy::{PolicyError, SpecialMode};
+use crate::core::precompiled::utf8_len;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 
@@ -49,9 +50,10 @@ impl Tokenizer {
     }
 
     /// Run BPE on a piece, honoring a separate merge-rank map when present,
-    /// and mapping any span the vocabulary could not represent through the
-    /// `<0xNN>` byte-fallback table when one is configured (instead of
-    /// silently dropping it, `byte_pair_encode_with_ranks`'s contract).
+    /// and rendering any span the vocabulary could not represent through the
+    /// [`ByteFallback`](super::types::ByteFallback) resolution when one is
+    /// configured (instead of silently dropping it, `byte_pair_encode_pieces`'
+    /// contract).
     ///
     /// **Byte-space note:** `bytes` is in RAW input-byte space when
     /// `use_byte_level` is false, but is the UTF-8 of the *ByteLevel-encoded*
@@ -66,8 +68,8 @@ impl Tokenizer {
     /// fallback id computed in the wrong byte space.
     #[inline]
     fn bpe(&self, bytes: &[u8]) -> Vec<u32> {
-        let table = (!self.use_byte_level)
-            .then_some(self.byte_fallback_ids.as_deref())
+        let fallback = (!self.use_byte_level)
+            .then_some(self.byte_fallback.as_ref())
             .flatten();
 
         // Seed BPE by character when and only when this vocabulary has its own
@@ -92,20 +94,66 @@ impl Tokenizer {
         };
 
         let mut out = Vec::with_capacity(pieces.len());
+        let Some(fallback) = fallback else {
+            // No fallback configured: an unrepresentable span is dropped,
+            // matching the prior (and still preserved) drop contract.
+            for piece in pieces {
+                if let Piece::Token(id) = piece {
+                    out.push(id);
+                }
+            }
+            return out;
+        };
+
+        // HuggingFace resolves fallback per CHARACTER over the whole word, with
+        // one wrinkle reproduced deliberately here: a pending unk is flushed by
+        // a *vocabulary* hit, never by a `<0xNN>` hit — `merge_word` in
+        // `tokenizers`' BPE model adds the byte tokens directly while the unk
+        // stays pending until the next vocabulary hit or the end of the word.
+        // So `▁hello\n` over a vocab whose only byte token is `<0x0A>` gives
+        // `▁ <unk> <unk> <unk> <unk> <0x0A> <unk>`, with the newline ahead of
+        // the final unk. Measured against `tokenizers` 0.22.1; a "tidier"
+        // strictly positional order would disagree with HuggingFace on every
+        // partial-fallback vocabulary. `pending_unk` holds the id to emit, so a
+        // vocabulary with no `unk_token` at all pends `None` and the character
+        // is dropped — the no-fallback behavior, which is also what HF does
+        // there (measured).
+        let mut pending_unk: Option<u32> = None;
         for piece in pieces {
             match piece {
-                Piece::Token(id) => out.push(id),
+                Piece::Token(id) => {
+                    out.extend(pending_unk.take());
+                    out.push(id);
+                }
                 Piece::Unresolved { start, len } => {
-                    if let Some(table) = table {
-                        if let Some(span) = bytes.get(start..start + len) {
-                            out.extend(span.iter().map(|&b| table[b as usize]));
+                    let Some(span) = bytes.get(start..start + len) else {
+                        continue;
+                    };
+                    let mut i = 0;
+                    while i < span.len() {
+                        // `min` guards a span that is not whole characters: the
+                        // tiktoken path (`merge_ranks == None`) splits by byte,
+                        // so a span can start or end mid-character. A truncated
+                        // or continuation byte is then handled on its own, which
+                        // is exactly the granularity BPE reported it at.
+                        let n = utf8_len(span[i]).min(span.len() - i);
+                        let ch = &span[i..i + n];
+                        // A character is emitted as its bytes only when EVERY
+                        // one of them has a `<0xNN>` entry, and otherwise
+                        // collapses to a single unk: `é` over a vocab declaring
+                        // only `<0xC3>` is one `<unk>`, not `<0xC3> <unk>`.
+                        if ch.iter().all(|&b| fallback.byte_ids[b as usize].is_some()) {
+                            out.extend(ch.iter().filter_map(|&b| fallback.byte_ids[b as usize]));
+                        } else {
+                            out.extend(pending_unk.take());
+                            pending_unk = fallback.unk_id;
                         }
+                        i += n;
                     }
-                    // else: dropped, matching the prior (and still preserved)
-                    // byte_pair_encode_with_ranks drop contract.
                 }
             }
         }
+        out.extend(pending_unk.take());
         out
     }
 

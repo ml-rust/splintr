@@ -418,6 +418,26 @@ pub(super) fn parse_special_decode_ids(root: &Value) -> rustc_hash::FxHashSet<u3
     ids
 }
 
+/// Resolve `model.unk_token` to its `model.vocab` id.
+///
+/// `default` is the spelling to assume when the model declares none — WordPiece
+/// files routinely omit `unk_token` while still relying on `[UNK]`, whereas a
+/// BPE file that omits it genuinely has no unk (pass `None` there). Returns
+/// `None` when there is no spelling to look up or the declared one is absent
+/// from the vocabulary; a backend that cannot work without one turns that into
+/// [`HfJsonError::MissingSpecial`].
+pub(super) fn parse_unk_id(
+    model: &Value,
+    vocab: &serde_json::Map<String, Value>,
+    default: Option<&str>,
+) -> Option<u32> {
+    let unk_token = model.get("unk_token").and_then(Value::as_str).or(default)?;
+    vocab
+        .get(unk_token)
+        .and_then(Value::as_u64)
+        .map(|id| id as u32)
+}
+
 /// Find the id of the first matching token content in `added_tokens`.
 pub(in crate::core) fn find_added_token(root: &Value, candidates: &[&str]) -> Option<u32> {
     let list = root.get("added_tokens").and_then(Value::as_array)?;

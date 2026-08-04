@@ -13,7 +13,7 @@ use super::super::any_tokenizer::{AnyTokenizer, Backend};
 use super::super::policy;
 use super::components::{
     find_added_token, parse_bert_norm, parse_norm_ops, parse_pre_tokenizer,
-    parse_special_decode_ids, parse_special_tokens,
+    parse_special_decode_ids, parse_special_tokens, parse_unk_id,
 };
 use super::HfJsonError;
 
@@ -148,24 +148,24 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     // map so BPE merges in the correct order regardless of id assignment.
     let merge_ranks = parse_merge_ranks(model, vocab);
 
-    // `model.byte_fallback: true` declares a full `<0xNN>` byte-fallback set in
+    // `model.byte_fallback: true` declares a `<0xNN>` byte-fallback set in
     // `model.vocab` (mistral-7b, embeddinggemma, ...): a piece BPE cannot
-    // represent should be emitted byte-by-byte through those ids rather than
-    // silently dropped. A declared-but-incomplete set is a malformed file, not
-    // something to silently degrade from — report it like the other backends'
-    // missing-special errors instead of continuing without fallback.
-    let byte_fallback = model
+    // represent should be emitted through those ids rather than silently
+    // dropped. The set need NOT be complete — HuggingFace resolves fallback per
+    // character, using `<0xNN>` where the entry exists and `model.unk_token`
+    // where it does not, so a file declaring only some of the 256 entries loads
+    // and tokenizes fine there (measured against `tokenizers` 0.22.1). Hence the
+    // unk id is resolved alongside, and neither half being present is not an
+    // error: with nothing to fall back to, `byte_fallback_from_encoder` yields
+    // `None` and the unrepresentable piece is dropped, exactly as HF does.
+    let declares_byte_fallback = model
         .get("byte_fallback")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let byte_fallback_ids = if byte_fallback {
-        Some(
-            Tokenizer::byte_fallback_ids_from_encoder(&encoder)
-                .ok_or(HfJsonError::MissingSpecial("byte_fallback"))?,
-        )
-    } else {
-        None
-    };
+    let unk_id = parse_unk_id(model, vocab, None);
+    let byte_fallback = declares_byte_fallback
+        .then(|| Tokenizer::byte_fallback_from_encoder(&encoder, unk_id))
+        .flatten();
 
     // Use the multi-stage pre-tokenizer engine when the json declares a pipeline
     // (Digits/Punctuation/Sequence/Split/…). It emits already byte-level-encoded
@@ -236,7 +236,7 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
         .with_added_token_matching(true)
         .with_special_decode_ids(parse_special_decode_ids(root))
         .with_normalizer(Normalizer::new(parse_norm_ops(root.get("normalizer"))?))
-        .with_byte_fallback(byte_fallback_ids);
+        .with_byte_fallback(byte_fallback);
     Ok(Backend::Bpe(tok))
 }
 
@@ -373,14 +373,10 @@ fn build_wordpiece(root: &Value, model: &Value) -> Result<Backend, HfJsonError> 
         id_to_token[id] = token.clone();
     }
 
-    let unk_token = model
-        .get("unk_token")
-        .and_then(Value::as_str)
-        .unwrap_or("[UNK]");
-    let unk_id = vocab
-        .get(unk_token)
-        .and_then(Value::as_u64)
-        .ok_or(HfJsonError::MissingSpecial("unk"))? as u32;
+    // WordPiece cannot tokenize at all without an unk, so an unresolvable one is
+    // a hard error here — unlike BPE, where it just narrows byte fallback.
+    let unk_id =
+        parse_unk_id(model, vocab, Some("[UNK]")).ok_or(HfJsonError::MissingSpecial("unk"))?;
 
     let max_word_len = model
         .get("max_input_chars_per_word")
