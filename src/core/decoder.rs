@@ -371,9 +371,18 @@ fn byte_fallback(tokens: Vec<String>) -> Vec<String> {
 
 /// Parse a `<0xNN>` byte-fallback token into its byte value.
 ///
-/// Shared with the lowered form's rendering
-/// ([`ByteFallbackRule::DeclaredRun`]), so a declared `ByteFallback` step reads
-/// exactly the same spellings whichever way it is driven.
+/// The *only* byte-token parser: shared with the lowered form's rendering
+/// ([`ByteFallbackRule::DeclaredRun`]) and with the surface-parsing rule the
+/// SentencePiece-shaped backends use ([`ByteFallbackRule::ParseSurface`]), so
+/// every path reads exactly the same spellings.
+///
+/// Exactly two hex digits, either case. Matches `tokenizers` 0.22.1's
+/// `decoders.ByteFallback`, measured directly: `<0x4a>` and `<0x4A>` both decode
+/// to `"J"`, while `<0x1>`, `<0x041>` and `<0xG1>` all pass through as their
+/// literal spelling. SentencePiece's own vocabularies agree with the strict
+/// reading and never exercise the case question — `mistral-7b-v0.3`'s
+/// `tokenizer.model` holds all 256 byte pieces, every one of them two upper-case
+/// hex digits.
 pub(crate) fn parse_byte_token(token: &str) -> Option<u8> {
     let hex = token.strip_prefix("<0x")?.strip_suffix('>')?;
     if hex.len() == 2 {
@@ -624,6 +633,47 @@ mod tests {
         // a single "\u{FFFD}" respectively.
         assert_eq!(same(j.clone(), &["<0xE2>", "<0x41>"]), "\u{fffd}\u{fffd}");
         assert_eq!(same(j, &["<0xF0>", "<0x9F>"]), "\u{fffd}\u{fffd}");
+    }
+
+    /// The one byte-token parser is strict: exactly two hex digits, either case.
+    ///
+    /// Measured against `tokenizers` 0.22.1's `decoders.ByteFallback`, which
+    /// decodes `<0x4a>` and `<0x4A>` alike to `"J"` and passes `<0x1>`,
+    /// `<0x041>` and `<0xG1>` through as their literal spelling. Every
+    /// [`ByteFallbackRule`] that parses a surface routes through this function,
+    /// so pinning it here pins both the declared step and
+    /// [`ByteFallbackRule::ParseSurface`] — a lenient second reading, under
+    /// which `<0x1>` would resolve to byte `0x01` on one path only, cannot come
+    /// back without failing this.
+    #[test]
+    fn byte_token_parse_is_strict_two_hex_digits() {
+        assert_eq!(parse_byte_token("<0x00>"), Some(0x00));
+        assert_eq!(parse_byte_token("<0x41>"), Some(0x41));
+        assert_eq!(parse_byte_token("<0xFF>"), Some(0xff));
+        // Case-insensitive, as the reference is.
+        assert_eq!(parse_byte_token("<0x4a>"), Some(0x4a));
+        assert_eq!(parse_byte_token("<0x4A>"), Some(0x4a));
+
+        // Fewer or more than two digits is text, not a byte.
+        assert_eq!(parse_byte_token("<0x1>"), None);
+        assert_eq!(parse_byte_token("<0x>"), None);
+        assert_eq!(parse_byte_token("<0x041>"), None);
+        // Not hex, and not the spelling at all.
+        assert_eq!(parse_byte_token("<0xG1>"), None);
+        assert_eq!(parse_byte_token("<0x 1>"), None);
+        assert_eq!(parse_byte_token("0x41"), None);
+        assert_eq!(parse_byte_token("<0x41"), None);
+        assert_eq!(parse_byte_token("hello"), None);
+    }
+
+    /// The strict reading, driven through the declared chain and its lowered
+    /// form: `<0x1>` renders as its own spelling rather than as byte `0x01`.
+    /// `tokenizers` 0.22.1 does the same — `ByteFallback().decode(["<0x1>"])` is
+    /// `"<0x1>"`.
+    #[test]
+    fn single_hex_digit_surface_is_literal_text() {
+        assert_eq!(same(mistral_chain(), &["<0x1>"]), "<0x1>");
+        assert_eq!(same(mistral_chain(), &["▁a", "<0x1>"]), "a<0x1>");
     }
 
     /// The Llama/Mistral-style SentencePiece chain, which four of the shipping

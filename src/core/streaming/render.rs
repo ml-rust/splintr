@@ -42,7 +42,9 @@ pub(crate) enum ByteFallbackRule {
     /// byte value it denotes. Shared with the tokenizer rather than copied.
     Table(Arc<FxHashMap<u32, u8>>),
     /// The byte value is read off the *surface* — any piece spelled `<0xNN>`
-    /// denotes that byte — rather than from an encode-side table.
+    /// denotes that byte — rather than from an encode-side table. Parsed with
+    /// [`parse_byte_token`], the same two-hex-digit reading every other rule
+    /// uses, so `<0x5>` is text here too.
     ///
     /// Ungated on purpose, and deliberately unlike [`Table`](Self::Table): the
     /// SentencePiece-shaped vocabularies have no separate inverse table, and
@@ -56,8 +58,7 @@ pub(crate) enum ByteFallbackRule {
     /// [`Decoder::lower`](crate::core::decoder::Decoder::lower).
     ///
     /// Reads the byte off the surface exactly as
-    /// [`ParseSurface`](Self::ParseSurface) does — but only from a two-hex-digit
-    /// `<0xNN>`, which is the parse the declared step itself uses — and renders
+    /// [`ParseSurface`](Self::ParseSurface) does — and renders
     /// it as [`Rendered::RunByte`] rather than as bytes, because the declared
     /// step does *not* decode its bytes the way the UTF-8 buffer does: a run
     /// that is not valid UTF-8 becomes one U+FFFD **per byte**, not one per
@@ -147,17 +148,6 @@ pub(crate) enum Rendered<'a> {
     RunByte(u8),
     /// In no table at all: neither the vocabulary nor the special tokens.
     Unknown,
-}
-
-/// The byte a `<0xNN>` piece denotes, or `None` for any other spelling.
-///
-/// The parse [`ByteFallbackRule::ParseSurface`] runs, kept beside
-/// [`BYTE_VALUES`] because the two are only ever used together.
-fn byte_fallback_surface(piece: &str) -> Option<u8> {
-    piece
-        .strip_prefix("<0x")
-        .and_then(|rest| rest.strip_suffix('>'))
-        .and_then(|hex| u8::from_str_radix(hex, 16).ok())
 }
 
 /// `[0, 1, …, 255]`, so a resolved byte-fallback byte can be handed out as a
@@ -295,6 +285,23 @@ impl RenderRules {
         self
     }
 
+    /// Empty the skip set, so every id the vocabulary declares special renders
+    /// its own spelling instead of nothing —
+    /// [`SpecialDecode::Render`](crate::SpecialDecode::Render).
+    ///
+    /// Sound *because* the four concrete backends put nothing else in that set:
+    /// each builds it from its declared `special=true` ids (plus, for the
+    /// SentencePiece-shaped ones, the vocabulary's own BOS/EOS/`<unk>`), all of
+    /// which have a surface to render. The one skip set that also holds ids with
+    /// *no* surface is [`AnyTokenizer`](crate::AnyTokenizer)'s declared-pipeline
+    /// one, which is why that path composes its set itself rather than calling
+    /// this — clearing it wholesale there would render an empty slot as an empty
+    /// surface, carrying a word separator with it.
+    pub(crate) fn rendering_specials(mut self) -> Self {
+        self.skip = Arc::new(FxHashSet::default());
+        self
+    }
+
     /// Append a literal substitution applied to a surface as it is rendered —
     /// see `surface_replace`. Order is declaration order, which is the order the
     /// declared chain applies its `Replace` steps in.
@@ -330,10 +337,9 @@ impl RenderRules {
     /// The byte a surface denotes under [`ByteFallbackRule::DeclaredRun`], or
     /// `None` under every other rule and for every other spelling.
     ///
-    /// Parses with the declared step's own
-    /// [`parse_byte_token`], not with [`byte_fallback_surface`]: the declared
-    /// step requires exactly two hex digits, so `<0x5>` is text to it, and
-    /// reproducing `Decoder::decode` means reproducing that.
+    /// Parses with [`parse_byte_token`], the one byte-token parser every rule
+    /// shares: exactly two hex digits, so `<0x5>` is text, and reproducing
+    /// `Decoder::decode` means reproducing that.
     fn declared_run_byte(&self, surface: &[u8]) -> Option<u8> {
         match self.byte_fallback {
             ByteFallbackRule::DeclaredRun => {
@@ -441,7 +447,7 @@ impl RenderRules {
                     // has to be in hand first — and its literal spelling is
                     // then never emitted.
                     let parsed = match self.byte_fallback {
-                        ByteFallbackRule::ParseSurface => byte_fallback_surface(piece),
+                        ByteFallbackRule::ParseSurface => parse_byte_token(piece),
                         ByteFallbackRule::DeclaredRun
                         | ByteFallbackRule::Table(_)
                         | ByteFallbackRule::None => None,
