@@ -668,7 +668,51 @@ then a manually dispatched `Release` that publishes exactly those artifacts.
 ### Differential testing against the reference implementations
 
 Unit tests fix the behaviour splintr already knows about; correctness against
-the real tokenizers is established differentially. `scripts/fuzz_reference.py`
+the real tokenizers is established differentially, on three levels.
+
+**In CI, with no model files and no Python.** `tests/reference_parity.rs` diffs
+every bundled vocabulary against committed fixtures in
+`tests/fixtures/pretrained/`, on both token ids _and_ decoded text — encode and
+decode are separate pipelines, and pinning only ids leaves byte-level
+unmapping, byte fallback and the SentencePiece dummy-prefix strip unpinned.
+Each fixture is captured by `scripts/extract_reference_cases.py` from whichever
+tool is authoritative for that vocabulary, and the script refuses to write one
+unless the reference provably _is_ the vocabulary splintr embeds:
+
+```bash
+# OpenAI vocabularies: the `tiktoken` package, gated on every mergeable rank
+python3 scripts/extract_reference_cases.py --vocab cl100k_base --reference-tiktoken \
+    --out-dir tests/fixtures/pretrained
+
+# HF-published vocabularies: `tokenizers`, gated on vocab size + a 256-id sample
+python3 scripts/extract_reference_cases.py --vocab llama3 \
+    --reference-hf path/to/llama-3.2-1b/tokenizer.json --out-dir tests/fixtures/pretrained
+
+# SentencePiece vocabularies: `sentencepiece`, gated on every piece and score
+python3 scripts/extract_reference_cases.py --vocab mistral_v2 \
+    --reference-spm path/to/mistral-7b-v0.3/tokenizer.model --out-dir tests/fixtures/pretrained
+```
+
+`tests/decode_agreement.rs` runs alongside it and needs no reference at all: it
+asserts that for every bundled vocabulary, every backend reachable from it and
+_every_ chunk size, streaming decode concatenated with `flush()` equals
+whole-sequence `decode`/`decode_lossy`, and that `reset()` leaves a decoder
+byte-identical to a fresh one.
+
+**Before a release, against the real models on your machine.**
+`scripts/verify_external_models.py` sweeps splintr's `from_json` loader and its
+bundled SentencePiece vocabularies across a shelf of published model
+tokenizers, printing one pass/fail row per target. It never skips: an absent
+model directory, an absent target file, or an installed `splintr` wheel that is
+not this checkout's version each abort or fail the run rather than shrinking it
+to whatever happened to be present.
+
+```bash
+python3 scripts/verify_external_models.py --models-dir ~/Projects/models
+python3 scripts/verify_external_models.py --models-dir ~/Projects/models --only bge-m3 --verbose
+```
+
+**To find new bugs.** `scripts/fuzz_reference.py`
 diffs splintr against `tokenizers`, `transformers` (slow, sentencepiece-backed)
 or `tiktoken` — auto-detected per target — using random strings assembled from
 each vocabulary's _own_ added and special tokens, joined with no separator.

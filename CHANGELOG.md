@@ -8,6 +8,12 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ## [Unreleased]
 
+### Added
+
+- **Reference fixtures for every bundled vocabulary that has a reference**, covering decoded text as well as token ids — encode and decode are separate pipelines, and a fixture pinning only ids left byte-level unmapping, byte fallback and the SentencePiece dummy-prefix strip unpinned. `scripts/extract_reference_cases.py` now speaks all three authoritative reference tools (`tiktoken` for the OpenAI vocabularies, `tokenizers` for the HF-published ones, `sentencepiece` for the `.spm`-backed Mistral V1/V2), gating each pairing exhaustively where the reference exposes its whole vocabulary as data. `mistral_v3` (Tekken) has no fixture: its reference is a Tekken checkpoint, and no near neighbour is an acceptable substitute.
+- **`tests/decode_agreement.rs`** — streaming decode concatenated with `flush()` equals whole-sequence `decode`/`decode_lossy` for every bundled vocabulary, every backend reachable from it and every chunk size, and `reset()` leaves a decoder byte-identical to a fresh one. Needs no reference tokenizer, so it runs in CI unconditionally.
+- **`scripts/verify_external_models.py`** — the pre-release sweep of splintr's `from_json` loader and bundled SentencePiece vocabularies against the published model tokenizers on a maintainer's machine, as a pass/fail table. Aborts rather than shrinking when the model directory, a target file, or a current `splintr` wheel is absent.
+
 ### Changed
 
 - **BREAKING: one streaming decoder, built by the tokenizer.** `ByteLevelStreamingDecoder` is gone and `StreamingDecoder::new(&tokenizer)` with it; the single `StreamingDecoder` is obtained only from `Tokenizer::streaming_decoder()`, which takes ByteLevel unmapping, the `special=true` ids to drop and the metaspace ▁ substitution from the tokenizer's own configuration. Picking the decoder that did not match the vocabulary — silently producing mojibake, and silently ignoring the skip set and the metaspace pass that `decode` applies — is no longer expressible. The decoder carries no lifetime, so it can be owned and moved into a generation task, and it shares the vocabulary map rather than copying it.

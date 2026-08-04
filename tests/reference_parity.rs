@@ -1,23 +1,35 @@
 //! Diff splintr's bundled pretrained vocabularies against independent
-//! HuggingFace `tokenizers` output, automatically, in `cargo test`.
+//! reference-tokenizer output, automatically, in `cargo test`.
 //!
 //! The fixtures this test reads (`tests/fixtures/pretrained/*.json`) are
 //! generated out of band by `scripts/extract_reference_cases.py` -- see that
-//! script's module docstring for how each fixture is produced and gated
-//! against the bundled vocabulary it pairs with. This test performs no
-//! network access and requires no Python at test time; it only reads the
-//! already-committed JSON.
+//! script's module docstring for which reference tool is authoritative for
+//! which vocabulary (`tiktoken`, `tokenizers` or `sentencepiece`), how each
+//! fixture is produced, and how it is gated against the bundled vocabulary it
+//! pairs with. This test performs no network access and requires no Python at
+//! test time; it only reads the already-committed JSON.
 //!
 //! # Which encode entry point?
 //!
-//! Fixtures are generated with `tokenizer.encode(text,
-//! add_special_tokens=False).ids`. This mirrors the mode-selection logic in
-//! `examples/verify_pretrained.rs`: both [`AnyTokenizer::encode_raw`] (no
-//! boundary template, matches `add_special_tokens=False`) and
-//! [`AnyTokenizer::encode`] (the policy's template) are tried for every
-//! case, and whichever produces fewer mismatches is treated as the
-//! authoritative comparison -- so this test and that example can never
-//! silently disagree about what "correct" means for a given vocabulary.
+//! Fixtures are generated with the reference's *untemplated* encode. This
+//! mirrors the mode-selection logic in `examples/verify_pretrained.rs`: both
+//! [`AnyTokenizer::encode_raw`] (no boundary template, matching the
+//! untemplated reference) and [`AnyTokenizer::encode`] (the policy's
+//! template) are tried for every case, and whichever produces fewer
+//! mismatches is treated as the authoritative comparison -- so this test and
+//! that example can never silently disagree about what "correct" means for a
+//! given vocabulary.
+//!
+//! # Why decode is checked too
+//!
+//! Encode and decode are separate pipelines, and pinning only ids leaves
+//! byte-level unmapping, byte fallback, the SentencePiece dummy-prefix strip
+//! and special-token skipping entirely unpinned -- historically where a large
+//! share of this crate's real divergences have been. So every case also
+//! carries the reference's own decode of the ids it produced, and
+//! [`AnyTokenizer::decode`] is asserted against it. That check runs over the
+//! *reference's* ids rather than splintr's, so a decode failure is reported as
+//! a decode failure even when encode already disagrees.
 //!
 //! This file intentionally duplicates a small amount of fixture-parsing and
 //! mode-selection logic from `examples/verify_pretrained.rs` rather than
@@ -58,10 +70,12 @@ impl Mode {
     }
 }
 
-/// One reference case: input text paired with the reference tokenizer's ids.
+/// One reference case: input text, the reference tokenizer's ids, and the
+/// reference tokenizer's own decode of exactly those ids.
 struct Case {
     input: String,
     expected: Vec<u32>,
+    decoded: String,
 }
 
 /// A whole fixture: the bundled vocabulary name plus every case for it.
@@ -133,7 +147,24 @@ fn load_fixture(path: &Path) -> Fixture {
                         })
                 })
                 .collect();
-            Case { input, expected }
+            // Required, not optional: a fixture without it would silently
+            // check half of what this test exists to check.
+            let decoded = entry
+                .get("decoded")
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "reference_parity: {}: case {index}: `decoded` missing or not a string -- \
+                         regenerate this fixture with scripts/extract_reference_cases.py",
+                        path.display()
+                    )
+                })
+                .to_owned();
+            Case {
+                input,
+                expected,
+                decoded,
+            }
         })
         .collect();
 
@@ -187,14 +218,14 @@ fn escape(text: &str) -> String {
 }
 
 /// Diff every bundled-vocabulary fixture in `tests/fixtures/pretrained/`
-/// against the independent HuggingFace `tokenizers` output it was generated
-/// from (see `scripts/extract_reference_cases.py`).
+/// against the independent reference-tokenizer output it was generated from
+/// (see `scripts/extract_reference_cases.py`), on both ids and decoded text.
 ///
 /// Fails loudly (rather than vacuously passing) if the fixtures directory is
 /// missing or contains no `.json` files, so an accidental deletion of the
 /// fixtures cannot silently turn this into a no-op.
 #[test]
-fn pretrained_vocabularies_match_huggingface_reference() {
+fn pretrained_vocabularies_match_reference_tokenizers() {
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pretrained");
 
     assert!(
@@ -257,6 +288,45 @@ fn pretrained_vocabularies_match_huggingface_reference() {
             .min_by_key(|(_, failures)| failures.len())
             .expect("Mode::ALL is non-empty");
 
+        // Decode is scored independently of the encode mode: it is driven from
+        // the reference's own ids, so it says something even when encode
+        // already disagrees.
+        let decode_failures: Vec<(usize, Result<String, String>)> = fixture
+            .cases
+            .iter()
+            .enumerate()
+            .filter_map(|(index, case)| match tokenizer.decode(&case.expected) {
+                Ok(text) if text == case.decoded => None,
+                Ok(text) => Some((index, Ok(text))),
+                Err(e) => Some((index, Err(e.to_string()))),
+            })
+            .collect();
+
+        if !decode_failures.is_empty() {
+            let mut detail = format!(
+                "vocab {:?} ({}): {}/{} cases decoded differently from the reference:",
+                fixture.vocab,
+                path.display(),
+                decode_failures.len(),
+                fixture.cases.len(),
+            );
+            for (index, outcome) in &decode_failures {
+                let case = &fixture.cases[*index];
+                let actual = match outcome {
+                    Ok(text) => format!("\"{}\"", escape(text)),
+                    Err(message) => format!("<error: {message}>"),
+                };
+                detail.push_str(&format!(
+                    "\n  [case {index}] input: \"{}\"\n    ids: {}\
+                     \n    expected: \"{}\"\n    actual:   {actual}",
+                    escape(&case.input),
+                    format_ids(&case.expected),
+                    escape(&case.decoded),
+                ));
+            }
+            failure_reports.push(detail);
+        }
+
         if best_failures.is_empty() {
             continue;
         }
@@ -295,7 +365,7 @@ fn pretrained_vocabularies_match_huggingface_reference() {
 
     assert!(
         failure_reports.is_empty(),
-        "reference_parity: splintr disagrees with the HuggingFace reference:\n\n{}",
+        "reference_parity: splintr disagrees with the reference tokenizer:\n\n{}",
         failure_reports.join("\n\n")
     );
 }

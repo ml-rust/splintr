@@ -8,58 +8,67 @@
  "cases": [
   {
    "input": "",
-   "expected": []
+   "expected": [],
+   "decoded": ""
   },
   {
    "input": " ",
    "expected": [
     220
-   ]
+   ],
+   "decoded": " "
   },
   {
    "input": "  ",
    "expected": [
     256
-   ]
+   ],
+   "decoded": "  "
   },
   {
    "input": "   ",
    "expected": [
     262
-   ]
+   ],
+   "decoded": "   "
   },
   {
    "input": "a",
    "expected": [
     64
-   ]
+   ],
+   "decoded": "a"
   },
   {
    "input": " a",
    "expected": [
     264
-   ]
+   ],
+   "decoded": " a"
   },
   {
    "input": "a ",
    "expected": [
     64,
     220
-   ]
+   ],
+   "decoded": "a "
   },
   {
    "input": " a ",
    "expected": [
     264,
     220
-   ]
+   ],
+   "decoded": " a "
   },
   {
    "input": "hello world",
    "expected": [
     15339,
     1917
-   ]
+   ],
+   "decoded": "hello world"
   },
   {
    "input": "Hello World!",
@@ -67,7 +76,8 @@
     9906,
     4435,
     0
-   ]
+   ],
+   "decoded": "Hello World!"
   },
   {
    "input": "the quick brown fox jumps over the lazy dog",
@@ -81,7 +91,8 @@
     279,
     16053,
     5679
-   ]
+   ],
+   "decoded": "the quick brown fox jumps over the lazy dog"
   },
   {
    "input": "\tindented\twith\ttabs",
@@ -92,7 +103,8 @@
     48048,
     3324,
     3518
-   ]
+   ],
+   "decoded": "\tindented\twith\ttabs"
   },
   {
    "input": "line one\nline two\nline three",
@@ -105,13 +117,15 @@
     198,
     1074,
     2380
-   ]
+   ],
+   "decoded": "line one\nline two\nline three"
   },
   {
    "input": "\n\n\n",
    "expected": [
     1432
-   ]
+   ],
+   "decoded": "\n\n\n"
   },
   {
    "input": "trailing whitespace   ",
@@ -120,7 +134,8 @@
     14612,
     37472,
     262
-   ]
+   ],
+   "decoded": "trailing whitespace   "
   },
   {
    "input": "   leading whitespace",
@@ -128,7 +143,8 @@
     256,
     6522,
     37472
-   ]
+   ],
+   "decoded": "   leading whitespace"
   },
   {
    "input": "multiple   internal    spaces",
@@ -138,7 +154,8 @@
     5419,
     262,
     12908
-   ]
+   ],
+   "decoded": "multiple   internal    spaces"
   },
   {
    "input": "I've got it, don't worry.",
@@ -152,7 +169,8 @@
     956,
     11196,
     13
-   ]
+   ],
+   "decoded": "I've got it, don't worry."
   },
   {
    "input": "it's a test — isn't it?",
@@ -166,7 +184,8 @@
     956,
     433,
     30
-   ]
+   ],
+   "decoded": "it's a test — isn't it?"
   },
   {
    "input": "punctuation: ,.!?;:'\"()[]{}",
@@ -182,7 +201,8 @@
     368,
     1318,
     6390
-   ]
+   ],
+   "decoded": "punctuation: ,.!?;:'\"()[]{}"
   },
   {
    "input": "hyphenated-word and em—dash",
@@ -195,14 +215,16 @@
     991,
     2345,
     44619
-   ]
+   ],
+   "decoded": "hyphenated-word and em—dash"
   },
   {
    "input": "こんにちは世界",
    "expected": [
     90115,
     102616
-   ]
+   ],
+   "decoded": "こんにちは世界"
   },
   {
    "input": "日本語のテキストです。",
@@ -215,7 +237,8 @@
     71634,
     38641,
     1811
-   ]
+   ],
+   "decoded": "日本語のテキストです。"
   },
   {
    "input": "你好，世界！",
@@ -225,7 +248,8 @@
     3922,
     102616,
     6447
-   ]
+   ],
+   "decoded": "你好，世界！"
   },
   {
    "input": "안녕하세요 세계",
@@ -233,7 +257,8 @@
     101193,
     124409,
     110572
-   ]
+   ],
+   "decoded": "안녕하세요 세계"
   },
   {
    "input": "emoji test 😀🎉🚀",
@@ -247,7 +272,8 @@
     9468,
     248,
     222
-   ]
+   ],
+   "decoded": "emoji test 😀🎉🚀"
   },
   {
    "input": "family: 👨‍👩‍👧‍👦",
@@ -268,7 +294,8 @@
     9468,
     239,
     99
-   ]
+   ],
+   "decoded": "family: 👨‍👩‍👧‍👦"
   },
   {
    "input": "flag: 🏳️‍🌈",
@@ -283,7 +310,8 @@
     9468,
     234,
     230
-   ]
+   ],
+   "decoded": "flag: 🏳️‍🌈"
   },
   {
    "input": "café résumé naïve",
@@ -295,7 +323,8 @@
     978,
     95980,
     588
-   ]
+   ],
+   "decoded": "café résumé naïve"
   },
   {
    "input": "Zürich Ångström Curaçao",
@@ -311,7 +340,8 @@
     5808,
     3209,
     3524
-   ]
+   ],
+   "decoded": "Zürich Ångström Curaçao"
   },
   {
    "input": "0123456789",
@@ -320,7 +350,8 @@
     12901,
     17458,
     24
-   ]
+   ],
+   "decoded": "0123456789"
   },
   {
    "input": "the year 2024 had 365 days",
@@ -334,7 +365,8 @@
     220,
     12676,
     2919
-   ]
+   ],
+   "decoded": "the year 2024 had 365 days"
   },
   {
    "input": "price: $19.99, quantity: 42",
@@ -350,7 +382,8 @@
     25,
     220,
     2983
-   ]
+   ],
+   "decoded": "price: $19.99, quantity: 42"
   },
   {
    "input": "def add(a, b):\n    return a + b\n",
@@ -367,7 +400,8 @@
     489,
     293,
     198
-   ]
+   ],
+   "decoded": "def add(a, b):\n    return a + b\n"
   },
   {
    "input": "if (x == 42) { print(\"hi\"); }",
@@ -385,7 +419,8 @@
     6151,
     5146,
     335
-   ]
+   ],
+   "decoded": "if (x == 42) { print(\"hi\"); }"
   },
   {
    "input": "Mixed 混合 текст with 日本語 and English.",
@@ -401,7 +436,8 @@
     323,
     6498,
     13
-   ]
+   ],
+   "decoded": "Mixed 混合 текст with 日本語 and English."
   },
   {
    "input": "русский текст с числами 123",
@@ -414,7 +450,8 @@
     121009,
     220,
     4513
-   ]
+   ],
+   "decoded": "русский текст с числами 123"
   },
   {
    "input": "a\tb\nc d",
@@ -424,7 +461,8 @@
     198,
     66,
     294
-   ]
+   ],
+   "decoded": "a\tb\nc d"
   },
   {
    "input": "   \t\n   ",
@@ -432,7 +470,8 @@
     262,
     1602,
     262
-   ]
+   ],
+   "decoded": "   \t\n   "
   },
   {
    "input": "The quick fox",
@@ -442,14 +481,16 @@
     28863,
     4194,
     15361
-   ]
+   ],
+   "decoded": "The quick fox"
   },
   {
    "input": "getUserName",
    "expected": [
     456,
     19387
-   ]
+   ],
+   "decoded": "getUserName"
   },
   {
    "input": "myVariableName",
@@ -457,21 +498,24 @@
     2465,
     7983,
     678
-   ]
+   ],
+   "decoded": "myVariableName"
   },
   {
    "input": "HTTPRequestHandler",
    "expected": [
     64865,
     3126
-   ]
+   ],
+   "decoded": "HTTPRequestHandler"
   },
   {
    "input": "XMLHttpRequest",
    "expected": [
     10833,
     27459
-   ]
+   ],
+   "decoded": "XMLHttpRequest"
   },
   {
    "input": "isFooBarBaz123",
@@ -482,7 +526,8 @@
     33,
     1394,
     4513
-   ]
+   ],
+   "decoded": "isFooBarBaz123"
   },
   {
    "input": "aB1cD2eF3",
@@ -496,7 +541,8 @@
     68,
     37,
     18
-   ]
+   ],
+   "decoded": "aB1cD2eF3"
   },
   {
    "input": "camelCaseVariable_with_snake",
@@ -507,20 +553,23 @@
     6753,
     29122,
     731
-   ]
+   ],
+   "decoded": "camelCaseVariable_with_snake"
   },
   {
    "input": "toString",
    "expected": [
     6712
-   ]
+   ],
+   "decoded": "toString"
   },
   {
    "input": ".isValidEmail",
    "expected": [
     33261,
     4886
-   ]
+   ],
+   "decoded": ".isValidEmail"
   },
   {
    "input": "config.getValue()",
@@ -528,7 +577,8 @@
     1710,
     12165,
     368
-   ]
+   ],
+   "decoded": "config.getValue()"
   },
   {
    "input": "self.assertEqual(x, 42)",
@@ -540,7 +590,8 @@
     220,
     2983,
     8
-   ]
+   ],
+   "decoded": "self.assertEqual(x, 42)"
   },
   {
    "input": "user_id.toString()",
@@ -549,7 +600,8 @@
     851,
     5180,
     368
-   ]
+   ],
+   "decoded": "user_id.toString()"
   },
   {
    "input": "(parenthesizedWord)",
@@ -558,7 +610,8 @@
     83979,
     11116,
     8
-   ]
+   ],
+   "decoded": "(parenthesizedWord)"
   },
   {
    "input": "#hashtagWord",
@@ -567,7 +620,8 @@
     4752,
     35411,
     11116
-   ]
+   ],
+   "decoded": "#hashtagWord"
   },
   {
    "input": "@mentionUser",
@@ -575,7 +629,8 @@
     31,
     30348,
     1502
-   ]
+   ],
+   "decoded": "@mentionUser"
   },
   {
    "input": "12345678901234567890",
@@ -587,7 +642,8 @@
     12901,
     17458,
     1954
-   ]
+   ],
+   "decoded": "12345678901234567890"
   },
   {
    "input": "9999999999",
@@ -596,7 +652,8 @@
     5500,
     5500,
     24
-   ]
+   ],
+   "decoded": "9999999999"
   },
   {
    "input": "3.14159265358979",
@@ -608,7 +665,8 @@
     21598,
     22905,
     4643
-   ]
+   ],
+   "decoded": "3.14159265358979"
   },
   {
    "input": "phone: 1234567890123",
@@ -621,7 +679,8 @@
     16474,
     11531,
     18
-   ]
+   ],
+   "decoded": "phone: 1234567890123"
   },
   {
    "input": "id_000111222333444",
@@ -633,7 +692,8 @@
     9716,
     8765,
     14870
-   ]
+   ],
+   "decoded": "id_000111222333444"
   },
   {
    "input": "binary 1010101010101010",
@@ -646,7 +706,8 @@
     7755,
     4645,
     15
-   ]
+   ],
+   "decoded": "binary 1010101010101010"
   },
   {
    "input": "北京市海淀区",
@@ -657,7 +718,8 @@
     85315,
     222,
     24775
-   ]
+   ],
+   "decoded": "北京市海淀区"
   },
   {
    "input": "こんにちはカタカナ",
@@ -667,7 +729,8 @@
     47307,
     71493,
     96452
-   ]
+   ],
+   "decoded": "こんにちはカタカナ"
   },
   {
    "input": "東京タワーは高い",
@@ -677,7 +740,8 @@
     124049,
     15682,
     126574
-   ]
+   ],
+   "decoded": "東京タワーは高い"
   },
   {
    "input": "한국어와中文混合",
@@ -687,7 +751,8 @@
     81673,
     108891,
     124117
-   ]
+   ],
+   "decoded": "한국어와中文混合"
   },
   {
    "input": "ひらがなカタカナ漢字",
@@ -702,7 +767,8 @@
     96452,
     115953,
     19113
-   ]
+   ],
+   "decoded": "ひらがなカタカナ漢字"
   },
   {
    "input": "台北101大樓",
@@ -712,7 +778,8 @@
     4645,
     27384,
     117122
-   ]
+   ],
+   "decoded": "台北101大樓"
   },
   {
    "input": "Mixed混合Text文字",
@@ -721,7 +788,8 @@
     124117,
     1199,
     88435
-   ]
+   ],
+   "decoded": "Mixed混合Text文字"
   },
   {
    "input": "Löwe löwe Léopard 狮子",
@@ -737,7 +805,8 @@
     112362,
     106,
     45829
-   ]
+   ],
+   "decoded": "Löwe löwe Léopard 狮子"
   },
   {
    "input": "user123名前test",
@@ -746,7 +815,8 @@
     4513,
     120613,
     1985
-   ]
+   ],
+   "decoded": "user123名前test"
   },
   {
    "input": "GitHub仓库clone",
@@ -755,7 +825,8 @@
     124207,
     46056,
     20579
-   ]
+   ],
+   "decoded": "GitHub仓库clone"
   },
   {
    "input": "日本語123English",
@@ -764,7 +835,8 @@
     102158,
     4513,
     23392
-   ]
+   ],
+   "decoded": "日本語123English"
   },
   {
    "input": "emoji😀letterRun日本語",
@@ -776,7 +848,8 @@
     6869,
     102433,
     102158
-   ]
+   ],
+   "decoded": "emoji😀letterRun日本語"
   },
   {
    "input": "PascalCase北京市camelCase",
@@ -788,7 +861,8 @@
     23530,
     94421,
     4301
-   ]
+   ],
+   "decoded": "PascalCase北京市camelCase"
   }
  ]
 }
