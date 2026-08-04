@@ -1,5 +1,5 @@
 use super::error::TokenizerError;
-use super::types::Tokenizer;
+use super::types::{ByteFallback, Tokenizer};
 use crate::core::streaming::{DecodeState, DecodeView, Rendered, StreamingDecoder};
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
@@ -16,17 +16,32 @@ impl Tokenizer {
             decoder: &self.decoder,
             special_tokens_decoder: &self.special_tokens_decoder,
             special_decode_ids: &self.special_decode_ids,
+            byte_fallback: self.decode_byte_fallback().map(|f| f.id_bytes().as_ref()),
             use_byte_level: self.use_byte_level,
             use_metaspace_decoder: self.use_metaspace_decoder,
         }
     }
 
+    /// The byte-fallback table decoding resolves `<0xNN>` ids through, or `None`
+    /// when this vocabulary has none.
+    ///
+    /// Gated on `!use_byte_level` exactly as the encode side gates it (see
+    /// `Tokenizer::bpe`): the table is keyed by RAW byte value, so on a
+    /// ByteLevel vocabulary — whose pieces live in ByteLevel space — encode can
+    /// never emit a fallback id, and decode must not resolve one either.
+    fn decode_byte_fallback(&self) -> Option<&ByteFallback> {
+        (!self.use_byte_level)
+            .then_some(self.byte_fallback.as_ref())
+            .flatten()
+    }
+
     /// A [`StreamingDecoder`] configured from this tokenizer.
     ///
     /// The only way to build one: ByteLevel unmapping, the `special=true` ids
-    /// to drop and the metaspace substitution all come from this tokenizer's
-    /// configuration, so the stream cannot be pointed at the wrong kind of
-    /// vocabulary and always reproduces [`decode`](Tokenizer::decode).
+    /// to drop, the `<0xNN>` byte-fallback resolution and the metaspace
+    /// substitution all come from this tokenizer's configuration, so the stream
+    /// cannot be pointed at the wrong kind of vocabulary and always reproduces
+    /// [`decode`](Tokenizer::decode).
     ///
     /// Cheap to call — the vocabulary map is shared, not copied — and the
     /// result borrows nothing, so it can be moved into a generation task.
@@ -35,6 +50,8 @@ impl Tokenizer {
             Arc::clone(&self.decoder),
             self.special_tokens_decoder.clone(),
             self.special_decode_ids.clone(),
+            self.decode_byte_fallback()
+                .map(|f| Arc::clone(f.id_bytes())),
             self.use_byte_level,
             self.use_metaspace_decoder,
         )))

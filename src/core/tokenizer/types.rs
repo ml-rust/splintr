@@ -30,15 +30,44 @@ pub struct ByteFallback {
     pub(super) byte_ids: Box<[Option<u32>; 256]>,
     /// `model.unk_token`'s id, for a character the byte entries cannot cover.
     pub(super) unk_id: Option<u32>,
+    /// The inverse of `byte_ids`: fallback token id → the byte value it
+    /// denotes, so decoding can render a `<0xNN>` id as that byte instead of
+    /// its literal vocabulary spelling.
+    ///
+    /// Built once here rather than per decode call, and behind an `Arc` so every
+    /// [`StreamingDecoder`](crate::StreamingDecoder) shares it instead of
+    /// copying it. Resolving from this table — the tokenizer's OWN encode-side
+    /// table — rather than from surfaces that merely look like `<0x..>` makes
+    /// decode the exact inverse of what encode can emit, and cannot misfire on a
+    /// vocabulary containing a literal token spelled `<0x41>`.
+    ///
+    /// A byte value with no entry contributes nothing. Two byte values sharing
+    /// one id cannot arise from a well-formed vocabulary (the 256 `<0xNN>`
+    /// spellings are distinct), and if one ever did, the higher byte value wins.
+    id_bytes: Arc<FxHashMap<u32, u8>>,
 }
 
 impl ByteFallback {
     /// Build a fallback from a per-byte `<0xNN>` id table and an unk id.
     pub fn new(byte_ids: [Option<u32>; 256], unk_id: Option<u32>) -> Self {
+        let id_bytes: FxHashMap<u32, u8> = byte_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(b, id)| id.map(|id| (id, b as u8)))
+            .collect();
         Self {
             byte_ids: Box::new(byte_ids),
             unk_id,
+            id_bytes: Arc::new(id_bytes),
         }
+    }
+
+    /// The token id → byte value table decoding resolves `<0xNN>` ids through.
+    ///
+    /// The `Arc` itself is handed out (not just a borrow) so an owned decode
+    /// state can share the table rather than clone it.
+    pub(crate) fn id_bytes(&self) -> &Arc<FxHashMap<u32, u8>> {
+        &self.id_bytes
     }
 }
 

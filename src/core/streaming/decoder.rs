@@ -241,6 +241,24 @@ mod tests {
         Tokenizer::new_with_metaspace_decoder(encoder, FxHashMap::default(), r".").unwrap()
     }
 
+    /// A byte-fallback BPE vocabulary in the shape mistral-7b's
+    /// `tokenizer.json` declares: the four bytes of `𐍈` (U+10348) are
+    /// reachable only through their `<0xNN>` entries, so that one character
+    /// encodes to four separate tokens.
+    fn make_byte_fallback_tokenizer() -> Tokenizer {
+        let mut encoder = FxHashMap::default();
+        encoder.insert(b"a".to_vec(), 1);
+        encoder.insert(b"c".to_vec(), 2);
+        for (i, b) in [0xF0u8, 0x90, 0x8D, 0x88].into_iter().enumerate() {
+            encoder.insert(format!("<0x{b:02X}>").into_bytes(), 10 + i as u32);
+        }
+
+        let byte_fallback = Tokenizer::byte_fallback_from_encoder(&encoder, None, true);
+        Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
+            .expect("the test pattern compiles")
+            .with_byte_fallback(byte_fallback)
+    }
+
     /// The concrete BPE backend behind a bundled vocabulary.
     fn pretrained_bpe(name: &str) -> Tokenizer {
         let any = from_pretrained(name).expect("bundled vocabulary loads");
@@ -547,6 +565,38 @@ mod tests {
         assert_eq!(drive_strict(&tokenizer, &[10, 11], 1), " Hello world");
         // ▁ reassembled across the token boundary still becomes a space.
         assert_eq!(drive_strict(&tokenizer, &[12, 13], 1), " x");
+    }
+
+    /// D23: a character split across several `<0xNN>` byte-fallback tokens
+    /// reassembles across `add_token` calls — the resolved bytes go through the
+    /// same UTF-8 buffer every other byte does, so nothing is emitted until the
+    /// character is complete, and `concat(stream) == decode` still holds.
+    #[test]
+    fn test_byte_fallback_char_reassembles_across_add_token_calls() {
+        let tokenizer = make_byte_fallback_tokenizer();
+        let ids = tokenizer.encode("a𐍈c");
+        assert_eq!(ids, vec![1, 10, 11, 12, 13, 2]);
+
+        let mut decoder = tokenizer.streaming_decoder();
+        assert_eq!(decoder.add_token(1).unwrap(), Some("a".to_string()));
+        // The three leading bytes of `𐍈` stay buffered: an incomplete
+        // character is never emitted.
+        for id in [10, 11, 12] {
+            assert_eq!(decoder.add_token(id).unwrap(), None);
+            assert!(decoder.has_pending());
+        }
+        assert_eq!(decoder.add_token(13).unwrap(), Some("𐍈".to_string()));
+        assert!(!decoder.has_pending());
+        assert_eq!(decoder.add_token(2).unwrap(), Some("c".to_string()));
+        assert_eq!(decoder.flush(), "");
+
+        // And the agreement property, under every grouping.
+        let expected = tokenizer.decode(&ids).expect("real ids decode");
+        assert_eq!(expected, "a𐍈c");
+        for chunk in 1..=ids.len() {
+            assert_eq!(drive_strict(&tokenizer, &ids, chunk), expected);
+        }
+        assert_eq!(drive_lossy(&tokenizer, &ids), tokenizer.decode_lossy(&ids));
     }
 
     /// Strict streaming reports an id in no table, mirroring `decode`; the

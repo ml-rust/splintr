@@ -670,3 +670,54 @@ fn encode_rayon_matches_encode_for_plain_tokenizer() {
         );
     }
 }
+
+/// A byte-fallback vocabulary in the shape mistral-7b's `tokenizer.json`
+/// declares: `a`/`c` are ordinary entries, and the four bytes of `𐍈`
+/// (U+10348) are reachable only through their `<0xNN>` entries. The table is
+/// derived by the same helper the json loader uses, so the ids the fallback
+/// carries are the ids the vocabulary spells.
+fn byte_fallback_tokenizer() -> Tokenizer {
+    let mut encoder = FxHashMap::default();
+    encoder.insert(b"a".to_vec(), 1);
+    encoder.insert(b"c".to_vec(), 2);
+    for (i, b) in [0xF0u8, 0x90, 0x8D, 0x88].into_iter().enumerate() {
+        encoder.insert(format!("<0x{b:02X}>").into_bytes(), 10 + i as u32);
+    }
+
+    let byte_fallback = Tokenizer::byte_fallback_from_encoder(&encoder, None, true);
+    Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
+        .expect("the test pattern compiles")
+        .with_byte_fallback(byte_fallback)
+}
+
+/// D23: decoding is the exact inverse of the byte fallback encoding emits — a
+/// `<0xNN>` id renders as the byte it denotes, not as its literal vocabulary
+/// spelling. The four ids `𐍈` (U+10348) encodes to therefore reassemble into
+/// that one character, which is only possible because the resolved bytes are
+/// concatenated before the UTF-8 decode rather than rendered per token.
+#[test]
+fn byte_fallback_ids_decode_to_the_bytes_they_denote() {
+    let tokenizer = byte_fallback_tokenizer();
+
+    let ids = tokenizer.encode("a𐍈c");
+    // One id per byte of the character, between the two resolvable tokens.
+    assert_eq!(ids, vec![1, 10, 11, 12, 13, 2]);
+    assert_eq!(tokenizer.decode(&ids).unwrap(), "a𐍈c");
+    assert_eq!(tokenizer.decode_lossy(&ids), "a𐍈c");
+}
+
+/// The resolution is keyed on the tokenizer's own `<0xNN>` table, so a
+/// vocabulary that declares no byte fallback is untouched: an id whose surface
+/// merely *looks* like a byte token still decodes to that literal spelling.
+#[test]
+fn without_byte_fallback_a_byte_token_surface_decodes_literally() {
+    let mut encoder = FxHashMap::default();
+    encoder.insert(b"a".to_vec(), 1);
+    encoder.insert(b"<0x41>".to_vec(), 2);
+
+    let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
+        .expect("the test pattern compiles");
+
+    assert!(!tokenizer.has_byte_fallback());
+    assert_eq!(tokenizer.decode(&[1, 2]).unwrap(), "a<0x41>");
+}

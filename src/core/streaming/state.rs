@@ -28,6 +28,18 @@ pub(crate) enum Rendered<'a> {
     Unknown,
 }
 
+/// `[0, 1, …, 255]`, so a resolved byte-fallback byte can be handed out as a
+/// borrowed one-byte slice instead of allocating a `Vec` per token.
+static BYTE_VALUES: [u8; 256] = {
+    let mut values = [0u8; 256];
+    let mut b = 0usize;
+    while b < 256 {
+        values[b] = b as u8;
+        b += 1;
+    }
+    values
+};
+
 /// A borrowed view of everything decoding consults.
 ///
 /// `Copy` and pointer-sized, so taking one per decode call (or per streaming
@@ -37,6 +49,10 @@ pub(crate) struct DecodeView<'a> {
     pub(crate) decoder: &'a FxHashMap<u32, Vec<u8>>,
     pub(crate) special_tokens_decoder: &'a FxHashMap<u32, String>,
     pub(crate) special_decode_ids: &'a FxHashSet<u32>,
+    /// The tokenizer's own `<0xNN>` table, inverted: fallback token id → the
+    /// byte value it denotes. `None` for a vocabulary that declares no byte
+    /// fallback, which is then unaffected.
+    pub(crate) byte_fallback: Option<&'a FxHashMap<u32, u8>>,
     pub(crate) use_byte_level: bool,
     pub(crate) use_metaspace_decoder: bool,
 }
@@ -51,11 +67,21 @@ impl<'a> DecodeView<'a> {
             return Rendered::Skipped;
         }
 
+        // A `<0xNN>` byte-fallback token denotes a byte, not its literal
+        // spelling, so it resolves to that byte — before the vocabulary lookup,
+        // which would otherwise render the spelling. The id is matched against
+        // the tokenizer's own encode-side table, never against surfaces that
+        // merely look like `<0x..>`, so decode is the exact inverse of what
+        // encode can emit and a vocabulary holding a literal `<0x41>` token is
+        // untouched. The byte goes into the same buffer every other byte does,
+        // which is what lets a character split across several `<0xNN>` tokens
+        // reassemble when streaming.
+        if let Some(&byte) = self.byte_fallback.and_then(|table| table.get(&id)) {
+            let b = byte as usize;
+            return Rendered::Bytes(Cow::Borrowed(&BYTE_VALUES[b..b + 1]));
+        }
+
         if let Some(bytes) = self.decoder.get(&id) {
-            // A `<0xNN>` byte-fallback token still renders as its literal
-            // spelling here, exactly as whole-sequence decoding renders it;
-            // resolving those back to the byte they name is a separate,
-            // still-open defect and deliberately not addressed here.
             return if self.use_byte_level {
                 match byte_level_decode_bytes(bytes) {
                     Some(decoded) => Rendered::Bytes(Cow::Owned(decoded)),
@@ -111,6 +137,9 @@ pub(crate) struct DecodeState {
     decoder: Arc<FxHashMap<u32, Vec<u8>>>,
     special_tokens_decoder: FxHashMap<u32, String>,
     special_decode_ids: FxHashSet<u32>,
+    /// The inverted `<0xNN>` table, shared with the tokenizer rather than
+    /// copied — the same reasoning as the vocabulary map above.
+    byte_fallback: Option<Arc<FxHashMap<u32, u8>>>,
     use_byte_level: bool,
     use_metaspace_decoder: bool,
 }
@@ -121,6 +150,7 @@ impl DecodeState {
         decoder: Arc<FxHashMap<u32, Vec<u8>>>,
         special_tokens_decoder: FxHashMap<u32, String>,
         special_decode_ids: FxHashSet<u32>,
+        byte_fallback: Option<Arc<FxHashMap<u32, u8>>>,
         use_byte_level: bool,
         use_metaspace_decoder: bool,
     ) -> Self {
@@ -128,6 +158,7 @@ impl DecodeState {
             decoder,
             special_tokens_decoder,
             special_decode_ids,
+            byte_fallback,
             use_byte_level,
             use_metaspace_decoder,
         }
@@ -139,6 +170,7 @@ impl DecodeState {
             decoder: &self.decoder,
             special_tokens_decoder: &self.special_tokens_decoder,
             special_decode_ids: &self.special_decode_ids,
+            byte_fallback: self.byte_fallback.as_deref(),
             use_byte_level: self.use_byte_level,
             use_metaspace_decoder: self.use_metaspace_decoder,
         }

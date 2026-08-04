@@ -897,3 +897,49 @@ fn byte_fallback_honors_a_non_default_unk_token_spelling() {
     };
     assert_eq!(t.encode("abc"), vec![1, 9, 2]);
 }
+
+/// D23: a `<0xNN>` id decodes to the byte it denotes, so the bare BPE backend
+/// agrees with the declared `ByteFallback` decoder op instead of rendering the
+/// token's literal vocabulary spelling.
+///
+/// The two paths are genuinely independent: `AnyTokenizer::decode` runs the
+/// json's declared decoder chain over token *surfaces*, while the backend's own
+/// `decode` resolves the id through the tokenizer's encode-side `<0xNN>` table.
+/// Only the second was broken. Measured on
+/// `mistral-7b-v0.3/tokenizer.json` before this fix, encoding `𐍈` gives ids
+/// whose surfaces are `["▁", "<0xF0>", "<0x90>", "<0x8D>", "<0x88>"]` and
+/// decoding them back gave `Ok("𐍈")` through `AnyTokenizer::decode` but
+/// `Ok(" <0xF0><0x90><0x8D><0x88>")` through the bare backend. Those model
+/// files live outside the repository, so the agreement is pinned here on a
+/// synthetic vocabulary of the same shape.
+///
+/// (The leading space of the mistral output comes from that file's declared
+/// `Strip{start: 1}` op and is a separate concern; this document declares no
+/// such op, so the two paths agree exactly.)
+#[test]
+fn byte_fallback_ids_decode_to_bytes_agreeing_with_the_declared_decoder() {
+    let json = r#"{
+        "decoder": {"type": "ByteFallback"},
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "a": 1, "c": 2,
+                "<0xF0>": 3, "<0x90>": 4, "<0x8D>": 5, "<0x88>": 6},
+            "merges": []}
+    }"#;
+    let tok = from_json_bytes(json.as_bytes()).expect("loads");
+    assert!(tok.declares_decoder());
+
+    let Backend::Bpe(bpe) = tok.backend() else {
+        panic!("expected BPE backend");
+    };
+    // `𐍈` (U+10348) is 4 UTF-8 bytes, none of which the merge vocabulary can
+    // represent, so it encodes as its four `<0xNN>` ids between `a` and `c`.
+    let ids = bpe.encode("a𐍈c");
+    assert_eq!(ids, vec![1, 3, 4, 5, 6, 2]);
+
+    let bare = bpe.decode(&ids).expect("the bare backend decodes");
+    assert_eq!(bare, "a𐍈c");
+    assert_eq!(
+        tok.decode(&ids).expect("the declared pipeline decodes"),
+        bare
+    );
+}
