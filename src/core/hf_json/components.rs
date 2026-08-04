@@ -7,7 +7,7 @@ use serde_json::Value;
 use super::super::added::{AddedToken, AddedTokenSet};
 use super::super::normalizer::NormOp;
 use super::super::precompiled::Precompiled;
-use super::super::tokenizer::{GPT2_PATTERN, SENTENCEPIECE_PATTERN};
+use super::super::tokenizer::{GPT2_PATTERN, NO_SPLIT_PATTERN, SENTENCEPIECE_PATTERN};
 use super::HfJsonError;
 
 /// How input is split before the model runs, distilled to what splintr needs.
@@ -24,9 +24,11 @@ pub(super) struct PreTokenization {
     /// Prepend a space to the input (ByteLevel/Metaspace `add_prefix_space`, or
     /// Metaspace `prepend_scheme` != "never").
     pub add_prefix_space: bool,
-    /// Whether a concrete splitter was recognized (ByteLevel/Metaspace/Split). If
-    /// false, `pattern` is the GPT-2 default — only a sound choice when no
-    /// pre-tokenizer was declared (see the caller's guess guard).
+    /// Whether `pattern` was settled by the file rather than guessed — either a
+    /// concrete splitter was recognized (ByteLevel/Metaspace/Split), or no
+    /// pre-tokenizer was declared at all and the answer is therefore
+    /// [`NO_SPLIT_PATTERN`]. If false, `pattern` is the GPT-2 default, which is
+    /// a guess (see the caller's guess guard).
     pub anchored: bool,
     /// Pre-tokenizer `type`s present in the json that this distiller does not
     /// itself model (they may still be handled by the multi-stage engine).
@@ -40,8 +42,15 @@ pub(super) struct PreTokenization {
 ///   unless an explicit `Split` regex is present.
 /// - `Split { pattern: Regex|String }` ⇒ use that regex.
 /// - `Metaspace` (SentencePiece-style) ⇒ [`SENTENCEPIECE_PATTERN`].
-/// - Anything else / absent ⇒ non-byte-level, [`GPT2_PATTERN`] fallback.
+/// - Absent, or an explicit `null` ⇒ [`NO_SPLIT_PATTERN`]: HuggingFace splits
+///   only when a pre-tokenizer is installed, so "no pre-tokenizer" means "do
+///   not split", never "split with a default".
+/// - Anything else ⇒ non-byte-level, [`GPT2_PATTERN`] fallback.
 pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
+    // A `"pre_tokenizer": null` member is the same thing as no member at all —
+    // both deserialize to `Option<PreTokenizerWrapper>::None` in `tokenizers`.
+    let pre = pre.filter(|v| !v.is_null());
+    let declared = pre.is_some();
     let mut byte_level = false;
     let mut split_regex: Option<String> = None;
     let mut metaspace = false;
@@ -118,10 +127,13 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
         );
     }
 
-    let pattern = match (&split_regex, metaspace) {
-        (Some(re), _) => re.clone(),
-        (None, true) => SENTENCEPIECE_PATTERN.to_string(),
-        (None, false) => GPT2_PATTERN.to_string(),
+    let pattern = match (&split_regex, metaspace, declared) {
+        (Some(re), _, _) => re.clone(),
+        (None, true, _) => SENTENCEPIECE_PATTERN.to_string(),
+        // Nothing declared at all: run the model over the whole normalized
+        // string, as HuggingFace does with no pre-tokenizer installed.
+        (None, false, false) => NO_SPLIT_PATTERN.to_string(),
+        (None, false, true) => GPT2_PATTERN.to_string(),
     };
 
     PreTokenization {
@@ -131,7 +143,7 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
         // ByteLevel/Metaspace default `add_prefix_space` to true in HF when the
         // field is absent; real configs set it explicitly.
         add_prefix_space: add_prefix_space.unwrap_or(metaspace || byte_level),
-        anchored: byte_level || metaspace || split_regex.is_some(),
+        anchored: byte_level || metaspace || split_regex.is_some() || !declared,
         unknown,
     }
 }

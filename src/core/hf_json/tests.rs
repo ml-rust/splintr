@@ -164,6 +164,103 @@ fn bpe_metaspace_merges_multibyte_underscore_instead_of_byte_fallback() {
     }
 }
 
+/// A `pre_tokenizer` of `null` (or no `pre_tokenizer` member at all) means the
+/// model runs over the **whole** normalized string: HuggingFace only splits
+/// when a pre-tokenizer is installed, so substituting a default pattern there
+/// invents a split the file never asked for.
+///
+/// This is the mistral-7b-awq-int4 / mistral-7b-gptq-int4 shape: `pre_tokenizer`
+/// is `null` and the metaspace transform lives in the normalizer instead
+/// (`Prepend{"▁"}` then `Replace{" " → "▁"}`). Under the GPT-2 default the
+/// prepended `▁` — a `\p{S}` character — was cut off the letter run behind it
+/// and could never merge.
+///
+/// The vocabulary is synthetic but the three ids are the real ones from
+/// `mistral-7b-awq-int4/tokenizer.json`, and the expectations are measured
+/// against `tokenizers` 0.22.1 over that file:
+///
+/// | text | ids | tokens |
+/// |---|---|---|
+/// | `"a"`  | `[264]`         | `▁a`      |
+/// | `" a"` | `[28705, 264]`  | `▁`, `▁a` |
+/// | `"a "` | `[264, 28705]`  | `▁a`, `▁` |
+///
+/// The old behavior spelled the first of those `[28705, 28708]` (`▁`, `a`).
+#[test]
+fn bpe_null_pre_tokenizer_runs_the_model_over_the_whole_string() {
+    // Both spellings of "there is no pre-tokenizer" must agree.
+    for pre_tokenizer_member in [r#""pre_tokenizer": null,"#, ""] {
+        let json = format!(
+            r#"{{
+                "added_tokens": [],
+                {pre_tokenizer_member}
+                "normalizer": {{"type": "Sequence", "normalizers": [
+                    {{"type": "Prepend", "prepend": "▁"}},
+                    {{"type": "Replace", "pattern": {{"String": " "}}, "content": "▁"}}
+                ]}},
+                "model": {{"type": "BPE",
+                    "vocab": {{"▁a": 264, "▁": 28705, "a": 28708}},
+                    "merges": [["▁", "a"]]}}
+            }}"#
+        );
+        let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+            .expect("a document without a pre_tokenizer loads")
+            .into_backend()
+        else {
+            panic!("expected BPE backend");
+        };
+        assert_eq!(t.encode("a"), vec![264], "with {pre_tokenizer_member:?}");
+        assert_eq!(t.encode(" a"), vec![28705, 264]);
+        assert_eq!(t.encode("a "), vec![264, 28705]);
+    }
+}
+
+/// `Metaspace` prepends its replacement to text that begins with a non-space
+/// whitespace character, and suppresses it only on an existing leading
+/// **space**. Guarding on whitespace in general dropped the `▁` in front of a
+/// leading tab or newline.
+///
+/// The mistral-7b-v0.3 shape (`prepend_scheme: "first"`, `split: false`) over a
+/// synthetic vocabulary carrying that file's real ids. Every row is measured
+/// against `tokenizers` 0.22.1 on `mistral-7b-v0.3/tokenizer.json`:
+///
+/// | text | ids | tokens |
+/// |---|---|---|
+/// | `"\n\n\n"` | `[29473, 781, 781, 781]` | `▁`, `<0x0A>`×3 |
+/// | `"\ta"`    | `[29473, 780, 29476]`    | `▁`, `<0x09>`, `a` |
+/// | `"a"`      | `[1032]`                 | `▁a` |
+/// | `" a"`     | `[1032]`                 | `▁a` |
+/// | `"  a"`    | `[29473, 1032]`          | `▁`, `▁a` |
+/// | `"a "`     | `[1032, 29473]`          | `▁a`, `▁` |
+///
+/// The last four rows are the ones a fix must not trade away: they already
+/// agreed, and they are what pins the guard to a literal space rather than
+/// making the prefix unconditional.
+#[test]
+fn bpe_metaspace_prepends_before_leading_non_space_whitespace() {
+    let json = r#"{
+        "added_tokens": [],
+        "pre_tokenizer": {"type": "Metaspace", "replacement": "▁",
+            "prepend_scheme": "first", "split": false},
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "▁a": 1032, "<0x09>": 780, "<0x0A>": 781,
+                "▁": 29473, "a": 29476},
+            "merges": [["▁", "a"]]}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("the metaspace document loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    assert_eq!(t.encode("\n\n\n"), vec![29473, 781, 781, 781]);
+    assert_eq!(t.encode("\ta"), vec![29473, 780, 29476]);
+    assert_eq!(t.encode("a"), vec![1032]);
+    assert_eq!(t.encode(" a"), vec![1032]);
+    assert_eq!(t.encode("  a"), vec![29473, 1032]);
+    assert_eq!(t.encode("a "), vec![1032, 29473]);
+}
+
 #[test]
 fn unigram_uses_viterbi_not_greedy() {
     // Tokens: "ab"(-5), "abc"(-1), "c"(-1), plus single chars. Greedy-longest at

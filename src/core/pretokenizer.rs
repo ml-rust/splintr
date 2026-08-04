@@ -236,13 +236,18 @@ impl PreTokenizer {
     }
 
     /// Pre-tokenize `text` into the final (BPE-ready) pieces.
+    ///
+    /// The `add_prefix_space` guard is a literal **space**, matching
+    /// `ByteLevel::pre_tokenize`'s own `!normalized.get().starts_with(' ')`:
+    /// text opening on any other whitespace still gets the prefix. Measured
+    /// against `tokenizers` 0.22.1 on a `ByteLevel { add_prefix_space: true }`
+    /// fixture, `"\ta"` pre-tokenizes to `Ġ`/`ĉ`/`a` while `" a"` stays `Ġa`.
     pub fn split(&self, text: &str) -> Vec<String> {
-        let mut pieces: Vec<String> =
-            if self.add_prefix_space && !text.starts_with(|c: char| c.is_whitespace()) {
-                vec![format!(" {text}")]
-            } else {
-                vec![text.to_string()]
-            };
+        let mut pieces: Vec<String> = if self.add_prefix_space && !text.starts_with(' ') {
+            vec![format!(" {text}")]
+        } else {
+            vec![text.to_string()]
+        };
         for stage in &self.compiled {
             let mut next = Vec::with_capacity(pieces.len());
             for p in &pieces {

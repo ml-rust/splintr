@@ -10,9 +10,26 @@ use rayon::prelude::*;
 
 impl Tokenizer {
     /// Apply `add_prefix_space` to an input, borrowing when no change is needed.
+    ///
+    /// The guard is a literal **space**, not whitespace in general — both HF
+    /// nodes that set this flag suppress the prefix only on an existing leading
+    /// space, and prepend across every other whitespace character:
+    ///
+    /// - `ByteLevel::pre_tokenize` tests `!normalized.get().starts_with(' ')`.
+    /// - `Metaspace::pre_tokenize` replaces spaces with the replacement first
+    ///   and then prepends unless the result already starts with it, which is
+    ///   the same test one step later.
+    ///
+    /// Measured against `tokenizers` 0.22.1 — on mistral-7b-v0.3 (`Metaspace`,
+    /// `prepend_scheme: "first"`, `split: false`), `"\n\n\n"` is
+    /// `[29473, 781, 781, 781]` (`▁`, `<0x0A>`×3) and `"\ta"` is
+    /// `[29473, 780, 29476]`, both keeping the `▁` a whitespace-wide guard
+    /// dropped, while `" a"` stays `[1032]` (`▁a`) and `"  a"` stays
+    /// `[29473, 1032]`. A ByteLevel fixture with `add_prefix_space: true`
+    /// behaves identically (`"\ta"` → `Ġ ĉ a`, `" a"` → `Ġa`).
     #[inline]
     fn prefixed<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
-        if self.add_prefix_space && !text.starts_with(|c: char| c.is_whitespace()) {
+        if self.add_prefix_space && !text.starts_with(' ') {
             std::borrow::Cow::Owned(format!(" {text}"))
         } else {
             std::borrow::Cow::Borrowed(text)

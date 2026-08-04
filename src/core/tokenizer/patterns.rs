@@ -60,6 +60,23 @@ pub const MISTRAL_V3_PATTERN: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{L
 pub const GPT2_PATTERN: &str =
     r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
 
+/// Pattern that takes the whole input as a single piece — the split a
+/// `tokenizer.json` with no `pre_tokenizer` (absent, or an explicit `null`)
+/// asks for.
+///
+/// HuggingFace's `Tokenizer::encode` only splits when a pre-tokenizer is
+/// installed; with none, the model runs over the entire normalized string as
+/// one word. Mistral's AWQ/GPTQ `tokenizer.json` files are shaped exactly that
+/// way — the metaspace transform lives in their `normalizer`
+/// (`Prepend{"▁"}` + `Replace{" " → "▁"}`) and `pre_tokenizer` is `null` — so
+/// substituting [`GPT2_PATTERN`] there cuts the prepended `▁` off the word it
+/// belongs to: measured against `tokenizers` 0.22.1, `"a"` is `[264]` (`▁a`)
+/// and not `[28705, 28708]` (`▁`, `a`).
+///
+/// `[\s\S]` rather than `.` so the match spans newlines without depending on a
+/// dotall flag being honored by both regex backends.
+pub const NO_SPLIT_PATTERN: &str = r"[\s\S]+";
+
 /// Pre-tokenizer pattern for Qwen2 / Qwen3 (llama.cpp's `qwen2` pre-tokenizer).
 ///
 /// Identical to [`LLAMA3_PATTERN`] except that digits split one at a time
