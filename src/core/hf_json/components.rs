@@ -25,8 +25,8 @@ pub(super) struct PreTokenization {
     /// Metaspace `prepend_scheme` != "never").
     pub add_prefix_space: bool,
     /// Whether `pattern` was settled by the file rather than guessed — either a
-    /// concrete splitter was recognized (ByteLevel/Metaspace/Split), or no
-    /// pre-tokenizer was declared at all and the answer is therefore
+    /// concrete splitter was recognized (ByteLevel/Metaspace/Split), or the
+    /// declared pipeline holds no stages at all and the answer is therefore
     /// [`NO_SPLIT_PATTERN`]. If false, `pattern` is the GPT-2 default, which is
     /// a guess (see the caller's guess guard).
     pub anchored: bool,
@@ -42,15 +42,40 @@ pub(super) struct PreTokenization {
 ///   unless an explicit `Split` regex is present.
 /// - `Split { pattern: Regex|String }` ⇒ use that regex.
 /// - `Metaspace` (SentencePiece-style) ⇒ [`SENTENCEPIECE_PATTERN`].
-/// - Absent, or an explicit `null` ⇒ [`NO_SPLIT_PATTERN`]: HuggingFace splits
-///   only when a pre-tokenizer is installed, so "no pre-tokenizer" means "do
-///   not split", never "split with a default".
+/// - Absent, an explicit `null`, or a declared pipeline holding **no stages**
+///   (`{"type": "Sequence", "pretokenizers": []}`, however deeply nested) ⇒
+///   [`NO_SPLIT_PATTERN`]: HuggingFace splits only where an installed stage
+///   splits, so "nothing to run" means "do not split", never "split with a
+///   default".
 /// - Anything else ⇒ non-byte-level, [`GPT2_PATTERN`] fallback.
+///
+/// # Declared-and-empty vs declared-and-unrecognized
+///
+/// The two are told apart by `stages`, the count of non-`Sequence` nodes the
+/// walk actually saw — not by whether anything was *understood*. A pipeline with
+/// zero nodes has nothing to run and cannot be a guess; a pipeline with nodes
+/// this distiller could not use is a guess, so those nodes land in `unknown` and
+/// the caller's guess guard refuses the file rather than inventing a split.
+///
+/// Measured against `tokenizers` 0.22.1 over a BPE fixture, `"a b c"`:
+///
+/// | `pre_tokenizer` | reference |
+/// |---|---|
+/// | `null` | `['a', ' ', 'b', ' ', 'c']` |
+/// | `{"type":"Sequence","pretokenizers":[]}` | `['a', ' ', 'b', ' ', 'c']` |
+/// | nested empty `Sequence`s | `['a', ' ', 'b', ' ', 'c']` |
+///
+/// So an empty pipeline is byte-identical to `null` there. Every *other* inert
+/// shape is a hard load failure in `tokenizers` rather than an alternative
+/// splitting — a `Sequence` missing its `pretokenizers` key, a `Split` with no
+/// `pattern`, an object with no `type`, an unknown `type`, and a `Sequence`
+/// containing one — so refusing them is what matches the reference. The last two
+/// already did; the two in between reached [`GPT2_PATTERN`] silently, and are now
+/// recorded in `unknown` so the same guard catches them.
 pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
     // A `"pre_tokenizer": null` member is the same thing as no member at all —
     // both deserialize to `Option<PreTokenizerWrapper>::None` in `tokenizers`.
     let pre = pre.filter(|v| !v.is_null());
-    let declared = pre.is_some();
     let mut byte_level = false;
     let mut split_regex: Option<String> = None;
     let mut metaspace = false;
@@ -58,6 +83,10 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
     let mut add_prefix_space: Option<bool> = None;
     // Pre-tokenizer types we neither parse nor handle implicitly via a backend.
     let mut unknown: Vec<String> = Vec::new();
+    // Non-`Sequence` nodes seen anywhere in the tree, recognized or not. Zero of
+    // them is the declared-and-empty case; a `Sequence` is a container and never
+    // counts itself.
+    let mut stages = 0usize;
 
     fn walk(
         v: &Value,
@@ -66,8 +95,13 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
         metaspace: &mut bool,
         add_prefix_space: &mut Option<bool>,
         unknown: &mut Vec<String>,
+        stages: &mut usize,
     ) {
-        match v.get("type").and_then(Value::as_str) {
+        let ty = v.get("type").and_then(Value::as_str);
+        if ty != Some("Sequence") {
+            *stages += 1;
+        }
+        match ty {
             Some("ByteLevel") => {
                 *byte_level = true;
                 if let Some(b) = v.get("add_prefix_space").and_then(Value::as_bool) {
@@ -84,19 +118,30 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
                     *add_prefix_space = Some(b);
                 }
             }
-            Some("Split") if split_regex.is_none() => {
-                // pattern is {"Regex": "..."} or {"String": "..."}.
-                if let Some(re) = v.get("pattern").and_then(|p| {
+            Some("Split") => {
+                // pattern is {"Regex": "..."} or {"String": "..."}. The first
+                // `Split` in the tree settles the regex; a later one is left to
+                // the multi-stage engine, which reads every stage.
+                match v.get("pattern").and_then(|p| {
                     p.get("Regex")
                         .and_then(Value::as_str)
                         .or_else(|| p.get("String").and_then(Value::as_str))
                 }) {
-                    *split_regex = Some(re.to_string());
+                    Some(re) => {
+                        if split_regex.is_none() {
+                            *split_regex = Some(re.to_string());
+                        }
+                    }
+                    // A `Split` with no usable `pattern` splits nothing and is
+                    // not a file `tokenizers` will even load (measured: `missing
+                    // field 'pattern'`), so it is a shape to refuse, not to
+                    // silently replace with the GPT-2 default.
+                    None => unknown.push("Split (no pattern)".to_string()),
                 }
             }
             // Whitespace-only splitters are subsumed by both our SentencePiece
             // (whitespace-split) and byte-level paths, so they need no pattern.
-            Some("Split") | Some("Whitespace") | Some("WhitespaceSplit") => {}
+            Some("Whitespace") | Some("WhitespaceSplit") => {}
             Some("Sequence") => {
                 if let Some(list) = v.get("pretokenizers").and_then(Value::as_array) {
                     for item in list {
@@ -107,12 +152,22 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
                             metaspace,
                             add_prefix_space,
                             unknown,
+                            stages,
                         );
                     }
+                } else {
+                    // A `Sequence` with no `pretokenizers` key is not an empty
+                    // pipeline, it is an unreadable one (measured: `missing
+                    // field 'pretokenizers'`). Count it so it cannot pass for
+                    // declared-and-empty, and flag it so the guard fires.
+                    *stages += 1;
+                    unknown.push("Sequence (no pretokenizers)".to_string());
                 }
             }
             Some(other) => unknown.push(other.to_string()),
-            None => {}
+            // No `type` at all: `tokenizers` refuses such a file outright
+            // (measured), so this is an unreadable node rather than an inert one.
+            None => unknown.push("(no type)".to_string()),
         }
     }
 
@@ -124,16 +179,20 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
             &mut metaspace,
             &mut add_prefix_space,
             &mut unknown,
+            &mut stages,
         );
     }
 
-    let pattern = match (&split_regex, metaspace, declared) {
+    // `stages == 0` covers both "no pre_tokenizer member" (the walk never ran)
+    // and "a declared pipeline with nothing in it" — HuggingFace treats them
+    // identically (measured), so one arm serves both.
+    let pattern = match (&split_regex, metaspace, stages) {
         (Some(re), _, _) => re.clone(),
         (None, true, _) => SENTENCEPIECE_PATTERN.to_string(),
-        // Nothing declared at all: run the model over the whole normalized
-        // string, as HuggingFace does with no pre-tokenizer installed.
-        (None, false, false) => NO_SPLIT_PATTERN.to_string(),
-        (None, false, true) => GPT2_PATTERN.to_string(),
+        // Nothing to run: run the model over the whole normalized string, as
+        // HuggingFace does with no pre-tokenizer stage installed.
+        (None, false, 0) => NO_SPLIT_PATTERN.to_string(),
+        (None, false, _) => GPT2_PATTERN.to_string(),
     };
 
     PreTokenization {
@@ -143,7 +202,7 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
         // ByteLevel/Metaspace default `add_prefix_space` to true in HF when the
         // field is absent; real configs set it explicitly.
         add_prefix_space: add_prefix_space.unwrap_or(metaspace || byte_level),
-        anchored: byte_level || metaspace || split_regex.is_some() || !declared,
+        anchored: byte_level || metaspace || split_regex.is_some() || stages == 0,
         unknown,
     }
 }

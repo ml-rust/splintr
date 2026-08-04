@@ -604,6 +604,78 @@ fn engine_handled_pretokenizer_without_bytelevel_still_loads() {
     assert_eq!(tok.family(), "BPE");
 }
 
+/// A *declared but empty* pipeline is not a reason to guess the GPT-2 default
+/// either: HuggingFace runs the model over the whole normalized string when no
+/// stage is installed, and an empty `Sequence` installs no stage.
+///
+/// Ground truth from `tokenizers` 0.22.1 on this exact document. `"ab1"` is the
+/// discriminating input: the GPT-2 pattern cuts between the letters and the
+/// digit, so `ab1` (id 5) can only form if nothing splits.
+///
+/// | `pre_tokenizer` | reference |
+/// |---|---|
+/// | `null` | `['ab1']` = `[5]` |
+/// | `{"type":"Sequence","pretokenizers":[]}` | `['ab1']` = `[5]` |
+/// | one nested inside another | `['ab1']` = `[5]` |
+///
+/// splintr used to answer `[4, 3]` (`ab`, `1`) for the latter two.
+#[test]
+fn declared_but_empty_pretokenizer_sequence_does_not_split() {
+    for pre in [
+        "null",
+        r#"{"type": "Sequence", "pretokenizers": []}"#,
+        r#"{"type": "Sequence", "pretokenizers": [
+            {"type": "Sequence", "pretokenizers": []}
+        ]}"#,
+    ] {
+        let json = format!(
+            r#"{{
+                "pre_tokenizer": {pre},
+                "model": {{"type": "BPE", "unk_token": "<unk>",
+                    "vocab": {{"<unk>": 0, "a": 1, "b": 2, "1": 3, "ab": 4, "ab1": 5}},
+                    "merges": ["a b", "ab 1"]}}
+            }}"#
+        );
+        let tok = from_json_bytes(json.as_bytes()).expect("an empty pipeline is loadable");
+        assert_eq!(tok.encode("ab1ab1"), vec![5, 5], "with pre_tokenizer {pre}");
+    }
+}
+
+/// The other declared-but-inert shapes must NOT become a silent no-split — the
+/// distinction is "no stages to run" versus "a stage this loader cannot read".
+///
+/// Every shape below is a hard load failure in `tokenizers` 0.22.1 (measured: a
+/// `Sequence` missing `pretokenizers` and a `Split` missing `pattern` both fail
+/// with `missing field`, and a node with no `type` or an unknown `type` fails to
+/// match any pre-tokenizer variant), so refusing them is what agrees with the
+/// reference. Two of the four already refused; the `Split`-without-`pattern` and
+/// the typeless node used to reach the GPT-2 default silently.
+#[test]
+fn declared_but_unreadable_pretokenizers_are_refused_not_treated_as_empty() {
+    for pre in [
+        r#"{"type": "Sequence"}"#,
+        r#"{"type": "Split", "behavior": "Isolated"}"#,
+        r#"{"foo": "bar"}"#,
+        r#"{"type": "SomeFuturePreTokenizer"}"#,
+        r#"{"type": "Sequence", "pretokenizers": [{"type": "Split", "behavior": "Isolated"}]}"#,
+    ] {
+        let json = format!(
+            r#"{{
+                "pre_tokenizer": {pre},
+                "model": {{"type": "BPE", "vocab": {{"a": 0, "b": 1, "ab": 2}},
+                    "merges": ["a b"]}}
+            }}"#
+        );
+        assert!(
+            matches!(
+                from_json_bytes(json.as_bytes()),
+                Err(HfJsonError::UnsupportedPreTokenizer(_))
+            ),
+            "pre_tokenizer {pre} must be refused, not guessed at"
+        );
+    }
+}
+
 #[test]
 fn unknown_pretokenizer_is_ok_when_split_is_anchored() {
     // The same unknown type alongside a ByteLevel (which fixes the split) is
