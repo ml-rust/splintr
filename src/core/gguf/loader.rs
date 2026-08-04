@@ -201,10 +201,29 @@ fn build_spm(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
     // `"<start_of_turn>hi"` must be `[<start_of_turn>, ▁hi]`; under the
     // HuggingFace scheme it would be `[▁, <start_of_turn>, hi]`, three pieces
     // the model never saw in that arrangement.
+    // Which ids decode drops. The backend resolves `<unk>` by name itself, but
+    // its BOS/EOS fields stay `None` here — they are the policy's — so the ids
+    // the file states are declared as decode-skipped instead, which is
+    // decode-only and cannot reach the encode path. Without them a generated
+    // sequence carried a literal `<s>`/`</s>` into the decoded text. The file's
+    // `unknown_token_id` joins them for a vocabulary that spells its unknown
+    // piece as something other than `<unk>`. Deliberately NOT every CONTROL /
+    // USER_DEFINED id in `specials`: that array drives added-token *matching*,
+    // and the `bert` arm above declines the same broadening for the same reason.
+    let special_decode: rustc_hash::FxHashSet<u32> = [
+        vocab.bos_token_id,
+        vocab.eos_token_id,
+        vocab.unknown_token_id,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
     let backend = Backend::Spm(
         SpmTokenizer::new(tokens, scores, None, None)?
             .with_prefix_space(add_space_prefix(&vocab, true))
             .with_prefix_scheme(SpmPrefixScheme::AfterEachSpecial)
+            .with_special_decode_ids(special_decode)
             .with_added_tokens(&specials)?,
     );
 

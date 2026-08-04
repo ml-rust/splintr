@@ -22,6 +22,7 @@
 
 use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
+use std::convert::Infallible;
 use thiserror::Error;
 
 use super::metaspace::{self, Prefix, WORD_BOUNDARY};
@@ -173,6 +174,12 @@ pub struct SpmTokenizer {
     prefix_scheme: SpmPrefixScheme,
     /// Control/added tokens to recognize verbatim in the input during encoding.
     added: Option<super::added::AddedTokens>,
+    /// Ids of `special=true` added tokens dropped on decode (HF default).
+    ///
+    /// The vocabulary's own BOS/EOS/UNK are *not* in here — they have fields of
+    /// their own and are dropped unconditionally — so this set holds exactly
+    /// what a loader declares on top of them.
+    special_decode: rustc_hash::FxHashSet<u32>,
 }
 
 impl SpmTokenizer {
@@ -239,6 +246,7 @@ impl SpmTokenizer {
             add_prefix_space: true,
             prefix_scheme: SpmPrefixScheme::default(),
             added: None,
+            special_decode: rustc_hash::FxHashSet::default(),
         })
     }
 
@@ -258,6 +266,22 @@ impl SpmTokenizer {
     ) -> Result<Self, SpmError> {
         self.added = super::added::AddedTokens::new(&tokens.into())?;
         Ok(self)
+    }
+
+    /// Set ids of `special=true` added tokens to drop on decode (HF default).
+    ///
+    /// Replaces rather than unions, unlike
+    /// [`WordPieceTokenizer::with_special_decode_ids`](super::wordpiece::WordPieceTokenizer::with_special_decode_ids):
+    /// that constructor resolves the `[CLS]`/`[SEP]`/… names its vocabulary
+    /// spells into the same set, so a caller stating what its *file* declares is
+    /// adding to knowledge already there. This constructor puts nothing in here —
+    /// the vocabulary's own BOS/EOS/UNK live in their own fields and are skipped
+    /// by [`is_skipped_on_decode`](Self::is_skipped_on_decode) regardless — so
+    /// there is nothing to union with, and replacing keeps the field meaning
+    /// exactly "what the loader declared", as on the Unigram sibling.
+    pub fn with_special_decode_ids(mut self, ids: rustc_hash::FxHashSet<u32>) -> Self {
+        self.special_decode = ids;
+        self
     }
 
     /// Set SentencePiece `add_dummy_prefix` (GGUF `tokenizer.ggml.add_space_prefix`).
@@ -611,6 +635,136 @@ impl SpmTokenizer {
         )?);
         Ok(out)
     }
+
+    /// Whether a token id is dropped when rendering decoded text.
+    ///
+    /// Shared by [`decode`](Self::decode) and
+    /// [`decode_lossy`](Self::decode_lossy) — through the one loop both drive —
+    /// so the two paths cannot drift on which ids they drop. Skips BOS/EOS,
+    /// `<unk>`, and any `special=true` added token (`special_decode`), matching
+    /// HuggingFace's default decode (`skip_special_tokens=True`) and the Unigram
+    /// sibling's identical rule.
+    ///
+    /// Measured with the `sentencepiece` Python package 0.2.0 on Mistral's own
+    /// `tokenizer.model`: `decode([1, 7080, 29477, 2294, 2])` is `'hello world'`
+    /// — the boundary tokens produce nothing. Left unskipped, every generated
+    /// sequence carried a literal `<s>`/`</s>` into the decoded text.
+    ///
+    /// `<unk>` goes with them rather than becoming SentencePiece's `unk_surface`
+    /// (`' ⁇ '`): that is `sp.decode`'s own API, not the HF
+    /// `skip_special_tokens` semantics this crate follows, and an unknown span
+    /// was unrecoverable anyway.
+    fn is_skipped_on_decode(&self, id: u32) -> bool {
+        Some(id) == self.bos_token_id
+            || Some(id) == self.eos_token_id
+            || Some(id) == self.unk_id
+            || self.special_decode.contains(&id)
+    }
+
+    /// Render ids to bytes, deciding through `on_unknown` what an id the
+    /// vocabulary does not contain means.
+    ///
+    /// The single decode loop. Strict decoding instantiates `E` with
+    /// [`TokenizeError`] and returns from `on_unknown`; lossy decoding
+    /// instantiates it with [`Infallible`] and skips — so the two cannot
+    /// disagree about what an id renders to, and the compiler proves the lossy
+    /// path's `Err` arm away rather than an assertion claiming it.
+    ///
+    /// Bytes rather than text because a `<0xNN>` run is only valid UTF-8 once
+    /// reassembled: what happens to a byte sequence that is not (an error, or
+    /// U+FFFD) is the caller's decision, and the only one they differ on.
+    fn decode_to_bytes<E>(
+        &self,
+        ids: &[u32],
+        on_unknown: impl Fn(u32) -> Result<(), E>,
+    ) -> Result<Vec<u8>, E> {
+        let mut bytes: Vec<u8> = Vec::new();
+        for &id in ids {
+            let piece = match self.id_to_token.get(id as usize) {
+                Some(piece) => piece,
+                None => {
+                    on_unknown(id)?;
+                    continue;
+                }
+            };
+            if self.is_skipped_on_decode(id) {
+                continue;
+            }
+            // `<0xNN>` byte tokens decode to the raw byte, not to their literal
+            // spelling; a multi-byte character is split across several of them
+            // and only reassembles as bytes.
+            let byte = piece
+                .strip_prefix("<0x")
+                .and_then(|rest| rest.strip_suffix('>'))
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+            match byte {
+                Some(b) => bytes.push(b),
+                None => bytes.extend(piece.replace(WORD_BOUNDARY, " ").as_bytes()),
+            }
+        }
+        Ok(bytes)
+    }
+
+    /// Remove the dummy prefix from rendered text — see [`decode`](Self::decode),
+    /// which documents why exactly one space comes off and only when one was
+    /// added.
+    fn strip_dummy_prefix(&self, text: String) -> String {
+        if !self.add_prefix_space {
+            return text;
+        }
+        match text.strip_prefix(' ') {
+            Some(rest) => rest.to_string(),
+            None => text,
+        }
+    }
+
+    /// Render the pieces, then strip the dummy prefix.
+    ///
+    /// BOS/EOS/`<unk>` and the declared `special=true` ids produce nothing —
+    /// see [`is_skipped_on_decode`](Self::is_skipped_on_decode).
+    ///
+    /// SentencePiece's `add_dummy_prefix` puts a boundary before the first piece
+    /// on encode, so rendering `▁` back to a space leaves one space that was
+    /// never in the input. The reference pipelines both remove exactly one:
+    /// `sp.decode`, and HuggingFace's declared decoder chain
+    /// `Replace(▁→" ") → ByteFallback → Fuse → Strip{content: " ", start: 1}`.
+    ///
+    /// Exactly one — never all leading whitespace. `"  Hello"` encodes to the
+    /// two-space piece `▁▁` plus `▁Hello`, which renders to three spaces; only
+    /// the dummy one comes off, leaving the two the caller wrote.
+    ///
+    /// And only when a dummy prefix was actually added: with
+    /// `add_dummy_prefix` off (Gemma) encoding never inserts one, so removing a
+    /// space here would eat one the caller wrote. llama.cpp gates its
+    /// detokenizer on the same flag.
+    ///
+    /// Errors with [`TokenizeError::InvalidTokenId`] on an id the vocabulary
+    /// does not contain — a distinct thing from the skips above, which are
+    /// deliberate — and with [`TokenizeError::Utf8Error`] when the rendered
+    /// bytes are not valid UTF-8.
+    pub fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
+        let bytes = self.decode_to_bytes(ids, |id| Err(TokenizeError::InvalidTokenId(id)))?;
+        let text = String::from_utf8(bytes).map_err(|_| TokenizeError::Utf8Error)?;
+        Ok(self.strip_dummy_prefix(text))
+    }
+
+    /// Decode ids to text, skipping ids the vocabulary does not contain and
+    /// replacing undecodable bytes with U+FFFD.
+    ///
+    /// The lenient half of the pair, over exactly the loop
+    /// [`decode`](Self::decode) drives: same pieces, same skips, same dummy-prefix
+    /// strip — only an unknown id and a broken byte sequence are treated as
+    /// something to survive rather than to report. This method never fails, so
+    /// `on_unknown` is instantiated with [`Infallible`], letting the compiler
+    /// prove the `Err` arm away rather than a runtime assertion claiming it.
+    pub fn decode_lossy(&self, ids: &[u32]) -> String {
+        let bytes = match self.decode_to_bytes(ids, |_| Ok::<(), Infallible>(())) {
+            Ok(bytes) => bytes,
+            // `Infallible` has no values, so this match has no arms to write.
+            Err(never) => match never {},
+        };
+        self.strip_dummy_prefix(String::from_utf8_lossy(&bytes).into_owned())
+    }
 }
 
 impl Tokenize for SpmTokenizer {
@@ -634,49 +788,11 @@ impl Tokenize for SpmTokenizer {
         self.encode_with(text, mode)
     }
 
-    /// Render the pieces, then strip the dummy prefix.
-    ///
-    /// SentencePiece's `add_dummy_prefix` puts a boundary before the first piece
-    /// on encode, so rendering `▁` back to a space leaves one space that was
-    /// never in the input. The reference pipelines both remove exactly one:
-    /// `sp.decode`, and HuggingFace's declared decoder chain
-    /// `Replace(▁→" ") → ByteFallback → Fuse → Strip{content: " ", start: 1}`.
-    ///
-    /// Exactly one — never all leading whitespace. `"  Hello"` encodes to the
-    /// two-space piece `▁▁` plus `▁Hello`, which renders to three spaces; only
-    /// the dummy one comes off, leaving the two the caller wrote.
-    ///
-    /// And only when a dummy prefix was actually added: with
-    /// `add_dummy_prefix` off (Gemma) encoding never inserts one, so removing a
-    /// space here would eat one the caller wrote. llama.cpp gates its
-    /// detokenizer on the same flag.
+    /// Render the pieces, then strip the dummy prefix — the inherent
+    /// [`decode`](SpmTokenizer::decode), which documents both, so the trait and
+    /// the type can never disagree about what an id decodes to.
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        let mut bytes: Vec<u8> = Vec::new();
-        for &id in ids {
-            let piece = self
-                .id_to_token
-                .get(id as usize)
-                .ok_or(TokenizeError::InvalidTokenId(id))?;
-            // `<0xNN>` byte tokens decode to the raw byte, not to their literal
-            // spelling; a multi-byte character is split across several of them
-            // and only reassembles as bytes.
-            let byte = piece
-                .strip_prefix("<0x")
-                .and_then(|rest| rest.strip_suffix('>'))
-                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
-            match byte {
-                Some(b) => bytes.push(b),
-                None => bytes.extend(piece.replace(WORD_BOUNDARY, " ").as_bytes()),
-            }
-        }
-        let text = String::from_utf8(bytes).map_err(|_| TokenizeError::Utf8Error)?;
-        if !self.add_prefix_space {
-            return Ok(text);
-        }
-        Ok(match text.strip_prefix(' ') {
-            Some(rest) => rest.to_string(),
-            None => text,
-        })
+        self.decode(ids)
     }
 
     fn vocab_size(&self) -> usize {
@@ -1171,6 +1287,99 @@ mod tests {
             !t.encode("<bos>hello").contains(&2),
             "no matcher configured, so `<bos>` is ordinary text"
         );
+    }
+
+    /// Boundary tokens must not leak into decoded text. Ground truth is the
+    /// `sentencepiece` Python package, version 0.2.0, reading Mistral's own
+    /// `tokenizer.model` — the file splintr bundles as `mistral` / `mistral_v2`:
+    ///
+    /// ```text
+    /// decode([1, 7080, 29477, 2294, 2]) -> 'hello world'
+    /// id 1 '<s>'   -> ''
+    /// id 2 '</s>'  -> ''
+    /// ```
+    ///
+    /// Left unskipped, the same ids came back as `"<s> hello world</s>"`, so
+    /// every generated sequence carried its own boundary markers into the text
+    /// a user reads.
+    ///
+    /// `<unk>` (id 0) goes with them. `sp.decode([0])` is `' ⁇ '` — its
+    /// `unk_surface` setting — but that is `sp.decode`'s own API rather than the
+    /// HuggingFace `skip_special_tokens=True` semantics this crate follows, and
+    /// which the Unigram sibling already drops `<unk>` under.
+    #[test]
+    fn boundary_tokens_decode_to_nothing() {
+        let tok = crate::core::pretrained::from_pretrained("mistral_v2")
+            .expect("mistral_v2 vocabulary loads");
+
+        // `[7080, 29477, 2294]` is `sp.encode("hello world")` on this file.
+        assert_eq!(
+            tok.decode(&[1, 7080, 29477, 2294, 2]).unwrap(),
+            "hello world"
+        );
+        assert_eq!(tok.decode(&[0]).unwrap(), "");
+        assert_eq!(tok.decode(&[1]).unwrap(), "");
+        assert_eq!(tok.decode(&[2]).unwrap(), "");
+    }
+
+    /// Ids a loader declares `special = true` are dropped too, on top of the
+    /// vocabulary's own sentinels — that is the whole point of the set, since a
+    /// chat marker's id is not spelled `<s>` and no name test would find it.
+    #[test]
+    fn declared_special_ids_are_skipped_on_decode() {
+        let (tokens, scores) = rank_scored_vocab();
+        // `<pad>` (0) declared special; `▁hello` (22) deliberately not, so the
+        // set is shown to drop what it holds rather than everything.
+        let t = SpmTokenizer::new(tokens, scores, None, None)
+            .unwrap()
+            .with_special_decode_ids([0u32].into_iter().collect());
+
+        assert_eq!(t.decode(&[0, 22, 23]).unwrap(), "hello world");
+        assert_eq!(t.decode(&[0]).unwrap(), "");
+        // Replacing rather than unioning: a second call states the whole set,
+        // so `▁world` starts being dropped and `<pad>` stops.
+        let t = t.with_special_decode_ids([23u32].into_iter().collect());
+        assert_eq!(t.decode(&[22, 23]).unwrap(), "hello");
+        assert_eq!(t.decode(&[0, 22]).unwrap(), "<pad> hello");
+    }
+
+    /// The lenient decode is the strict one everywhere the strict one succeeds,
+    /// and skips exactly what it refuses — an id the vocabulary does not
+    /// contain, which `decode` reports as
+    /// [`TokenizeError::InvalidTokenId`].
+    #[test]
+    fn decode_lossy_agrees_with_decode_and_skips_what_it_rejects() {
+        let t = tok();
+        for text in ["hello world", " hello", "hell", ""] {
+            let ids = t.encode(text);
+            assert_eq!(
+                t.decode_lossy(&ids),
+                t.decode(&ids).unwrap(),
+                "input {text:?}"
+            );
+        }
+
+        let unknown = t.vocab_size() as u32;
+        let ids = [22, unknown, 23];
+        assert!(matches!(
+            t.decode(&ids),
+            Err(TokenizeError::InvalidTokenId(id)) if id == unknown
+        ));
+        assert_eq!(t.decode_lossy(&ids), "hello world");
+    }
+
+    /// The skip rule is shared, so it applies on the lossy side too — a lossy
+    /// decoder is not a way around `skip_special_tokens`.
+    #[test]
+    fn decode_lossy_skips_the_same_ids_decode_does() {
+        let (tokens, scores) = rank_scored_vocab();
+        // BOS = `<bos>` (2), EOS = `<eos>` (1), and `<unk>` (3) resolves itself.
+        let t = SpmTokenizer::new(tokens, scores, Some(2), Some(1))
+            .unwrap()
+            .with_special_decode_ids([0u32].into_iter().collect());
+
+        assert_eq!(t.decode_lossy(&[2, 22, 3, 23, 0, 1]), "hello world");
+        assert_eq!(t.decode(&[2, 22, 3, 23, 0, 1]).unwrap(), "hello world");
     }
 
     /// Merging must be deterministic and must not depend on how many equal

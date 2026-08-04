@@ -284,6 +284,14 @@ fn spm_from_vocab(
     scores.resize(pieces.len(), NEVER_MERGE);
 
     let eos = eos_token_id(vocab);
+    // The two boundary ids reach the backend through the constructor, which is
+    // what makes decode drop them (`sp.decode([1, …, 2])` renders neither) as
+    // well as what the leading-sentinel prefix rule keys off. `<unk>` needs no
+    // stating — the constructor resolves it by name from the vocabulary itself.
+    // The control and agent tokens in `special` are deliberately NOT declared
+    // decode-skipped: they are this vocabulary's addressable markers, and a
+    // caller decoding `[INST]` back to `"[INST]"` is reading the round trip
+    // these vocabularies are bundled for.
     let tokenizer = SpmTokenizer::new(pieces, scores, bos_token_id(vocab), Some(eos))?
         .with_prefix_scheme(spm_prefix_scheme(vocab))
         .with_added_tokens(&special)?;
