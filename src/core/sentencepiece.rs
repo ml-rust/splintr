@@ -439,8 +439,11 @@ impl SentencePieceTokenizer {
         // Strip the single leading space only when the metaspace pre-tokenizer
         // prepended one (add_prefix_space / prepend_scheme != "never"). HF's
         // Metaspace decoder mirrors its prepend behavior; with prefixing disabled
-        // a genuine leading space must be preserved, not eaten. (Token-by-token
-        // streaming uses the dedicated StreamingDecoder, not this method.)
+        // a genuine leading space must be preserved, not eaten. (This strip is
+        // position-dependent — it applies to the sequence, not to each token —
+        // so a streaming decoder for this backend has to track start-of-stream
+        // to reproduce it. This backend has no streaming factory yet; only
+        // [`Tokenizer`](crate::Tokenizer) does.)
         if self.add_prefix_space {
             Ok(result
                 .strip_prefix(' ')

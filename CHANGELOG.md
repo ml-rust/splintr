@@ -8,6 +8,11 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: one streaming decoder, built by the tokenizer.** `ByteLevelStreamingDecoder` is gone and `StreamingDecoder::new(&tokenizer)` with it; the single `StreamingDecoder` is obtained only from `Tokenizer::streaming_decoder()`, which takes ByteLevel unmapping, the `special=true` ids to drop and the metaspace ▁ substitution from the tokenizer's own configuration. Picking the decoder that did not match the vocabulary — silently producing mojibake, and silently ignoring the skip set and the metaspace pass that `decode` applies — is no longer expressible. The decoder carries no lifetime, so it can be owned and moved into a generation task, and it shares the vocabulary map rather than copying it.
+- **BREAKING: the streaming API is strict by default and mirrors `decode`.** `add_token`/`add_tokens` return `Result<Option<String>, TokenizeError>` and report an id in no table as `TokenizeError::InvalidTokenId`, exactly as `decode` does; the new `add_token_lossy`/`add_tokens_lossy` skip it instead, exactly as `decode_lossy` does. Concatenating every emission plus `flush()` now equals `decode` (and always equals `decode_lossy`), for raw and ByteLevel vocabularies alike.
+
 ### Fixed
 
 - **A HuggingFace `Split` pre-tokenizer with a string pattern now splits on that string literally**, as `tokenizers` does, instead of compiling it as a regex. Splitting `"a.b c"` on `"."` with behavior `removed` yields `["a", "b c"]`; only `Regex(".")` matches every character. `PreTokStage::Split` carries the new `SplitPattern` (`Literal` | `Regex`) to keep the two forms distinct, and a literal is escaped before compiling.

@@ -12,7 +12,7 @@
 //! actually calls the method — compiling is most of the assertion.
 use splintr::{
     ByteFallback, NormOp, Normalizer, PreTokStage, PreTokenizer, SplitBehavior, SplitPattern,
-    Tokenizer,
+    StreamingDecoder, Tokenizer,
 };
 
 /// A vocabulary that tells the two splits apart: as one chunk `"a12"` BPEs into
@@ -169,6 +169,67 @@ fn every_split_behavior_is_nameable() {
     assert_eq!(split(SplitBehavior::Contiguous), vec!["a", "  ", "b"]);
     // `Isolated` is the default, matching HuggingFace's absent-behavior case.
     assert_eq!(SplitBehavior::default(), SplitBehavior::Isolated);
+}
+
+/// [`StreamingDecoder`] is nameable from the crate root — a caller has to be
+/// able to write the type down to store one in a struct — and
+/// [`Tokenizer::streaming_decoder`] is the *only* way to obtain one: the type
+/// has no public constructor, and no other public method returns it. That is
+/// what makes "streaming with the decoder that does not match the vocabulary"
+/// unrepresentable rather than merely discouraged, so it is asserted from
+/// outside the crate, where `pub(crate)` items are genuinely unreachable.
+///
+/// The binding is annotated deliberately: it fails to compile if the type ever
+/// grows a lifetime parameter, which would stop callers owning a decoder past
+/// the tokenizer's scope.
+#[test]
+fn streaming_decoder_is_nameable_and_only_reachable_through_the_factory() {
+    let mut decoder: StreamingDecoder = digit_tokenizer().streaming_decoder();
+
+    let ids = digit_tokenizer().encode("a12");
+    let mut streamed = String::new();
+    for id in &ids {
+        if let Some(text) = decoder.add_token(*id).expect("ids come from encode") {
+            streamed.push_str(&text);
+        }
+    }
+    streamed.push_str(&decoder.flush());
+
+    // The whole point of the type: the stream says what `decode` says.
+    assert_eq!(streamed, "a12");
+    assert_eq!(
+        streamed,
+        digit_tokenizer()
+            .decode(&ids)
+            .expect("ids come from encode")
+    );
+
+    // An id in no table is reported, exactly as `decode` reports it.
+    assert!(matches!(
+        decoder.add_token(9_999),
+        Err(splintr::TokenizeError::InvalidTokenId(9_999))
+    ));
+    // ...and the lossy twin skips it instead, exactly as `decode_lossy` does.
+    decoder.reset();
+    assert_eq!(decoder.add_token_lossy(9_999), None);
+    assert!(!decoder.has_pending());
+    assert_eq!(decoder.pending_bytes(), 0);
+}
+
+/// A decoder owns its configuration, so it outlives the tokenizer that built
+/// it. This test compiles only because [`StreamingDecoder`] carries no
+/// lifetime — the property that lets a caller move one into a generation task.
+#[test]
+fn streaming_decoder_outlives_the_tokenizer_that_built_it() {
+    let mut decoder = {
+        let tokenizer = digit_tokenizer();
+        tokenizer.streaming_decoder()
+    };
+
+    assert_eq!(
+        decoder.add_tokens(&[0, 3]).expect("known ids"),
+        Some("a12".to_string())
+    );
 }
 
 /// Both [`SplitPattern`] variants are nameable from outside the crate and mean

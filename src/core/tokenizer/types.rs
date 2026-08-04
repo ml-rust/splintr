@@ -101,7 +101,11 @@ pub struct Tokenizer {
     /// BPE models whose ids don't follow merge order (e.g. RoBERTa). `None`
     /// means tiktoken-style (id doubles as merge rank).
     pub(super) merge_ranks: Option<FxHashMap<Vec<u8>, u32>>,
-    pub(super) decoder: FxHashMap<u32, Vec<u8>>,
+    /// Behind an `Arc` so a clone — and every
+    /// [`StreamingDecoder`](crate::StreamingDecoder) built from this tokenizer —
+    /// shares the id→bytes table instead of copying a vocabulary-sized map.
+    /// Immutable once built: no method mutates it after construction.
+    pub(super) decoder: Arc<FxHashMap<u32, Vec<u8>>>,
     pub(super) special_tokens: FxHashMap<String, u32>,
     pub(super) special_tokens_decoder: FxHashMap<u32, String>,
     /// Behind an `Arc` so cloning a tokenizer shares the compiled regex
@@ -185,7 +189,9 @@ impl Clone for Tokenizer {
         Self {
             encoder: self.encoder.clone(),
             merge_ranks: self.merge_ranks.clone(),
-            decoder: self.decoder.clone(),
+            // Immutable once built, so the clone shares the table rather than
+            // duplicating it (the same reasoning as the compiled regex above).
+            decoder: Arc::clone(&self.decoder),
             special_tokens: self.special_tokens.clone(),
             special_tokens_decoder: self.special_tokens_decoder.clone(),
             regex,
@@ -268,7 +274,8 @@ impl Tokenizer {
 
     /// Get the decoder map (token ID -> bytes).
     pub fn decoder(&self) -> &FxHashMap<u32, Vec<u8>> {
-        &self.decoder
+        // The sharing is an implementation detail: callers still see the map.
+        self.decoder.as_ref()
     }
 
     /// Get the special tokens map.

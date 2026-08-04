@@ -230,7 +230,7 @@ impl Tokenizer {
         Ok(Self {
             encoder,
             merge_ranks: None,
-            decoder,
+            decoder: Arc::new(decoder),
             special_tokens,
             special_tokens_decoder,
             regex,
@@ -487,7 +487,7 @@ impl Tokenizer {
         Ok(Self {
             encoder,
             merge_ranks: None,
-            decoder,
+            decoder: Arc::new(decoder),
             special_tokens,
             special_tokens_decoder,
             regex: Arc::new(RegexBackend::Regexr(Box::new(regex))),

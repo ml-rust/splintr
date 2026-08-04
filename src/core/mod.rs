@@ -18,8 +18,9 @@
 //!   with optional PCRE2 backend via `.pcre2(true)` (requires `pcre2` feature).
 //! - `bpe`: Low-level byte-pair encoding algorithm using linked-list approach
 //! - `vocab`: Vocabulary loading utilities for tiktoken format
-//! - [`StreamingDecoder`]: UTF-8 safe streaming decoder for token-by-token LLM output
-//! - [`ByteLevelStreamingDecoder`]: Streaming decoder for ByteLevel tokenizers (DeepSeek, GPT-2)
+//! - [`StreamingDecoder`]: UTF-8 safe streaming decoder for token-by-token LLM output,
+//!   built by [`Tokenizer::streaming_decoder`] so it always matches the vocabulary
+//!   it decodes (ByteLevel or raw) and always agrees with [`Tokenizer::decode`]
 //!
 //! # Performance Optimizations
 //!
@@ -70,7 +71,7 @@ pub use pretrained::{
 };
 pub use sentencepiece::{SentencePieceError, SentencePieceTokenizer};
 pub use spm::{SpmError, SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
-pub use streaming::{ByteLevelStreamingDecoder, StreamingDecoder};
+pub use streaming::StreamingDecoder;
 pub use tokenize::{Tokenize, TokenizeError};
 pub use tokenizer::{
     cl100k_agent_tokens, o200k_agent_tokens, ByteFallback, Tokenizer, TokenizerError,

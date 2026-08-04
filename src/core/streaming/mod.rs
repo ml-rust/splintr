@@ -4,15 +4,20 @@
 //! and only emits complete, valid UTF-8 characters. This is critical for streaming
 //! LLM output where token boundaries may not align with character boundaries.
 //!
-//! # ByteLevel Support
+//! # One decoder, configured by the tokenizer
 //!
-//! For tokenizers using ByteLevel encoding (GPT-2, Llama, DeepSeek V3), the
-//! [`ByteLevelStreamingDecoder`](crate::ByteLevelStreamingDecoder) handles the
-//! ByteLevel-to-bytes conversion before UTF-8 assembly.
+//! There is a single [`StreamingDecoder`](crate::StreamingDecoder), obtained
+//! only from [`Tokenizer::streaming_decoder`](crate::Tokenizer::streaming_decoder).
+//! Everything that used to be the caller's choice — ByteLevel unmapping (GPT-2,
+//! Llama, DeepSeek V3), the `special=true` ids to drop, the metaspace ▁
+//! substitution — is taken from the tokenizer's own configuration, so a stream
+//! agrees with whole-sequence decoding by construction.
 
 mod decoder;
+mod state;
 // Crate-internal: the Python bindings drive their own decoders off the same
 // `Utf8Buffer`. Never re-exported, so it stays out of the public API.
 pub(crate) mod utf8;
 
-pub use decoder::{ByteLevelStreamingDecoder, StreamingDecoder};
+pub use decoder::StreamingDecoder;
+pub(crate) use state::{DecodeState, DecodeView, Rendered};

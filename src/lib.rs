@@ -3,11 +3,11 @@ pub mod core;
 mod python;
 
 pub use core::{
-    AddedToken, AddedTokenSet, ByteFallback, ByteLevelStreamingDecoder, SentencePieceError,
-    SentencePieceTokenizer, SpmError, SpmPrefixScheme, SpmTokenizer, StreamingDecoder, Tokenize,
-    TokenizeError, Tokenizer, TokenizerError, WordPieceError, WordPieceTokenizer,
-    CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN,
-    O200K_BASE_PATTERN, QWEN2_PATTERN, SENTENCEPIECE_PATTERN,
+    AddedToken, AddedTokenSet, ByteFallback, SentencePieceError, SentencePieceTokenizer, SpmError,
+    SpmPrefixScheme, SpmTokenizer, StreamingDecoder, Tokenize, TokenizeError, Tokenizer,
+    TokenizerError, WordPieceError, WordPieceTokenizer, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS,
+    GPT2_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
+    SENTENCEPIECE_PATTERN,
 };
 
 // Re-export pretrained tokenizer API
