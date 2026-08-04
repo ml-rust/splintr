@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "splintr-rs"
-version = "0.11.0"
+version = "0.12.0"
 description = "Fast Rust tokenizer (BPE + SentencePiece) with Python bindings"
 readme = "README.md"
 license = { text = "MIT" }
