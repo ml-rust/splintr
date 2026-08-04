@@ -923,6 +923,66 @@ fn unk_fallback_is_not_gated_on_the_byte_fallback_flag() {
     }
 }
 
+/// `model.fuse_unk` collapses a RUN of unk-resolved characters into a single
+/// unk id. It was never read, so a file declaring it emitted one unk per
+/// unrepresentable character where HuggingFace emits one per run.
+///
+/// Ground truth from `tokenizers` 0.22.1 on this exact document —
+/// `{"<unk>": 0, "a": 1, "<0x7A>": 2, "b": 3, "ab": 4}`, `unk_token: "<unk>"`,
+/// `byte_fallback: true`, no `pre_tokenizer` — so `z` (0x7A) is the one
+/// unrepresentable character with a `<0xNN>` entry and `x`/`y` have none:
+///
+/// | input | `fuse_unk: false` | `fuse_unk: true` |
+/// |---|---|---|
+/// | `"xxzxx"` | `[0, 2, 0, 0, 0]` | `[2, 0]` |
+/// | `"xzx"`   | `[2, 0, 0]`       | `[2, 0]` |
+/// | `"axyzb"` | `[1, 0, 2, 0, 3]` | `[1, 2, 0, 3]` |
+/// | `"ééé"`   | `[0, 0, 0]`       | `[0]` |
+/// | `"xax"`   | `[0, 1, 0]`       | `[0, 1, 0]` |
+///
+/// The last row is the load-bearing one: fusing does **not** cross a
+/// *vocabulary* hit, so `a` still ends the run — while the `<0x7A>` rows show it
+/// does cross a `<0xNN>` hit, which is the deliberately-reproduced HuggingFace
+/// quirk (a pending unk is flushed by a vocabulary hit and never by a byte one)
+/// surviving intact under the flag.
+#[test]
+fn fuse_unk_collapses_a_run_of_unks_into_one() {
+    let cases = [
+        ("xxzxx", vec![0, 2, 0, 0, 0], vec![2, 0]),
+        ("xzx", vec![2, 0, 0], vec![2, 0]),
+        ("axyzb", vec![1, 0, 2, 0, 3], vec![1, 2, 0, 3]),
+        ("ééé", vec![0, 0, 0], vec![0]),
+        ("xax", vec![0, 1, 0], vec![0, 1, 0]),
+    ];
+    // The third spelling omits the field: `tokenizers` defaults it to false
+    // (measured — an omitting file encodes `"xyz"` as three `<unk>`s), so it
+    // must behave as the explicit `false`.
+    for (fragment, fused) in [
+        (r#""fuse_unk": true,"#, true),
+        (r#""fuse_unk": false,"#, false),
+        ("", false),
+    ] {
+        let json = format!(
+            r#"{{
+                "model": {{"type": "BPE", "byte_fallback": true, {fragment}
+                    "unk_token": "<unk>",
+                    "vocab": {{"<unk>": 0, "a": 1, "<0x7A>": 2, "b": 3, "ab": 4}},
+                    "merges": ["a b"]}}
+            }}"#
+        );
+        let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+            .expect("loads")
+            .into_backend()
+        else {
+            panic!("expected BPE backend");
+        };
+        for (text, unfused_ids, fused_ids) in &cases {
+            let expected = if fused { fused_ids } else { unfused_ids };
+            assert_eq!(&t.encode(text), expected, "{text:?} with {fragment:?}");
+        }
+    }
+}
+
 /// A ByteLevel BPE model (GPT-2 style) with a resolvable `model.unk_token`
 /// must NOT report a fallback: `Tokenizer::bpe` discards `byte_fallback`
 /// outright whenever `use_byte_level` is true (the `<0xNN>` table is keyed by

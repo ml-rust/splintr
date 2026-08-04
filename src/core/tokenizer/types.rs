@@ -32,6 +32,20 @@ pub struct ByteFallback {
     pub(super) byte_ids: Box<[Option<u32>; 256]>,
     /// `model.unk_token`'s id, for a character the byte entries cannot cover.
     pub(super) unk_id: Option<u32>,
+    /// `model.fuse_unk`: collapse a *run* of unk-resolved characters into a
+    /// single unk id. Off by default, which is both HuggingFace's default for an
+    /// absent field and the behavior this type had before the flag existed.
+    ///
+    /// The run is delimited by a **vocabulary** hit, not by a `<0xNN>` hit — the
+    /// same asymmetry the un-fused path already reproduces (see `Tokenizer::bpe`).
+    /// Measured against `tokenizers` 0.22.1 on a `{"<unk>": 0, "a": 1,
+    /// "<0x7A>": 2, "b": 3, "ab": 4}` vocab with `unk_token: "<unk>"` and
+    /// `byte_fallback: true`: `"xxzxx"` is `['<unk>', '<0x7A>', '<unk>',
+    /// '<unk>', '<unk>']` under `fuse_unk: false` and `['<0x7A>', '<unk>']`
+    /// under `fuse_unk: true` — one unk for the whole run, spanning the byte
+    /// token — while `"xax"` is `['<unk>', 'a', '<unk>']` under both, because
+    /// the vocabulary hit ends the run.
+    pub(super) fuse_unk: bool,
     /// The inverse of `byte_ids`: fallback token id → the byte value it
     /// denotes, so decoding can render a `<0xNN>` id as that byte instead of
     /// its literal vocabulary spelling.
@@ -51,6 +65,9 @@ pub struct ByteFallback {
 
 impl ByteFallback {
     /// Build a fallback from a per-byte `<0xNN>` id table and an unk id.
+    ///
+    /// `fuse_unk` starts off; a vocabulary that declares `model.fuse_unk` turns
+    /// it on with [`with_fuse_unk`](Self::with_fuse_unk).
     pub fn new(byte_ids: [Option<u32>; 256], unk_id: Option<u32>) -> Self {
         let id_bytes: FxHashMap<u32, u8> = byte_ids
             .iter()
@@ -60,8 +77,16 @@ impl ByteFallback {
         Self {
             byte_ids: Box::new(byte_ids),
             unk_id,
+            fuse_unk: false,
             id_bytes: Arc::new(id_bytes),
         }
+    }
+
+    /// Set `model.fuse_unk` — see the field's own documentation for the measured
+    /// behavior it selects. Returns `self` for chaining.
+    pub fn with_fuse_unk(mut self, fuse_unk: bool) -> Self {
+        self.fuse_unk = fuse_unk;
+        self
     }
 
     /// The token id → byte value table decoding resolves `<0xNN>` ids through.

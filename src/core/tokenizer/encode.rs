@@ -135,6 +135,12 @@ impl Tokenizer {
         // vocabulary with no `unk_token` at all pends `None` and the character
         // is dropped — the no-fallback behavior, which is also what HF does
         // there (measured).
+        //
+        // `model.fuse_unk` collapses a *run* of unk-resolved characters into one
+        // unk, and it is exactly this flush that it suppresses: the run is
+        // delimited by a vocabulary hit (which still flushes) and spans any
+        // `<0xNN>` hit in between, since those never flush either way. Measured
+        // against `tokenizers` 0.22.1 — see [`ByteFallback::fuse_unk`].
         let mut pending_unk: Option<u32> = None;
         for piece in pieces {
             match piece {
@@ -162,7 +168,9 @@ impl Tokenizer {
                         if ch.iter().all(|&b| fallback.byte_ids[b as usize].is_some()) {
                             out.extend(ch.iter().filter_map(|&b| fallback.byte_ids[b as usize]));
                         } else {
-                            out.extend(pending_unk.take());
+                            if !fallback.fuse_unk {
+                                out.extend(pending_unk.take());
+                            }
                             pending_unk = fallback.unk_id;
                         }
                         i += n;

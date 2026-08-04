@@ -204,10 +204,24 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
         .get("byte_fallback")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+
+    // `model.fuse_unk` is a separate knob over the unk half only: it collapses a
+    // *run* of unk-resolved characters into a single unk id rather than emitting
+    // one per character. It defaults to false when absent, which is
+    // `tokenizers`' own default (measured: a file omitting the field encodes
+    // `"xyz"` over the vocab above as three `<unk>`s). Every byte-fallback
+    // vocabulary on the shelf declares `fuse_unk: true` alongside a *complete*
+    // 256-entry `<0xNN>` set, where no character ever reaches the unk branch —
+    // so the flag only becomes observable on a partial (or absent) byte table.
     let unk_id = parse_unk_id(model, vocab, None);
+    let fuse_unk = model
+        .get("fuse_unk")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let byte_fallback = (!is_byte_level)
         .then(|| Tokenizer::byte_fallback_from_encoder(&encoder, unk_id, declares_byte_fallback))
-        .flatten();
+        .flatten()
+        .map(|bf| bf.with_fuse_unk(fuse_unk));
 
     let tok = match engine {
         Some(pt) => {
