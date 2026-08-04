@@ -354,6 +354,29 @@ impl RenderRules {
             .any(|(from, _)| piece.contains(from.as_str()))
     }
 
+    /// The bytes one id contributes to decoded output, for the callers that
+    /// want a *token* rather than a sequence — `Tokenize::decode_token_bytes`
+    /// and its text sibling.
+    ///
+    /// Exactly [`render`](Self::render)'s answer, flattened: a skipped id
+    /// contributes nothing (`Some(empty)`, a deliberate no-op and never an
+    /// error), a byte-fallback run byte contributes that byte — as
+    /// `Tokenizer::decode_bytes` also reads it, since the declared step's
+    /// U+FFFD-per-byte rule is about text and there is no text here — and an id
+    /// in no table at all is `None`, left for the caller to name.
+    ///
+    /// The [`Lead`] a surface carries is deliberately dropped: it is a separator
+    /// *between* tokens, which is a fact about the sequence and not about this
+    /// id, and only the cursor knows whether it is emitted.
+    pub(crate) fn token_bytes(&self, id: u32) -> Option<Vec<u8>> {
+        match self.render(id) {
+            Rendered::Skipped => Some(Vec::new()),
+            Rendered::Bytes { lead: _, bytes } => Some(bytes.into_owned()),
+            Rendered::RunByte(byte) => Some(vec![byte]),
+            Rendered::Unknown => None,
+        }
+    }
+
     /// Render one id, deferring the "not in any table" decision to the caller
     /// so strict and lossy decoding cannot drift into two different notions of
     /// "unknown".

@@ -12,7 +12,7 @@
 //! actually calls the method — compiling is most of the assertion.
 use splintr::{
     from_json_bytes, AnyTokenizer, ByteFallback, NormOp, Normalizer, PreTokStage, PreTokenizer,
-    SentencePieceTokenizer, SplitBehavior, SplitPattern, SpmTokenizer, StreamingDecoder,
+    SentencePieceTokenizer, SplitBehavior, SplitPattern, SpmTokenizer, StreamingDecoder, Tokenize,
     TokenizeError, Tokenizer, WordPieceTokenizer,
 };
 
@@ -492,4 +492,146 @@ fn both_split_patterns_are_nameable() {
         vec!["a", "b c"]
     );
     assert!(split(SplitPattern::Regex(".".to_string())).is_empty());
+}
+
+/// Everything [`Tokenize`] adds for per-token decoding, reached ONLY through a
+/// generic `T: Tokenize` bound — no concrete type, no inherent method.
+///
+/// This is what makes the trait genuinely usable downstream: a caller writing
+/// generic code over splintr's backends must be able to render one id, stream
+/// ids, and decode leniently without naming a backend. Every type in the
+/// signature — [`StreamingDecoder`], [`TokenizeError`] — is reachable from the
+/// crate root, or this would not compile.
+fn per_token_through_the_trait<T: Tokenize>(tokenizer: &T, ids: &[u32]) -> (Vec<u8>, String) {
+    let joined: Vec<u8> = ids
+        .iter()
+        .flat_map(|&id| tokenizer.decode_token_bytes(id).expect("id is known"))
+        .collect();
+
+    // `decode_token` is the same bytes as text, and reports `Utf8Error` for an
+    // id that spells no character on its own.
+    for &id in ids {
+        match tokenizer.decode_token(id) {
+            Ok(text) => assert_eq!(
+                tokenizer.decode_token_bytes(id).expect("id is known"),
+                text.into_bytes()
+            ),
+            Err(TokenizeError::Utf8Error) => {}
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
+
+    let mut decoder: StreamingDecoder = tokenizer
+        .streaming_decoder()
+        .expect("this tokenizer can stream");
+    let mut streamed = decoder.add_tokens_lossy(ids).unwrap_or_default();
+    streamed.push_str(&decoder.flush());
+    assert_eq!(streamed, tokenizer.decode_lossy(ids));
+
+    (joined, streamed)
+}
+
+/// The BPE backend through the bound.
+#[test]
+fn bpe_per_token_decoding_is_reachable_through_the_trait() {
+    let (joined, streamed) = per_token_through_the_trait(&digit_tokenizer(), &[0, 3]);
+    assert_eq!(joined, b"a12".to_vec());
+    assert_eq!(streamed, "a12");
+}
+
+/// The WordPiece backend through the bound. Its `decode_lossy` was inherent-only
+/// before, so this call is the whole point of the addition.
+#[test]
+fn wordpiece_per_token_decoding_is_reachable_through_the_trait() {
+    let vocab = ["[UNK]", "[CLS]", "hello", "##ing"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let tokenizer = WordPieceTokenizer::new(vocab, 0, 200, true);
+
+    // `[CLS]` is dropped on decode, so it contributes nothing at all.
+    let (joined, streamed) = per_token_through_the_trait(&tokenizer, &[1, 2, 3]);
+    assert_eq!(joined, b"helloing".to_vec());
+    assert_eq!(streamed, "helloing");
+}
+
+/// The Unigram backend through the bound, likewise.
+#[test]
+fn unigram_per_token_decoding_is_reachable_through_the_trait() {
+    let tokens = ["<unk>", "</s>", "▁hello", "▁world"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let tokenizer = SentencePieceTokenizer::new(tokens, vec![], None, 1)
+        .expect("the vocabulary is well formed")
+        .with_prefix_space(false);
+
+    let (joined, streamed) = per_token_through_the_trait(&tokenizer, &[2, 3, 1]);
+    assert_eq!(joined, b" hello world".to_vec());
+    assert_eq!(streamed, " hello world");
+}
+
+/// The SPM-BPE backend through the bound, including a `<0xNN>` id whose bytes
+/// are not text on their own — the case `decode_token` reports and the streaming
+/// decoder exists to handle.
+#[test]
+fn spm_per_token_decoding_is_reachable_through_the_trait() {
+    let mut tokens: Vec<String> = ["<unk>", "</s>", "▁hi"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    for b in 0..=255u32 {
+        tokens.push(format!("<0x{b:02X}>"));
+    }
+    let n = tokens.len();
+    let tokenizer = SpmTokenizer::new(tokens, (0..n).map(|i| -(i as f32)).collect(), None, Some(1))
+        .expect("the vocabulary is well formed")
+        .with_prefix_space(false);
+
+    // The three `<0xNN>` ids spelling `—` (U+2014, E2 80 94): each is a byte,
+    // none of them a character.
+    let em_dash: Vec<u32> = [0xE2u32, 0x80, 0x94].into_iter().map(|b| 3 + b).collect();
+    assert!(matches!(
+        tokenizer.decode_token(em_dash[0]),
+        Err(TokenizeError::Utf8Error)
+    ));
+
+    let ids = [vec![2], em_dash].concat();
+    let (joined, streamed) = per_token_through_the_trait(&tokenizer, &ids);
+    assert_eq!(String::from_utf8(joined).expect("valid together"), " hi—");
+    assert_eq!(streamed, " hi—");
+}
+
+/// The universal handle through the bound. It is the one implementor whose
+/// `streaming_decoder` can refuse, which is why the trait's method is fallible
+/// at all — here the declared pipeline lowers, so it answers.
+#[test]
+fn any_tokenizer_per_token_decoding_is_reachable_through_the_trait() {
+    // The same Llama/Mistral document
+    // `any_tokenizer_streaming_decoder_and_its_error_are_reachable_downstream`
+    // streams, so the two tests cannot disagree about what it decodes to.
+    let json = r#"{
+        "added_tokens": [{"id": 1, "content": "<s>", "special": true}],
+        "pre_tokenizer": {"type": "Metaspace", "prepend_scheme": "first"},
+        "decoder": {"type": "Sequence", "decoders": [
+            {"type": "Replace", "pattern": {"String": "▁"}, "content": " "},
+            {"type": "ByteFallback"},
+            {"type": "Fuse"},
+            {"type": "Strip", "content": " ", "start": 1, "stop": 0}
+        ]},
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "<s>": 1, "▁Hi": 2,
+                "<0xE2>": 3, "<0x82>": 4, "<0xAC>": 5},
+            "merges": []}
+    }"#;
+    let tokenizer: AnyTokenizer = from_json_bytes(json.as_bytes()).expect("the document loads");
+    assert!(tokenizer.declares_decoder());
+
+    // Concatenated per-id bytes are the stream *before* post-processing, so
+    // they still carry the leading space the declared `Strip` removes. The
+    // `special = true` `<s>` contributes nothing, and each `<0xNN>` id
+    // contributes exactly one byte of `€`.
+    let (joined, streamed) = per_token_through_the_trait(&tokenizer, &[1, 2, 3, 4, 5]);
+    assert_eq!(joined, " Hi\u{20ac}".as_bytes().to_vec());
+    assert_eq!(streamed, "Hi\u{20ac}");
 }

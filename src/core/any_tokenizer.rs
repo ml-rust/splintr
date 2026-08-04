@@ -49,6 +49,28 @@ impl Backend {
             Backend::Spm(t) => t.streaming_decoder(),
         }
     }
+
+    /// The backend's own lossy whole-sequence decode. Reached under exactly the
+    /// condition [`streaming_decoder`](Self::streaming_decoder) is.
+    fn decode_lossy(&self, ids: &[u32]) -> String {
+        match self {
+            Backend::Bpe(t) => Tokenize::decode_lossy(t, ids),
+            Backend::Unigram(t) => Tokenize::decode_lossy(t, ids),
+            Backend::WordPiece(t) => Tokenize::decode_lossy(t, ids),
+            Backend::Spm(t) => Tokenize::decode_lossy(t, ids),
+        }
+    }
+
+    /// The backend's own per-id rendering. Reached under exactly the condition
+    /// [`streaming_decoder`](Self::streaming_decoder) is.
+    fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {
+        match self {
+            Backend::Bpe(t) => Tokenize::decode_token_bytes(t, id),
+            Backend::Unigram(t) => Tokenize::decode_token_bytes(t, id),
+            Backend::WordPiece(t) => Tokenize::decode_token_bytes(t, id),
+            Backend::Spm(t) => Tokenize::decode_token_bytes(t, id),
+        }
+    }
 }
 
 /// A loaded tokenizer: a backend family plus the special-token policy parsed
@@ -297,16 +319,9 @@ impl AnyTokenizer {
     /// The one decode implementation, shared by the inherent [`Self::decode`]
     /// and the [`Tokenize`] impl so neither can drift from the other.
     fn decode_inner(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        // When the json declares a `decoder`, drive decoding from it: collect the
-        // surface strings (skipping special-flagged added tokens, matching HF's
-        // default `skip_special_tokens=true`) and run the configured pipeline.
+        // When the json declares a `decoder`, drive decoding from it.
         if let Some(decoder) = &self.decoder {
-            let surfaces: Vec<String> = ids
-                .iter()
-                .filter(|id| !self.special_decode.contains(id))
-                .filter_map(|&id| self.backend.token_surface(id))
-                .collect();
-            return Ok(decoder.decode(surfaces));
+            return Ok(self.decode_declared(decoder, ids));
         }
         match &self.backend {
             Backend::Bpe(t) => Tokenize::decode(t, ids),
@@ -314,6 +329,125 @@ impl AnyTokenizer {
             Backend::WordPiece(t) => Tokenize::decode(t, ids),
             Backend::Spm(t) => Tokenize::decode(t, ids),
         }
+    }
+
+    /// The declared `decoder` pipeline's own decode: collect the surface strings
+    /// (skipping special-flagged added tokens, matching HF's default
+    /// `skip_special_tokens=true`) and run the configured pipeline.
+    ///
+    /// Infallible, and that is the pipeline's own property rather than a
+    /// simplification here: an id with no surface at all is dropped by the
+    /// `filter_map`, and the chain's own `ByteFallback` step substitutes U+FFFD
+    /// for a byte run it cannot decode. So the declared path has no separate
+    /// lossy form to write — strict and lossy decoding through it are the same
+    /// call, which is why [`decode_lossy`](Self::decode_lossy) shares this
+    /// function rather than inventing one.
+    fn decode_declared(&self, decoder: &super::decoder::Decoder, ids: &[u32]) -> String {
+        let surfaces: Vec<String> = ids
+            .iter()
+            .filter(|id| !self.special_decode.contains(id))
+            .filter_map(|&id| self.backend.token_surface(id))
+            .collect();
+        decoder.decode(surfaces)
+    }
+
+    /// Decode ids back to text, surviving what [`decode`](Self::decode) would
+    /// report: an id the backend does not know is skipped and bytes that cannot
+    /// be valid UTF-8 become U+FFFD.
+    ///
+    /// Branches exactly as [`decode`](Self::decode) does, on the same
+    /// `self.decoder`, so the two can never disagree about which machinery
+    /// answers. On the declared-pipeline branch they are literally the same
+    /// call — see `decode_declared`, which is already total — and only the
+    /// backend branch has a distinct lenient drive to reach.
+    pub fn decode_lossy(&self, ids: &[u32]) -> String {
+        if let Some(decoder) = &self.decoder {
+            return self.decode_declared(decoder, ids);
+        }
+        self.backend.decode_lossy(ids)
+    }
+
+    /// The bytes one id contributes to this handle's decoded output — see
+    /// [`Tokenize::decode_token_bytes`], whose contract this is.
+    ///
+    /// Branches as [`decode`](Self::decode) does: a declared `decoder` pipeline
+    /// renders the id, and with none declared the backend's own rules do. A
+    /// caller reaching past this handle for a backend's per-id rendering while a
+    /// pipeline is declared would get the raw piece (`▁hello`) the pipeline
+    /// exists to turn into text — the hazard [`declares_decoder`](Self::declares_decoder)
+    /// warns about — so this method exists to be the one that does not.
+    ///
+    /// # Errors
+    /// [`TokenizeError::InvalidTokenId`] for an id in no table at all, and —
+    /// only on the declared branch, and for exactly the pipelines
+    /// [`streaming_decoder`](Self::streaming_decoder) refuses —
+    /// [`TokenizeError::UnstreamableDecoder`]: a pipeline whose steps cannot be
+    /// evaluated one chunk at a time cannot be evaluated one *token* at a time
+    /// either, and whole-sequence [`decode`](Self::decode) remains the way to
+    /// read those.
+    pub fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {
+        let Some(decoder) = &self.decoder else {
+            return self.backend.decode_token_bytes(id);
+        };
+        self.declared_token_bytes(decoder, id)
+    }
+
+    /// [`decode_token_bytes`](Self::decode_token_bytes) as text — see
+    /// [`Tokenize::decode_token`], which documents why
+    /// [`TokenizeError::Utf8Error`] here is the ordinary signal to stream
+    /// instead.
+    pub fn decode_token(&self, id: u32) -> Result<String, TokenizeError> {
+        super::tokenize::token_text_of(self.decode_token_bytes(id)?)
+    }
+
+    /// One id rendered through the *declared* pipeline's lowered rules — the
+    /// same lowering [`streaming_decoder`](Self::streaming_decoder) streams
+    /// through, so the two cannot disagree about what an id stands for.
+    ///
+    /// Unlike that method this does not materialize the whole surface table: a
+    /// single id needs a single surface, so the rules are given a one-slot
+    /// vocabulary and asked about slot 0. The skip and the missing-surface
+    /// decisions are therefore made here rather than folded into the rules'
+    /// tables, and they are the ones
+    /// [`Tokenize::decode_token_bytes`] states: a skipped special contributes
+    /// nothing, an id with no surface is invalid.
+    ///
+    /// A `WordPiece` pipeline's declared per-token `cleanup` does not run here:
+    /// the unit it cleans is the token *plus* the separator it carries, and the
+    /// separator is a fact about the sequence that this method deliberately
+    /// drops — so the space that cleanup exists to remove is not present to
+    /// remove.
+    fn declared_token_bytes(
+        &self,
+        decoder: &super::decoder::Decoder,
+        id: u32,
+    ) -> Result<Vec<u8>, TokenizeError> {
+        // The refusal is decided first, so it does not depend on which id was
+        // asked about: a pipeline this handle cannot render through renders no
+        // id, not merely the ones that are neither skipped nor missing.
+        let Some((rules, _post)) = decoder.lower() else {
+            // The post-ops are dropped on purpose, not overlooked: they are the
+            // sequence-level half of decoding, and this method reports what one
+            // id contributes before any of it.
+            return Err(TokenizeError::UnstreamableDecoder(
+                decoder.unstreamable_op().unwrap_or("declared"),
+            ));
+        };
+        if self.special_decode.contains(&id) {
+            return Ok(Vec::new());
+        }
+        let Some(surface) = self.backend.token_surface(id) else {
+            return Err(TokenizeError::InvalidTokenId(id));
+        };
+        let rules = rules.with_vocabulary(
+            Surfaces::ByIndex(Arc::new(vec![surface])),
+            Arc::new(rustc_hash::FxHashMap::default()),
+            Arc::new(rustc_hash::FxHashSet::default()),
+        );
+        // Slot 0 is the surface just placed there, so it is never unknown; the
+        // mapping restores the caller's id for the spelling the type system
+        // cannot prove away.
+        super::tokenize::token_bytes_of(&rules, 0).map_err(|_| TokenizeError::InvalidTokenId(id))
     }
 
     /// Decode many id lists — the batch form of [`decode`](Self::decode),
@@ -443,6 +577,26 @@ impl Tokenize for AnyTokenizer {
 
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
         self.decode_inner(ids)
+    }
+
+    fn decode_lossy(&self, ids: &[u32]) -> String {
+        AnyTokenizer::decode_lossy(self, ids)
+    }
+
+    /// The one implementor that can refuse — see the inherent
+    /// [`streaming_decoder`](AnyTokenizer::streaming_decoder), which has the
+    /// same signature, so the trait method is a plain delegation rather than a
+    /// widening.
+    fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
+        AnyTokenizer::streaming_decoder(self)
+    }
+
+    fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {
+        AnyTokenizer::decode_token_bytes(self, id)
+    }
+
+    fn decode_token(&self, id: u32) -> Result<String, TokenizeError> {
+        AnyTokenizer::decode_token(self, id)
     }
 
     fn vocab_size(&self) -> usize {
@@ -589,5 +743,149 @@ mod tests {
             "hello world",
             "declared decoder pipeline + special_decode must both apply"
         );
+    }
+
+    // =========================================================================
+    // Per-id decoding and lossy decoding through the universal handle
+    // =========================================================================
+
+    /// The Mistral-shaped handle the declared-pipeline tests share: a BPE
+    /// backend whose surfaces are raw SentencePiece pieces, one `special = true`
+    /// id, one `<0xNN>` piece for the declared `ByteFallback` step to resolve,
+    /// and the `tokenizer.json` `decoder` chain verbatim.
+    fn declared_handle() -> AnyTokenizer {
+        let mut encoder = rustc_hash::FxHashMap::default();
+        encoder.insert("\u{2581}hello".as_bytes().to_vec(), 10);
+        encoder.insert("\u{2581}world".as_bytes().to_vec(), 11);
+        encoder.insert("<0xF0>".as_bytes().to_vec(), 12);
+        let mut special_tokens = rustc_hash::FxHashMap::default();
+        special_tokens.insert("<s>".to_string(), 1);
+
+        let tokenizer = Tokenizer::new(encoder, special_tokens.clone(), r"\S+|\s+")
+            .expect("the test pattern compiles");
+        let policy = SpecialPolicy::boundary(Some(1), None, None, special_tokens);
+
+        let declared = serde_json::json!({
+            "type": "Sequence",
+            "decoders": [
+                {"type": "Replace", "pattern": {"String": "\u{2581}"}, "content": " "},
+                {"type": "ByteFallback"},
+                {"type": "Fuse"},
+                {"type": "Strip", "content": " ", "start": 1, "stop": 0}
+            ]
+        });
+
+        AnyTokenizer {
+            backend: Backend::Bpe(tokenizer),
+            policy,
+            decoder: super::super::decoder::parse(Some(&declared)),
+            special_decode: [1].into_iter().collect(),
+        }
+    }
+
+    /// Per-id decoding on a declared pipeline renders through that pipeline's
+    /// own lowered rules, not the backend's: `▁hello` is ` hello`, never the raw
+    /// piece. The three answers are the ones the trait states — content bytes, an
+    /// empty contribution for a skipped special, an error for an id in no table.
+    #[test]
+    fn decode_token_bytes_runs_the_declared_pipeline_per_id() {
+        let any = declared_handle();
+        assert!(any.declares_decoder());
+
+        assert_eq!(any.decode_token_bytes(10).unwrap(), b" hello".to_vec());
+        // The declared `Strip` is a *sequence* post-op, so the leading space the
+        // `Replace` produced is still here — this is what "no sequence-level
+        // post-processing" means.
+        assert_eq!(any.decode_token(10).unwrap(), " hello");
+
+        assert_eq!(any.decode_token_bytes(1).unwrap(), Vec::<u8>::new());
+        assert_eq!(any.decode_token(1).unwrap(), "");
+
+        assert!(matches!(
+            any.decode_token_bytes(999),
+            Err(TokenizeError::InvalidTokenId(999))
+        ));
+    }
+
+    /// The declared `ByteFallback` step's `<0xNN>` piece is one byte, so it has
+    /// bytes but is not text on its own — the case that motivates the pair.
+    #[test]
+    fn a_declared_byte_fallback_id_has_bytes_but_no_text_of_its_own() {
+        let any = declared_handle();
+
+        assert_eq!(any.decode_token_bytes(12).unwrap(), vec![0xF0]);
+        assert!(matches!(
+            any.decode_token(12),
+            Err(TokenizeError::Utf8Error)
+        ));
+    }
+
+    /// Agreement on the declared branch, stated exactly. Concatenating the per-id
+    /// bytes gives the stream *before* its post-ops; the streaming decoder then
+    /// applies the declared `Strip`, and the difference between the two is
+    /// precisely the one leading space that strip removes.
+    #[test]
+    fn concatenated_token_bytes_equal_the_stream_before_post_processing() {
+        let any = declared_handle();
+        let ids = [1, 10, 11];
+
+        let joined: Vec<u8> = ids
+            .iter()
+            .flat_map(|&id| any.decode_token_bytes(id).expect("every id is known"))
+            .collect();
+        assert_eq!(String::from_utf8(joined).unwrap(), " hello world");
+
+        let mut streamed = any.streaming_decoder().expect("this pipeline lowers");
+        let mut out = streamed.add_tokens_lossy(&ids).unwrap_or_default();
+        out.push_str(&streamed.flush());
+        assert_eq!(out, "hello world");
+    }
+
+    /// With no pipeline declared, per-id decoding delegates to the backend — the
+    /// same branch `decode` takes.
+    #[test]
+    fn decode_token_bytes_delegates_to_the_backend_without_a_declared_pipeline() {
+        let mut encoder = rustc_hash::FxHashMap::default();
+        encoder.insert("\u{2581}hello".as_bytes().to_vec(), 10);
+        let tokenizer = Tokenizer::new(encoder, rustc_hash::FxHashMap::default(), r"\S+|\s+")
+            .expect("the test pattern compiles");
+        let any = AnyTokenizer::new(Backend::Bpe(tokenizer), SpecialPolicy::default());
+
+        assert!(!any.declares_decoder());
+        // The backend's own rules: the raw piece, ▁ and all.
+        assert_eq!(any.decode_token(10).unwrap(), "\u{2581}hello");
+        assert!(matches!(
+            any.decode_token_bytes(999),
+            Err(TokenizeError::InvalidTokenId(999))
+        ));
+    }
+
+    /// `decode_lossy` must take the same branch `decode` takes, or the two
+    /// disagree about what a sequence says. On a declared pipeline they are the
+    /// same call — that pipeline is already total — and on the backend branch
+    /// they differ only in surviving an unknown id.
+    #[test]
+    fn decode_lossy_mirrors_decode_on_both_branches() {
+        let any = declared_handle();
+        let ids = [1, 10, 11];
+
+        assert_eq!(Tokenize::decode(&any, &ids).unwrap(), "hello world");
+        assert_eq!(Tokenize::decode_lossy(&any, &ids), "hello world");
+        // An id the backend does not know is dropped by the declared pipeline's
+        // own surface collection, on both halves alike.
+        assert_eq!(
+            Tokenize::decode_lossy(&any, &[1, 10, 999, 11]),
+            "hello world"
+        );
+
+        let mut encoder = rustc_hash::FxHashMap::default();
+        encoder.insert(b"hello".to_vec(), 10);
+        encoder.insert(b" world".to_vec(), 11);
+        let tokenizer = Tokenizer::new(encoder, rustc_hash::FxHashMap::default(), r"\S+|\s+")
+            .expect("the test pattern compiles");
+        let bare = AnyTokenizer::new(Backend::Bpe(tokenizer), SpecialPolicy::default());
+
+        assert!(Tokenize::decode(&bare, &[10, 999, 11]).is_err());
+        assert_eq!(Tokenize::decode_lossy(&bare, &[10, 999, 11]), "hello world");
     }
 }

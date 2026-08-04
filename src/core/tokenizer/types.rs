@@ -1,5 +1,7 @@
 use crate::core::added::AddedTokens;
 use crate::core::policy::{PolicyError, SpecialMode};
+use crate::core::streaming::StreamingDecoder;
+use crate::core::tokenize::{token_bytes_of, token_text_of, Tokenize, TokenizeError};
 use lru::LruCache;
 use rustc_hash::{FxHashMap, FxHasher};
 use std::hash::BuildHasherDefault;
@@ -269,6 +271,31 @@ impl crate::core::tokenize::Tokenize for Tokenizer {
             }
             other => crate::core::tokenize::TokenizeError::Other(other.to_string()),
         })
+    }
+
+    /// Skips unknown ids and substitutes U+FFFD — the inherent
+    /// [`decode_lossy`](Tokenizer::decode_lossy), so the trait and the type can
+    /// never disagree about what a sequence decodes to.
+    fn decode_lossy(&self, ids: &[u32]) -> String {
+        Tokenizer::decode_lossy(self, ids)
+    }
+
+    /// This backend never refuses to stream — the inherent
+    /// [`streaming_decoder`](Tokenizer::streaming_decoder), wrapped in the `Ok`
+    /// the trait's shape needs for [`AnyTokenizer`](crate::AnyTokenizer)'s sake.
+    fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
+        Ok(Tokenizer::streaming_decoder(self))
+    }
+
+    fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {
+        // Rendered through the very rules `decode` and `decode_bytes` render
+        // through, so a per-id answer cannot drift from the sequence they emit.
+        let state = self.decode_state();
+        token_bytes_of(state.render(), id)
+    }
+
+    fn decode_token(&self, id: u32) -> Result<String, TokenizeError> {
+        token_text_of(<Tokenizer as Tokenize>::decode_token_bytes(self, id)?)
     }
 
     fn vocab_size(&self) -> usize {

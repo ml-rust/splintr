@@ -761,3 +761,116 @@ fn without_byte_fallback_a_byte_token_surface_decodes_literally() {
     assert!(!tokenizer.has_byte_fallback());
     assert_eq!(tokenizer.decode(&[1, 2]).unwrap(), "a<0x41>");
 }
+
+// =============================================================================
+// Per-id decoding: `Tokenize::decode_token_bytes` / `decode_token`
+// =============================================================================
+
+/// A vocabulary with a special token this tokenizer is told to *drop* on
+/// decode, so a test can tell the deliberate skip apart from an unknown id.
+fn skipping_tokenizer() -> Tokenizer {
+    let mut encoder = FxHashMap::default();
+    encoder.insert(b"Hello".to_vec(), 200);
+    encoder.insert(b" world".to_vec(), 201);
+
+    let mut special_tokens = FxHashMap::default();
+    special_tokens.insert("<|endoftext|>".to_string(), 50256);
+
+    Tokenizer::new(encoder, special_tokens, r"\S+|\s+")
+        .expect("the test pattern compiles")
+        .with_special_decode_ids([50256].into_iter().collect())
+}
+
+/// The three answers the method distinguishes, on the BPE backend: an ordinary
+/// content id renders its bytes, a special decode *drops* (an empty
+/// contribution, not an error — it really does contribute nothing to the
+/// stream), and an id in no table at all is reported.
+#[test]
+fn decode_token_bytes_separates_content_skip_and_unknown() {
+    use crate::core::tokenize::{Tokenize, TokenizeError};
+    let tokenizer = skipping_tokenizer();
+
+    assert_eq!(
+        tokenizer.decode_token_bytes(200).unwrap(),
+        b"Hello".to_vec()
+    );
+    assert_eq!(tokenizer.decode_token(200).unwrap(), "Hello");
+
+    assert_eq!(
+        tokenizer.decode_token_bytes(50256).unwrap(),
+        Vec::<u8>::new()
+    );
+    assert_eq!(tokenizer.decode_token(50256).unwrap(), "");
+
+    assert!(matches!(
+        tokenizer.decode_token_bytes(4242),
+        Err(TokenizeError::InvalidTokenId(4242))
+    ));
+    assert!(matches!(
+        tokenizer.decode_token(4242),
+        Err(TokenizeError::InvalidTokenId(4242))
+    ));
+}
+
+/// The case the pair of methods exists for: a `<0xNN>` byte-fallback id carries
+/// one byte of a four-byte character, so it *has* bytes but is not text on its
+/// own. `decode_token_bytes` answers with the byte; `decode_token` reports
+/// `Utf8Error`, which is the documented signal to stream instead.
+#[test]
+fn a_byte_fallback_id_has_bytes_but_no_text_of_its_own() {
+    use crate::core::tokenize::{Tokenize, TokenizeError};
+    let tokenizer = byte_fallback_tokenizer();
+    let ids = tokenizer.encode("a𐍈c");
+    assert_eq!(ids, vec![1, 10, 11, 12, 13, 2]);
+
+    // The four bytes of U+10348, one per id, none of them a character.
+    for (id, byte) in ids[1..5].iter().zip([0xF0, 0x90, 0x8D, 0x88]) {
+        assert_eq!(tokenizer.decode_token_bytes(*id).unwrap(), vec![byte]);
+        assert!(matches!(
+            tokenizer.decode_token(*id),
+            Err(TokenizeError::Utf8Error)
+        ));
+    }
+    // ...while the ids that are whole characters decode fine.
+    assert_eq!(tokenizer.decode_token(1).unwrap(), "a");
+}
+
+/// Agreement: concatenating the per-id bytes over a sequence is exactly what
+/// decoding that sequence emits. Exact on this tokenizer, which declares no
+/// text post-op and no word separator, so nothing stands between the rendered
+/// bytes and the decoded text.
+#[test]
+fn concatenated_token_bytes_equal_the_decoded_sequence() {
+    use crate::core::tokenize::Tokenize;
+    let tokenizer = byte_fallback_tokenizer();
+    let ids = tokenizer.encode("a𐍈c");
+
+    let joined: Vec<u8> = ids
+        .iter()
+        .flat_map(|&id| tokenizer.decode_token_bytes(id).expect("every id is known"))
+        .collect();
+
+    assert_eq!(joined, tokenizer.decode_lossy(&ids).into_bytes());
+    assert_eq!(String::from_utf8(joined).unwrap(), "a𐍈c");
+}
+
+/// The trait's `decode_lossy` and `streaming_decoder` are the inherent ones —
+/// this backend never refuses to stream, so the `Result` the trait's shape
+/// carries for `AnyTokenizer`'s sake is always `Ok` here.
+#[test]
+fn trait_decode_lossy_and_streaming_decoder_match_the_inherent_pair() {
+    use crate::core::tokenize::Tokenize;
+    let tokenizer = skipping_tokenizer();
+    let ids = [50256, 200, 201, 4242];
+
+    assert_eq!(Tokenize::decode_lossy(&tokenizer, &ids), "Hello world");
+    assert_eq!(
+        Tokenize::decode_lossy(&tokenizer, &ids),
+        Tokenizer::decode_lossy(&tokenizer, &ids)
+    );
+
+    let mut streamed = Tokenize::streaming_decoder(&tokenizer).expect("BPE always streams");
+    let mut out = streamed.add_tokens_lossy(&ids).unwrap_or_default();
+    out.push_str(&streamed.flush());
+    assert_eq!(out, "Hello world");
+}

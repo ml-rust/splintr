@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use super::policy::{PolicyError, SpecialMode};
 use super::streaming::{DecodeState, StreamingDecoder};
+use super::tokenize::{token_bytes_of, token_text_of, TokenizeError};
 
 #[derive(Error, Debug)]
 pub enum SentencePieceError {
@@ -568,6 +569,33 @@ impl super::tokenize::Tokenize for SentencePieceTokenizer {
     fn decode(&self, ids: &[u32]) -> Result<String, super::tokenize::TokenizeError> {
         self.decode(ids)
             .map_err(|e| super::tokenize::TokenizeError::Other(e.to_string()))
+    }
+
+    /// Skips ids the vocabulary does not contain — the inherent
+    /// [`decode_lossy`](SentencePieceTokenizer::decode_lossy), so the trait and
+    /// the type can never disagree about what a sequence decodes to.
+    fn decode_lossy(&self, ids: &[u32]) -> String {
+        SentencePieceTokenizer::decode_lossy(self, ids)
+    }
+
+    /// This backend never refuses to stream — the inherent
+    /// [`streaming_decoder`](SentencePieceTokenizer::streaming_decoder),
+    /// wrapped in the `Ok` the trait's shape needs for
+    /// [`AnyTokenizer`](crate::AnyTokenizer)'s sake.
+    fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
+        Ok(SentencePieceTokenizer::streaming_decoder(self))
+    }
+
+    fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {
+        // Rendered through the very rules `decode` drives, so a per-id answer
+        // cannot drift from the sequence it emits.
+        let state = self.decode_state();
+        token_bytes_of(state.render(), id)
+    }
+
+    fn decode_token(&self, id: u32) -> Result<String, TokenizeError> {
+        let bytes = <Self as super::tokenize::Tokenize>::decode_token_bytes(self, id)?;
+        token_text_of(bytes)
     }
 
     fn vocab_size(&self) -> usize {
@@ -1240,5 +1268,116 @@ mod tests {
 
             prop_assert_eq!(from_reused, from_fresh);
         }
+    }
+
+    // =========================================================================
+    // Per-id decoding: `Tokenize::decode_token_bytes` / `decode_token`
+    // =========================================================================
+
+    /// A vocabulary whose `<0xNN>` entries spell the four bytes of `𐍈`
+    /// (U+10348), so a test can ask for one byte of a character on its own.
+    /// The metaspace prefix is turned off, which leaves this tokenizer with no
+    /// text post-op at all — the shape the agreement test below needs.
+    fn byte_fallback_tokenizer() -> SentencePieceTokenizer {
+        let tokens: Vec<String> = [
+            "<unk>", "<s>", "</s>", "▁Hello", "▁world", "<0xF0>", "<0x90>", "<0x8D>", "<0x88>",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        let scores = vec![0.0; tokens.len()];
+        SentencePieceTokenizer::new(tokens, scores, Some(1), 2)
+            .expect("the vocabulary is well formed")
+            .with_prefix_space(false)
+    }
+
+    /// The three answers the method distinguishes: an ordinary piece renders its
+    /// bytes (▁ already substituted, since that is a *rendering* rule), a
+    /// skipped id contributes an empty `Vec` rather than an error — it really
+    /// does contribute nothing — and an id the vocabulary has no slot for is
+    /// reported.
+    #[test]
+    fn decode_token_bytes_separates_content_skip_and_unknown() {
+        use crate::core::tokenize::{Tokenize, TokenizeError};
+        let tok = byte_fallback_tokenizer();
+
+        // No sequence-level post-processing: the space the ▁ became is still
+        // here, where `decode` of the same id alone would have stripped it on a
+        // prefixing tokenizer.
+        assert_eq!(tok.decode_token_bytes(3).unwrap(), b" Hello".to_vec());
+        assert_eq!(tok.decode_token(3).unwrap(), " Hello");
+
+        // BOS is in `skipped_on_decode`, and so are EOS and `<unk>`.
+        for skipped in [0, 1, 2] {
+            assert_eq!(tok.decode_token_bytes(skipped).unwrap(), Vec::<u8>::new());
+            assert_eq!(tok.decode_token(skipped).unwrap(), "");
+        }
+
+        assert!(matches!(
+            tok.decode_token_bytes(999),
+            Err(TokenizeError::InvalidTokenId(999))
+        ));
+        assert!(matches!(
+            tok.decode_token(999),
+            Err(TokenizeError::InvalidTokenId(999))
+        ));
+    }
+
+    /// The case the pair of methods exists for: a `<0xNN>` id carries one byte
+    /// of a four-byte character, so it has bytes but is not text on its own.
+    #[test]
+    fn a_byte_fallback_id_has_bytes_but_no_text_of_its_own() {
+        use crate::core::tokenize::{Tokenize, TokenizeError};
+        let tok = byte_fallback_tokenizer();
+
+        for (id, byte) in (5u32..=8).zip([0xF0, 0x90, 0x8D, 0x88]) {
+            assert_eq!(tok.decode_token_bytes(id).unwrap(), vec![byte]);
+            assert!(matches!(
+                tok.decode_token(id),
+                Err(TokenizeError::Utf8Error)
+            ));
+        }
+    }
+
+    /// Agreement: concatenating the per-id bytes over a sequence is exactly what
+    /// decoding that sequence emits. Exact here because `with_prefix_space(false)`
+    /// leaves no post-op, and this backend declares no word separator.
+    #[test]
+    fn concatenated_token_bytes_equal_the_decoded_sequence() {
+        use crate::core::tokenize::Tokenize;
+        let tok = byte_fallback_tokenizer();
+
+        for ids in [
+            vec![1, 3, 4, 2],       // specials + ordinary pieces
+            vec![5, 6, 7, 8],       // one character spelled out byte by byte
+            vec![1, 3, 5, 6, 7, 8], // and the two mixed
+        ] {
+            let joined: Vec<u8> = ids
+                .iter()
+                .flat_map(|&id| tok.decode_token_bytes(id).expect("every id is known"))
+                .collect();
+            assert_eq!(joined, tok.decode_lossy(&ids).into_bytes(), "ids: {ids:?}");
+        }
+    }
+
+    /// The trait's `decode_lossy` and `streaming_decoder` are the inherent ones.
+    /// Before this, `decode_lossy` was inherent-only and therefore unreachable
+    /// for any caller holding this backend through the trait.
+    #[test]
+    fn trait_decode_lossy_and_streaming_decoder_match_the_inherent_pair() {
+        use crate::core::tokenize::Tokenize;
+        let tok = byte_fallback_tokenizer();
+        let ids = [1, 3, 4, 999, 2];
+
+        assert_eq!(Tokenize::decode_lossy(&tok, &ids), " Hello world");
+        assert_eq!(
+            Tokenize::decode_lossy(&tok, &ids),
+            SentencePieceTokenizer::decode_lossy(&tok, &ids)
+        );
+
+        let mut streamed = Tokenize::streaming_decoder(&tok).expect("Unigram always streams");
+        let mut out = streamed.add_tokens_lossy(&ids).unwrap_or_default();
+        out.push_str(&streamed.flush());
+        assert_eq!(out, " Hello world");
     }
 }

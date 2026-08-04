@@ -812,6 +812,32 @@ impl Tokenize for SpmTokenizer {
         self.decode(ids)
     }
 
+    /// Skips unknown ids and substitutes U+FFFD — the inherent
+    /// [`decode_lossy`](SpmTokenizer::decode_lossy), so the trait and the type
+    /// can never disagree about what a sequence decodes to.
+    fn decode_lossy(&self, ids: &[u32]) -> String {
+        SpmTokenizer::decode_lossy(self, ids)
+    }
+
+    /// This backend never refuses to stream — the inherent
+    /// [`streaming_decoder`](SpmTokenizer::streaming_decoder), wrapped in the
+    /// `Ok` the trait's shape needs for [`AnyTokenizer`](crate::AnyTokenizer)'s
+    /// sake.
+    fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
+        Ok(SpmTokenizer::streaming_decoder(self))
+    }
+
+    fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {
+        // Rendered through the very rules `decode` drives, so a per-id answer
+        // cannot drift from the sequence it emits.
+        let state = self.decode_state();
+        super::tokenize::token_bytes_of(state.render(), id)
+    }
+
+    fn decode_token(&self, id: u32) -> Result<String, TokenizeError> {
+        super::tokenize::token_text_of(Tokenize::decode_token_bytes(self, id)?)
+    }
+
     fn vocab_size(&self) -> usize {
         self.id_to_token.len()
     }
@@ -1745,5 +1771,122 @@ mod tests {
 
             prop_assert_eq!(from_reused, from_fresh);
         }
+    }
+
+    // =========================================================================
+    // Per-id decoding: `Tokenize::decode_token_bytes` / `decode_token`
+    // =========================================================================
+
+    /// A vocabulary carrying the full `<0xNN>` byte-fallback range, so a test can
+    /// ask for one byte of a multi-byte character on its own. The dummy prefix is
+    /// turned off, which leaves this tokenizer with no text post-op at all — the
+    /// shape the agreement test below needs.
+    fn per_id_tokenizer() -> SpmTokenizer {
+        let mut tokens: Vec<String> = ["<unk>", "<s>", "</s>", "▁hello", "▁world"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        for b in 0..=255u32 {
+            tokens.push(format!("<0x{b:02X}>"));
+        }
+        let n = tokens.len();
+        SpmTokenizer::new(
+            tokens,
+            (0..n).map(|i| -(i as f32)).collect(),
+            Some(1),
+            Some(2),
+        )
+        .expect("the vocabulary is well formed")
+        .with_prefix_space(false)
+    }
+
+    /// The id of a `<0xNN>` piece in [`per_id_tokenizer`]'s layout.
+    fn byte_id(byte: u8) -> u32 {
+        5 + byte as u32
+    }
+
+    /// The three answers the method distinguishes: an ordinary piece renders its
+    /// bytes (▁ already substituted, since that is a *rendering* rule), a skipped
+    /// id contributes an empty `Vec` rather than an error — it really does
+    /// contribute nothing — and an id the vocabulary has no slot for is reported.
+    #[test]
+    fn decode_token_bytes_separates_content_skip_and_unknown() {
+        let t = per_id_tokenizer();
+
+        // No sequence-level post-processing: the space the ▁ became is still
+        // here, where a prefixing tokenizer's `decode` would have stripped it.
+        assert_eq!(t.decode_token_bytes(3).unwrap(), b" hello".to_vec());
+        assert_eq!(t.decode_token(3).unwrap(), " hello");
+
+        // `<unk>`, BOS and EOS are all in `skipped_on_decode`.
+        for skipped in [0, 1, 2] {
+            assert_eq!(t.decode_token_bytes(skipped).unwrap(), Vec::<u8>::new());
+            assert_eq!(t.decode_token(skipped).unwrap(), "");
+        }
+
+        assert!(matches!(
+            t.decode_token_bytes(9999),
+            Err(TokenizeError::InvalidTokenId(9999))
+        ));
+        assert!(matches!(
+            t.decode_token(9999),
+            Err(TokenizeError::InvalidTokenId(9999))
+        ));
+    }
+
+    /// The case the pair of methods exists for: a `<0xNN>` id carries one byte of
+    /// a four-byte character, so it has bytes but is not text on its own.
+    #[test]
+    fn a_byte_fallback_id_has_bytes_but_no_text_of_its_own() {
+        let t = per_id_tokenizer();
+
+        for byte in [0xF0, 0x90, 0x8D, 0x88] {
+            let id = byte_id(byte);
+            assert_eq!(t.decode_token_bytes(id).unwrap(), vec![byte]);
+            assert!(matches!(t.decode_token(id), Err(TokenizeError::Utf8Error)));
+        }
+        // ...while an ASCII byte-fallback id is a character all by itself.
+        assert_eq!(t.decode_token(byte_id(b'A')).unwrap(), "A");
+    }
+
+    /// Agreement: concatenating the per-id bytes over a sequence is exactly what
+    /// decoding that sequence emits. Exact here because `with_prefix_space(false)`
+    /// leaves no post-op, and this backend declares no word separator.
+    #[test]
+    fn concatenated_token_bytes_equal_the_decoded_sequence() {
+        let t = per_id_tokenizer();
+        let spelled_out: Vec<u32> = [0xF0, 0x90, 0x8D, 0x88].into_iter().map(byte_id).collect();
+
+        for ids in [
+            vec![1, 3, 4, 2],
+            spelled_out.clone(),
+            [vec![1, 3], spelled_out].concat(),
+        ] {
+            let joined: Vec<u8> = ids
+                .iter()
+                .flat_map(|&id| t.decode_token_bytes(id).expect("every id is known"))
+                .collect();
+            assert_eq!(joined, t.decode_lossy(&ids).into_bytes(), "ids: {ids:?}");
+        }
+    }
+
+    /// The trait's `decode_lossy` and `streaming_decoder` are the inherent ones.
+    /// Before this, `decode_lossy` was inherent-only and therefore unreachable
+    /// for any caller holding this backend through the trait.
+    #[test]
+    fn trait_decode_lossy_and_streaming_decoder_match_the_inherent_pair() {
+        let t = per_id_tokenizer();
+        let ids = [1, 3, 4, 9999, 2];
+
+        assert_eq!(Tokenize::decode_lossy(&t, &ids), " hello world");
+        assert_eq!(
+            Tokenize::decode_lossy(&t, &ids),
+            SpmTokenizer::decode_lossy(&t, &ids)
+        );
+
+        let mut streamed = Tokenize::streaming_decoder(&t).expect("SPM-BPE always streams");
+        let mut out = streamed.add_tokens_lossy(&ids).unwrap_or_default();
+        out.push_str(&streamed.flush());
+        assert_eq!(out, " hello world");
     }
 }

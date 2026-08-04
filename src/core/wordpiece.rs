@@ -383,6 +383,36 @@ impl Tokenize for WordPieceTokenizer {
         self.decode(ids)
     }
 
+    /// Skips ids the vocabulary does not contain — the inherent
+    /// [`decode_lossy`](WordPieceTokenizer::decode_lossy), so the trait and the
+    /// type can never disagree about what a sequence decodes to.
+    fn decode_lossy(&self, ids: &[u32]) -> String {
+        WordPieceTokenizer::decode_lossy(self, ids)
+    }
+
+    /// This backend never refuses to stream — the inherent
+    /// [`streaming_decoder`](WordPieceTokenizer::streaming_decoder), wrapped in
+    /// the `Ok` the trait's shape needs for
+    /// [`AnyTokenizer`](crate::AnyTokenizer)'s sake.
+    fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
+        Ok(WordPieceTokenizer::streaming_decoder(self))
+    }
+
+    /// The token's own text, with any `##` continuation marker removed and
+    /// **without** the word separator a word-starting surface carries: that
+    /// separator sits between two tokens, so it belongs to the sequence and not
+    /// to this id — see [`Tokenize::decode_token_bytes`].
+    fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {
+        // Rendered through the very rules `decode` drives, so a per-id answer
+        // cannot drift from the sequence it emits.
+        let state = self.decode_state();
+        super::tokenize::token_bytes_of(state.render(), id)
+    }
+
+    fn decode_token(&self, id: u32) -> Result<String, TokenizeError> {
+        super::tokenize::token_text_of(Tokenize::decode_token_bytes(self, id)?)
+    }
+
     fn vocab_size(&self) -> usize {
         self.id_to_token.len()
     }
@@ -1219,5 +1249,93 @@ mod tests {
 
             prop_assert_eq!(from_reused, from_fresh);
         }
+    }
+
+    // =========================================================================
+    // Per-id decoding: `Tokenize::decode_token_bytes` / `decode_token`
+    // =========================================================================
+
+    /// The three answers the method distinguishes: an ordinary surface renders
+    /// its text (a `##` continuation without its marker, which is a fact about
+    /// that surface's spelling and not about the sequence), a skipped special
+    /// contributes an empty `Vec` rather than an error — it really does
+    /// contribute nothing — and an id the vocabulary has no slot for is reported.
+    #[test]
+    fn decode_token_bytes_separates_content_skip_and_unknown() {
+        let tok = make_tokenizer();
+
+        assert_eq!(tok.decode_token_bytes(4).unwrap(), b"hello".to_vec());
+        assert_eq!(tok.decode_token(4).unwrap(), "hello");
+        // The `##` comes off: `##ing` contributes `ing`.
+        assert_eq!(tok.decode_token(6).unwrap(), "ing");
+
+        // `[CLS]` and `[SEP]` are dropped on decode.
+        for skipped in [2, 3] {
+            assert_eq!(tok.decode_token_bytes(skipped).unwrap(), Vec::<u8>::new());
+            assert_eq!(tok.decode_token(skipped).unwrap(), "");
+        }
+
+        assert!(matches!(
+            tok.decode_token_bytes(999),
+            Err(TokenizeError::InvalidTokenId(999))
+        ));
+        assert!(matches!(
+            tok.decode_token(999),
+            Err(TokenizeError::InvalidTokenId(999))
+        ));
+    }
+
+    /// Agreement, and the one place it is not literal equality.
+    ///
+    /// This backend's surfaces carry no spacing of their own, so decoding puts a
+    /// separator *between* word-starting tokens. That separator belongs to the
+    /// sequence, not to any one id, and `decode_token_bytes` therefore leaves it
+    /// out by contract. So the invariant is stated over a sequence whose tokens
+    /// carry no separator — a leading skipped special plus continuations, where
+    /// exact equality holds — and the word-start case is pinned separately as
+    /// "the decoded text differs by exactly the separators".
+    #[test]
+    fn concatenated_token_bytes_equal_the_decoded_sequence_without_separators() {
+        let tok = make_tokenizer();
+
+        // `[CLS] un ##know ##n [SEP]`: nothing after the first word start, so no
+        // separator is ever emitted and the concatenation is the decoded text.
+        let glued = [2, 8, 9, 10, 3];
+        let joined: Vec<u8> = glued
+            .iter()
+            .flat_map(|&id| tok.decode_token_bytes(id).expect("every id is known"))
+            .collect();
+        assert_eq!(joined, tok.decode_lossy(&glued).into_bytes());
+        assert_eq!(String::from_utf8(joined).unwrap(), "unknown");
+
+        // `hello world`: two word starts, so decoding inserts the one separator
+        // the per-id bytes do not carry.
+        let separated = [4, 5];
+        let joined: String = separated
+            .iter()
+            .map(|&id| tok.decode_token(id).expect("every id is known"))
+            .collect();
+        assert_eq!(joined, "helloworld");
+        assert_eq!(tok.decode_lossy(&separated), "hello world");
+    }
+
+    /// The trait's `decode_lossy` and `streaming_decoder` are the inherent ones.
+    /// Before this, `decode_lossy` was inherent-only and therefore unreachable
+    /// for any caller holding this backend through the trait.
+    #[test]
+    fn trait_decode_lossy_and_streaming_decoder_match_the_inherent_pair() {
+        let tok = make_tokenizer();
+        let ids = [2, 4, 999, 5, 3];
+
+        assert_eq!(Tokenize::decode_lossy(&tok, &ids), "hello world");
+        assert_eq!(
+            Tokenize::decode_lossy(&tok, &ids),
+            WordPieceTokenizer::decode_lossy(&tok, &ids)
+        );
+
+        let mut streamed = Tokenize::streaming_decoder(&tok).expect("WordPiece always streams");
+        let mut out = streamed.add_tokens_lossy(&ids).unwrap_or_default();
+        out.push_str(&streamed.flush());
+        assert_eq!(out, "hello world");
     }
 }
