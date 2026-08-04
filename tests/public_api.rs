@@ -12,7 +12,7 @@
 //! actually calls the method — compiling is most of the assertion.
 use splintr::{
     ByteFallback, NormOp, Normalizer, PreTokStage, PreTokenizer, SplitBehavior, SplitPattern,
-    StreamingDecoder, Tokenizer,
+    SpmTokenizer, StreamingDecoder, Tokenizer,
 };
 
 /// A vocabulary that tells the two splits apart: as one chunk `"a12"` BPEs into
@@ -214,6 +214,64 @@ fn streaming_decoder_is_nameable_and_only_reachable_through_the_factory() {
     assert_eq!(decoder.add_token_lossy(9_999), None);
     assert!(!decoder.has_pending());
     assert_eq!(decoder.pending_bytes(), 0);
+}
+
+/// A four-piece SentencePiece-BPE vocabulary: `▁` is the word boundary, so
+/// `["▁hello", "▁world"]` decodes to `"hello world"` once the dummy prefix
+/// comes off.
+fn spm_tokenizer() -> SpmTokenizer {
+    let tokens = ["<unk>", "▁", "▁hello", "▁world"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    // Empty scores: id order is the merge order, which is all this needs.
+    SpmTokenizer::new(tokens, vec![], None, None).expect("vocabulary builds")
+}
+
+/// [`SpmTokenizer::streaming_decoder`] is callable from outside the crate and
+/// hands back the *same* [`StreamingDecoder`] — so the SPM backend widens who
+/// may hand one out without widening how one can be built: the type still has
+/// no public constructor, and the annotated binding still fails to compile if
+/// it ever grows a lifetime parameter.
+#[test]
+fn spm_streaming_decoder_is_reachable_and_agrees_with_decode() {
+    let spm = spm_tokenizer();
+    let ids = [2u32, 3];
+
+    let mut decoder: StreamingDecoder = spm.streaming_decoder();
+    let mut streamed = String::new();
+    for id in ids {
+        if let Some(text) = decoder.add_token(id).expect("ids are in the vocabulary") {
+            streamed.push_str(&text);
+        }
+    }
+    streamed.push_str(&decoder.flush());
+
+    // The dummy prefix comes off exactly once, on the stream as on `decode`.
+    assert_eq!(streamed, "hello world");
+    assert_eq!(
+        streamed,
+        spm.decode(&ids).expect("ids are in the vocabulary")
+    );
+}
+
+/// The SPM decoder owns its configuration too, so it outlives the tokenizer
+/// that built it — and a leading skipped id must not spend the dummy-prefix
+/// strip, which is only observable from a caller driving the stream by hand.
+#[test]
+fn spm_streaming_decoder_outlives_its_tokenizer_and_keeps_the_prefix_strip() {
+    let mut decoder = {
+        let spm = spm_tokenizer();
+        spm.streaming_decoder()
+    };
+
+    // `<unk>` (0) is skipped, renders nothing, and therefore leaves the strip
+    // armed for the first character that actually arrives.
+    assert_eq!(decoder.add_token(0).expect("known id"), None);
+    assert_eq!(
+        decoder.add_tokens(&[2, 3]).expect("known ids"),
+        Some("hello world".to_string())
+    );
 }
 
 /// A decoder owns its configuration, so it outlives the tokenizer that built

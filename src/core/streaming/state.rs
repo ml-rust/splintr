@@ -36,7 +36,26 @@ pub(crate) enum DecodePost {
     /// exactly what applying it to the joined text gives. That is what lets the
     /// streaming decoder post-process incrementally and still agree with
     /// whole-sequence decoding.
+    ///
+    /// Only the BPE backend lists this. Its surfaces are byte strings, so a ▁
+    /// can be split across two pieces and only reassembled text can see it. The
+    /// SentencePiece-shaped backends substitute per surface while rendering
+    /// instead — see `RenderRules`' `use_metaspace` — because for them a ▁
+    /// spelled out through `<0xNN>` byte-fallback ids must keep its own
+    /// character, which text this op runs over can no longer distinguish.
     MetaspaceToSpace,
+    /// Remove **one** leading space from the decoded sequence, undoing
+    /// SentencePiece's `add_dummy_prefix` — see
+    /// [`SpmTokenizer::decode`](crate::SpmTokenizer::decode), which documents
+    /// why exactly one comes off and only when one was added.
+    ///
+    /// The one post-op that does *not* distribute over concatenation: "leading"
+    /// is a position, so it is the cursor that decides — through its `at_start`
+    /// flag — which chunk this may touch. The space it looks for is the one the
+    /// metaspace substitution produces from the dummy prefix's ▁, so it must run
+    /// after that substitution — which, on the backend that lists this op, has
+    /// already happened while the surface was rendered.
+    StripLeadingSpace,
 }
 
 /// Everything decoding consults: the per-id rules, plus what to do to the text
@@ -73,18 +92,37 @@ impl DecodeState {
     }
 
     /// Apply the post-ops, in order.
-    fn postprocess(&self, text: String) -> String {
-        self.post.iter().fold(text, |text, op| match op {
+    ///
+    /// `at_start` is the cursor's "nothing has been emitted yet" flag, threaded
+    /// in because the position-dependent ops need it — and *consumed here*, at
+    /// the first chunk that carries any character at all. A chunk can be empty
+    /// (a flush with nothing buffered), and a push can render nothing (every id
+    /// skipped, or bytes that are still an incomplete UTF-8 sequence); neither
+    /// spends the flag, because neither emitted a character for the strip to
+    /// look at.
+    fn postprocess(&self, text: String, at_start: &mut bool) -> String {
+        if text.is_empty() {
+            return text;
+        }
+        let text = self.post.iter().fold(text, |text, op| match op {
             // Replace ▁ with space - this preserves word boundaries
             DecodePost::MetaspaceToSpace => text.replace('\u{2581}', " "),
-        })
+            // Only the very first emitted character can be the dummy prefix.
+            DecodePost::StripLeadingSpace if *at_start => match text.strip_prefix(' ') {
+                Some(rest) => rest.to_string(),
+                None => text,
+            },
+            DecodePost::StripLeadingSpace => text,
+        });
+        *at_start = false;
+        text
     }
 }
 
-/// The one place position-dependent decode state lives — today the UTF-8
-/// reassembly buffer, and whatever "what has been emitted so far" flags a
-/// later backend's [`Lead`]/[`DecodePost`] variants need. Nothing else in
-/// decoding is allowed to remember where it is in the sequence.
+/// The one place position-dependent decode state lives — the UTF-8 reassembly
+/// buffer, and the "what has been emitted so far" flags the position-dependent
+/// [`Lead`]/[`DecodePost`] variants need. Nothing else in decoding is allowed
+/// to remember where it is in the sequence.
 ///
 /// Generic over how the state is held so the *same* code drives both callers:
 /// whole-sequence decoding borrows a `&DecodeState` it built on the spot, while
@@ -93,6 +131,15 @@ impl DecodeState {
 pub(crate) struct DecodeCursor<S> {
     state: S,
     bytes: Utf8Buffer,
+    /// Whether this cursor has emitted a character yet, for the post-ops that
+    /// are about position rather than about content
+    /// ([`DecodePost::StripLeadingSpace`]).
+    ///
+    /// Spent at the first emitted *character*, not the first
+    /// [`feed`](Self::feed): a push whose ids are all skipped, or whose bytes
+    /// are still an incomplete UTF-8 sequence, renders nothing and leaves the
+    /// flag armed — so a leading BOS cannot eat the dummy-prefix strip.
+    at_start: bool,
 }
 
 impl<S: Borrow<DecodeState>> DecodeCursor<S> {
@@ -101,6 +148,7 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
         Self {
             state,
             bytes: Utf8Buffer::new(),
+            at_start: true,
         }
     }
 
@@ -109,6 +157,7 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
         Self {
             state,
             bytes: Utf8Buffer::with_capacity(capacity),
+            at_start: true,
         }
     }
 
@@ -155,8 +204,20 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
         on_unknown: impl Fn(u32) -> Result<(), E>,
     ) -> Result<Option<String>, E> {
         self.render_into(ids, on_unknown)?;
-        let text = self.bytes.take_complete();
-        Ok(text.map(|text| self.state.borrow().postprocess(text)))
+        match self.bytes.take_complete() {
+            Some(text) => Ok(Some(self.postprocess(text))),
+            None => Ok(None),
+        }
+    }
+
+    /// Run the state's post-ops over one emitted chunk, handing them this
+    /// cursor's position flag — the only state they are allowed to consult.
+    fn postprocess(&mut self, text: String) -> String {
+        // Disjoint fields: the rules are borrowed out of `state` while
+        // `at_start` is borrowed mutably, which is exactly why the flag lives
+        // on the cursor and not inside the shared `DecodeState`.
+        let state = self.state.borrow();
+        state.postprocess(text, &mut self.at_start)
     }
 
     /// The strict twin of [`feed`](Self::feed): a byte that is definitively not
@@ -175,7 +236,8 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
     ) -> Result<Option<String>, E> {
         self.render_into(ids, on_unknown)?;
         match self.bytes.take_complete_strict() {
-            Ok(text) => Ok(text.map(|text| self.state.borrow().postprocess(text))),
+            Ok(Some(text)) => Ok(Some(self.postprocess(text))),
+            Ok(None) => Ok(None),
             Err(InvalidUtf8) => Err(on_invalid_utf8()),
         }
     }
@@ -186,7 +248,7 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
     /// replaced with the Unicode replacement character (U+FFFD).
     pub(crate) fn flush(&mut self) -> String {
         let text = self.bytes.flush();
-        self.state.borrow().postprocess(text)
+        self.postprocess(text)
     }
 
     /// The strict twin of [`flush`](Self::flush): a trailing sequence that is
@@ -197,7 +259,7 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
         on_invalid_utf8: impl Fn() -> E,
     ) -> Result<String, E> {
         match self.bytes.flush_strict() {
-            Ok(text) => Ok(self.state.borrow().postprocess(text)),
+            Ok(text) => Ok(self.postprocess(text)),
             Err(InvalidUtf8) => Err(on_invalid_utf8()),
         }
     }
@@ -207,6 +269,7 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
     /// The cursor is then indistinguishable from a freshly built one.
     pub(crate) fn reset(&mut self) {
         self.bytes.clear();
+        self.at_start = true;
     }
 
     /// Check if there are buffered bytes waiting for completion.

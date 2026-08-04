@@ -20,13 +20,17 @@
 //! The merge loop below reproduces llama.cpp's `llm_tokenizer_spm`, which
 //! recovers `▁hello` and `▁sourdough` from the same vocabulary.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BinaryHeap;
 use std::convert::Infallible;
+use std::sync::Arc;
 use thiserror::Error;
 
-use super::metaspace::{self, Prefix, WORD_BOUNDARY};
+use super::metaspace::{self, Prefix};
 use super::policy::{PolicyError, SpecialMode};
+use super::streaming::{
+    ByteFallbackRule, DecodePost, DecodeState, RenderRules, StreamingDecoder, Surfaces,
+};
 use super::tokenize::{Tokenize, TokenizeError};
 
 /// SentencePiece's "never merge" score sentinel.
@@ -160,7 +164,10 @@ impl PartialOrd for Bigram {
 /// SentencePiece BPE tokenizer for `tokenizer.ggml.model = "llama"` vocabularies.
 pub struct SpmTokenizer {
     token_to_id: FxHashMap<String, u32>,
-    id_to_token: Vec<String>,
+    /// The pieces, indexed by id. Behind an `Arc` so decoding — whole-sequence
+    /// and streaming alike — can share the surface table rather than copy a
+    /// 32k-entry vector per decoder.
+    id_to_token: Arc<Vec<String>>,
     /// Merge ranks. Higher merges earlier.
     scores: Vec<f32>,
     bos_token_id: Option<u32>,
@@ -237,7 +244,7 @@ impl SpmTokenizer {
 
         Ok(Self {
             token_to_id,
-            id_to_token: tokens,
+            id_to_token: Arc::new(tokens),
             scores,
             bos_token_id,
             eos_token_id,
@@ -276,7 +283,7 @@ impl SpmTokenizer {
     /// spells into the same set, so a caller stating what its *file* declares is
     /// adding to knowledge already there. This constructor puts nothing in here —
     /// the vocabulary's own BOS/EOS/UNK live in their own fields and are skipped
-    /// by [`is_skipped_on_decode`](Self::is_skipped_on_decode) regardless — so
+    /// by [`skipped_on_decode`](Self::skipped_on_decode) regardless — so
     /// there is nothing to union with, and replacing keeps the field meaning
     /// exactly "what the loader declared", as on the Unigram sibling.
     pub fn with_special_decode_ids(mut self, ids: rustc_hash::FxHashSet<u32>) -> Self {
@@ -636,12 +643,12 @@ impl SpmTokenizer {
         Ok(out)
     }
 
-    /// Whether a token id is dropped when rendering decoded text.
+    /// The ids dropped when rendering decoded text.
     ///
-    /// Shared by [`decode`](Self::decode) and
-    /// [`decode_lossy`](Self::decode_lossy) — through the one loop both drive —
-    /// so the two paths cannot drift on which ids they drop. Skips BOS/EOS,
-    /// `<unk>`, and any `special=true` added token (`special_decode`), matching
+    /// Built once per [`decode_state`](Self::decode_state) and consulted by
+    /// every decode path through it — whole-sequence and streaming alike — so
+    /// none of them can drift on which ids they drop. Holds BOS/EOS, `<unk>`,
+    /// and any `special=true` added token (`special_decode`), matching
     /// HuggingFace's default decode (`skip_special_tokens=True`) and the Unigram
     /// sibling's identical rule.
     ///
@@ -654,74 +661,82 @@ impl SpmTokenizer {
     /// (`' ⁇ '`): that is `sp.decode`'s own API, not the HF
     /// `skip_special_tokens` semantics this crate follows, and an unknown span
     /// was unrecoverable anyway.
-    fn is_skipped_on_decode(&self, id: u32) -> bool {
-        Some(id) == self.bos_token_id
-            || Some(id) == self.eos_token_id
-            || Some(id) == self.unk_id
-            || self.special_decode.contains(&id)
+    fn skipped_on_decode(&self) -> FxHashSet<u32> {
+        let mut skip = self.special_decode.clone();
+        skip.extend(self.bos_token_id);
+        skip.extend(self.eos_token_id);
+        skip.extend(self.unk_id);
+        skip
     }
 
-    /// Render ids to bytes, deciding through `on_unknown` what an id the
-    /// vocabulary does not contain means.
+    /// This tokenizer's decode configuration, as the streaming decoder sees it.
     ///
-    /// The single decode loop. Strict decoding instantiates `E` with
-    /// [`TokenizeError`] and returns from `on_unknown`; lossy decoding
-    /// instantiates it with [`Infallible`] and skips — so the two cannot
-    /// disagree about what an id renders to, and the compiler proves the lossy
-    /// path's `Err` arm away rather than an assertion claiming it.
+    /// Whole-sequence decoding and streaming decoding drive the same
+    /// [`DecodeState`] through the same cursor, so the two cannot disagree about
+    /// what an id means or about what happens to the text it produces. The four
+    /// steps `decode` used to spell out inline are exactly the four knobs here:
+    /// the skip set, the id-indexed surfaces, `<0xNN>` parsed off the surface,
+    /// and the ▁→space substitution followed by the dummy-prefix strip.
     ///
-    /// Bytes rather than text because a `<0xNN>` run is only valid UTF-8 once
-    /// reassembled: what happens to a byte sequence that is not (an error, or
-    /// U+FFFD) is the caller's decision, and the only one they differ on.
-    fn decode_to_bytes<E>(
-        &self,
-        ids: &[u32],
-        on_unknown: impl Fn(u32) -> Result<(), E>,
-    ) -> Result<Vec<u8>, E> {
-        let mut bytes: Vec<u8> = Vec::new();
-        for &id in ids {
-            let piece = match self.id_to_token.get(id as usize) {
-                Some(piece) => piece,
-                None => {
-                    on_unknown(id)?;
-                    continue;
-                }
-            };
-            if self.is_skipped_on_decode(id) {
-                continue;
-            }
-            // `<0xNN>` byte tokens decode to the raw byte, not to their literal
-            // spelling; a multi-byte character is split across several of them
-            // and only reassembles as bytes.
-            let byte = piece
-                .strip_prefix("<0x")
-                .and_then(|rest| rest.strip_suffix('>'))
-                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
-            match byte {
-                Some(b) => bytes.push(b),
-                None => bytes.extend(piece.replace(WORD_BOUNDARY, " ").as_bytes()),
-            }
-        }
-        Ok(bytes)
+    /// The substitution is a *rendering* rule, not a post-op over reassembled
+    /// text: only a surface may lose its ▁, never a byte a `<0xNN>` token
+    /// produced. Measured with the `sentencepiece` package 0.2.0 on Mistral's
+    /// own `tokenizer.model`, `decode` of the ids for `<0xE2>`, `<0x96>`,
+    /// `<0x81>` is `'▁'` while `decode` of the `▁` piece is `''`, and only a
+    /// per-surface substitution can tell those apart.
+    ///
+    /// Cheap to build — the piece vector is shared with this tokenizer rather
+    /// than copied — which is what lets `decode` capture one per call instead of
+    /// the tokenizer having to cache one that could go stale.
+    fn decode_state(&self) -> DecodeState {
+        // The strip looks for `' '`, which is what the rendering substitution
+        // has already produced from the dummy prefix's `▁`, so by the time a
+        // post-op runs the space is there to remove. It is listed at all only
+        // when a prefix was actually added — with `add_dummy_prefix` off
+        // (Gemma) there is none to remove.
+        let post = if self.add_prefix_space {
+            vec![DecodePost::StripLeadingSpace]
+        } else {
+            Vec::new()
+        };
+
+        DecodeState::new(
+            RenderRules::new(
+                Surfaces::ByIndex(Arc::clone(&self.id_to_token)),
+                // No separate special-token table: every id this vocabulary
+                // knows — sentinels and added tokens included — has a slot in
+                // the piece vector, so the surfaces answer for all of them.
+                Arc::new(FxHashMap::default()),
+                Arc::new(self.skipped_on_decode()),
+                // Ungated, unlike the BPE backend's encode-side inverse table:
+                // these vocabularies spell the byte in the piece itself, and
+                // every reference detokenizer for them parses that spelling.
+                ByteFallbackRule::ParseSurface,
+                false,
+                true,
+            ),
+            post,
+        )
     }
 
-    /// Remove the dummy prefix from rendered text — see [`decode`](Self::decode),
-    /// which documents why exactly one space comes off and only when one was
-    /// added.
-    fn strip_dummy_prefix(&self, text: String) -> String {
-        if !self.add_prefix_space {
-            return text;
-        }
-        match text.strip_prefix(' ') {
-            Some(rest) => rest.to_string(),
-            None => text,
-        }
+    /// A [`StreamingDecoder`] configured from this tokenizer.
+    ///
+    /// The only way to build one for this backend: the skipped ids, the
+    /// `<0xNN>` byte-fallback resolution, the ▁ substitution and the
+    /// dummy-prefix strip all come from this tokenizer's configuration, so the
+    /// stream cannot be pointed at the wrong kind of vocabulary and always
+    /// reproduces [`decode`](Self::decode).
+    ///
+    /// Cheap to call — the piece vector is shared, not copied — and the result
+    /// borrows nothing, so it can be moved into a generation task.
+    pub fn streaming_decoder(&self) -> StreamingDecoder {
+        StreamingDecoder::new(Arc::new(self.decode_state()))
     }
 
     /// Render the pieces, then strip the dummy prefix.
     ///
     /// BOS/EOS/`<unk>` and the declared `special=true` ids produce nothing —
-    /// see [`is_skipped_on_decode`](Self::is_skipped_on_decode).
+    /// see [`skipped_on_decode`](Self::skipped_on_decode).
     ///
     /// SentencePiece's `add_dummy_prefix` puts a boundary before the first piece
     /// on encode, so rendering `▁` back to a space leaves one space that was
@@ -742,10 +757,25 @@ impl SpmTokenizer {
     /// does not contain — a distinct thing from the skips above, which are
     /// deliberate — and with [`TokenizeError::Utf8Error`] when the rendered
     /// bytes are not valid UTF-8.
+    ///
+    /// The degenerate drive of the streaming cursor: one feed of every id, then
+    /// a flush. Strict throughout — never a U+FFFD substitution — but *what* an
+    /// id renders to and what happens to the resulting text is decided by
+    /// exactly the code [`streaming_decoder`](Self::streaming_decoder) uses.
     pub fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        let bytes = self.decode_to_bytes(ids, |id| Err(TokenizeError::InvalidTokenId(id)))?;
-        let text = String::from_utf8(bytes).map_err(|_| TokenizeError::Utf8Error)?;
-        Ok(self.strip_dummy_prefix(text))
+        let state = self.decode_state();
+        let mut cursor = state.cursor_with_capacity(ids.len() * 4);
+
+        let emitted = cursor.feed_strict(
+            ids,
+            |id| Err(TokenizeError::InvalidTokenId(id)),
+            || TokenizeError::Utf8Error,
+        )?;
+
+        let mut text = emitted.unwrap_or_default();
+        text.push_str(&cursor.finish_strict(|| TokenizeError::Utf8Error)?);
+
+        Ok(text)
     }
 
     /// Decode ids to text, skipping ids the vocabulary does not contain and
@@ -758,12 +788,17 @@ impl SpmTokenizer {
     /// `on_unknown` is instantiated with [`Infallible`], letting the compiler
     /// prove the `Err` arm away rather than a runtime assertion claiming it.
     pub fn decode_lossy(&self, ids: &[u32]) -> String {
-        let bytes = match self.decode_to_bytes(ids, |_| Ok::<(), Infallible>(())) {
-            Ok(bytes) => bytes,
+        let state = self.decode_state();
+        let mut cursor = state.cursor_with_capacity(ids.len() * 4);
+
+        let mut text = match cursor.feed(ids, |_| Ok::<(), Infallible>(())) {
+            Ok(text) => text.unwrap_or_default(),
             // `Infallible` has no values, so this match has no arms to write.
             Err(never) => match never {},
         };
-        self.strip_dummy_prefix(String::from_utf8_lossy(&bytes).into_owned())
+        text.push_str(&cursor.flush());
+
+        text
     }
 }
 
@@ -803,6 +838,11 @@ impl Tokenize for SpmTokenizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::any_tokenizer::Backend;
+    use crate::core::metaspace::WORD_BOUNDARY;
+    use crate::core::pretrained::from_pretrained;
+    use proptest::prelude::*;
+    use std::sync::OnceLock;
 
     /// A vocabulary shaped like the ones this tokenizer is for: scores are merge
     /// ranks (`-id`), and it carries the *intermediate* merge results a real BPE
@@ -1391,5 +1431,337 @@ mod tests {
             pieces(&t, "hello hello hello"),
             vec!["▁hello", "▁hello", "▁hello"]
         );
+    }
+
+    // =========================================================================
+    // Streaming: concat(stream) == decode
+    // =========================================================================
+
+    /// The concrete SPM backend behind a bundled vocabulary.
+    fn pretrained_spm(name: &str) -> SpmTokenizer {
+        let any = from_pretrained(name).expect("bundled vocabulary loads");
+        match any.into_backend() {
+            Backend::Spm(tokenizer) => tokenizer,
+            _ => panic!("{name} is an SPM vocabulary"),
+        }
+    }
+
+    /// The bundled SPM vocabularies, built once: a proptest case must not pay
+    /// for parsing a 32k-piece vocabulary on every iteration. The two differ in
+    /// [`SpmPrefixScheme`], so both are driven.
+    fn mistral() -> &'static SpmTokenizer {
+        static TOKENIZER: OnceLock<SpmTokenizer> = OnceLock::new();
+        TOKENIZER.get_or_init(|| pretrained_spm("mistral"))
+    }
+
+    fn mistral_v2() -> &'static SpmTokenizer {
+        static TOKENIZER: OnceLock<SpmTokenizer> = OnceLock::new();
+        TOKENIZER.get_or_init(|| pretrained_spm("mistral_v2"))
+    }
+
+    /// Texts exercising ASCII, leading spaces (the dummy-prefix trap),
+    /// multi-byte scripts and characters these vocabularies can only spell as
+    /// runs of `<0xNN>` byte tokens — every shape that can straddle a chunk
+    /// boundary.
+    const STREAM_TEXTS: &[&str] = &[
+        "",
+        "hello world",
+        " hello world",
+        "  two leading spaces",
+        "Hello, world! 1234567890",
+        "こんにちは世界、これはテストです。",
+        "Привет, мир!",
+        "🎉🚀 emoji 👨‍👩‍👧‍👦 family",
+        "héllo — ünïcode, and é as e\u{0301}",
+        "def f(x):\n    return x ** 2  # code",
+    ];
+
+    /// Feed `ids` through a streaming decoder in the given chunk sizes and
+    /// concatenate every emission plus the final flush.
+    fn drive_strict(tokenizer: &SpmTokenizer, ids: &[u32], chunk: usize) -> String {
+        let mut decoder = tokenizer.streaming_decoder();
+        let mut out = String::new();
+        for group in ids.chunks(chunk.max(1)) {
+            if let Some(text) = decoder.add_tokens(group).expect("ids are all known") {
+                out.push_str(&text);
+            }
+        }
+        out.push_str(&decoder.flush());
+        out
+    }
+
+    /// Same, one id at a time through the lossy entry point.
+    fn drive_lossy(tokenizer: &SpmTokenizer, ids: &[u32]) -> String {
+        let mut decoder = tokenizer.streaming_decoder();
+        let mut out = String::new();
+        for &id in ids {
+            if let Some(text) = decoder.add_token_lossy(id) {
+                out.push_str(&text);
+            }
+        }
+        out.push_str(&decoder.flush());
+        out
+    }
+
+    /// The point of the factory: on the bundled vocabularies, streaming a real
+    /// encoding reproduces `decode` exactly — including the ▁ substitution, the
+    /// dummy-prefix strip and characters that exist only as `<0xNN>` runs.
+    #[test]
+    fn stream_matches_decode_on_the_bundled_spm_vocabularies() {
+        for tokenizer in [mistral(), mistral_v2()] {
+            for text in STREAM_TEXTS {
+                let ids = tokenizer.encode(text);
+                let expected = tokenizer.decode(&ids).expect("real ids decode");
+
+                for chunk in 1..=ids.len().max(1) {
+                    assert_eq!(
+                        drive_strict(tokenizer, &ids, chunk),
+                        expected,
+                        "text: {text:?}, chunk: {chunk}"
+                    );
+                }
+                assert_eq!(
+                    drive_lossy(tokenizer, &ids),
+                    tokenizer.decode_lossy(&ids),
+                    "text: {text:?}"
+                );
+            }
+        }
+    }
+
+    /// The `at_start` trap: a skipped id renders nothing, so it must not spend
+    /// the dummy-prefix strip. A leading BOS therefore strips exactly as the
+    /// same ids without it do — the failure mode is `" hello world"`, with the
+    /// prefix space the encoder added left in.
+    #[test]
+    fn a_leading_bos_does_not_consume_the_leading_space_strip() {
+        // The reference ids `boundary_tokens_decode_to_nothing` documents:
+        // `[7080, 29477, 2294]` is `sp.encode("hello world")` on this file, and
+        // `1` / `2` are `<s>` / `</s>`. Chunk size 1 is the sharpest form —
+        // feeding the BOS on its own is a push that emits nothing at all, so
+        // nothing may be consumed by it.
+        let tokenizer = mistral_v2();
+        let bare = [7080u32, 29477, 2294];
+        let with_bos = [1u32, 7080, 29477, 2294, 2];
+
+        assert_eq!(drive_strict(tokenizer, &bare, 1), "hello world");
+        assert_eq!(drive_strict(tokenizer, &with_bos, 1), "hello world");
+        assert_eq!(
+            tokenizer.decode(&with_bos).expect("real ids decode"),
+            "hello world"
+        );
+
+        // ...and the same on the synthetic vocabulary, where `<pad>` (0) is
+        // declared special rather than being a sentinel.
+        let (tokens, scores) = rank_scored_vocab();
+        let t = SpmTokenizer::new(tokens, scores, Some(2), Some(1))
+            .unwrap()
+            .with_special_decode_ids([0u32].into_iter().collect());
+        assert_eq!(drive_strict(&t, &[2, 0, 22, 23, 1], 1), "hello world");
+        assert_eq!(drive_strict(&t, &[22, 23], 1), "hello world");
+    }
+
+    /// A character split across several `<0xNN>` byte tokens reassembles across
+    /// `add_token` calls: the resolved bytes go through the same UTF-8 buffer
+    /// every other byte does, so nothing is emitted until the character is
+    /// complete.
+    #[test]
+    fn a_byte_fallback_char_reassembles_across_add_token_calls() {
+        let mut tokens: Vec<String> = vec!["<unk>".into(), "▁".into()];
+        for b in 0..=255u32 {
+            tokens.push(format!("<0x{b:02X}>"));
+        }
+        let n = tokens.len();
+        let t = SpmTokenizer::new(tokens, (0..n).map(|i| -(i as f32)).collect(), None, None)
+            .unwrap()
+            .with_prefix_space(false);
+
+        // 🎉 (U+1F389) is four UTF-8 bytes, none of them a piece of its own.
+        let ids = t.encode("🎉");
+        assert_eq!(ids.len(), 4, "four bytes, so four byte-fallback tokens");
+
+        let mut decoder = t.streaming_decoder();
+        for &id in &ids[..3] {
+            assert_eq!(decoder.add_token(id).unwrap(), None);
+            assert!(decoder.has_pending());
+        }
+        assert_eq!(decoder.add_token(ids[3]).unwrap(), Some("🎉".to_string()));
+        assert!(!decoder.has_pending());
+        assert_eq!(decoder.flush(), "");
+
+        assert_eq!(t.decode(&ids).unwrap(), "🎉");
+        for chunk in 1..=ids.len() {
+            assert_eq!(drive_strict(&t, &ids, chunk), "🎉");
+        }
+        assert_eq!(drive_lossy(&t, &ids), t.decode_lossy(&ids));
+    }
+
+    /// A `<0xNN>` piece is a byte even where the surface would otherwise be
+    /// rendered literally — the parse is ungated on this backend, unlike the
+    /// BPE one, which resolves through an encode-side inverse table.
+    #[test]
+    fn byte_fallback_ids_render_as_bytes_not_as_their_spelling() {
+        let mut tokens: Vec<String> = vec!["<unk>".into(), "▁".into()];
+        for b in 0..=255u32 {
+            tokens.push(format!("<0x{b:02X}>"));
+        }
+        let n = tokens.len();
+        let t = SpmTokenizer::new(tokens, (0..n).map(|i| -(i as f32)).collect(), None, None)
+            .unwrap()
+            .with_prefix_space(false);
+
+        // `<0x41>` sits at id 2 + 0x41 and denotes `A`, never the text `<0x41>`.
+        let id = 2 + 0x41;
+        assert_eq!(t.token_surface(id).as_deref(), Some("<0x41>"));
+        assert_eq!(t.decode(&[id]).unwrap(), "A");
+        assert_eq!(drive_strict(&t, &[id], 1), "A");
+    }
+
+    /// The ids of `pieces`, looked up by spelling rather than written down, so
+    /// a test says which pieces it means instead of which slots they happen to
+    /// sit in.
+    fn ids_of(tokenizer: &SpmTokenizer, pieces: &[&str]) -> Vec<u32> {
+        pieces
+            .iter()
+            .map(|piece| match tokenizer.token_to_id.get(*piece) {
+                Some(&id) => id,
+                None => panic!("{piece} is a piece of this vocabulary"),
+            })
+            .collect()
+    }
+
+    /// A ▁ spelled out through byte-fallback ids is the literal character, not a
+    /// word boundary — so the substitution must happen per *surface*, never over
+    /// reassembled text.
+    ///
+    /// Ground truth from the `sentencepiece` package 0.2.0 reading Mistral's own
+    /// `tokenizer.model`, the file `mistral_v2` bundles:
+    ///
+    /// ```text
+    /// ids for the pieces "<0xE2>", "<0x96>", "<0x81>"  ->  [997, 921, 900]
+    /// sentencepiece.decode([997, 921, 900])            ->  '▁'
+    /// sentencepiece.decode([piece_to_id("▁")])         ->  ''
+    /// ```
+    ///
+    /// The two lines are the whole point: the same three UTF-8 bytes mean a
+    /// character when a `<0xNN>` token produced them and a space when the `▁`
+    /// piece did. Text that has already been reassembled cannot tell them apart.
+    #[test]
+    fn a_byte_fallback_metaspace_decodes_to_the_literal_character() {
+        let tokenizer = mistral_v2();
+        let spelled_out = ids_of(tokenizer, &["<0xE2>", "<0x96>", "<0x81>"]);
+
+        assert_eq!(tokenizer.decode(&spelled_out).unwrap(), WORD_BOUNDARY);
+        assert_eq!(tokenizer.decode_lossy(&spelled_out), WORD_BOUNDARY);
+        // ...while the `▁` piece itself is the dummy prefix, and comes off.
+        assert_eq!(tokenizer.decode(&ids_of(tokenizer, &["▁"])).unwrap(), "");
+    }
+
+    /// The same three ids through the streaming decoder, under every grouping:
+    /// the substitution is a rendering rule, so it cannot depend on where a
+    /// chunk boundary fell — and stream and `decode` agree on this case too.
+    #[test]
+    fn a_byte_fallback_metaspace_streams_as_the_literal_character() {
+        let tokenizer = mistral_v2();
+        let spelled_out = ids_of(tokenizer, &["<0xE2>", "<0x96>", "<0x81>"]);
+
+        for chunk in 1..=spelled_out.len() {
+            assert_eq!(
+                drive_strict(tokenizer, &spelled_out, chunk),
+                WORD_BOUNDARY,
+                "chunk: {chunk}"
+            );
+        }
+        assert_eq!(drive_lossy(tokenizer, &spelled_out), WORD_BOUNDARY);
+    }
+
+    /// ...and the substitution is not disabled wholesale: an ordinary
+    /// ▁-prefixed piece is still a space. `sentencepiece` 0.2.0 on the same
+    /// file: `decode([piece_to_id("▁a"), piece_to_id("▁world")])` — ids
+    /// `[1032, 2294]` — is `'a world'`, the first boundary being the dummy
+    /// prefix and the second a real space.
+    #[test]
+    fn an_ordinary_metaspace_piece_still_decodes_to_a_space() {
+        let tokenizer = mistral_v2();
+        let ids = ids_of(tokenizer, &["▁a", "▁world"]);
+
+        assert_eq!(tokenizer.decode(&ids).unwrap(), "a world");
+        assert_eq!(drive_strict(tokenizer, &ids, 1), "a world");
+    }
+
+    proptest! {
+        /// Chunk-partition invariance: arbitrary grouping through `add_tokens`
+        /// gives what one-at-a-time gives, and both give `decode`.
+        #[test]
+        fn prop_chunking_matches_decode_mistral_v2(
+            text in ".{0,120}",
+            chunk in 1usize..8,
+        ) {
+            let tokenizer = mistral_v2();
+            let ids = tokenizer.encode(&text);
+            let expected = tokenizer.decode(&ids).expect("real ids decode");
+
+            prop_assert_eq!(drive_strict(tokenizer, &ids, 1), expected.clone());
+            prop_assert_eq!(drive_strict(tokenizer, &ids, chunk), expected);
+        }
+
+        /// The same on the other bundled vocabulary, whose prefix scheme (and
+        /// therefore whose leading pieces) differ.
+        #[test]
+        fn prop_chunking_matches_decode_mistral(
+            text in ".{0,120}",
+            chunk in 1usize..8,
+        ) {
+            let tokenizer = mistral();
+            let ids = tokenizer.encode(&text);
+            let expected = tokenizer.decode(&ids).expect("real ids decode");
+
+            prop_assert_eq!(drive_strict(tokenizer, &ids, 1), expected.clone());
+            prop_assert_eq!(drive_strict(tokenizer, &ids, chunk), expected);
+        }
+
+        /// Arbitrary ids — unknown ones, bare byte tokens and mid-character
+        /// splits included — stream lossily to exactly `decode_lossy`.
+        #[test]
+        fn prop_arbitrary_ids_match_decode_lossy(
+            ids in prop::collection::vec(0u32..600, 0..48),
+        ) {
+            let tokenizer = mistral_v2();
+            prop_assert_eq!(drive_lossy(tokenizer, &ids), tokenizer.decode_lossy(&ids));
+        }
+
+        /// `reset()` purity: a used-then-reset decoder behaves byte-identically
+        /// to a freshly built one — `at_start` included, which is why the dirty
+        /// prefix is fed before the reset rather than after.
+        #[test]
+        fn prop_reset_matches_a_fresh_decoder(
+            dirty in prop::collection::vec(0u32..600, 0..16),
+            ids in prop::collection::vec(0u32..600, 0..32),
+        ) {
+            let tokenizer = mistral_v2();
+
+            let mut reused = tokenizer.streaming_decoder();
+            reused.add_tokens_lossy(&dirty);
+            reused.reset();
+            prop_assert!(!reused.has_pending());
+            prop_assert_eq!(reused.pending_bytes(), 0);
+
+            let mut fresh = tokenizer.streaming_decoder();
+
+            let mut from_reused = String::new();
+            let mut from_fresh = String::new();
+            for &id in &ids {
+                let a = reused.add_token_lossy(id);
+                let b = fresh.add_token_lossy(id);
+                prop_assert_eq!(&a, &b);
+                prop_assert_eq!(reused.pending_bytes(), fresh.pending_bytes());
+                from_reused.push_str(&a.unwrap_or_default());
+                from_fresh.push_str(&b.unwrap_or_default());
+            }
+            from_reused.push_str(&reused.flush());
+            from_fresh.push_str(&fresh.flush());
+
+            prop_assert_eq!(from_reused, from_fresh);
+        }
     }
 }

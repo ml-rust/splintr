@@ -30,6 +30,10 @@ impl Tokenizer {
                     None => ByteFallbackRule::None,
                 },
                 self.use_byte_level,
+                // The metaspace substitution stays a post-op on this backend:
+                // its surfaces are byte strings that can hold half a ▁, so only
+                // reassembled text can see the marker.
+                false,
             ),
             if self.use_metaspace_decoder {
                 vec![DecodePost::MetaspaceToSpace]

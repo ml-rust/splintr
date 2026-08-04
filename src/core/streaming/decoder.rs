@@ -22,12 +22,15 @@ use std::sync::Arc;
 ///
 /// # Obtaining one
 ///
-/// There is no public constructor: the only way to build a decoder is
-/// [`Tokenizer::streaming_decoder`](crate::Tokenizer::streaming_decoder), which
-/// takes the byte-level flag, the skipped-special-token set and the metaspace
-/// flag from the tokenizer's own configuration. A decoder therefore cannot be
-/// paired with the wrong kind of vocabulary — the mistake that used to turn a
-/// byte-level stream into mojibake is not expressible.
+/// There is no public constructor: a decoder is built by a tokenizer's own
+/// `streaming_decoder` —
+/// [`Tokenizer::streaming_decoder`](crate::Tokenizer::streaming_decoder) or
+/// [`SpmTokenizer::streaming_decoder`](crate::SpmTokenizer::streaming_decoder) —
+/// which takes the surfaces, the skipped-special-token set and every spelling
+/// rule (byte level, byte fallback, metaspace) from that tokenizer's own
+/// configuration. A decoder therefore cannot be paired with the wrong kind of
+/// vocabulary — the mistake that used to turn a byte-level stream into mojibake
+/// is not expressible.
 ///
 /// # Agreement with whole-sequence decoding
 ///
