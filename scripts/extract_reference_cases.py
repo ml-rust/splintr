@@ -192,11 +192,21 @@ def read_tiktoken_lines(path: Path) -> list[bytes]:
     """
     lines: list[bytes] = []
     with path.open("r", encoding="ascii") as handle:
-        for line_no, line in enumerate(handle):
-            stripped = line.strip()
-            if not stripped:
+        for line_no, raw_line in enumerate(handle):
+            # Only strip the trailing newline, not arbitrary whitespace: the
+            # separator is the LAST space on the line (matching
+            # `load_tiktoken_bpe`'s `rposition` in `src/core/vocab.rs`), and a
+            # base64 payload can legitimately be empty -- e.g. the whisper
+            # vocab's rank-50256 line `" 50256"` encodes the empty byte
+            # string. `.strip()` followed by `partition(" ")` would eat that
+            # leading space and make the payload indistinguishable from a
+            # missing one.
+            line = raw_line.rstrip("\n").rstrip("\r")
+            if not line:
                 continue
-            b64, _, rank_text = stripped.partition(" ")
+            b64, sep, rank_text = line.rpartition(" ")
+            if not sep:
+                raise ValueError(f"{path}:{line_no + 1}: missing space separator")
             try:
                 rank = int(rank_text)
             except ValueError as exc:
