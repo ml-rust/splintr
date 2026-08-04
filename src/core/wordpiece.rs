@@ -8,8 +8,14 @@
 //! Handles `[CLS]`, `[SEP]`, `[PAD]`, `[UNK]` special tokens.
 
 use super::policy::{PolicyError, SpecialMode};
+use super::streaming::{
+    ByteFallbackRule, DecodePost, DecodeState, RenderRules, StreamingDecoder, Surfaces,
+    WordSeparator,
+};
 use super::tokenize::{Tokenize, TokenizeError};
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Errors from building a [`WordPieceTokenizer`].
@@ -39,8 +45,10 @@ pub enum WordPieceError {
 pub struct WordPieceTokenizer {
     /// Token string → ID
     token_to_id: HashMap<String, u32>,
-    /// ID → token string
-    id_to_token: Vec<String>,
+    /// ID → token string. Behind an `Arc` so decoding — whole-sequence and
+    /// streaming alike — can share the surface table rather than copy a
+    /// 30k-entry vector per decoder.
+    id_to_token: Arc<Vec<String>>,
     /// Token ID for unknown tokens
     unk_token_id: u32,
     /// Maximum characters in a single word before it's treated as [UNK]
@@ -148,7 +156,7 @@ impl WordPieceTokenizer {
 
         Self {
             token_to_id,
-            id_to_token: vocab,
+            id_to_token: Arc::new(vocab),
             unk_token_id,
             max_word_len,
             do_lower_case,
@@ -367,12 +375,12 @@ impl Tokenize for WordPieceTokenizer {
         self.encode_with(text, mode)
     }
 
+    /// Render the pieces, joining words with spaces and dropping the space
+    /// before `. ? ! ,` — the inherent [`decode`](WordPieceTokenizer::decode),
+    /// which documents both, so the trait and the type can never disagree about
+    /// what an id decodes to.
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        if self.continuation_prefix.is_empty() {
-            self.decode_without_prefix(ids)
-        } else {
-            self.decode_with_prefix(ids)
-        }
+        self.decode(ids)
     }
 
     fn vocab_size(&self) -> usize {
@@ -387,65 +395,139 @@ impl WordPieceTokenizer {
         self.id_to_token.get(id as usize).cloned()
     }
 
-    /// Decode when vocab uses `##` prefix — use prefix presence to detect continuations.
-    fn decode_with_prefix(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        let mut pieces = Vec::with_capacity(ids.len());
+    /// This tokenizer's decode configuration, as the streaming decoder sees it.
+    ///
+    /// Whole-sequence decoding and streaming decoding drive the same
+    /// [`DecodeState`] through the same cursor, so the two cannot disagree about
+    /// what an id means or about what happens to the text it produces. The steps
+    /// the two prefixed/prefix-less decode bodies used to spell out inline are
+    /// exactly the knobs here: the skip set, the id-indexed surfaces, the word
+    /// separator, and the cleanup pass over the text they produce.
+    ///
+    /// This backend has no byte layer at all — its surfaces are `String`s, so no
+    /// character can be split across two of them — but the bytes still go
+    /// through the cursor's UTF-8 buffer, which is what lets the streaming
+    /// decoder be the same code.
+    ///
+    /// Cheap to build — the surface vector is shared with this tokenizer rather
+    /// than copied — which is what lets `decode` capture one per call instead of
+    /// the tokenizer having to cache one that could go stale.
+    fn decode_state(&self) -> DecodeState {
+        // An empty continuation prefix is *not* a marker that matches every
+        // surface: a GGUF-stripped vocabulary has had its `##`s removed, so
+        // continuations are indistinguishable from word starts and every token
+        // gets a separator, which is what joining every surface with a space
+        // means.
+        let separator = if self.continuation_prefix.is_empty() {
+            WordSeparator::EveryToken
+        } else {
+            WordSeparator::Continuation(self.continuation_prefix.clone())
+        };
 
-        for &id in ids {
-            let token = self
-                .id_to_token
-                .get(id as usize)
-                .ok_or(TokenizeError::InvalidTokenId(id))?;
-
-            if self.special_decode.contains(&id) {
-                continue;
-            }
-
-            if let Some(stripped) = token.strip_prefix(self.continuation_prefix.as_str()) {
-                pieces.push(stripped.to_string());
-            } else {
-                if !pieces.is_empty() {
-                    pieces.push(" ".to_string());
-                }
-                pieces.push(token.to_string());
-            }
-        }
-
-        Ok(cleanup_tokenization(&pieces.join("")))
+        DecodeState::new(
+            RenderRules::new(
+                Surfaces::ByIndex(Arc::clone(&self.id_to_token)),
+                // No separate special-token table: every id this vocabulary has
+                // is a slot in the surface vector, so an id outside it is
+                // unknown rather than special.
+                Arc::new(rustc_hash::FxHashMap::default()),
+                Arc::new(self.special_decode.clone()),
+                // No `<0xNN>` byte fallback and no ByteLevel or metaspace
+                // spelling: a BERT-family surface is the text it stands for.
+                ByteFallbackRule::None,
+                false,
+                false,
+            )
+            .with_word_separator(separator),
+            vec![DecodePost::CleanupTokenization],
+        )
     }
 
-    /// Decode when vocab has no `##` prefix (GGUF-stripped).
-    /// Without `##`, we can't distinguish continuations from word starts,
-    /// so we just join with spaces between each token.
-    fn decode_without_prefix(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        let mut parts = Vec::with_capacity(ids.len());
-
-        for &id in ids {
-            let token = self
-                .id_to_token
-                .get(id as usize)
-                .ok_or(TokenizeError::InvalidTokenId(id))?;
-
-            if self.special_decode.contains(&id) {
-                continue;
-            }
-
-            parts.push(token.as_str());
-        }
-
-        Ok(cleanup_tokenization(&parts.join(" ")))
+    /// A [`StreamingDecoder`] configured from this tokenizer.
+    ///
+    /// The only way to build one for this backend: the skipped ids, the
+    /// continuation prefix and the punctuation cleanup all come from this
+    /// tokenizer's configuration, so the stream cannot be pointed at the wrong
+    /// kind of vocabulary and always reproduces [`decode`](Self::decode) —
+    /// including across a chunk boundary that falls between a word and the
+    /// punctuation mark whose space the cleanup removes.
+    ///
+    /// Cheap to call — the surface vector is shared, not copied — and the result
+    /// borrows nothing, so it can be moved into a generation task.
+    pub fn streaming_decoder(&self) -> StreamingDecoder {
+        StreamingDecoder::new(Arc::new(self.decode_state()))
     }
-}
 
-/// HuggingFace `tokenizers` WordPiece-decoder cleanup (`cleanup=true`, the
-/// default): drop the space before `. ? ! ,`. (Unlike `transformers`'
-/// `clean_up_tokenization_spaces`, the `tokenizers` decoder does NOT touch
-/// apostrophe contractions.)
-fn cleanup_tokenization(s: &str) -> String {
-    s.replace(" .", ".")
-        .replace(" ?", "?")
-        .replace(" !", "!")
-        .replace(" ,", ",")
+    /// Decode token ids to text.
+    ///
+    /// Words are rejoined with a single space and continuations are glued back
+    /// on: a surface carrying the `##` prefix loses it and follows the previous
+    /// token directly, while any other surface starts a new word and is preceded
+    /// by a space — unless nothing has been rendered yet. A vocabulary with no
+    /// `##` at all (GGUF-stripped) cannot tell the two apart, so every token
+    /// starts a word there.
+    ///
+    /// The declared specials produce nothing (HF's `skip_special_tokens=True`
+    /// default) — see [`with_special_decode_ids`](Self::with_special_decode_ids)
+    /// — and a skipped id emits no separator either, so a leading `[CLS]` does
+    /// not put a space in front of the first word.
+    ///
+    /// Finally the `tokenizers` WordPiece cleanup drops the space before
+    /// `. ? ! ,`. That step is position-dependent — the space it removes belongs
+    /// to the token *before* the punctuation — so it is the cursor that holds a
+    /// trailing space run back until the next chunk can claim it, and
+    /// [`streaming_decoder`](Self::streaming_decoder) therefore reproduces it
+    /// across chunk boundaries.
+    ///
+    /// Errors with [`TokenizeError::InvalidTokenId`] on an id the vocabulary
+    /// does not contain — a distinct thing from the skips above, which are
+    /// deliberate.
+    ///
+    /// The degenerate drive of the streaming cursor: one feed of every id, then
+    /// a flush. Strict about ids and — like the Unigram sibling, and unlike
+    /// SPM-BPE — silent about UTF-8, which costs nothing here because a surface
+    /// is a `String` and can never hand the buffer a byte that is not valid. What
+    /// an id renders to and what happens to the resulting text is decided by
+    /// exactly the code [`streaming_decoder`](Self::streaming_decoder) uses.
+    pub fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
+        self.drive(ids, |id| Err(TokenizeError::InvalidTokenId(id)))
+    }
+
+    /// Decode token ids to text, skipping ids the vocabulary does not contain.
+    ///
+    /// The lenient half of the pair, over exactly the loop
+    /// [`decode`](Self::decode) drives — same surfaces, same skips, same
+    /// separator, same cleanup — with only an unknown id treated as something to
+    /// survive rather than to report. This method never fails, so `on_unknown`
+    /// is instantiated with [`Infallible`], letting the compiler prove the `Err`
+    /// arm away rather than a runtime assertion claiming it.
+    pub fn decode_lossy(&self, ids: &[u32]) -> String {
+        match self.drive(ids, |_| Ok::<(), Infallible>(())) {
+            Ok(text) => text,
+            // `Infallible` has no values, so this match has no arms to write.
+            Err(never) => match never {},
+        }
+    }
+
+    /// The one decode loop, driven by both halves of the pair so that neither
+    /// can drift: they differ only in what an id in no table means.
+    ///
+    /// Lossy on the UTF-8 question deliberately, and harmlessly: every surface
+    /// is a `String`, so the buffer is never handed a byte that could be invalid
+    /// and the substitution has nothing to substitute.
+    fn drive<E>(
+        &self,
+        ids: &[u32],
+        on_unknown: impl Fn(u32) -> Result<(), E>,
+    ) -> Result<String, E> {
+        let state = self.decode_state();
+        let mut cursor = state.cursor_with_capacity(ids.len() * 4);
+
+        let mut text = cursor.feed(ids, on_unknown)?.unwrap_or_default();
+        text.push_str(&cursor.flush());
+
+        Ok(text)
+    }
 }
 
 /// The names BERT-family vocabularies spell their special tokens with. Read
@@ -561,6 +643,7 @@ fn is_punctuation(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn make_tokenizer() -> WordPieceTokenizer {
         let vocab = vec![
@@ -821,5 +904,320 @@ mod tests {
         let tok = make_tokenizer();
         let result = tok.decode(&[999]);
         assert!(result.is_err());
+    }
+
+    /// An id the vocabulary does not contain is skipped rather than reported,
+    /// which is the only thing `decode_lossy` does differently from `decode`.
+    #[test]
+    fn decode_lossy_skips_an_unknown_id_that_decode_reports() {
+        let tok = make_tokenizer();
+        assert!(tok.decode(&[4, 999, 5]).is_err());
+        assert_eq!(tok.decode_lossy(&[4, 999, 5]), "hello world");
+        // ...and agrees with `decode` everywhere `decode` succeeds.
+        assert_eq!(tok.decode_lossy(&[2, 4, 5, 3]), "hello world");
+    }
+
+    // =========================================================================
+    // The streaming decoder: concat(stream) == decode, at every chunk size
+    // =========================================================================
+
+    /// A `##` vocabulary carrying everything the stream has to get right: a
+    /// continuation, specials dropped on decode, the punctuation the cleanup
+    /// rewrites — as a word of its own (`,`, `.`) and as a *continuation*
+    /// (`##.`), which is the shape that leaves the space it eats in an earlier
+    /// chunk. The empty surface (id 10) renders a bare separator, so a chunk can
+    /// consist of nothing but spaces.
+    fn stream_vocab() -> Vec<String> {
+        [
+            "[PAD]", // 0
+            "[UNK]", // 1
+            "[CLS]", // 2
+            "[SEP]", // 3
+            "hello", // 4
+            "world", // 5
+            "##ing", // 6
+            ",",     // 7
+            ".",     // 8
+            "a",     // 9
+            "",      // 10
+            "##.",   // 11
+            "?",     // 12
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+    }
+
+    /// The `##` path, whose continuations are marked.
+    fn stream_tokenizer() -> WordPieceTokenizer {
+        WordPieceTokenizer::new(stream_vocab(), 1, 200, true)
+    }
+
+    /// The GGUF-stripped path: the same vocabulary with no continuation prefix
+    /// declared, so every token starts a word.
+    fn bare_stream_tokenizer() -> WordPieceTokenizer {
+        WordPieceTokenizer::with_options(stream_vocab(), 1, 200, true, true, true, String::new())
+    }
+
+    /// Feed `ids` through a streaming decoder in the given chunk sizes and
+    /// concatenate every emission plus the final flush.
+    fn drive_strict(tokenizer: &WordPieceTokenizer, ids: &[u32], chunk: usize) -> String {
+        let mut decoder = tokenizer.streaming_decoder();
+        let mut out = String::new();
+        for group in ids.chunks(chunk.max(1)) {
+            if let Some(text) = decoder.add_tokens(group).expect("ids are all known") {
+                out.push_str(&text);
+            }
+        }
+        out.push_str(&decoder.flush());
+        out
+    }
+
+    /// Same, one id at a time through the lossy entry point.
+    fn drive_lossy(tokenizer: &WordPieceTokenizer, ids: &[u32]) -> String {
+        let mut decoder = tokenizer.streaming_decoder();
+        let mut out = String::new();
+        for &id in ids {
+            if let Some(text) = decoder.add_token_lossy(id) {
+                out.push_str(&text);
+            }
+        }
+        out.push_str(&decoder.flush());
+        out
+    }
+
+    /// Id sequences covering a continuation, a dropped special at position 0
+    /// (which must not emit a leading separator), punctuation the cleanup
+    /// rewrites, and runs of empty surfaces.
+    const STREAM_IDS: &[&[u32]] = &[
+        &[],
+        &[4, 5],
+        &[4, 6],
+        &[2, 4, 6, 7, 5, 3],
+        &[2, 4, 5, 8],
+        &[4, 7, 5, 12],
+        &[9, 10, 8],
+        &[9, 10, 10, 8],
+        &[9, 10, 11],
+        &[10, 4],
+        &[2, 3, 0],
+    ];
+
+    /// The point of the factory: streaming reproduces `decode` exactly, under
+    /// every grouping and through both entry points — on the `##` path and on
+    /// the prefix-less one.
+    #[test]
+    fn stream_matches_decode_at_every_chunk_size() {
+        for tokenizer in [stream_tokenizer(), bare_stream_tokenizer()] {
+            for ids in STREAM_IDS {
+                let expected = tokenizer.decode(ids).expect("ids are all known");
+
+                for chunk in 1..=ids.len().max(1) {
+                    assert_eq!(
+                        drive_strict(&tokenizer, ids, chunk),
+                        expected,
+                        "ids: {ids:?}, chunk: {chunk}"
+                    );
+                }
+                assert_eq!(
+                    drive_lossy(&tokenizer, ids),
+                    tokenizer.decode_lossy(ids),
+                    "ids: {ids:?}"
+                );
+                assert_eq!(tokenizer.decode_lossy(ids), expected, "ids: {ids:?}");
+            }
+        }
+    }
+
+    /// A skipped special at position 0 must not emit a separator: the flag the
+    /// separator consults is "a token has rendered", and a skip renders nothing.
+    /// The failure mode is a leading space on every BERT sequence.
+    #[test]
+    fn a_leading_special_does_not_emit_a_separator() {
+        let tok = stream_tokenizer();
+        let mut decoder = tok.streaming_decoder();
+
+        assert_eq!(decoder.add_token(2).expect("[CLS] is known"), None);
+        assert_eq!(
+            decoder.add_token(4).expect("known id"),
+            Some("hello".to_string())
+        );
+        assert_eq!(drive_strict(&tok, &[2, 4, 5, 3], 1), "hello world");
+        assert_eq!(tok.decode(&[2, 4, 5, 3]).unwrap(), "hello world");
+    }
+
+    /// The case the held space run exists for: the space the cleanup removes is
+    /// emitted with the token *before* the punctuation, so when the two arrive
+    /// in separate `add_token` calls the stream can only agree with `decode` by
+    /// holding that space back.
+    ///
+    /// `##.` is the sharp form — a *continuation* punctuation carries no
+    /// separator of its own, so the only space available is the one already
+    /// emitted. Without the hold this streams as `"a ."` where `decode` is
+    /// `"a."`.
+    #[test]
+    fn punctuation_straddling_a_chunk_boundary_matches_decode() {
+        let tok = stream_tokenizer();
+
+        let ids = [9u32, 10, 11]; // "a", "", "##."
+        assert_eq!(tok.decode(&ids).unwrap(), "a.");
+
+        let mut decoder = tok.streaming_decoder();
+        let mut streamed = String::new();
+        for id in ids {
+            streamed.push_str(&decoder.add_token(id).expect("known id").unwrap_or_default());
+        }
+        streamed.push_str(&decoder.flush());
+        assert_eq!(streamed, "a.");
+
+        // ...and the ordinary shape, where the punctuation is a word of its own
+        // and brings its own separator: `"hello"` then `","`.
+        let ids = [4u32, 7];
+        assert_eq!(tok.decode(&ids).unwrap(), "hello,");
+        let mut decoder = tok.streaming_decoder();
+        let mut streamed = String::new();
+        for id in ids {
+            streamed.push_str(&decoder.add_token(id).expect("known id").unwrap_or_default());
+        }
+        streamed.push_str(&decoder.flush());
+        assert_eq!(streamed, "hello,");
+    }
+
+    /// The cleanup is `str::replace`, which is single-pass and does not rescan
+    /// what it produced: `"a  ."` keeps one of its two spaces. The stream has to
+    /// hold the whole trailing *run* back to be handed the same string — holding
+    /// one space would offer the replacement a different one.
+    #[test]
+    fn the_whole_trailing_space_run_is_held() {
+        let tok = stream_tokenizer();
+
+        // "a" + sep + "" + sep + "." renders `"a  ."`, and exactly one space
+        // comes off.
+        let ids = [9u32, 10, 8];
+        assert_eq!(tok.decode(&ids).unwrap(), "a .");
+        for chunk in 1..=ids.len() {
+            assert_eq!(drive_strict(&tok, &ids, chunk), "a .", "chunk: {chunk}");
+        }
+
+        // A second empty surface adds a second space-only chunk, so the run
+        // spans two emissions and still yields one deletion.
+        let ids = [9u32, 10, 10, 8];
+        assert_eq!(tok.decode(&ids).unwrap(), "a  .");
+        for chunk in 1..=ids.len() {
+            assert_eq!(drive_strict(&tok, &ids, chunk), "a  .", "chunk: {chunk}");
+        }
+    }
+
+    /// A held run that no punctuation ever claims is emitted by `flush` rather
+    /// than swallowed — the trailing space `decode` also keeps.
+    #[test]
+    fn a_held_space_run_survives_the_flush() {
+        let tok = stream_tokenizer();
+        let ids = [9u32, 10];
+
+        assert_eq!(tok.decode(&ids).unwrap(), "a ");
+
+        let mut decoder = tok.streaming_decoder();
+        let emitted = decoder
+            .add_tokens(&ids)
+            .expect("known ids")
+            .unwrap_or_default();
+        assert_eq!(emitted, "a", "the trailing space is still held");
+        assert_eq!(decoder.flush(), " ");
+    }
+
+    /// The prefix-less (GGUF-stripped) path joins every token with a space, so
+    /// its punctuation always arrives with a separator of its own — and the
+    /// space-run hold still has to reproduce `decode` across chunks.
+    #[test]
+    fn the_prefixless_path_streams_like_decode() {
+        let tok = bare_stream_tokenizer();
+
+        // `##.` is not a continuation here: it is a word spelled `##.`.
+        assert_eq!(tok.decode(&[9, 11]).unwrap(), "a ##.");
+        assert_eq!(tok.decode(&[4, 6]).unwrap(), "hello ##ing");
+        assert_eq!(tok.decode(&[9, 10, 10, 8]).unwrap(), "a  .");
+
+        for ids in [vec![9u32, 11], vec![4, 6], vec![9, 10, 10, 8]] {
+            let expected = tok.decode(&ids).expect("known ids");
+            for chunk in 1..=ids.len() {
+                assert_eq!(drive_strict(&tok, &ids, chunk), expected, "chunk: {chunk}");
+            }
+        }
+    }
+
+    proptest! {
+        /// Chunk-partition invariance on the `##` path: arbitrary grouping
+        /// through `add_tokens` gives what one-at-a-time gives, and both give
+        /// `decode`.
+        #[test]
+        fn prop_chunking_matches_decode(
+            ids in prop::collection::vec(0u32..13, 0..32),
+            chunk in 1usize..8,
+        ) {
+            let tokenizer = stream_tokenizer();
+            let expected = tokenizer.decode(&ids).expect("every id is in range");
+
+            prop_assert_eq!(drive_strict(&tokenizer, &ids, 1), expected.clone());
+            prop_assert_eq!(drive_strict(&tokenizer, &ids, chunk), expected);
+        }
+
+        /// The same on the prefix-less path, whose separator rule differs.
+        #[test]
+        fn prop_chunking_matches_decode_without_prefix(
+            ids in prop::collection::vec(0u32..13, 0..32),
+            chunk in 1usize..8,
+        ) {
+            let tokenizer = bare_stream_tokenizer();
+            let expected = tokenizer.decode(&ids).expect("every id is in range");
+
+            prop_assert_eq!(drive_strict(&tokenizer, &ids, 1), expected.clone());
+            prop_assert_eq!(drive_strict(&tokenizer, &ids, chunk), expected);
+        }
+
+        /// Arbitrary ids — unknown ones included — stream lossily to exactly
+        /// what `decode_lossy` produces.
+        #[test]
+        fn prop_arbitrary_ids_match_decode_lossy(
+            ids in prop::collection::vec(0u32..40, 0..48),
+        ) {
+            let tokenizer = stream_tokenizer();
+            prop_assert_eq!(drive_lossy(&tokenizer, &ids), tokenizer.decode_lossy(&ids));
+        }
+
+        /// `reset()` purity: a used-then-reset decoder behaves byte-identically
+        /// to a freshly built one — the "a token has rendered" flag and the held
+        /// space run included, which is why the dirty prefix is fed before the
+        /// reset rather than after.
+        #[test]
+        fn prop_reset_matches_a_fresh_decoder(
+            dirty in prop::collection::vec(0u32..40, 0..16),
+            ids in prop::collection::vec(0u32..40, 0..32),
+        ) {
+            let tokenizer = stream_tokenizer();
+
+            let mut reused = tokenizer.streaming_decoder();
+            reused.add_tokens_lossy(&dirty);
+            reused.reset();
+            prop_assert!(!reused.has_pending());
+            prop_assert_eq!(reused.pending_bytes(), 0);
+
+            let mut fresh = tokenizer.streaming_decoder();
+
+            let mut from_reused = String::new();
+            let mut from_fresh = String::new();
+            for &id in &ids {
+                let a = reused.add_token_lossy(id);
+                let b = fresh.add_token_lossy(id);
+                prop_assert_eq!(&a, &b);
+                prop_assert_eq!(reused.pending_bytes(), fresh.pending_bytes());
+                from_reused.push_str(&a.unwrap_or_default());
+                from_fresh.push_str(&b.unwrap_or_default());
+            }
+            from_reused.push_str(&reused.flush());
+            from_fresh.push_str(&fresh.flush());
+
+            prop_assert_eq!(from_reused, from_fresh);
+        }
     }
 }

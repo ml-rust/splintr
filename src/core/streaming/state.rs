@@ -58,6 +58,36 @@ pub(crate) enum DecodePost {
     /// after that substitution — which, on the backend that lists this op, has
     /// already happened while the surface was rendered.
     StripLeadingSpace,
+    /// Drop the space before `. ? ! ,` — HuggingFace `tokenizers`'
+    /// WordPiece-decoder cleanup (`cleanup = true`, its default). Unlike
+    /// `transformers`' `clean_up_tokenization_spaces`, it does NOT touch
+    /// apostrophe contractions.
+    ///
+    /// The other op that does not distribute over concatenation, and for a
+    /// different reason than [`StripLeadingSpace`](Self::StripLeadingSpace): the
+    /// space it removes is emitted with the token *before* the punctuation,
+    /// which on a stream can be a whole chunk earlier. So the cursor holds back
+    /// the trailing run of spaces instead of emitting it, and the next chunk is
+    /// cleaned as held+next; [`flush`](DecodeCursor::flush) emits whatever is
+    /// still held.
+    ///
+    /// It is the whole *run*, never one space: `str::replace` is single-pass and
+    /// does not rescan what it produced, so `"a  ."` is `"a ."` — holding one
+    /// space would offer the replacement a different string to scan than
+    /// whole-sequence decoding gives it.
+    CleanupTokenization,
+}
+
+/// The [`DecodePost::CleanupTokenization`] replacement itself, over one string.
+///
+/// Single-pass per pattern, deliberately: this is `str::replace`, which is what
+/// the reference cleanup is, and re-running it until it converges would eat the
+/// second space of `"a  ."`.
+fn cleanup_tokenization(s: &str) -> String {
+    s.replace(" .", ".")
+        .replace(" ?", "?")
+        .replace(" !", "!")
+        .replace(" ,", ",")
 }
 
 /// Everything decoding consults: the per-id rules, plus what to do to the text
@@ -138,7 +168,14 @@ impl DecodeState {
     /// skipped, or bytes that are still an incomplete UTF-8 sequence); neither
     /// spends the flag, because neither emitted a character for the strip to
     /// look at.
-    fn postprocess(&self, text: String, at_start: &mut bool) -> String {
+    ///
+    /// `held_spaces` is the trailing run of spaces
+    /// [`DecodePost::CleanupTokenization`] kept back from an earlier chunk, so
+    /// that a punctuation mark arriving in this one can still consume it. An
+    /// empty chunk leaves it alone: there is nothing to clean and nothing new to
+    /// hold, and the run must survive until either a chunk or the flush claims
+    /// it.
+    fn postprocess(&self, text: String, at_start: &mut bool, held_spaces: &mut String) -> String {
         if text.is_empty() {
             return text;
         }
@@ -151,6 +188,18 @@ impl DecodeState {
                 None => text,
             },
             DecodePost::StripLeadingSpace => text,
+            DecodePost::CleanupTokenization => {
+                // Re-run the replacement over held+next, which is the same
+                // string whole-sequence decoding hands it, and hold the new
+                // trailing run in turn.
+                let mut combined = std::mem::take(held_spaces);
+                combined.push_str(&text);
+                let mut cleaned = cleanup_tokenization(&combined);
+                let kept = cleaned.trim_end_matches(' ').len();
+                held_spaces.push_str(&cleaned[kept..]);
+                cleaned.truncate(kept);
+                cleaned
+            }
         });
         *at_start = false;
         text
@@ -178,6 +227,24 @@ pub(crate) struct DecodeCursor<S> {
     /// are still an incomplete UTF-8 sequence, renders nothing and leaves the
     /// flag armed — so a leading BOS cannot eat the dummy-prefix strip.
     at_start: bool,
+    /// Whether a token has rendered yet, for [`Lead::SpaceUnlessFirst`] — a
+    /// *different* question from [`at_start`](Self::at_start), and deliberately
+    /// not the same flag: this one is about tokens, that one about characters.
+    ///
+    /// Spent by the first id that renders bytes at all, even zero of them: a
+    /// WordPiece `##`-only piece renders the empty string and still means the
+    /// next word start needs a separator, which is exactly what the
+    /// whole-sequence decode's `pieces.is_empty()` predicate said. A skipped or
+    /// unknown id renders nothing and leaves it armed, so a leading `[CLS]`
+    /// cannot put a space in front of the first word.
+    rendered_a_token: bool,
+    /// The trailing run of spaces [`DecodePost::CleanupTokenization`] is holding
+    /// back for a punctuation mark that may arrive in a later chunk. Emitted by
+    /// [`flush`](Self::flush) when none does.
+    ///
+    /// Always empty on a backend that does not list that op, which is why the
+    /// flush-time append costs those backends nothing.
+    held_spaces: String,
 }
 
 impl<S: Borrow<DecodeState>> DecodeCursor<S> {
@@ -187,6 +254,8 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
             state,
             bytes: Utf8Buffer::new(),
             at_start: true,
+            rendered_a_token: false,
+            held_spaces: String::new(),
         }
     }
 
@@ -196,6 +265,8 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
             state,
             bytes: Utf8Buffer::with_capacity(capacity),
             at_start: true,
+            rendered_a_token: false,
+            held_spaces: String::new(),
         }
     }
 
@@ -221,8 +292,15 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
                 Rendered::Bytes { lead, bytes } => {
                     match lead {
                         Lead::None => {}
+                        // The separator goes through the same buffer the token's
+                        // own bytes do, so it is part of the text the post-ops
+                        // then see — which is what lets the cleanup op eat it.
+                        Lead::SpaceUnlessFirst if self.rendered_a_token => self.bytes.push(b" "),
+                        Lead::SpaceUnlessFirst => {}
                     }
                     self.bytes.push(&bytes);
+                    // Even when `bytes` was empty: a token rendered.
+                    self.rendered_a_token = true;
                 }
                 Rendered::Unknown => on_unknown(id)?,
             }
@@ -252,10 +330,11 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
     /// cursor's position flag — the only state they are allowed to consult.
     fn postprocess(&mut self, text: String) -> String {
         // Disjoint fields: the rules are borrowed out of `state` while
-        // `at_start` is borrowed mutably, which is exactly why the flag lives
-        // on the cursor and not inside the shared `DecodeState`.
+        // `at_start` and the held space run are borrowed mutably, which is
+        // exactly why those live on the cursor and not inside the shared
+        // `DecodeState`.
         let state = self.state.borrow();
-        state.postprocess(text, &mut self.at_start)
+        state.postprocess(text, &mut self.at_start, &mut self.held_spaces)
     }
 
     /// The strict twin of [`feed`](Self::feed): a byte that is definitively not
@@ -286,7 +365,18 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
     /// replaced with the Unicode replacement character (U+FFFD).
     pub(crate) fn flush(&mut self) -> String {
         let text = self.bytes.flush();
-        self.postprocess(text)
+        let mut text = self.postprocess(text);
+        text.push_str(&self.take_held_spaces());
+        text
+    }
+
+    /// The space run [`DecodePost::CleanupTokenization`] was holding for a
+    /// punctuation mark that never came, disarmed as it is taken.
+    ///
+    /// Always empty on every other backend, so this is the whole cost they pay
+    /// for the op existing.
+    fn take_held_spaces(&mut self) -> String {
+        std::mem::take(&mut self.held_spaces)
     }
 
     /// The strict twin of [`flush`](Self::flush): a trailing sequence that is
@@ -297,7 +387,11 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
         on_invalid_utf8: impl Fn() -> E,
     ) -> Result<String, E> {
         match self.bytes.flush_strict() {
-            Ok(text) => Ok(self.postprocess(text)),
+            Ok(text) => {
+                let mut text = self.postprocess(text);
+                text.push_str(&self.take_held_spaces());
+                Ok(text)
+            }
             Err(InvalidUtf8) => Err(on_invalid_utf8()),
         }
     }
@@ -308,6 +402,8 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
     pub(crate) fn reset(&mut self) {
         self.bytes.clear();
         self.at_start = true;
+        self.rendered_a_token = false;
+        self.held_spaces.clear();
     }
 
     /// Check if there are buffered bytes waiting for completion.

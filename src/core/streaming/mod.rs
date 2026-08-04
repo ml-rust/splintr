@@ -9,9 +9,10 @@
 //! There is a single [`StreamingDecoder`](crate::StreamingDecoder), obtained
 //! only from a tokenizer's own factory —
 //! [`Tokenizer::streaming_decoder`](crate::Tokenizer::streaming_decoder),
-//! [`SpmTokenizer::streaming_decoder`](crate::SpmTokenizer::streaming_decoder)
+//! [`SpmTokenizer::streaming_decoder`](crate::SpmTokenizer::streaming_decoder),
+//! [`SentencePieceTokenizer::streaming_decoder`](crate::SentencePieceTokenizer::streaming_decoder)
 //! or
-//! [`SentencePieceTokenizer::streaming_decoder`](crate::SentencePieceTokenizer::streaming_decoder).
+//! [`WordPieceTokenizer::streaming_decoder`](crate::WordPieceTokenizer::streaming_decoder).
 //! Everything that used to be the caller's choice — ByteLevel unmapping (GPT-2,
 //! Llama, DeepSeek V3), the `special=true` ids to drop, the metaspace ▁
 //! substitution, `<0xNN>` byte fallback, the SentencePiece dummy-prefix strip —
@@ -26,5 +27,5 @@ mod state;
 pub(crate) mod utf8;
 
 pub use decoder::StreamingDecoder;
-pub(crate) use render::{ByteFallbackRule, Lead, RenderRules, Rendered, Surfaces};
+pub(crate) use render::{ByteFallbackRule, Lead, RenderRules, Rendered, Surfaces, WordSeparator};
 pub(crate) use state::{DecodePost, DecodeState};

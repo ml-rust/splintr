@@ -59,9 +59,57 @@ pub(crate) enum ByteFallbackRule {
 /// cursor's decision, since only the cursor knows whether anything has been
 /// rendered yet.
 pub(crate) enum Lead {
-    /// No separator: the token's bytes are the whole of its rendering. Every
-    /// current backend, BPE included.
+    /// No separator: the token's bytes are the whole of its rendering. The BPE
+    /// and SentencePiece-shaped backends, whose surfaces spell their own
+    /// spacing.
     None,
+    /// A single space, unless this is the first token to render — WordPiece,
+    /// whose surfaces carry no spacing of their own.
+    ///
+    /// "First" means the first *token*, not the first character: a `##`-only
+    /// piece renders the empty string and still counts, which is what the
+    /// whole-sequence decode's `pieces.is_empty()` predicate meant.
+    SpaceUnlessFirst,
+}
+
+/// Whether a surface begins a word, and how that is read off its spelling.
+///
+/// WordPiece's alone: its vocabulary stores bare word fragments and marks
+/// *continuations* rather than word starts, so the space between words exists
+/// nowhere in the surfaces and has to be put back while rendering. Every other
+/// backend's surfaces already spell their own spacing, which is
+/// [`None`](Self::None).
+pub(crate) enum WordSeparator {
+    /// Surfaces spell their own spacing; no token ever carries a separator.
+    None,
+    /// Every surface begins a word, so every token after the first carries a
+    /// separator. The GGUF-stripped WordPiece vocabularies, whose `##` markers
+    /// were removed and whose continuations are therefore indistinguishable
+    /// from word starts.
+    EveryToken,
+    /// A surface beginning with this marker (`##`) continues the previous word:
+    /// the marker comes off and no separator is carried. Any other surface
+    /// begins a word.
+    ///
+    /// Never an empty marker — every surface begins with that, so nothing would
+    /// ever start a word. A vocabulary with no marker is
+    /// [`EveryToken`](Self::EveryToken), which is the opposite reading.
+    Continuation(String),
+}
+
+impl WordSeparator {
+    /// Split a surface into the separator it carries and the text that is left
+    /// once any continuation marker is removed.
+    fn split<'a>(&self, piece: &'a str) -> (Lead, &'a str) {
+        match self {
+            Self::None => (Lead::None, piece),
+            Self::EveryToken => (Lead::SpaceUnlessFirst, piece),
+            Self::Continuation(marker) => match piece.strip_prefix(marker.as_str()) {
+                Some(rest) => (Lead::None, rest),
+                None => (Lead::SpaceUnlessFirst, piece),
+            },
+        }
+    }
 }
 
 /// What a single token id renders to.
@@ -129,6 +177,14 @@ pub(crate) struct RenderRules {
     /// metaspace substitution as a post-op: its vocabulary is byte-keyed, so a ▁
     /// can be split across two of its pieces and only reassembled text sees it.
     use_metaspace: bool,
+    /// Whether a [`Surfaces::ByIndex`] surface has to be given back the word
+    /// spacing its vocabulary does not spell — see [`WordSeparator`], which only
+    /// the WordPiece backend sets to anything but [`None`](WordSeparator::None).
+    ///
+    /// Set through a builder rather than through a [`new`](Self::new) parameter,
+    /// so the backends with no word separator to declare — every other one — say
+    /// nothing at all.
+    word_separator: WordSeparator,
 }
 
 impl RenderRules {
@@ -148,7 +204,19 @@ impl RenderRules {
             byte_fallback,
             use_byte_level,
             use_metaspace,
+            word_separator: WordSeparator::None,
         }
+    }
+
+    /// Declare that this vocabulary's surfaces carry no word spacing of their
+    /// own, so rendering has to put it back — see [`WordSeparator`].
+    ///
+    /// WordPiece's alone. Whether a declared separator is actually emitted stays
+    /// the cursor's decision: [`Lead::SpaceUnlessFirst`] is a position-dependent
+    /// rule, and rendering knows no position.
+    pub(crate) fn with_word_separator(mut self, word_separator: WordSeparator) -> Self {
+        self.word_separator = word_separator;
+        self
     }
 
     /// Render one id, deferring the "not in any table" decision to the caller
@@ -219,6 +287,12 @@ impl RenderRules {
                             bytes: Cow::Borrowed(&BYTE_VALUES[b..b + 1]),
                         };
                     }
+                    // The word separator is read off the surface, and the marker
+                    // that decides it comes off with it — after the
+                    // byte-fallback arm above, so a `<0xNN>` token is a byte and
+                    // never a word start. Positionless: whether the separator is
+                    // emitted is the cursor's call.
+                    let (lead, piece) = self.word_separator.split(piece);
                     // No ByteLevel arm: these vocabularies spell their pieces as
                     // text. The marker they do use (▁) is substituted here,
                     // where the text being rendered is known to be a *surface* —
@@ -231,10 +305,7 @@ impl RenderRules {
                     } else {
                         Cow::Borrowed(piece.as_bytes())
                     };
-                    return Rendered::Bytes {
-                        lead: Lead::None,
-                        bytes,
-                    };
+                    return Rendered::Bytes { lead, bytes };
                 }
             }
         }

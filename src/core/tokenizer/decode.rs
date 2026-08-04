@@ -87,6 +87,11 @@ impl Tokenizer {
         let mut result = Vec::with_capacity(tokens.len() * 4);
         let state = self.decode_state();
         let rules = state.render();
+        // The one bit of position this byte-level path carries, for the same
+        // reason the cursor carries it: a separator is emitted between rendered
+        // tokens, never before the first. Inert on this backend, whose rules
+        // declare no word separator, but the rendering is shared.
+        let mut rendered_a_token = false;
 
         for &token in tokens {
             match rules.render(token) {
@@ -94,8 +99,11 @@ impl Tokenizer {
                 Rendered::Bytes { lead, bytes } => {
                     match lead {
                         Lead::None => {}
+                        Lead::SpaceUnlessFirst if rendered_a_token => result.push(b' '),
+                        Lead::SpaceUnlessFirst => {}
                     }
                     result.extend_from_slice(&bytes);
+                    rendered_a_token = true;
                 }
                 Rendered::Unknown => return Err(TokenizerError::InvalidTokenId(token)),
             }

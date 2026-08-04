@@ -12,7 +12,7 @@
 //! actually calls the method — compiling is most of the assertion.
 use splintr::{
     ByteFallback, NormOp, Normalizer, PreTokStage, PreTokenizer, SentencePieceTokenizer,
-    SplitBehavior, SplitPattern, SpmTokenizer, StreamingDecoder, Tokenizer,
+    SplitBehavior, SplitPattern, SpmTokenizer, StreamingDecoder, Tokenizer, WordPieceTokenizer,
 };
 
 /// A vocabulary that tells the two splits apart: as one chunk `"a12"` BPEs into
@@ -330,6 +330,65 @@ fn unigram_streaming_decoder_outlives_its_tokenizer_and_keeps_the_prefix_strip()
     assert_eq!(
         decoder.add_tokens(&[2, 3]).expect("known ids"),
         Some("hello world".to_string())
+    );
+}
+
+/// A small BERT-shaped vocabulary: `##` marks continuations, `[CLS]`/`[SEP]`
+/// are dropped on decode, and `,` is a word of its own whose separator the
+/// WordPiece cleanup removes.
+fn wordpiece_tokenizer() -> WordPieceTokenizer {
+    let vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "hello", "##ing", ","]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    WordPieceTokenizer::new(vocab, 1, 200, true)
+}
+
+/// [`WordPieceTokenizer::streaming_decoder`] is callable from outside the crate
+/// and hands back the *same* [`StreamingDecoder`] — so the WordPiece backend
+/// widens who may hand one out without widening how one can be built: the type
+/// still has no public constructor, and the annotated binding still fails to
+/// compile if it ever grows a lifetime parameter.
+#[test]
+fn wordpiece_streaming_decoder_is_reachable_and_agrees_with_decode() {
+    let wordpiece = wordpiece_tokenizer();
+    // `[CLS]`, `hello`, `##ing`, `,`, `[SEP]`: a dropped special at position 0,
+    // a continuation glued straight on, and a comma whose separator goes.
+    let ids = [2u32, 4, 5, 6, 3];
+
+    let mut decoder: StreamingDecoder = wordpiece.streaming_decoder();
+    let mut streamed = String::new();
+    for id in ids {
+        if let Some(text) = decoder.add_token(id).expect("ids are in the vocabulary") {
+            streamed.push_str(&text);
+        }
+    }
+    streamed.push_str(&decoder.flush());
+
+    assert_eq!(streamed, "helloing,");
+    assert_eq!(
+        streamed,
+        wordpiece.decode(&ids).expect("ids are in the vocabulary")
+    );
+}
+
+/// The WordPiece decoder owns its configuration too, so it outlives the
+/// tokenizer that built it — and a leading skipped id must not put a separator
+/// in front of the first word, which is only observable from a caller driving
+/// the stream by hand.
+#[test]
+fn wordpiece_streaming_decoder_outlives_its_tokenizer_and_keeps_the_word_separator() {
+    let mut decoder = {
+        let wordpiece = wordpiece_tokenizer();
+        wordpiece.streaming_decoder()
+    };
+
+    // `[CLS]` (2) is skipped, renders nothing, and therefore leaves the "no
+    // token has rendered yet" flag armed for the first word that arrives.
+    assert_eq!(decoder.add_token(2).expect("known id"), None);
+    assert_eq!(
+        decoder.add_token(4).expect("known id"),
+        Some("hello".to_string())
     );
 }
 
