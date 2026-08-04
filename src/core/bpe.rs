@@ -224,9 +224,9 @@ pub(super) fn byte_pair_encode_pieces_seeded(
     // `nodes` (capacity `piece.len()`, an exact bound for byte seeding and an
     // upper bound for char seeding, since a UTF-8 char is never longer than
     // its own byte count) so no separate spans buffer is allocated; `prev`/
-    // `next` only depend on final list length, so they're filled in a second
-    // pass over the same allocation once that length is known.
-    let mut nodes: Vec<Node> = match char_granular
+    // `next` only depend on final list length, so they're filled in by
+    // [`merge_and_collect`] once that length is known.
+    let nodes: Vec<Node> = match char_granular
         .then(|| std::str::from_utf8(piece).ok())
         .flatten()
     {
@@ -243,6 +243,70 @@ pub(super) fn byte_pair_encode_pieces_seeded(
             len: 1,
         })),
     };
+    merge_and_collect(piece, nodes, merge_ranks, id_encoder, None)
+}
+
+/// One symbol the merge starts from, when the caller has already decided the
+/// segmentation — see [`byte_pair_encode_pieces_presegmented`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Seed {
+    /// Start of this symbol's surface within the buffer the seeds describe.
+    pub(super) start: usize,
+    /// Length of that surface, in bytes.
+    pub(super) len: usize,
+    /// The id this symbol already stands for, used verbatim when no merge
+    /// absorbed it. `None` defers to the ordinary `id_encoder` lookup.
+    pub(super) id: Option<u32>,
+}
+
+/// [`byte_pair_encode_pieces_seeded`] over a segmentation the caller supplies,
+/// rather than one derived from `piece` by byte or by character.
+///
+/// This exists for HuggingFace's byte-fallback order: `tokenizers`' BPE model
+/// resolves an unrepresentable character to its `<0xNN>`/`<unk>` tokens
+/// *before* merging, so those tokens are ordinary word symbols that the merge
+/// list may combine with their neighbours. Reproducing that means merging over
+/// a buffer whose unrepresentable characters have already been replaced by
+/// those tokens' vocabulary spellings, split at the spellings' own boundaries —
+/// which is exactly a caller-supplied segmentation (see
+/// `Tokenizer::bpe_fallback_first`).
+///
+/// Deliberately without [`byte_pair_encode_pieces_seeded`]'s whole-piece fast
+/// path: that shortcut answers "is this entire chunk one token?", a question
+/// about the *input*, and the buffer here is a rewritten one whose
+/// concatenation is not input text.
+pub(super) fn byte_pair_encode_pieces_presegmented(
+    piece: &[u8],
+    seeds: &[Seed],
+    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &FxHashMap<Vec<u8>, u32>,
+) -> Vec<Piece> {
+    if seeds.is_empty() {
+        return vec![];
+    }
+    let nodes = Vec::from_iter(seeds.iter().map(|seed| Node {
+        prev: 0,
+        next: 0,
+        start: seed.start,
+        len: seed.len,
+    }));
+    merge_and_collect(piece, nodes, merge_ranks, id_encoder, Some(seeds))
+}
+
+/// Link `nodes` into a list, run the merge loop over them, and collect the
+/// resulting pieces — everything both seeding strategies share.
+///
+/// `nodes` arrives with `start`/`len` set and `prev`/`next` ignored. `seeds`,
+/// when present, is the segmentation `nodes` was built from, and supplies the
+/// id of a symbol no merge absorbed (see [`Seed::id`]); `None` is the ordinary
+/// path, where every node resolves through `id_encoder` alone.
+fn merge_and_collect(
+    piece: &[u8],
+    mut nodes: Vec<Node>,
+    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    seeds: Option<&[Seed]>,
+) -> Vec<Piece> {
     let count = nodes.len();
     for (i, node) in nodes.iter_mut().enumerate() {
         node.prev = if i == 0 { usize::MAX } else { i - 1 };
@@ -271,9 +335,12 @@ pub(super) fn byte_pair_encode_pieces_seeded(
         }
     };
 
-    // Seed the heap with every adjacent pair.
+    // Seed the heap with every adjacent pair. `saturating_sub` because this is
+    // now shared by two callers: the seeded one guarantees a non-empty list
+    // through its own fast paths, the presegmented one through its `is_empty`
+    // guard, and neither may become an underflow if a third ever appears.
     let mut queue: BinaryHeap<Merge> = BinaryHeap::new();
-    for i in 0..nodes.len() - 1 {
+    for i in 0..nodes.len().saturating_sub(1) {
         push(&mut queue, i, i + 1, &nodes);
     }
 
@@ -322,7 +389,18 @@ pub(super) fn byte_pair_encode_pieces_seeded(
         let node = &nodes[curr];
         let slice = &piece[node.start..node.start + node.len];
 
-        if let Some(&id) = id_encoder.get(slice) {
+        // A presegmented seed that no merge absorbed (its length is still the
+        // one it was seeded with) keeps the id the caller already resolved it
+        // to. That id is the authority: the caller may have resolved it from a
+        // table other than `id_encoder` — a `<0xNN>` byte-fallback table, say —
+        // and re-deriving it from the surface would answer a different
+        // question. A merged node has no seed id and resolves as usual.
+        let seeded = seeds
+            .and_then(|seeds| seeds.get(curr))
+            .filter(|seed| seed.len == node.len)
+            .and_then(|seed| seed.id);
+
+        if let Some(id) = seeded.or_else(|| id_encoder.get(slice).copied()) {
             if let Some((start, len)) = unresolved_run.take() {
                 result.push(Piece::Unresolved { start, len });
             }

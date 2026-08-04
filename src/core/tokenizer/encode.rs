@@ -1,7 +1,10 @@
 use super::backend::subdivide;
-use super::types::Tokenizer;
+use super::types::{ByteFallback, Tokenizer};
 use crate::core::added::AddedTokens;
-use crate::core::bpe::{byte_pair_encode_pieces, byte_pair_encode_pieces_seeded, Piece};
+use crate::core::bpe::{
+    byte_pair_encode_pieces, byte_pair_encode_pieces_presegmented, byte_pair_encode_pieces_seeded,
+    Piece, Seed,
+};
 use crate::core::byte_level::byte_level_encode;
 use crate::core::policy::{PolicyError, SpecialMode};
 use crate::core::precompiled::utf8_len;
@@ -72,6 +75,14 @@ impl Tokenizer {
     /// configured (instead of silently dropping it, `byte_pair_encode_pieces`'
     /// contract).
     ///
+    /// **Ordering note:** the resolution here runs after the merge, which is
+    /// the cheap order and the right answer whenever no merge takes a
+    /// `<0xNN>`/`<unk>` token as an operand. When a vocabulary's merge list
+    /// does, HuggingFace's order (resolve first, then merge) is observably
+    /// different, and the chunk is redone through
+    /// [`bpe_fallback_first`](Self::bpe_fallback_first) — see its doc for the
+    /// measurement and for why no shelf vocabulary reaches it.
+    ///
     /// **Byte-space note:** `bytes` is in RAW input-byte space when
     /// `use_byte_level` is false, but is the UTF-8 of the *ByteLevel-encoded*
     /// text when `use_byte_level` is true (see `encode_chunk`). The
@@ -121,6 +132,27 @@ impl Tokenizer {
             }
             return out;
         };
+
+        // HuggingFace resolves the fallback BEFORE merging, so its `<0xNN>`/
+        // `<unk>` tokens are ordinary word symbols the merge list may combine
+        // with their neighbours; the resolution below runs AFTER, so it cannot.
+        // The two agree unless some merge takes one of those tokens as an
+        // operand, which is why the redo is gated on there being something
+        // unresolved at all: with nothing to substitute, the orders coincide by
+        // construction and the merge already ran over exactly HuggingFace's
+        // symbols. (`merge_ranks.is_some()` is the whole of the "is this a
+        // HuggingFace-shaped vocabulary" test here — `fallback` being `Some`
+        // already implies `!use_byte_level`, so the two conjuncts together are
+        // the character-seeded path.)
+        if self.merge_ranks.is_some()
+            && pieces
+                .iter()
+                .any(|piece| matches!(piece, Piece::Unresolved { .. }))
+        {
+            if let Some(ids) = self.bpe_fallback_first(bytes, fallback) {
+                return ids;
+            }
+        }
 
         // HuggingFace resolves fallback per CHARACTER over the whole word, with
         // one wrinkle reproduced deliberately here: a pending unk is flushed by
@@ -180,6 +212,130 @@ impl Tokenizer {
         }
         out.extend(pending_unk.take());
         out
+    }
+
+    /// [`Tokenizer::bpe`] in HuggingFace's order: resolve the byte fallback
+    /// FIRST, then merge over the result.
+    ///
+    /// `tokenizers`' `BPE::merge_word` builds the word one character at a time,
+    /// and a character the vocabulary cannot represent is added to that word as
+    /// its `<0xNN>` byte tokens (or as the unk) right there — *before*
+    /// `merge_all` runs. Those tokens are therefore ordinary symbols the merge
+    /// list may combine with their neighbours. `Tokenizer::bpe` merges the raw
+    /// characters first and maps the leftovers through the table afterwards, so
+    /// they never can.
+    ///
+    /// Measured against `tokenizers` 0.22.1 on a `{"<unk>": 0, "a": 1, "b": 2,
+    /// "<0x7A>": 3, "<0x7A>b": 4, "a<0x7A>": 5}` vocab with
+    /// `byte_fallback: true` and `merges` `[["<0x7A>","b"], ["a","<0x7A>"]]`
+    /// (`z` is 0x7A and is absent from the vocabulary): `encode("zb")` is
+    /// `['<0x7A>b']` and `encode("az")` is `['a<0x7A>']` — one token each, from
+    /// a merge whose operand is a byte-fallback token. Resolving after the
+    /// merge gives `['<0x7A>', 'b']` and `['a', '<0x7A>']` instead.
+    ///
+    /// No published vocabulary on the shelf distinguishes the two: neither
+    /// `mistral-7b-v0.3` nor `embeddinggemma-300m` — the byte-fallback models
+    /// this project verifies against — has a single merge whose concatenated
+    /// key so much as *contains* `<0x` or `<unk>`, and a merge can only take a
+    /// substituted symbol as an operand if its key contains that symbol's whole
+    /// spelling. So this path returns byte-identical ids for them; it is the
+    /// partial or unusual vocabulary it exists for.
+    ///
+    /// Returns `None` when the substitution cannot be carried out faithfully —
+    /// non-UTF-8 input (there are no characters to walk), a fallback id with no
+    /// spelling in the vocabulary (it cannot be a merge operand, so there is
+    /// nothing for this ordering to change), or a merged surface that does not
+    /// resolve. The caller then keeps the resolve-after-merge path, which is
+    /// this method's answer too in all of those cases.
+    fn bpe_fallback_first(&self, bytes: &[u8], fallback: &ByteFallback) -> Option<Vec<u32>> {
+        let ranks = self.merge_ranks.as_ref()?;
+        let text = std::str::from_utf8(bytes).ok()?;
+
+        // The rewritten buffer: input characters the vocabulary has, and the
+        // vocabulary SPELLINGS (`<0x7A>`, `<unk>`) of the tokens the ones it
+        // lacks resolve to — because the merge list refers to those tokens by
+        // exactly those spellings. `seeds` cuts it back at the symbol
+        // boundaries, so a 6-byte `<0x7A>` is one symbol rather than six.
+        let mut buf: Vec<u8> = Vec::with_capacity(bytes.len());
+        let mut seeds: Vec<Seed> = Vec::new();
+
+        // Append a resolved token by its vocabulary spelling. `None` when the
+        // id has no spelling — see this method's own `None` contract.
+        let push_token = |buf: &mut Vec<u8>, seeds: &mut Vec<Seed>, id: u32| -> Option<()> {
+            let spelling = self.decoder.get(&id)?;
+            seeds.push(Seed {
+                start: buf.len(),
+                len: spelling.len(),
+                id: Some(id),
+            });
+            buf.extend_from_slice(spelling);
+            Some(())
+        };
+
+        // The same per-character walk `Tokenizer::bpe`'s resolution does, with
+        // the same deliberate wrinkle: a pending unk is flushed by a
+        // *vocabulary* hit, never by a `<0xNN>` hit, and `fuse_unk` collapses a
+        // run of unk-resolved characters into one. See `Tokenizer::bpe` and
+        // `ByteFallback::fuse_unk` for the measurements behind both.
+        let mut pending_unk: Option<u32> = None;
+        for ch in text.chars() {
+            let mut encoded = [0u8; 4];
+            let ch_bytes = ch.encode_utf8(&mut encoded).as_bytes();
+
+            if let Some(&id) = self.encoder.get(ch_bytes) {
+                if let Some(unk) = pending_unk.take() {
+                    push_token(&mut buf, &mut seeds, unk)?;
+                }
+                // Seeded by its own bytes rather than through `push_token`: a
+                // vocabulary hit's spelling IS the character.
+                seeds.push(Seed {
+                    start: buf.len(),
+                    len: ch_bytes.len(),
+                    id: Some(id),
+                });
+                buf.extend_from_slice(ch_bytes);
+                continue;
+            }
+
+            // A character is emitted as its bytes only when EVERY one of them
+            // has a `<0xNN>` entry, and otherwise collapses to a single unk.
+            if ch_bytes
+                .iter()
+                .all(|&b| fallback.byte_ids[b as usize].is_some())
+            {
+                for &b in ch_bytes {
+                    if let Some(id) = fallback.byte_ids[b as usize] {
+                        push_token(&mut buf, &mut seeds, id)?;
+                    }
+                }
+                continue;
+            }
+
+            if !fallback.fuse_unk {
+                if let Some(unk) = pending_unk.take() {
+                    push_token(&mut buf, &mut seeds, unk)?;
+                }
+            }
+            pending_unk = fallback.unk_id;
+        }
+        if let Some(unk) = pending_unk.take() {
+            push_token(&mut buf, &mut seeds, unk)?;
+        }
+
+        let pieces = byte_pair_encode_pieces_presegmented(&buf, &seeds, ranks, &self.encoder);
+        let mut out = Vec::with_capacity(pieces.len());
+        for piece in pieces {
+            match piece {
+                Piece::Token(id) => out.push(id),
+                // Every seed carries its own id, so only a merged surface the
+                // vocabulary does not contain can land here — which a merge
+                // list built from that same vocabulary cannot produce. Bail
+                // rather than map bytes of a rewritten buffer through a table
+                // keyed by RAW input bytes.
+                Piece::Unresolved { .. } => return None,
+            }
+        }
+        Some(out)
     }
 
     /// Encode bytes with BPE and caching.

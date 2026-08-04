@@ -213,6 +213,225 @@ fn multi_byte_char_falls_back_whole_unless_all_its_bytes_are_declared() {
     assert_eq!(build(byte_ids).encode("aéc"), vec![1, 5, 6, 2]);
 }
 
+/// A vocabulary whose merge list takes a byte-fallback token as an operand —
+/// the shape that makes HuggingFace's resolve-*before*-merge order observable.
+///
+/// `z` (0x7A) is deliberately absent from the vocabulary, so it can only be
+/// reached through `<0x7A>`, and three of the merges have that token on one
+/// side. `merges` and `byte_fallback` together are what
+/// `src/core/hf_json/loader.rs` builds for a `tokenizer.json` of this shape.
+fn byte_operand_merge_tokenizer() -> Tokenizer {
+    let encoder: FxHashMap<Vec<u8>, u32> = [
+        ("<unk>", 0),
+        ("a", 1),
+        ("b", 2),
+        ("<0x7A>", 3),
+        ("<0x7A>b", 4),
+        ("a<0x7A>", 5),
+        ("<0x7A><0x7A>", 6),
+    ]
+    .iter()
+    .map(|(token, id)| (token.as_bytes().to_vec(), *id))
+    .collect();
+
+    // The `merges` list in order, so rank == position, as the loader assigns it.
+    let merge_ranks: FxHashMap<Vec<u8>, u32> = ["<0x7A>b", "a<0x7A>", "<0x7A><0x7A>"]
+        .iter()
+        .enumerate()
+        .map(|(rank, key)| (key.as_bytes().to_vec(), rank as u32))
+        .collect();
+
+    let mut byte_ids = [None; 256];
+    byte_ids[0x7A] = Some(3);
+
+    Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
+        .expect("the test pattern compiles")
+        .with_merge_ranks(merge_ranks)
+        .with_byte_fallback(Some(ByteFallback::new(byte_ids, Some(0))))
+}
+
+/// HuggingFace resolves byte fallback BEFORE the merges run, so a `<0xNN>`
+/// token is an ordinary word symbol its merge list may combine with either
+/// neighbour. Resolving after the merge — the cheap order, still taken when
+/// nothing is unresolved — cannot produce these ids at all.
+///
+/// Ground truth from `tokenizers` 0.22.1 on exactly this vocabulary
+/// (`byte_fallback: true`, `unk_token: "<unk>"`, merges
+/// `[["<0x7A>","b"], ["a","<0x7A>"], ["<0x7A>","<0x7A>"]]`):
+///
+/// ```text
+/// encode('zb')  -> ['<0x7A>b']            ids [4]
+/// encode('az')  -> ['a<0x7A>']            ids [5]
+/// encode('zz')  -> ['<0x7A><0x7A>']       ids [6]
+/// encode('zbz') -> ['<0x7A>b', '<0x7A>']  ids [4, 3]
+/// encode('z')   -> ['<0x7A>']             ids [3]
+/// encode('ab')  -> ['a', 'b']             ids [1, 2]
+/// ```
+#[test]
+fn a_byte_fallback_token_merges_with_its_neighbour_as_huggingface_does() {
+    let tokenizer = byte_operand_merge_tokenizer();
+    assert_eq!(tokenizer.encode("zb"), vec![4]);
+    assert_eq!(tokenizer.encode("az"), vec![5]);
+    assert_eq!(tokenizer.encode("zz"), vec![6]);
+    assert_eq!(tokenizer.encode("zbz"), vec![4, 3]);
+    // A lone unresolved character still resolves to its byte token, and a word
+    // with nothing unresolved is untouched by any of this.
+    assert_eq!(tokenizer.encode("z"), vec![3]);
+    assert_eq!(tokenizer.encode("ab"), vec![1, 2]);
+}
+
+/// The same for a MULTI-BYTE character: its `<0xNN>` tokens are separate word
+/// symbols, so a merge can join them to each other and to what precedes them.
+///
+/// Ground truth from `tokenizers` 0.22.1 on `{"<unk>": 0, "a": 1, "<0xC3>": 2,
+/// "<0xA9>": 3, "<0xC3><0xA9>": 4, "a<0xC3>": 5}` with `byte_fallback: true`
+/// and merges `[["<0xC3>","<0xA9>"], ["a","<0xC3>"]]` (`é` is 0xC3 0xA9):
+///
+/// ```text
+/// encode('é')  -> ['<0xC3><0xA9>']       ids [4]
+/// encode('aé') -> ['a', '<0xC3><0xA9>']  ids [1, 4]
+/// encode('éa') -> ['<0xC3><0xA9>', 'a']  ids [4, 1]
+/// ```
+///
+/// Note `'aé'`: the lower-ranked `<0xC3> <0xA9>` merge wins over `a <0xC3>`,
+/// which is the merge list deciding between two byte-token operands — the
+/// resolve-after-merge order has no rank to consult at all there.
+#[test]
+fn a_multi_byte_char_s_fallback_tokens_merge_with_each_other() {
+    let encoder: FxHashMap<Vec<u8>, u32> = [
+        ("<unk>", 0),
+        ("a", 1),
+        ("<0xC3>", 2),
+        ("<0xA9>", 3),
+        ("<0xC3><0xA9>", 4),
+        ("a<0xC3>", 5),
+    ]
+    .iter()
+    .map(|(token, id)| (token.as_bytes().to_vec(), *id))
+    .collect();
+
+    let merge_ranks: FxHashMap<Vec<u8>, u32> = ["<0xC3><0xA9>", "a<0xC3>"]
+        .iter()
+        .enumerate()
+        .map(|(rank, key)| (key.as_bytes().to_vec(), rank as u32))
+        .collect();
+
+    let mut byte_ids = [None; 256];
+    byte_ids[0xC3] = Some(2);
+    byte_ids[0xA9] = Some(3);
+
+    let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
+        .expect("the test pattern compiles")
+        .with_merge_ranks(merge_ranks)
+        .with_byte_fallback(Some(ByteFallback::new(byte_ids, Some(0))));
+
+    assert_eq!(tokenizer.encode("é"), vec![4]);
+    assert_eq!(tokenizer.encode("aé"), vec![1, 4]);
+    assert_eq!(tokenizer.encode("éa"), vec![4, 1]);
+}
+
+/// The reordering changes NOTHING when no merge takes a fallback token as an
+/// operand — which is every published vocabulary this project verifies against
+/// (neither `mistral-7b-v0.3` nor `embeddinggemma-300m` has a merge whose
+/// concatenated key so much as contains `<0x` or `<unk>`).
+///
+/// Same vocabulary, ids and ground truth as
+/// [`byte_fallback_resolves_each_byte_separately_falling_back_to_unk`], with a
+/// merge list added: `tokenizers` 0.22.1 gives `['a', '<0x78>', '<unk>',
+/// '<unk>', 'c']`, the unk-overtaking order the resolve-after-merge path
+/// already reproduced. Both orders must agree here, or the redo would be a
+/// silent behavior change for every real byte-fallback model.
+#[test]
+fn resolving_first_leaves_a_vocabulary_without_byte_operand_merges_alone() {
+    let encoder: FxHashMap<Vec<u8>, u32> = [("<unk>", 0), ("a", 1), ("c", 2), ("<0x78>", 3)]
+        .iter()
+        .map(|(token, id)| (token.as_bytes().to_vec(), *id))
+        .collect();
+
+    let mut byte_ids = [None; 256];
+    byte_ids[0x78] = Some(3);
+
+    // A merge list that exists but names no fallback token, so the character
+    // walk runs and the merge over its output finds nothing to do.
+    let merge_ranks: FxHashMap<Vec<u8>, u32> = [(b"ac".to_vec(), 0u32)].into_iter().collect();
+
+    let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
+        .expect("the test pattern compiles")
+        .with_merge_ranks(merge_ranks)
+        .with_byte_fallback(Some(ByteFallback::new(byte_ids, Some(0))));
+
+    assert_eq!(tokenizer.encode("abxbc"), vec![1, 3, 0, 0, 2]);
+    assert_eq!(tokenizer.encode("abc"), vec![1, 0, 2]);
+}
+
+/// `model.fuse_unk` survives the reordering: it still collapses a *run* of
+/// unk-resolved characters into one unk, and the run still spans a `<0xNN>` hit
+/// without being broken by it.
+///
+/// Ground truth from `tokenizers` 0.22.1 on `{"<unk>": 0, "a": 1, "<0x7A>": 2,
+/// "b": 3, "ab": 4}` with `byte_fallback: true` — the same measurement
+/// `ByteFallback::fuse_unk` documents: `encode('xxzxx')` is `['<unk>',
+/// '<0x7A>', '<unk>', '<unk>', '<unk>']` unfused and `['<0x7A>', '<unk>']`
+/// fused, while `'xax'` is `['<unk>', 'a', '<unk>']` under both.
+#[test]
+fn fuse_unk_still_holds_when_the_fallback_is_resolved_first() {
+    let encoder: FxHashMap<Vec<u8>, u32> =
+        [("<unk>", 0), ("a", 1), ("<0x7A>", 2), ("b", 3), ("ab", 4)]
+            .iter()
+            .map(|(token, id)| (token.as_bytes().to_vec(), *id))
+            .collect();
+
+    let merge_ranks: FxHashMap<Vec<u8>, u32> = [(b"ab".to_vec(), 0u32)].into_iter().collect();
+
+    let mut byte_ids = [None; 256];
+    byte_ids[0x7A] = Some(2);
+
+    let build = |fuse_unk: bool| {
+        Tokenizer::new(encoder.clone(), FxHashMap::default(), r"\S+|\s+")
+            .expect("the test pattern compiles")
+            .with_merge_ranks(merge_ranks.clone())
+            .with_byte_fallback(Some(
+                ByteFallback::new(byte_ids, Some(0)).with_fuse_unk(fuse_unk),
+            ))
+    };
+
+    assert_eq!(build(false).encode("xxzxx"), vec![0, 2, 0, 0, 0]);
+    assert_eq!(build(true).encode("xxzxx"), vec![2, 0]);
+    assert_eq!(build(false).encode("xax"), vec![0, 1, 0]);
+    assert_eq!(build(true).encode("xax"), vec![0, 1, 0]);
+}
+
+/// A fallback id the vocabulary spells no token for cannot be a merge operand,
+/// so there is nothing for the reordering to change and the resolve-after-merge
+/// answer stands. Pinned because that is what the redo's bail-out returns, and
+/// a bail-out that quietly returned something *else* would be invisible.
+///
+/// This is [`partial_fallback_tokenizer`]'s shape with a merge list added: a
+/// `<0xNN>` table wired up directly rather than derived from the encoder, so id
+/// 3 denotes byte 0x78 while no `"<0x78>"` token exists to merge with anything.
+/// The ids are the same ones that test measures against `tokenizers` 0.22.1.
+#[test]
+fn a_fallback_id_with_no_vocabulary_spelling_keeps_the_after_merge_answer() {
+    let encoder: FxHashMap<Vec<u8>, u32> = [("<unk>", 0), ("a", 1), ("c", 2)]
+        .iter()
+        .map(|(token, id)| (token.as_bytes().to_vec(), *id))
+        .collect();
+
+    let merge_ranks: FxHashMap<Vec<u8>, u32> = [(b"ac".to_vec(), 0u32)].into_iter().collect();
+
+    // Id 3 has no `"<0x78>"` vocabulary entry, so the encoder-derived decoder
+    // has no spelling for it and the redo bails back to the after-merge path.
+    let mut byte_ids = [None; 256];
+    byte_ids[0x78] = Some(3);
+
+    let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
+        .expect("the test pattern compiles")
+        .with_merge_ranks(merge_ranks)
+        .with_byte_fallback(Some(ByteFallback::new(byte_ids, Some(0))));
+
+    assert_eq!(tokenizer.encode("abxbc"), vec![1, 3, 0, 0, 2]);
+}
+
 /// D3 regression: an id absent from the vocab, the special-tokens decoder,
 /// and the `special=true` skip set must error, not silently render as `""`.
 #[test]

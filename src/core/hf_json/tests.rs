@@ -1127,6 +1127,45 @@ fn byte_fallback_honors_a_non_default_unk_token_spelling() {
     assert_eq!(t.encode("abc"), vec![1, 9, 2]);
 }
 
+/// A `tokenizer.json` whose `merges` take a `<0xNN>` token as an operand, end
+/// to end through the loader: HuggingFace resolves byte fallback BEFORE
+/// merging, so those merges fire and each input below is a single token.
+///
+/// The file is the one the measurement was taken on. `tokenizers` 0.22.1,
+/// loading exactly these bytes:
+///
+/// ```text
+/// encode('zb',  add_special_tokens=False) -> ['<0x7A>b']            ids [4]
+/// encode('az',  add_special_tokens=False) -> ['a<0x7A>']            ids [5]
+/// encode('zz',  add_special_tokens=False) -> ['<0x7A><0x7A>']       ids [6]
+/// encode('zbz', add_special_tokens=False) -> ['<0x7A>b', '<0x7A>']  ids [4, 3]
+/// ```
+///
+/// No published vocabulary needs this — neither `mistral-7b-v0.3` nor
+/// `embeddinggemma-300m` has a merge whose concatenated key contains `<0x` at
+/// all — so the divergence it pins is only reachable on a file like this one,
+/// which is why the file is here rather than on the shelf.
+#[test]
+fn merges_over_byte_fallback_tokens_fire_as_huggingface_orders_them() {
+    let json = r#"{
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "a": 1, "b": 2, "<0x7A>": 3,
+                "<0x7A>b": 4, "a<0x7A>": 5, "<0x7A><0x7A>": 6},
+            "merges": [["<0x7A>", "b"], ["a", "<0x7A>"], ["<0x7A>", "<0x7A>"]]}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    // `z` is 0x7A and has no vocabulary entry of its own.
+    assert_eq!(t.encode("zb"), vec![4]);
+    assert_eq!(t.encode("az"), vec![5]);
+    assert_eq!(t.encode("zz"), vec![6]);
+    assert_eq!(t.encode("zbz"), vec![4, 3]);
+}
+
 /// D23: a `<0xNN>` id decodes to the byte it denotes, so the bare BPE backend
 /// agrees with the declared `ByteFallback` decoder op instead of rendering the
 /// token's literal vocabulary spelling.
