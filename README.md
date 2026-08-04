@@ -81,13 +81,19 @@ every format**, at Rust speed, with the reference implementations as the correct
 
 ![Batch Encoding Throughput](images/benchmark_batch.png)
 
-| Configuration | Splintr      | Tiktoken | HuggingFace | TokenDagger |
-| ------------- | ------------ | -------- | ----------- | ----------- |
-| 1,000 texts   | **111 MB/s** | 9 MB/s   | 28 MB/s     | 9 MB/s      |
-| 500 texts     | **107 MB/s** | 10 MB/s  | 27 MB/s     | 8 MB/s      |
-| 100 texts     | **69 MB/s**  | 7 MB/s   | 20 MB/s     | 6 MB/s      |
+| Configuration | Splintr         | Tiktoken   | HuggingFace | TokenDagger | vs tiktoken |
+| ------------- | --------------- | ---------- | ----------- | ----------- | ----------- |
+| 1,000 texts   | **56.4 MB/s**   | 5.8 MB/s   | 14.7 MB/s   | 4.7 MB/s    | 9.8x        |
+| 500 texts     | **65.1 MB/s**   | 5.5 MB/s   | 14.8 MB/s   | 5.4 MB/s    | 11.9x       |
+| 100 texts     | **50.3 MB/s**   | 4.0 MB/s   | 11.3 MB/s   | 3.8 MB/s    | 12.7x       |
 
 **10-12x faster than tiktoken. 4x faster than HuggingFace. Built in Rust, accessible from Python.**
+
+Produced by `benchmarks/benchmark_batch.py` on the machine described under
+[Performance Deep Dive](#performance-deep-dive). The absolute MB/s move with the hardware
+and with the versions of the libraries being compared against; the ratio is the durable
+part. Re-run the script to get the figures for your own machine. The chart above is from an
+earlier run on different hardware — the table is the measured one.
 
 ## Quick Start
 
@@ -117,7 +123,7 @@ tokenizer = Tokenizer.from_pretrained("cl100k_base")  # OpenAI GPT-4/3.5
 tokens = tokenizer.encode("Hello, world!")
 text = tokenizer.decode(tokens)
 
-# Batch encode (10-12x faster)
+# Batch encode (10-12x faster than tiktoken)
 texts = ["Hello, world!", "How are you?", "Machine learning is fun!"]
 batch_tokens = tokenizer.encode_batch(texts)
 ```
@@ -160,8 +166,8 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 **Performance where it matters:**
 
-- **12x faster batch encoding** - Parallel processing across multiple texts using Rayon
-- **3-4x faster single text encoding** - Optimized sequential algorithm for typical use cases
+- **10-12x faster batch encoding than tiktoken** - Parallel processing across multiple texts using Rayon
+- **~2-2.6x faster single text encoding than tiktoken** - Optimized sequential algorithm for typical use cases
 - **Smart parallelization** - Sequential for small texts (<1MB), parallel for large datasets
 - **LRU caching** - Avoid redundant encoding of frequently seen text chunks
 
@@ -182,11 +188,24 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 ## Performance Deep Dive
 
-All benchmarks performed on Linux (6.16.8-arch3-1) with 24 CPU cores, comparing against tiktoken (reference Python implementation), Hugging Face tokenizers, and TokenDagger.
+Every number on this page was measured by the scripts in `benchmarks/` — `benchmark_batch.py`
+for the batch figures, `benchmark_single.py` for the single-text ones — on Linux
+(7.0.10-arch1-1), an AMD Ryzen 9 5900X with 24 logical cores, against tiktoken 0.8.0
+(the reference Python implementation), Hugging Face tokenizers 0.22.1, and TokenDagger 0.1.1
+on CPython 3.12. Absolute throughput moves with the hardware and with the versions of those
+libraries; the ratios are the part that carries across machines. Run the scripts yourself to
+get your own figures — see [Running Benchmarks Yourself](#running-benchmarks-yourself).
+
+The charts below were plotted from an earlier run, on different hardware and against
+different versions of the comparison libraries, so their absolute axes do not match the
+figures quoted in the text. Where the two disagree, the numbers in the text are the measured
+ones; the charts are kept for the shape they show, not their values.
 
 ### Single Text Encoding
 
-For single texts, splintr achieves **3-4x faster** encoding across various text sizes:
+For single texts, splintr encodes **~2-2.6x faster** than tiktoken across the five text types
+`benchmark_single.py` covers (short prose, medium prose, long prose, Python code,
+multilingual):
 
 ![Single Text Encoding Comparison](images/benchmark_single.png)
 
@@ -233,17 +252,19 @@ This architecture ensures splintr is optimized for the most common tokenization 
 git clone https://github.com/ml-rust/splintr.git
 cd splintr
 pip install -e .
-pip install tiktoken
+pip install tiktoken tokenizers tokendagger
 
-# Run the benchmark suite
+# The two scripts that produced the figures above
+python benchmarks/benchmark_batch.py    # batch throughput table + speedup charts
+python benchmarks/benchmark_single.py   # single-text throughput + latency charts
+
+# The broader suite, written to a file
 cd benchmarks
 python benchmark.py --model cl100k_base --output results/my_benchmark.json
-
-# View results
 cat results/my_benchmark.md
 ```
 
-The benchmark suite tests single text encoding, batch encoding, streaming decoder performance, and special token handling across various content types.
+`benchmark.py` covers single text encoding, batch encoding, streaming decoder performance, and special token handling across various content types. Expect different absolute numbers on different hardware and with different versions of the comparison libraries — record which you ran against before quoting a figure.
 
 ### Regex Backends
 
@@ -585,7 +606,7 @@ Splintr implements several optimizations that make tokenization faster:
 
 **LLM Applications:**
 
-- Tokenizing prompts with 3-4x lower latency
+- Tokenizing prompts with ~2-2.6x lower latency than tiktoken
 - Streaming decoder for real-time output display
 - Token counting for API cost estimation
 

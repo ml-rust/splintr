@@ -106,11 +106,14 @@ impl ByteFallback {
 ///
 /// - **Single text encoding**: Uses sequential processing via [`Tokenizer::encode`].
 ///   Benchmarks show sequential is faster for texts up to ~1MB due to Rayon
-///   thread pool overhead. Sequential achieves ~50 MB/s consistently.
+///   thread pool overhead.
 ///
 /// - **Batch encoding**: Uses Rayon parallelism via [`Tokenizer::encode_batch`].
-///   Parallelizes across texts (not within a single text), achieving ~110 MB/s
-///   on batch workloads - approximately 10-12x faster than tiktoken.
+///   Parallelizes across texts (not within a single text) - approximately
+///   10-12x faster than tiktoken on the batch workloads
+///   `benchmarks/benchmark_batch.py` runs. Absolute throughput depends on the
+///   machine and on the version of the library being compared against; the
+///   ratio is what carries across both.
 ///
 /// - **Very large single texts (>1MB)**: Use [`Tokenizer::encode_rayon`] for texts larger
 ///   than ~1MB where Rayon parallelization within the text becomes beneficial.

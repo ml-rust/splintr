@@ -163,8 +163,9 @@ whenever the text is untrusted — see below.
 #### `encode_batch(texts: list[str]) -> list[list[int]]`
 
 Encode multiple texts in parallel using Rayon — the batch form of `encode`, with
-the boundary template applied to each result. This is where Splintr really shines,
-achieving 10-12x speedup over sequential processing.
+the boundary template applied to each result. This is where Splintr really shines:
+roughly 10-12x tiktoken's throughput on the batch workloads
+`benchmarks/benchmark_batch.py` runs.
 
 ```python
 texts = ["Hello, world!", "How are you?"]
@@ -1099,7 +1100,7 @@ print("\nDone!")
 
 ## Performance Tips
 
-1. **Use `encode_batch()` for multiple texts**: This is where Splintr achieves 10-12x speedup. Always prefer batch encoding when you have multiple texts.
+1. **Use `encode_batch()` for multiple texts**: This is where Splintr reaches roughly 10-12x tiktoken's throughput. Always prefer batch encoding when you have multiple texts.
 
 2. **Use `encode()` for single texts**: Don't use `encode_rayon()` unless your text is >1MB. The sequential implementation is faster for typical use cases.
 
