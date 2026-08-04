@@ -89,6 +89,43 @@ fn bpe_honors_merge_order_independent_of_ids() {
 }
 
 #[test]
+fn bpe_metaspace_pretokenizer_folds_spaces_into_underscore_prefix() {
+    // A BPE model (not Unigram) whose pre_tokenizer is a bare `Metaspace` node,
+    // the Mistral/Gemma/Llama-SPM shape: the vocab is `▁`-marked and
+    // `prepend_scheme: "first"` means a leading space is implied on the first
+    // word. Must NOT fall back to per-character/byte-fallback tokens.
+    let json = r#"{
+        "pre_tokenizer": {"type": "Metaspace", "prepend_scheme": "first"},
+        "model": {"type": "BPE",
+            "vocab": {"▁hello": 10, "▁world": 11, "hello": 12, "world": 13},
+            "merges": []}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes()).unwrap().into_backend() else {
+        panic!("expected BPE backend");
+    };
+    // Both words get a `▁` prefix: the implied leading space on "hello", and the
+    // real space folded onto "world".
+    assert_eq!(t.encode("hello world"), vec![10, 11]);
+}
+
+#[test]
+fn bpe_metaspace_pretokenizer_omits_prefix_when_prepend_scheme_never() {
+    // Same vocab and model, but `prepend_scheme: "never"`: no leading `▁` is
+    // implied, so the first word matches its bare (non-prefixed) vocab entry
+    // while the second, following a real space, still gets `▁`.
+    let json = r#"{
+        "pre_tokenizer": {"type": "Metaspace", "prepend_scheme": "never"},
+        "model": {"type": "BPE",
+            "vocab": {"▁hello": 10, "▁world": 11, "hello": 12, "world": 13},
+            "merges": []}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes()).unwrap().into_backend() else {
+        panic!("expected BPE backend");
+    };
+    assert_eq!(t.encode("hello world"), vec![12, 11]);
+}
+
+#[test]
 fn unigram_uses_viterbi_not_greedy() {
     // Tokens: "ab"(-5), "abc"(-1), "c"(-1), plus single chars. Greedy-longest at
     // ▁? no ▁ here — use a vocab with the relevant pieces. For "abc": greedy

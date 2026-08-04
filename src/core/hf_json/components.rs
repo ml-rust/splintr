@@ -15,6 +15,10 @@ use super::HfJsonError;
 pub(super) struct PreTokenization {
     /// Whether tokens are byte-level encoded (GPT-2/Whisper/Llama3 style).
     pub byte_level: bool,
+    /// Whether a `Metaspace` node was declared (Mistral/Gemma/Llama-SPM style):
+    /// the vocab is `▁`-marked and the tokenizer must be built in metaspace-decoder
+    /// mode (`Tokenizer::new_with_metaspace_decoder`) rather than the plain path.
+    pub metaspace: bool,
     /// The pre-tokenization split regex.
     pub pattern: String,
     /// Prepend a space to the input (ByteLevel/Metaspace `add_prefix_space`, or
@@ -122,6 +126,7 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
 
     PreTokenization {
         byte_level,
+        metaspace,
         pattern,
         // ByteLevel/Metaspace default `add_prefix_space` to true in HF when the
         // field is absent; real configs set it explicitly.

@@ -204,9 +204,14 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
             t.with_pre_tokenizer(pt)
         }
         None => {
-            // No pre-tokenizer declared: fall back to the single-regex path.
+            // No multi-stage pipeline declared: fall back to the single-regex
+            // path. `Metaspace` gets its own branch — it is BPE with a
+            // `▁`-marked vocab, decoded via `use_metaspace_decoder`, distinct
+            // from both plain BPE and ByteLevel.
             let t = if pre.byte_level {
                 Tokenizer::new_byte_level(encoder, specials, &pre.pattern)?
+            } else if pre.metaspace {
+                Tokenizer::new_with_metaspace_decoder(encoder, specials, &pre.pattern)?
             } else {
                 Tokenizer::new(encoder, specials, &pre.pattern)?
             };
@@ -214,7 +219,14 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
                 Some(ranks) => t.with_merge_ranks(ranks),
                 None => t,
             };
-            t.with_prefix_space(pre.byte_level && pre.add_prefix_space)
+            // Not gated on `pre.byte_level`: `add_prefix_space` is only ever set
+            // (non-`None`) by a ByteLevel or Metaspace node (see
+            // `parse_pre_tokenizer`), so for the byte-level branch ANDing with
+            // `true` was a no-op — this is behavior-preserving there — while for
+            // the Metaspace branch it previously force-disabled a prefix the
+            // vocab actually needs (`prepend_scheme: "first"` resolves
+            // `add_prefix_space` to `true`).
+            t.with_prefix_space(pre.add_prefix_space)
         }
     };
     // HuggingFace recognizes added tokens in the input during encoding, and drops
