@@ -286,6 +286,7 @@ pub(crate) struct DecodeCursor<S> {
 ///
 /// A free function over the two fields rather than a method, so it can be called
 /// while the rendering rules are borrowed out of the cursor's state.
+#[inline]
 fn end_byte_run(run: &mut Vec<u8>, buffer: &mut Utf8Buffer) {
     if run.is_empty() {
         return;
@@ -336,6 +337,60 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
     /// what it can decode, which is the order whole-sequence decoding has
     /// always reported errors in.
     fn render_into<E>(
+        &mut self,
+        ids: &[u32],
+        on_unknown: impl Fn(u32) -> Result<(), E>,
+    ) -> Result<(), E> {
+        // Under `plain_by_id`'s shape — every tiktoken-style BPE vocabulary —
+        // everything the general loop re-decides per id is a constant, so the
+        // shape is established once here and the per-id work is the skip check,
+        // one map lookup and the special-token fallback that `render` would
+        // itself reduce to. Semantics are `render`'s, not a second set: this is
+        // the same rules object, inspected rather than reimplemented.
+        {
+            let rules = self.state.borrow().render();
+            if let Some(map) = rules.plain_by_id() {
+                for &id in ids {
+                    if rules.skips(id) {
+                        continue;
+                    }
+                    // No `end_byte_run` here, and deliberately: the shape
+                    // excludes every byte-fallback rule, so `Rendered::RunByte`
+                    // is unreachable and `byte_run` is provably still empty.
+                    // The `Lead` is likewise constantly `Lead::None` — the
+                    // `ById` arm of `render` hardcodes it — so no separator is
+                    // ever emitted and `rendered_a_token` is only written, never
+                    // read.
+                    match map.get(&id) {
+                        Some(bytes) => {
+                            self.bytes.push(bytes);
+                            // Even when `bytes` was empty: a token rendered.
+                            self.rendered_a_token = true;
+                        }
+                        None => match rules.special_surface(id) {
+                            Some(text) => {
+                                self.bytes.push(text.as_bytes());
+                                self.rendered_a_token = true;
+                            }
+                            None => on_unknown(id)?,
+                        },
+                    }
+                }
+                return Ok(());
+            }
+        }
+
+        self.render_into_general(ids, on_unknown)
+    }
+
+    /// The general rendering loop: one [`RenderRules::render`] per id, with
+    /// every position-dependent decision the cursor owns applied around it.
+    ///
+    /// Split out from [`render_into`](Self::render_into) only so the specialized
+    /// loop above has something to be checked against — it is the definition of
+    /// what that loop must reproduce, and both are driven over the same ids by
+    /// this module's tests.
+    fn render_into_general<E>(
         &mut self,
         ids: &[u32],
         on_unknown: impl Fn(u32) -> Result<(), E>,
@@ -515,9 +570,11 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::render::{ByteFallbackRule, RenderRules, Surfaces};
     use super::{DecodeCursor, DecodeState};
     use crate::core::tokenizer::Tokenizer;
     use rustc_hash::{FxHashMap, FxHashSet};
+    use std::cell::RefCell;
     use std::convert::Infallible;
     use std::sync::Arc;
 
@@ -620,5 +677,122 @@ mod tests {
             out.push_str(&cursor.flush());
             assert_eq!(out, "AJ<0x1><0x041><0xG1>", "in chunks of {chunk}");
         }
+    }
+
+    /// Which of the two rendering loops a drive uses — the only thing the
+    /// equivalence test below varies.
+    #[derive(Clone, Copy)]
+    enum Loop {
+        Specialized,
+        General,
+    }
+
+    /// A decode state in the shape [`RenderRules::plain_by_id`] names, holding
+    /// every case the specialized loop distinguishes: ordinary surfaces, a
+    /// surface that is *empty* (id 3), a skipped id (4), an id that only the
+    /// special-token table knows (5), and — by omission — ids in no table at all.
+    fn plain_state() -> DecodeState {
+        let mut surfaces = FxHashMap::default();
+        surfaces.insert(1u32, b"He".to_vec());
+        surfaces.insert(2u32, b"llo".to_vec());
+        surfaces.insert(3u32, Vec::new());
+
+        let mut specials = FxHashMap::default();
+        specials.insert(5u32, "<eos>".to_string());
+
+        let skip: FxHashSet<u32> = [4u32].into_iter().collect();
+
+        DecodeState::new(
+            RenderRules::new(
+                Surfaces::ById(Arc::new(surfaces)),
+                Arc::new(specials),
+                Arc::new(skip),
+                ByteFallbackRule::None,
+                false,
+                false,
+            ),
+            Vec::new(),
+        )
+    }
+
+    /// Drive one loop over `ids`, reporting everything the two must agree on:
+    /// the text rendered, the token flag, and which ids reached `on_unknown`.
+    ///
+    /// Unknown ids are recorded rather than raised so a single sequence can
+    /// exercise the unknown arm *and* everything after it.
+    fn render_with(state: &DecodeState, ids: &[u32], which: Loop) -> (String, bool, Vec<u32>) {
+        let mut cursor = DecodeCursor::new(state);
+        let unknown = RefCell::new(Vec::new());
+        let record = |id: u32| {
+            unknown.borrow_mut().push(id);
+            Ok::<(), Infallible>(())
+        };
+        let outcome = match which {
+            Loop::Specialized => cursor.render_into(ids, record),
+            Loop::General => cursor.render_into_general(ids, record),
+        };
+        match outcome {
+            Ok(()) => {}
+            // `Infallible` has no values, so this match has no arms to write.
+            Err(never) => match never {},
+        }
+        let rendered_a_token = cursor.rendered_a_token;
+        (cursor.flush(), rendered_a_token, unknown.into_inner())
+    }
+
+    /// The specialization in [`DecodeCursor::render_into`] is a loop shape, not
+    /// a second set of rules — so it is checked against the general loop rather
+    /// than trusted to match it. Any future condition dropped from
+    /// [`RenderRules::plain_by_id`] shows up here as a divergence.
+    #[test]
+    fn specialized_loop_agrees_with_general_loop() {
+        let state = plain_state();
+        assert!(
+            state.render().plain_by_id().is_some(),
+            "the fixture must take the specialized path, or this proves nothing"
+        );
+
+        for ids in [
+            // Every arm on its own, so a divergence names its own case.
+            vec![1],
+            vec![3],
+            vec![4],
+            vec![5],
+            vec![9],
+            vec![],
+            // ...and mixed, which is where the ordering between the surface
+            // lookup, the skip set and the special table can drift.
+            vec![3, 1, 4, 2, 5, 9, 4, 3, 1],
+            vec![4, 9, 5, 1],
+        ] {
+            let specialized = render_with(&state, &ids, Loop::Specialized);
+            let general = render_with(&state, &ids, Loop::General);
+            assert_eq!(specialized, general, "ids: {ids:?}");
+        }
+    }
+
+    /// The two cases the equivalence check above would also pass on if *both*
+    /// loops were wrong, pinned to their absolute answers.
+    #[test]
+    fn specialized_loop_renders_the_expected_text() {
+        let state = plain_state();
+        let ids = [3, 1, 4, 2, 5, 9, 4, 3, 1];
+
+        let (text, rendered_a_token, unknown) = render_with(&state, &ids, Loop::Specialized);
+        assert_eq!(text, "Hello<eos>He");
+        assert!(rendered_a_token);
+        assert_eq!(unknown, vec![9]);
+
+        // An empty surface still *rendered a token* — the distinction
+        // `rendered_a_token` exists to make, and the one a `map.get` hit
+        // returning zero bytes could silently lose.
+        let (text, rendered_a_token, unknown) = render_with(&state, &[3], Loop::Specialized);
+        assert_eq!(text, "");
+        assert!(rendered_a_token);
+        assert!(unknown.is_empty());
+
+        // A skipped id renders nothing and leaves the flag armed.
+        let (_, rendered_a_token, _) = render_with(&state, &[4], Loop::Specialized);
+        assert!(!rendered_a_token);
     }
 }

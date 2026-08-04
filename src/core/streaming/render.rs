@@ -119,6 +119,16 @@ pub(crate) enum WordSeparator {
 }
 
 impl WordSeparator {
+    /// Whether [`split`](Self::split) can only ever answer [`Lead::None`], so a
+    /// caller that has no separator to emit need not consult it per token.
+    #[inline]
+    fn is_trivial(&self) -> bool {
+        match self {
+            Self::None => true,
+            Self::EveryToken | Self::Continuation(_) => false,
+        }
+    }
+
     /// Split a surface into the separator it carries and the text that is left
     /// once any continuation marker is removed.
     fn split<'a>(&self, piece: &'a str) -> (Lead, &'a str) {
@@ -173,6 +183,20 @@ pub(crate) struct RenderRules {
     special_tokens_decoder: Arc<FxHashMap<u32, String>>,
     /// Ids to drop outright (HF `skip_special_tokens`).
     skip: Arc<FxHashSet<u32>>,
+    /// The inclusive `(min, max)` id span `skip` covers, or `None` when `skip`
+    /// is empty — recomputed by every site that assigns `skip` (see
+    /// [`skip_span`]).
+    ///
+    /// Every vocabulary here puts its special ids in a high, narrow band well
+    /// above the ordinary token ids (llama3 specials start at 128000 with
+    /// ordinary ids below; cl100k at 100257), so an ordinary id almost never
+    /// falls inside the span. [`skips`](Self::skips) checks the span first —
+    /// two integer comparisons — before touching the hash table, which the
+    /// hot decode path calls once per token id. The span only *rejects* ids
+    /// the hash table would also have rejected; membership is still decided
+    /// by `skip` alone, so this cannot change the answer, only skip the
+    /// lookup.
+    skip_span: Option<(u32, u32)>,
     byte_fallback: ByteFallbackRule,
     use_byte_level: bool,
     /// Literal substitutions applied, in order, to a [`Surfaces::ByIndex`]
@@ -225,6 +249,16 @@ pub(crate) struct RenderRules {
     word_separator: WordSeparator,
 }
 
+/// The inclusive `(min, max)` id span a skip set covers, or `None` when it is
+/// empty — see `RenderRules::skip_span` for why this is worth precomputing.
+#[inline]
+fn skip_span(skip: &FxHashSet<u32>) -> Option<(u32, u32)> {
+    skip.iter().fold(None, |span, &id| match span {
+        Some((lo, hi)) => Some((lo.min(id), hi.max(id))),
+        None => Some((id, id)),
+    })
+}
+
 impl RenderRules {
     /// Capture a backend's per-id rendering rules.
     pub(crate) fn new(
@@ -235,10 +269,12 @@ impl RenderRules {
         use_byte_level: bool,
         use_metaspace: bool,
     ) -> Self {
+        let skip_span = skip_span(&skip);
         let mut rules = Self {
             surfaces,
             special_tokens_decoder,
             skip,
+            skip_span,
             byte_fallback,
             use_byte_level,
             surface_replace: Vec::new(),
@@ -263,6 +299,7 @@ impl RenderRules {
             surfaces: Surfaces::ByIndex(Arc::new(Vec::new())),
             special_tokens_decoder: Arc::new(FxHashMap::default()),
             skip: Arc::new(FxHashSet::default()),
+            skip_span: None,
             byte_fallback,
             use_byte_level,
             surface_replace: Vec::new(),
@@ -281,6 +318,7 @@ impl RenderRules {
     ) -> Self {
         self.surfaces = surfaces;
         self.special_tokens_decoder = special_tokens_decoder;
+        self.skip_span = skip_span(&skip);
         self.skip = skip;
         self
     }
@@ -299,6 +337,7 @@ impl RenderRules {
     /// surface, carrying a word separator with it.
     pub(crate) fn rendering_specials(mut self) -> Self {
         self.skip = Arc::new(FxHashSet::default());
+        self.skip_span = None;
         self
     }
 
@@ -319,6 +358,7 @@ impl RenderRules {
     /// Whether a rendered token is cleaned as a token, for the cursor — which
     /// applies it, because the separator that is part of the cleaned unit is the
     /// cursor's decision.
+    #[inline]
     pub(crate) fn unit_cleanup(&self) -> bool {
         self.unit_cleanup
     }
@@ -340,6 +380,7 @@ impl RenderRules {
     /// Parses with [`parse_byte_token`], the one byte-token parser every rule
     /// shares: exactly two hex digits, so `<0x5>` is text, and reproducing
     /// `Decoder::decode` means reproducing that.
+    #[inline]
     fn declared_run_byte(&self, surface: &[u8]) -> Option<u8> {
         match self.byte_fallback {
             ByteFallbackRule::DeclaredRun => {
@@ -354,6 +395,7 @@ impl RenderRules {
     /// Whether any declared substitution has anything to do to this surface —
     /// checked first so that the pieces that carry no pattern (nearly all of
     /// them) are rendered without allocating.
+    #[inline]
     fn surface_replace_applies(&self, piece: &str) -> bool {
         self.surface_replace
             .iter()
@@ -383,12 +425,69 @@ impl RenderRules {
         }
     }
 
+    /// Whether this id is dropped outright — the skip check
+    /// [`render`](Self::render) makes first, exposed so a caller that has
+    /// already established the rendering shape can make it without going
+    /// through the full match.
+    ///
+    /// `skip_span` is checked first: every vocabulary here clusters its
+    /// special ids into a high, narrow band, so an ordinary id — the common
+    /// case on the hot decode path — is rejected by two integer comparisons
+    /// and never touches the hash table. The hash lookup remains the sole
+    /// authority on membership; the span can only skip a lookup that would
+    /// have missed, never change the answer.
+    #[inline]
+    pub(crate) fn skips(&self, id: u32) -> bool {
+        match self.skip_span {
+            Some((lo, hi)) => (lo..=hi).contains(&id) && self.skip.contains(&id),
+            None => false,
+        }
+    }
+
+    /// The special token's own spelling, or `None` if the id names none — the
+    /// last lookup [`render`](Self::render) makes, exposed for the same reason
+    /// as [`skips`](Self::skips).
+    ///
+    /// Never ByteLevel-encoded, as in [`render`](Self::render): a special
+    /// token's text is its text.
+    #[inline]
+    pub(crate) fn special_surface(&self, id: u32) -> Option<&str> {
+        self.special_tokens_decoder.get(&id).map(String::as_str)
+    }
+
+    /// The id → bytes table, but only under the shape in which
+    /// [`render`](Self::render) reduces to a skip-check, one map lookup and the
+    /// special-token fallback — the shape every tiktoken-style BPE vocabulary
+    /// has, and the one the per-id loop in
+    /// [`DecodeCursor`](super::state::DecodeCursor) is specialized on.
+    ///
+    /// That shape is: surfaces keyed [`ById`](Surfaces::ById), no byte fallback
+    /// at all (so [`Rendered::RunByte`] is unreachable and `declared_run_byte`
+    /// is constantly `None`), no ByteLevel unmapping, no per-token cleanup, no
+    /// surface substitutions, and a [`WordSeparator`] that can only answer
+    /// [`Lead::None`]. Everything the general path re-decides per id is then a
+    /// constant, which is what makes the specialized loop a loop-shape
+    /// optimization rather than a second set of rules.
+    pub(crate) fn plain_by_id(&self) -> Option<&FxHashMap<u32, Vec<u8>>> {
+        let map = match &self.surfaces {
+            Surfaces::ById(map) => map,
+            Surfaces::ByIndex(_) => return None,
+        };
+        let plain = matches!(self.byte_fallback, ByteFallbackRule::None)
+            && !self.use_byte_level
+            && !self.unit_cleanup
+            && self.surface_replace.is_empty()
+            && self.word_separator.is_trivial();
+        plain.then_some(map.as_ref())
+    }
+
     /// Render one id, deferring the "not in any table" decision to the caller
     /// so strict and lossy decoding cannot drift into two different notions of
     /// "unknown".
+    #[inline]
     pub(crate) fn render(&self, id: u32) -> Rendered<'_> {
         // Drop `special=true` added tokens (HF default skip_special_tokens).
-        if self.skip.contains(&id) {
+        if self.skips(id) {
             return Rendered::Skipped;
         }
 
@@ -507,12 +606,193 @@ impl RenderRules {
         }
 
         // Special tokens are never ByteLevel-encoded: their text is their text.
-        match self.special_tokens_decoder.get(&id) {
+        match self.special_surface(id) {
             Some(special) => Rendered::Bytes {
                 lead: Lead::None,
                 bytes: Cow::Borrowed(special.as_bytes()),
             },
             None => Rendered::Unknown,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ByteFallbackRule, RenderRules, Surfaces, WordSeparator};
+    use rustc_hash::{FxHashMap, FxHashSet};
+    use std::sync::Arc;
+
+    /// The BPE shape [`RenderRules::plain_by_id`] names: id-keyed surfaces and
+    /// nothing else declared.
+    fn plain(byte_fallback: ByteFallbackRule, use_byte_level: bool) -> RenderRules {
+        let mut surfaces = FxHashMap::default();
+        surfaces.insert(1u32, b"Hi".to_vec());
+        RenderRules::new(
+            Surfaces::ById(Arc::new(surfaces)),
+            Arc::new(FxHashMap::default()),
+            Arc::new(FxHashSet::default()),
+            byte_fallback,
+            use_byte_level,
+            false,
+        )
+    }
+
+    /// Each of the conditions below has its own test, so an edit that drops one
+    /// from the predicate fails a named test rather than silently widening the
+    /// set of vocabularies the specialized loop claims to cover.
+    #[test]
+    fn plain_by_id_accepts_the_plain_bpe_shape() {
+        let rules = plain(ByteFallbackRule::None, false);
+        let map = rules.plain_by_id().expect("the plain BPE shape qualifies");
+        assert_eq!(map.get(&1).map(Vec::as_slice), Some(b"Hi".as_slice()));
+    }
+
+    #[test]
+    fn plain_by_id_rejects_by_index_surfaces() {
+        let rules = RenderRules::new(
+            Surfaces::ByIndex(Arc::new(vec!["Hi".to_string()])),
+            Arc::new(FxHashMap::default()),
+            Arc::new(FxHashSet::default()),
+            ByteFallbackRule::None,
+            false,
+            false,
+        );
+        assert!(rules.plain_by_id().is_none());
+    }
+
+    #[test]
+    fn plain_by_id_rejects_byte_fallback() {
+        // Every rule but `None` can make `render` answer something the
+        // specialized loop has no arm for.
+        let table = Arc::new(FxHashMap::default());
+        assert!(plain(ByteFallbackRule::Table(table), false)
+            .plain_by_id()
+            .is_none());
+        assert!(plain(ByteFallbackRule::ParseSurface, false)
+            .plain_by_id()
+            .is_none());
+        assert!(plain(ByteFallbackRule::DeclaredRun, false)
+            .plain_by_id()
+            .is_none());
+    }
+
+    #[test]
+    fn plain_by_id_rejects_byte_level() {
+        assert!(plain(ByteFallbackRule::None, true).plain_by_id().is_none());
+    }
+
+    #[test]
+    fn plain_by_id_rejects_surface_replace() {
+        let rules = plain(ByteFallbackRule::None, false)
+            .with_surface_replace("a".to_string(), "b".to_string());
+        assert!(rules.plain_by_id().is_none());
+    }
+
+    #[test]
+    fn plain_by_id_rejects_unit_cleanup() {
+        let rules = plain(ByteFallbackRule::None, false).with_unit_cleanup();
+        assert!(rules.plain_by_id().is_none());
+    }
+
+    #[test]
+    fn plain_by_id_rejects_word_separator() {
+        let every =
+            plain(ByteFallbackRule::None, false).with_word_separator(WordSeparator::EveryToken);
+        assert!(every.plain_by_id().is_none());
+        let marked = plain(ByteFallbackRule::None, false)
+            .with_word_separator(WordSeparator::Continuation("##".to_string()));
+        assert!(marked.plain_by_id().is_none());
+    }
+
+    /// The `skip_span` prefilter must never change `skips`'s answer: a sparse
+    /// skip set spanning a wide range should still answer true for exactly its
+    /// members and false everywhere else, including ids inside the span that
+    /// are not members.
+    #[test]
+    fn skips_is_answer_preserving_across_a_sparse_span() {
+        let mut skip = FxHashSet::default();
+        skip.insert(5u32);
+        skip.insert(9000u32);
+        let rules = RenderRules::new(
+            Surfaces::ById(Arc::new(FxHashMap::default())),
+            Arc::new(FxHashMap::default()),
+            Arc::new(skip),
+            ByteFallbackRule::None,
+            false,
+            false,
+        );
+
+        // Members.
+        assert!(rules.skips(5));
+        assert!(rules.skips(9000));
+
+        // Non-members inside the span.
+        assert!(!rules.skips(6));
+        assert!(!rules.skips(4999));
+
+        // Below the span.
+        assert!(!rules.skips(0));
+        assert!(!rules.skips(4));
+
+        // Above the span.
+        assert!(!rules.skips(9001));
+        assert!(!rules.skips(u32::MAX));
+    }
+
+    /// An empty skip set answers false everywhere, with no span to consult.
+    #[test]
+    fn skips_is_false_for_an_empty_skip_set() {
+        let rules = plain(ByteFallbackRule::None, false);
+        assert!(!rules.skips(0));
+        assert!(!rules.skips(1));
+        assert!(!rules.skips(9000));
+        assert!(!rules.skips(u32::MAX));
+    }
+
+    /// [`with_vocabulary`](RenderRules::with_vocabulary) replaces `skip` after
+    /// construction — the one site the span could drift out of sync with the
+    /// set it describes if it were not recomputed there too.
+    #[test]
+    fn skips_is_correct_after_with_vocabulary_replaces_skip() {
+        let mut first_skip = FxHashSet::default();
+        first_skip.insert(5u32);
+        let rules = RenderRules::declared(ByteFallbackRule::None, false).with_vocabulary(
+            Surfaces::ById(Arc::new(FxHashMap::default())),
+            Arc::new(FxHashMap::default()),
+            Arc::new(first_skip),
+        );
+        assert!(rules.skips(5));
+        assert!(!rules.skips(9000));
+
+        let mut second_skip = FxHashSet::default();
+        second_skip.insert(9000u32);
+        let rules = rules.with_vocabulary(
+            Surfaces::ById(Arc::new(FxHashMap::default())),
+            Arc::new(FxHashMap::default()),
+            Arc::new(second_skip),
+        );
+        // The old member must no longer answer true, and the new member must.
+        assert!(!rules.skips(5));
+        assert!(rules.skips(9000));
+    }
+
+    /// [`rendering_specials`](RenderRules::rendering_specials) empties `skip`
+    /// after construction — the other site the span must be cleared at.
+    #[test]
+    fn skips_is_false_after_rendering_specials_clears_skip() {
+        let mut skip = FxHashSet::default();
+        skip.insert(5u32);
+        let rules = RenderRules::new(
+            Surfaces::ById(Arc::new(FxHashMap::default())),
+            Arc::new(FxHashMap::default()),
+            Arc::new(skip),
+            ByteFallbackRule::None,
+            false,
+            false,
+        )
+        .rendering_specials();
+        assert!(!rules.skips(5));
+        assert!(!rules.skips(0));
+        assert!(!rules.skips(u32::MAX));
     }
 }
