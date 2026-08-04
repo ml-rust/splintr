@@ -11,8 +11,8 @@
 //! therefore *constructs* the argument through crate-root paths and then
 //! actually calls the method — compiling is most of the assertion.
 use splintr::{
-    ByteFallback, NormOp, Normalizer, PreTokStage, PreTokenizer, SplitBehavior, SplitPattern,
-    SpmTokenizer, StreamingDecoder, Tokenizer,
+    ByteFallback, NormOp, Normalizer, PreTokStage, PreTokenizer, SentencePieceTokenizer,
+    SplitBehavior, SplitPattern, SpmTokenizer, StreamingDecoder, Tokenizer,
 };
 
 /// A vocabulary that tells the two splits apart: as one chunk `"a12"` BPEs into
@@ -263,6 +263,65 @@ fn spm_streaming_decoder_outlives_its_tokenizer_and_keeps_the_prefix_strip() {
     let mut decoder = {
         let spm = spm_tokenizer();
         spm.streaming_decoder()
+    };
+
+    // `<unk>` (0) is skipped, renders nothing, and therefore leaves the strip
+    // armed for the first character that actually arrives.
+    assert_eq!(decoder.add_token(0).expect("known id"), None);
+    assert_eq!(
+        decoder.add_tokens(&[2, 3]).expect("known ids"),
+        Some("hello world".to_string())
+    );
+}
+
+/// A five-piece Unigram vocabulary: `▁` is the word boundary, so
+/// `["▁hello", "▁world"]` decodes to `"hello world"` once the metaspace prefix
+/// comes off, and `<0x21>` is a byte-fallback token for `!`.
+fn unigram_tokenizer() -> SentencePieceTokenizer {
+    let tokens = ["<unk>", "</s>", "▁hello", "▁world", "<0x21>"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    // Empty scores: uniform, which is all a decode-side guard needs.
+    SentencePieceTokenizer::new(tokens, vec![], None, 1).expect("vocabulary builds")
+}
+
+/// [`SentencePieceTokenizer::streaming_decoder`] is callable from outside the
+/// crate and hands back the *same* [`StreamingDecoder`] — so the Unigram
+/// backend widens who may hand one out without widening how one can be built:
+/// the type still has no public constructor, and the annotated binding still
+/// fails to compile if it ever grows a lifetime parameter.
+#[test]
+fn unigram_streaming_decoder_is_reachable_and_agrees_with_decode() {
+    let unigram = unigram_tokenizer();
+    let ids = [2u32, 3, 4];
+
+    let mut decoder: StreamingDecoder = unigram.streaming_decoder();
+    let mut streamed = String::new();
+    for id in ids {
+        if let Some(text) = decoder.add_token(id).expect("ids are in the vocabulary") {
+            streamed.push_str(&text);
+        }
+    }
+    streamed.push_str(&decoder.flush());
+
+    // The metaspace prefix comes off exactly once, on the stream as on `decode`,
+    // and the byte-fallback id is its byte rather than its spelling.
+    assert_eq!(streamed, "hello world!");
+    assert_eq!(
+        streamed,
+        unigram.decode(&ids).expect("ids are in the vocabulary")
+    );
+}
+
+/// The Unigram decoder owns its configuration too, so it outlives the tokenizer
+/// that built it — and a leading skipped id must not spend the metaspace-prefix
+/// strip, which is only observable from a caller driving the stream by hand.
+#[test]
+fn unigram_streaming_decoder_outlives_its_tokenizer_and_keeps_the_prefix_strip() {
+    let mut decoder = {
+        let unigram = unigram_tokenizer();
+        unigram.streaming_decoder()
     };
 
     // `<unk>` (0) is skipped, renders nothing, and therefore leaves the strip

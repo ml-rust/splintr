@@ -28,9 +28,7 @@ use thiserror::Error;
 
 use super::metaspace::{self, Prefix};
 use super::policy::{PolicyError, SpecialMode};
-use super::streaming::{
-    ByteFallbackRule, DecodePost, DecodeState, RenderRules, StreamingDecoder, Surfaces,
-};
+use super::streaming::{DecodeState, StreamingDecoder};
 use super::tokenize::{Tokenize, TokenizeError};
 
 /// SentencePiece's "never merge" score sentinel.
@@ -283,7 +281,7 @@ impl SpmTokenizer {
     /// spells into the same set, so a caller stating what its *file* declares is
     /// adding to knowledge already there. This constructor puts nothing in here —
     /// the vocabulary's own BOS/EOS/UNK live in their own fields and are skipped
-    /// by [`skipped_on_decode`](Self::skipped_on_decode) regardless — so
+    /// by the internal `skipped_on_decode` set regardless — so
     /// there is nothing to union with, and replacing keeps the field meaning
     /// exactly "what the loader declared", as on the Unigram sibling.
     pub fn with_special_decode_ids(mut self, ids: rustc_hash::FxHashSet<u32>) -> Self {
@@ -689,33 +687,17 @@ impl SpmTokenizer {
     /// than copied — which is what lets `decode` capture one per call instead of
     /// the tokenizer having to cache one that could go stale.
     fn decode_state(&self) -> DecodeState {
-        // The strip looks for `' '`, which is what the rendering substitution
-        // has already produced from the dummy prefix's `▁`, so by the time a
-        // post-op runs the space is there to remove. It is listed at all only
-        // when a prefix was actually added — with `add_dummy_prefix` off
-        // (Gemma) there is none to remove.
-        let post = if self.add_prefix_space {
-            vec![DecodePost::StripLeadingSpace]
-        } else {
-            Vec::new()
-        };
-
-        DecodeState::new(
-            RenderRules::new(
-                Surfaces::ByIndex(Arc::clone(&self.id_to_token)),
-                // No separate special-token table: every id this vocabulary
-                // knows — sentinels and added tokens included — has a slot in
-                // the piece vector, so the surfaces answer for all of them.
-                Arc::new(FxHashMap::default()),
-                Arc::new(self.skipped_on_decode()),
-                // Ungated, unlike the BPE backend's encode-side inverse table:
-                // these vocabularies spell the byte in the piece itself, and
-                // every reference detokenizer for them parses that spelling.
-                ByteFallbackRule::ParseSurface,
-                false,
-                true,
-            ),
-            post,
+        // Shared with the Unigram backend's identically-shaped decode
+        // configuration — see `DecodeState::for_piece_vocab`. The strip looks
+        // for `' '`, which is what the rendering substitution has already
+        // produced from the dummy prefix's `▁`, so by the time a post-op runs
+        // the space is there to remove. It is listed at all only when a prefix
+        // was actually added — with `add_dummy_prefix` off (Gemma) there is
+        // none to remove.
+        DecodeState::for_piece_vocab(
+            &self.id_to_token,
+            self.skipped_on_decode(),
+            self.add_prefix_space,
         )
     }
 
@@ -736,7 +718,7 @@ impl SpmTokenizer {
     /// Render the pieces, then strip the dummy prefix.
     ///
     /// BOS/EOS/`<unk>` and the declared `special=true` ids produce nothing —
-    /// see [`skipped_on_decode`](Self::skipped_on_decode).
+    /// see the internal `skipped_on_decode` set.
     ///
     /// SentencePiece's `add_dummy_prefix` puts a boundary before the first piece
     /// on encode, so rendering `▁` back to a space leaves one space that was

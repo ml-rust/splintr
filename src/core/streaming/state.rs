@@ -13,9 +13,11 @@
 //!
 //! [`Tokenizer::decode`]: crate::Tokenizer::decode
 
-use super::render::{Lead, RenderRules, Rendered};
+use super::render::{ByteFallbackRule, Lead, RenderRules, Rendered, Surfaces};
 use super::utf8::{InvalidUtf8, Utf8Buffer};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Borrow;
+use std::sync::Arc;
 
 /// A text post-op, applied to decoded text in list order.
 ///
@@ -74,6 +76,42 @@ impl DecodeState {
     /// Capture a tokenizer's decode configuration.
     pub(crate) fn new(render: RenderRules, post: Vec<DecodePost>) -> Self {
         Self { render, post }
+    }
+
+    /// Decode configuration shared by the SentencePiece-shaped backends
+    /// (SPM-BPE and Unigram): pieces indexed by id, no separate special-token
+    /// table (every id has a slot in the piece vector), `<0xNN>` byte-fallback
+    /// parsed off the surface, the ▁→space substitution applied per surface
+    /// while rendering (not as a post-op, so byte-fallback bytes keep the
+    /// literal ▁ — see `RenderRules::new`'s `use_metaspace`), and the
+    /// dummy/metaspace-prefix space stripped exactly when one was added.
+    ///
+    /// The two backends differ in how `skipped` is composed (their
+    /// `bos_token_id`/`eos_token_id` shapes are not identical) and in what they
+    /// call the leading marker, but the `DecodeState` those decisions produce
+    /// is the same shape, so only this construction is shared.
+    pub(crate) fn for_piece_vocab(
+        id_to_token: &Arc<Vec<String>>,
+        skipped: FxHashSet<u32>,
+        add_prefix_space: bool,
+    ) -> Self {
+        let post = if add_prefix_space {
+            vec![DecodePost::StripLeadingSpace]
+        } else {
+            Vec::new()
+        };
+
+        Self::new(
+            RenderRules::new(
+                Surfaces::ByIndex(Arc::clone(id_to_token)),
+                Arc::new(FxHashMap::default()),
+                Arc::new(skipped),
+                ByteFallbackRule::ParseSurface,
+                false,
+                true,
+            ),
+            post,
+        )
     }
 
     /// The per-id rendering rules, for a caller that wants bytes rather than

@@ -73,7 +73,7 @@ impl Tokenizer {
     /// Decode token IDs back to bytes.
     ///
     /// The one decode entry point that wants bytes rather than text, so it
-    /// renders through [`RenderRules`] directly instead of through a cursor —
+    /// renders through the internal `RenderRules` directly instead of through a cursor —
     /// there is no UTF-8 reassembly and no post-op to run on raw bytes. The
     /// rendering itself is still the same code every other decode path uses.
     ///

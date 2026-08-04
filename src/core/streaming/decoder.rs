@@ -24,8 +24,10 @@ use std::sync::Arc;
 ///
 /// There is no public constructor: a decoder is built by a tokenizer's own
 /// `streaming_decoder` —
-/// [`Tokenizer::streaming_decoder`](crate::Tokenizer::streaming_decoder) or
-/// [`SpmTokenizer::streaming_decoder`](crate::SpmTokenizer::streaming_decoder) —
+/// [`Tokenizer::streaming_decoder`](crate::Tokenizer::streaming_decoder),
+/// [`SpmTokenizer::streaming_decoder`](crate::SpmTokenizer::streaming_decoder)
+/// or
+/// [`SentencePieceTokenizer::streaming_decoder`](crate::SentencePieceTokenizer::streaming_decoder) —
 /// which takes the surfaces, the skipped-special-token set and every spelling
 /// rule (byte level, byte fallback, metaspace) from that tokenizer's own
 /// configuration. A decoder therefore cannot be paired with the wrong kind of

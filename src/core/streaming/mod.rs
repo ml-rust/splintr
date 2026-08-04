@@ -8,8 +8,10 @@
 //!
 //! There is a single [`StreamingDecoder`](crate::StreamingDecoder), obtained
 //! only from a tokenizer's own factory —
-//! [`Tokenizer::streaming_decoder`](crate::Tokenizer::streaming_decoder) or
-//! [`SpmTokenizer::streaming_decoder`](crate::SpmTokenizer::streaming_decoder).
+//! [`Tokenizer::streaming_decoder`](crate::Tokenizer::streaming_decoder),
+//! [`SpmTokenizer::streaming_decoder`](crate::SpmTokenizer::streaming_decoder)
+//! or
+//! [`SentencePieceTokenizer::streaming_decoder`](crate::SentencePieceTokenizer::streaming_decoder).
 //! Everything that used to be the caller's choice — ByteLevel unmapping (GPT-2,
 //! Llama, DeepSeek V3), the `special=true` ids to drop, the metaspace ▁
 //! substitution, `<0xNN>` byte fallback, the SentencePiece dummy-prefix strip —
