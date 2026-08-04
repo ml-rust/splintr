@@ -327,7 +327,19 @@ class TestDeepSeekV3ChatFormat:
         return Tokenizer.from_pretrained("deepseek_v3")
 
     def test_chat_format(self, tokenizer):
-        """Test DeepSeek V3 chat format encoding/decoding."""
+        """Test DeepSeek V3 chat format encoding/decoding.
+
+        DeepSeek splits its own markers two ways in `tokenizer.json`, and decode
+        follows that split exactly. Measured with `tokenizers` 0.22.1 on
+        `deepseek-v3-tokenizer/tokenizer.json` over this string::
+
+            decode(ids)                            -> '<｜User｜>Hello!<｜Assistant｜>Hi there!'
+            decode(ids, skip_special_tokens=False) -> the full marked-up chat
+
+        ``<｜begin▁of▁sentence｜>`` (0) and ``<|EOT|>`` (128805) are declared
+        ``special: true`` and drop; ``<｜User｜>`` (128803) and
+        ``<｜Assistant｜>`` (128804) are declared ``special: false`` and stay.
+        """
         chat = "<｜begin▁of▁sentence｜><｜User｜>Hello!<｜Assistant｜>Hi there!<|EOT|>"
 
         tokens = tokenizer.encode_with_special(chat)
@@ -338,12 +350,19 @@ class TestDeepSeekV3ChatFormat:
         assert 128804 in tokens  # Assistant
         assert 128805 in tokens  # EOT
 
-        # Verify roundtrip
         decoded = tokenizer.decode(tokens)
-        assert decoded == chat
+        assert decoded == "<｜User｜>Hello!<｜Assistant｜>Hi there!"
 
     def test_thinking_format(self, tokenizer):
-        """Test DeepSeek V3 thinking format (R1-style reasoning)."""
+        """Test DeepSeek V3 thinking format (R1-style reasoning).
+
+        ``<think>``/``</think>`` are splintr's names for ids 128798/128799,
+        which DeepSeek's own `tokenizer.json` spells
+        ``<｜place▁holder▁no▁798｜>``/``...799`` and declares ``special: true``.
+        `tokenizers` 0.22.1 drops both ids (``decode([128798]) == ''``), so they
+        drop here too -- the reasoning text survives, its delimiters do not.
+        ``<｜User｜>``/``<｜Assistant｜>`` are ``special: false`` and stay.
+        """
         chat = (
             "<｜User｜>What is 2+2?"
             "<｜Assistant｜><think>Let me calculate: 2+2=4</think>"
@@ -359,9 +378,12 @@ class TestDeepSeekV3ChatFormat:
         assert 128799 in tokens  # /think
         assert 128805 in tokens  # EOT
 
-        # Verify roundtrip
         decoded = tokenizer.decode(tokens)
-        assert decoded == chat
+        assert decoded == (
+            "<｜User｜>What is 2+2?<｜Assistant｜>"
+            "Let me calculate: 2+2=4"
+            "The answer is 4."
+        )
 
 
 class TestDeepSeekV3BatchEncoding:
@@ -392,46 +414,56 @@ class TestDeepSeekV3BatchEncoding:
 
 
 class TestDeepSeekV3SpecialTokenDecode:
-    """Test that special tokens decode correctly."""
+    """Decode follows DeepSeek's own ``special`` flags, id by id.
+
+    Measured with `tokenizers` 0.22.1 on `deepseek-v3-tokenizer/tokenizer.json`,
+    which declares 804 of its 818 added tokens ``special: true`` and the
+    remaining 14 ``special: false``::
+
+        decode([0]) == decode([1]) == decode([128798])
+                    == decode([128799]) == decode([128805]) == ''
+        decode([128803] + hello_ids) -> '<｜User｜>hello'
+        decode([128804] + hello_ids) -> '<｜Assistant｜>hello'
+
+    So the sentence boundaries, the placeholder ids splintr names
+    ``<think>``/``</think>``, and ``<|EOT|>`` drop, while the chat, FIM and tool
+    markers stay. The dropped ones previously asserted their spelling, which
+    pinned splintr's own output rather than the reference.
+    """
 
     @pytest.fixture
     def tokenizer(self):
         return Tokenizer.from_pretrained("deepseek_v3")
 
     def test_decode_begin_of_sentence(self, tokenizer):
-        """Test decoding begin_of_sentence token."""
-        decoded = tokenizer.decode([0])
-        assert decoded == "<｜begin▁of▁sentence｜>"
+        """begin_of_sentence is ``special: true`` and renders as nothing."""
+        assert tokenizer.decode([0]) == ""
 
     def test_decode_end_of_sentence(self, tokenizer):
-        """Test decoding end_of_sentence token."""
-        decoded = tokenizer.decode([1])
-        assert decoded == "<｜end▁of▁sentence｜>"
+        """end_of_sentence is ``special: true`` and renders as nothing."""
+        assert tokenizer.decode([1]) == ""
 
     def test_decode_think(self, tokenizer):
-        """Test decoding think token."""
-        decoded = tokenizer.decode([128798])
-        assert decoded == "<think>"
+        """Id 128798 is ``special: true`` and renders as nothing."""
+        assert tokenizer.decode([128798]) == ""
 
     def test_decode_think_end(self, tokenizer):
-        """Test decoding think_end token."""
-        decoded = tokenizer.decode([128799])
-        assert decoded == "</think>"
+        """Id 128799 is ``special: true`` and renders as nothing."""
+        assert tokenizer.decode([128799]) == ""
 
     def test_decode_user(self, tokenizer):
-        """Test decoding User token."""
+        """``<｜User｜>`` is ``special: false``, so it is still rendered."""
         decoded = tokenizer.decode([128803])
         assert decoded == "<｜User｜>"
 
     def test_decode_assistant(self, tokenizer):
-        """Test decoding Assistant token."""
+        """``<｜Assistant｜>`` is ``special: false``, so it is still rendered."""
         decoded = tokenizer.decode([128804])
         assert decoded == "<｜Assistant｜>"
 
     def test_decode_eot(self, tokenizer):
-        """Test decoding EOT token."""
-        decoded = tokenizer.decode([128805])
-        assert decoded == "<|EOT|>"
+        """``<|EOT|>`` is ``special: true`` and renders as nothing."""
+        assert tokenizer.decode([128805]) == ""
 
 
 class TestDeepSeekV3EdgeCases:
@@ -490,7 +522,14 @@ class TestDeepSeekV3MixedSpecialTokens:
         return Tokenizer.from_pretrained("deepseek_v3")
 
     def test_mixed_native_and_agent_tokens(self, tokenizer):
-        """Test mixing native DeepSeek tokens with splintr agent tokens."""
+        """Test mixing native DeepSeek tokens with splintr agent tokens.
+
+        Round-tripped through `decode_with_special`, splintr's
+        `skip_special_tokens=False`: `<|think|>`/`<|/think|>` are agent control
+        markers and `decode` drops them, exactly as `tokenizers` 0.22.1 drops
+        every id DeepSeek declares ``special: true``. The chat template must
+        still survive a round trip, so the round trip names the mode.
+        """
         chat = (
             "<｜User｜>Tell me about Rust."
             "<|think|>User wants info about Rust programming language.<|/think|>"
@@ -508,8 +547,15 @@ class TestDeepSeekV3MixedSpecialTokens:
         assert 128906 in tokens  # /think (agent)
 
         # Verify roundtrip
-        decoded = tokenizer.decode(tokens)
-        assert decoded == chat
+        assert tokenizer.decode_with_special(tokens) == chat
+        # ...and the default mode drops exactly the declared-special ids:
+        # `<｜User｜>`/`<｜Assistant｜>` are `special: false` in DeepSeek's own
+        # `tokenizer.json` and stay, the agent markers go.
+        assert tokenizer.decode(tokens) == (
+            "<｜User｜>Tell me about Rust."
+            "User wants info about Rust programming language."
+            "<｜Assistant｜>Rust is a systems programming language."
+        )
 
 
 class TestDeepSeekV3StreamingDecoder:
@@ -602,11 +648,17 @@ class TestDeepSeekV3StreamingDecoder:
         assert result == text
 
     def test_streaming_decoder_special_tokens(self, tokenizer):
-        """Test streaming decoder with special tokens."""
+        """Test streaming decoder with special tokens.
+
+        `streaming_decoder_with_special` is the stream that reproduces
+        `decode_with_special`, so a generation loop can see the control markers
+        go past — the same choice whole-sequence decoding offers. The default
+        `streaming_decoder` drops them, and is covered below.
+        """
         text = "<｜begin▁of▁sentence｜>Hello<|EOT|>"
         tokens = tokenizer.encode_with_special(text)
 
-        decoder = tokenizer.streaming_decoder()
+        decoder = tokenizer.streaming_decoder_with_special()
         result = ""
         for token in tokens:
             chunk = decoder.add_token(token)
@@ -616,12 +668,30 @@ class TestDeepSeekV3StreamingDecoder:
 
         assert result == text
 
+    def test_streaming_decoder_special_tokens_dropped_by_default(self, tokenizer):
+        """The default stream drops them, and still agrees with `decode`.
+
+        `<｜begin▁of▁sentence｜>` (0) and `<|EOT|>` (128805) are both
+        ``special: true`` in DeepSeek's own `tokenizer.json`, which `tokenizers`
+        0.22.1 decodes to `''`.
+        """
+        tokens = tokenizer.encode_with_special("<｜begin▁of▁sentence｜>Hello<|EOT|>")
+
+        decoder = tokenizer.streaming_decoder()
+        result = (decoder.add_tokens(tokens) or "") + decoder.flush()
+
+        assert result == "Hello"
+        assert result == tokenizer.decode(tokens)
+
     def test_streaming_decoder_mixed_special(self, tokenizer):
-        """Test streaming decoder with mixed content and special tokens."""
+        """Test streaming decoder with mixed content and special tokens.
+
+        Through `streaming_decoder_with_special`, for the reason given above.
+        """
         text = "<｜User｜>你好!<|think|>Let me think...<|/think|><｜Assistant｜>Hello!"
         tokens = tokenizer.encode_with_special(text)
 
-        decoder = tokenizer.streaming_decoder()
+        decoder = tokenizer.streaming_decoder_with_special()
         result = ""
         for token in tokens:
             chunk = decoder.add_token(token)

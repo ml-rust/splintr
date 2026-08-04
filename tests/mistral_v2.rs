@@ -1,4 +1,4 @@
-use splintr::{from_pretrained, Tokenize};
+use splintr::{from_pretrained, SpecialDecode, Tokenize};
 
 // =============================================================================
 // Exact Token ID Tests
@@ -132,25 +132,87 @@ fn test_v2_agent_tokens() {
     assert_eq!(tokens, vec![29473, 32783]); // FUNCTION token = 32768 + 15
 }
 
+/// V2's control tokens render as nothing, which is what both of this
+/// vocabulary's reference tokenizers do.
+///
+/// Measured on `mistral-7b-v0.3`'s own files, where `[INST]` is id 3:
+///
+/// ```text
+/// sentencepiece 0.2.0, tokenizer.model:
+///   sp.decode([3] + sp.encode("hello"))                     -> 'hello'
+///   sp.decode([4] + …), sp.decode([5] + …), …               -> 'hello'
+/// tokenizers 0.22.1, tokenizer.json ([INST] is `special: true`):
+///   decode([3, …])                                          -> 'hello'
+///   decode([3, …], skip_special_tokens=False)               -> '[INST] hello'
+/// ```
+///
+/// This used to assert `decode([3]) == "[INST]"`, which pinned splintr's own
+/// output rather than a reference — and made the *same* vocabulary decode
+/// differently depending on whether it was loaded by `from_pretrained` or by
+/// `from_json` on `mistral-7b-v0.3/tokenizer.json`. A caller that wants the
+/// marker spelled asks the name→id map, not `decode`.
 #[test]
 fn test_v2_decode_control_tokens() {
     let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
 
-    // Decode [INST] token
-    let text = tok.decode(&[3]).expect("Failed to decode");
-    assert_eq!(text, "[INST]");
+    for id in [3, 4, 5, 6] {
+        let text = tok.decode(&[id]).expect("Failed to decode");
+        assert_eq!(text, "", "control token {id} must decode to nothing");
+    }
 
-    // Decode [/INST] token
-    let text = tok.decode(&[4]).expect("Failed to decode");
-    assert_eq!(text, "[/INST]");
+    // ...and a control token pressed against real text drops out of it without
+    // taking any of the text with it. `[7080, 29477, 2294]` is
+    // `sp.encode("hello world")` on this file.
+    assert_eq!(
+        tok.decode(&[3, 7080, 29477, 2294, 4])
+            .expect("Failed to decode"),
+        "hello world"
+    );
+}
 
-    // Decode [TOOL_CALLS] token
-    let text = tok.decode(&[5]).expect("Failed to decode");
-    assert_eq!(text, "[TOOL_CALLS]");
+/// The markers are still reachable: `decode_with(.., SpecialDecode::Render)` is
+/// splintr's `skip_special_tokens=False`, and it puts back exactly what the
+/// default drops.
+///
+/// Measured on `mistral-7b-v0.3` with `tokenizers` 0.22.1, over the same ids:
+///
+/// ```text
+/// decode([3, 6006, …, 4])                          -> 'Write a poem about RustRust is fast and safe...'
+/// decode([3, 6006, …, 4], skip_special_tokens=False)
+///                                                  -> '[INST]Write a poem about Rust[/INST]Rust is fast and safe...'
+/// ```
+#[test]
+fn test_v2_control_tokens_render_under_the_explicit_mode() {
+    let tok = from_pretrained("mistral_v2").expect("Failed to load mistral_v2");
 
-    // Decode [AVAILABLE_TOOLS] token
-    let text = tok.decode(&[6]).expect("Failed to decode");
-    assert_eq!(text, "[AVAILABLE_TOOLS]");
+    let text = "[INST]Write a poem about Rust[/INST]Rust is fast and safe...";
+    let tokens = tok.encode(text);
+
+    assert_eq!(
+        tok.decode(&tokens).expect("Failed to decode"),
+        "Write a poem about RustRust is fast and safe..."
+    );
+    assert_eq!(
+        tok.decode_with(&tokens, SpecialDecode::Render)
+            .expect("Failed to decode"),
+        text,
+        "the chat template must survive a round trip when the mode asks for it"
+    );
+
+    // ...and the stream that reproduces that decode agrees with it, at every
+    // chunking — the same contract `streaming_decoder` holds for `decode`.
+    for chunk in 1..=tokens.len() {
+        let mut decoder = Tokenize::streaming_decoder_with(&tok, SpecialDecode::Render)
+            .expect("this vocabulary streams");
+        let mut streamed = String::new();
+        for group in tokens.chunks(chunk) {
+            if let Some(part) = decoder.add_tokens(group).expect("ids are all known") {
+                streamed.push_str(&part);
+            }
+        }
+        streamed.push_str(&decoder.flush());
+        assert_eq!(streamed, text, "streamed in chunks of {chunk}");
+    }
 }
 
 #[test]
@@ -169,12 +231,21 @@ fn test_v2_full_instruction_roundtrip() {
         vec![29473, 3, 3963, 1117, 1040, 8854, 3922, 29572, 4]
     );
 
-    // Because the dummy prefix is now the only space-like piece added, and
-    // `decode` strips exactly that one, this string does round-trip. (HF's own
-    // detokenizer prints "[INST] What ... [/INST]" — it re-spaces around added
-    // tokens on the way out. The ids are the contract; that spacing is not.)
+    // The control tokens do not come back: `decode` implements HuggingFace's
+    // default `skip_special_tokens=True`, and both references agree on exactly
+    // these ids —
+    //
+    // ```text
+    // sentencepiece 0.2.0: sp.decode(ids)                        -> 'What is the weather today?'
+    // tokenizers 0.22.1:   decode(ids)                           -> 'What is the weather today?'
+    //                      decode(ids, skip_special_tokens=False) -> '[INST]What is the weather today?[/INST]'
+    // ```
+    //
+    // — so the round trip is over the *content*, and the ids remain the
+    // contract. (This used to assert the whole marked-up string came back,
+    // which no reference produces without `skip_special_tokens=False`.)
     let decoded = tok.decode(&tokens).expect("Failed to decode");
-    assert_eq!(decoded, text);
+    assert_eq!(decoded, "What is the weather today?");
 }
 
 #[test]

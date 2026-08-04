@@ -22,7 +22,7 @@
 //! let tokens = tokenizer.encode("Hello, world!");
 //! ```
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::any_tokenizer::{AnyTokenizer, Backend};
 use super::policy::SpecialPolicy;
@@ -189,14 +189,17 @@ fn resolve_vocab(name: &str) -> Result<PretrainedVocab, TokenizerError> {
 pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError> {
     let special = special_tokens(vocab);
     let named = special.clone();
+    // What this vocabulary's own reference tokenizer renders as nothing — see
+    // `special_decode_ids`, which states the measurement per vocabulary.
+    let skipped = special_decode_ids(vocab, &special);
     // Mistral V1/V2 are SentencePiece: they take the SPM-BPE backend, which has
     // no pre-tokenizer regex, and so must return before `patterns` is consulted.
     match vocab {
         PretrainedVocab::MistralV1 => {
-            return spm_from_vocab(MISTRAL_SPM_VOCAB, vocab, special, named)
+            return spm_from_vocab(MISTRAL_SPM_VOCAB, vocab, special, named, skipped)
         }
         PretrainedVocab::MistralV2 => {
-            return spm_from_vocab(MISTRAL_V2_SPM_VOCAB, vocab, special, named)
+            return spm_from_vocab(MISTRAL_V2_SPM_VOCAB, vocab, special, named, skipped)
         }
         _ => {}
     }
@@ -233,9 +236,15 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
 
     // In-text special-token matching is on for every bundled vocabulary, the
     // same as the json and GGUF loaders, so `AnyTokenizer::encode` means one
-    // thing regardless of which loader produced the handle.
+    // thing regardless of which loader produced the handle. The decode-skipped
+    // ids are stated for the same reason: the two loaders must not disagree
+    // about what a marker id decodes to either.
     Ok(AnyTokenizer::new(
-        Backend::Bpe(tokenizer.with_added_token_matching(true)),
+        Backend::Bpe(
+            tokenizer
+                .with_added_token_matching(true)
+                .with_special_decode_ids(skipped),
+        ),
         SpecialPolicy::boundary(None, None, Some(eos_token_id(vocab)), named),
     ))
 }
@@ -267,6 +276,7 @@ fn spm_from_vocab(
     vocab: PretrainedVocab,
     special: FxHashMap<String, u32>,
     named: FxHashMap<String, u32>,
+    skipped: FxHashSet<u32>,
 ) -> Result<AnyTokenizer, TokenizerError> {
     let (mut pieces, mut scores) = load_spm_vocab(data)?;
     // Agent tokens live above the vocabulary file's last id; give them slots so
@@ -288,13 +298,20 @@ fn spm_from_vocab(
     // what makes decode drop them (`sp.decode([1, …, 2])` renders neither) as
     // well as what the leading-sentinel prefix rule keys off. `<unk>` needs no
     // stating — the constructor resolves it by name from the vocabulary itself.
-    // The control and agent tokens in `special` are deliberately NOT declared
-    // decode-skipped: they are this vocabulary's addressable markers, and a
-    // caller decoding `[INST]` back to `"[INST]"` is reading the round trip
-    // these vocabularies are bundled for.
+    // The control and agent tokens in `special` are declared decode-skipped too,
+    // through `special_decode_ids`. They were once deliberately left rendered —
+    // on the reading that a caller decoding `[INST]` back to `"[INST]"` is the
+    // round trip these vocabularies are bundled for — but that made the *same*
+    // vocabulary decode differently depending on which loader produced the
+    // handle, and disagreed with both references: `sentencepiece` 0.2.0 and
+    // `tokenizers` 0.22.1 on `mistral-7b-v0.3` each decode `[3, …]` as plain
+    // `'hello'`. A caller that wants the marker spelled has the vocabulary's
+    // own name→id map (`AnyTokenizer::special_token_id`); a caller decoding
+    // model output wants what the reference gives.
     let tokenizer = SpmTokenizer::new(pieces, scores, bos_token_id(vocab), Some(eos))?
         .with_prefix_scheme(spm_prefix_scheme(vocab))
-        .with_added_tokens(&special)?;
+        .with_added_tokens(&special)?
+        .with_special_decode_ids(skipped);
 
     Ok(AnyTokenizer::new(
         Backend::Spm(tokenizer),
@@ -471,6 +488,84 @@ pub fn base_vocab_size(vocab: PretrainedVocab) -> u32 {
 /// Python bindings) that only have the name `from_pretrained` accepts.
 pub fn base_vocab_size_by_name(name: &str) -> Result<u32, TokenizerError> {
     resolve_vocab(name).map(base_vocab_size)
+}
+
+/// The ids `from_pretrained` declares decode-skipped, i.e. those a bundled
+/// vocabulary renders as nothing under HuggingFace's default
+/// `skip_special_tokens=True` — the semantics [`AnyTokenizer::decode`] implements
+/// for every loader.
+///
+/// Not simply "everything in [`special_tokens`]": what counts as skipped is a
+/// per-vocabulary fact, so each arm below states what its own reference tool was
+/// **measured** to do, and a marker the reference renders is left rendered here
+/// too. Without this the bundled loader and the `from_json` loader answered
+/// differently for the *same* vocabulary — `from_pretrained("mistral_v2")`
+/// decoded id 3 as `"[INST]"` where `from_json` on `mistral-7b-v0.3`'s
+/// `tokenizer.json` decoded it as nothing.
+fn special_decode_ids(vocab: PretrainedVocab, special: &FxHashMap<String, u32>) -> FxHashSet<u32> {
+    let all = || special.values().copied().collect::<FxHashSet<u32>>();
+    match vocab {
+        // Reference: `tiktoken` 0.8.0, which has no `skip_special_tokens` mode
+        // at all and renders every one of these — `enc.decode([100257])` is
+        // `'<|endoftext|>'`, `o200k`'s `decode([199999])` likewise. Nothing is
+        // declared skipped rather than overriding a measured reference; see
+        // `pretrained_special_decode_ids_follow_the_reference` for the pin.
+        PretrainedVocab::Cl100kBase | PretrainedVocab::O200kBase => FxHashSet::default(),
+
+        // Reference: `tokenizers` 0.22.1 on `llama-3.2-1b/tokenizer.json`, whose
+        // 256 added tokens are *all* `special: true` — `decode([128000, …])`
+        // drops `<|begin_of_text|>`, `<|eot_id|>`, `<|step_id|>` and the rest.
+        // splintr's own multimodal (128256+) and agent (128300+) tokens are the
+        // same kind of marker one id block higher, with no reference of their
+        // own, so they follow the rule the reference sets for the block below.
+        PretrainedVocab::Llama3 => all(),
+
+        // Reference: `sentencepiece` 0.2.0 and `tokenizers` 0.22.1, which agree
+        // on `mistral-7b-v0.3`'s vocabulary: `sp.decode([3] + ids)` and
+        // `decode([3] + ids)` are both `'hello'`, and all 771 of the json's
+        // added tokens are `special: true`. V1 names only `<unk>`/`<s>`/`</s>`,
+        // which the SPM backend already skips; both add agent tokens above the
+        // file's last id, which have no reference and follow the same rule.
+        PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => all(),
+
+        // No reference implementation for the Tekken vocabulary is available to
+        // measure (`mistral_common` is not installed and no Tekken
+        // `tokenizer.json` is on the shelf), so its markers are left rendered
+        // rather than changed on the strength of V2's measurement.
+        PretrainedVocab::MistralV3 => FxHashSet::default(),
+
+        // Reference: `tokenizers` 0.22.1 on `deepseek-v3-tokenizer/tokenizer.json`,
+        // which declares 14 of its added tokens `special: false` and therefore
+        // *renders* them: `decode([128803] + ids)` is `'<｜User｜>hello'`. Those
+        // ids stay rendered here. Everything else it declares `special: true`
+        // and drops, including 128798/128799 (which splintr names
+        // `<think>`/`</think>` and the reference names as placeholders) and
+        // `<|EOT|>` (128805).
+        PretrainedVocab::DeepseekV3 => {
+            let rendered: FxHashSet<u32> = (128800..=128804).chain(128806..=128814).collect();
+            all().difference(&rendered).copied().collect()
+        }
+
+        // Reference: `tokenizers` 0.22.1 on `whisper-tiny/tokenizer.json`. Its
+        // 107 control tokens (`<|endoftext|>`, `<|startoftranscript|>`, the
+        // language table, `<|translate|>`…`<|notimestamps|>`) are `special:
+        // true` and dropped; the 1,501 timestamp tokens `<|0.00|>`…`<|30.00|>`
+        // are `special: false` and rendered — they carry the transcript's
+        // timings, which is content, so they are left rendered here too.
+        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
+            let variant = match vocab {
+                PretrainedVocab::WhisperV2 => WhisperVariant::V2Multilingual,
+                PretrainedVocab::WhisperV3 => WhisperVariant::V3Multilingual,
+                _ => WhisperVariant::V1Multilingual,
+            };
+            let first_timestamp = variant.first_timestamp_token_id();
+            special
+                .values()
+                .copied()
+                .filter(|&id| id < first_timestamp)
+                .collect()
+        }
+    }
 }
 
 /// Get the special tokens map for a vocabulary.
@@ -871,6 +966,7 @@ fn insert_agent_tokens_llama3(special: &mut FxHashMap<String, u32>, base: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::policy::SpecialDecode;
     use crate::core::Tokenize;
 
     /// Reach the concrete BPE tokenizer for assertions on `Tokenizer`-only APIs.
@@ -892,6 +988,174 @@ mod tests {
             .position(|p| p == piece)
             .unwrap_or_else(|| panic!("{piece:?} is not in the vocabulary"));
         id as u32
+    }
+
+    /// What every bundled vocabulary decodes a marker id to, pinned against the
+    /// reference tool that is authoritative for it — the whole point of
+    /// [`special_decode_ids`], which is otherwise a table nothing checks.
+    ///
+    /// Each expectation below was measured, not assumed:
+    ///
+    /// * `mistral_v2` — `sentencepiece` 0.2.0 and `tokenizers` 0.22.1 on
+    ///   `mistral-7b-v0.3`: `decode([3] + hello_ids)` is `'hello'` under both.
+    /// * `llama3` — `tokenizers` 0.22.1 on `llama-3.2-1b`: every one of its 256
+    ///   added tokens is `special: true`, and `decode([128000] + ids)` is
+    ///   `'hello'`.
+    /// * `deepseek_v3` — `tokenizers` 0.22.1 on `deepseek-v3-tokenizer`: id 0 is
+    ///   `special: true` and dropped, while `<｜User｜>` (128803) is
+    ///   `special: false` and `decode([128803] + ids)` is `'<｜User｜>hello'`.
+    /// * `whisper` — `tokenizers` 0.22.1 on `whisper-tiny`: `<|startoftranscript|>`
+    ///   is `special: true` and dropped; the timestamp tokens are
+    ///   `special: false` and rendered.
+    /// * `cl100k_base` / `o200k_base` — `tiktoken` 0.8.0, which has no
+    ///   `skip_special_tokens` mode and renders: `enc.decode([100257])` is
+    ///   `'<|endoftext|>'`. Left rendered rather than overriding the reference.
+    #[test]
+    fn pretrained_special_decode_ids_follow_the_reference() {
+        // (vocab, id, decoded text)
+        let dropped: [(&str, u32); 8] = [
+            ("mistral_v2", 3),       // [INST]
+            ("mistral_v2", 4),       // [/INST]
+            ("llama3", 128000),      // <|begin_of_text|>
+            ("llama3", 128009),      // <|eot_id|>
+            ("deepseek_v3", 0),      // <｜begin▁of▁sentence｜>
+            ("deepseek_v3", 128805), // <|EOT|>
+            ("whisper", 50258),      // <|startoftranscript|>
+            ("whisper", 50259),      // <|en|>
+        ];
+        for (name, id) in dropped {
+            let tokenizer = from_pretrained(name).expect("bundled vocabulary loads");
+            assert_eq!(
+                tokenizer.decode(&[id]).expect("a skipped id decodes"),
+                "",
+                "{name}: id {id} must render as nothing, as its reference does"
+            );
+        }
+
+        let rendered: [(&str, u32, &str); 4] = [
+            // `special: false` in DeepSeek's own `tokenizer.json`.
+            ("deepseek_v3", 128803, "<｜User｜>"),
+            ("deepseek_v3", 128804, "<｜Assistant｜>"),
+            // `tiktoken` renders these; splintr does not override it.
+            ("cl100k_base", 100257, "<|endoftext|>"),
+            ("o200k_base", 199999, "<|endoftext|>"),
+        ];
+        for (name, id, text) in rendered {
+            let tokenizer = from_pretrained(name).expect("bundled vocabulary loads");
+            assert_eq!(
+                tokenizer.decode(&[id]).expect("a rendered id decodes"),
+                text,
+                "{name}: id {id} must still render, as its reference does"
+            );
+        }
+    }
+
+    /// Every marker `decode` drops is still reachable, through the explicit
+    /// [`SpecialDecode::Render`] mode.
+    ///
+    /// The point of the default is that a control token is an instruction to the
+    /// model rather than text for a user to read — not that its spelling becomes
+    /// unreachable. A vocabulary that could only drop them would be strictly
+    /// less capable than the reference it is matching, since `tokenizers` offers
+    /// `skip_special_tokens=False`.
+    #[test]
+    fn pretrained_markers_are_still_reachable_with_specials_rendered() {
+        for (name, id, spelling) in [
+            ("mistral_v2", 3u32, "[INST]"),
+            ("mistral_v2", 4, "[/INST]"),
+            ("llama3", 128000, "<|begin_of_text|>"),
+            ("llama3", 128009, "<|eot_id|>"),
+            ("deepseek_v3", 0, "<｜begin▁of▁sentence｜>"),
+            ("deepseek_v3", 128805, "<|EOT|>"),
+            ("whisper", 50258, "<|startoftranscript|>"),
+        ] {
+            let tokenizer = from_pretrained(name).expect("bundled vocabulary loads");
+            assert_eq!(
+                tokenizer.decode(&[id]).expect("a skipped id decodes"),
+                "",
+                "{name}: id {id} is dropped by default"
+            );
+            assert_eq!(
+                tokenizer
+                    .decode_with(&[id], SpecialDecode::Render)
+                    .expect("a rendered id decodes"),
+                spelling,
+                "{name}: id {id} must be reachable with specials rendered"
+            );
+        }
+    }
+
+    /// A marker rendered out of the middle of real text, on both backend
+    /// shapes: the explicit mode restores the marker and changes nothing else.
+    ///
+    /// `[7080, 29477, 2294]` is `sp.encode("hello world")` on
+    /// `mistral-7b-v0.3`'s `tokenizer.model`, and `tokenizers` 0.22.1 decodes
+    /// `[3, 7080, 29477, 2294, 4]` as `'hello world'` by default and as
+    /// `'[INST] hello world[/INST]'` under `skip_special_tokens=False`.
+    ///
+    /// That space is the point of the "and nothing else": the dummy-prefix strip
+    /// is spent by whichever token renders *first*, so with `[INST]` dropped it
+    /// eats the space `▁hell` carries, and with `[INST]` rendered it does not.
+    /// The reference behaves the same way, and matching it is what says the mode
+    /// changes the skip set and nothing about the post-ops.
+    #[test]
+    fn rendering_specials_restores_the_marker_and_nothing_else() {
+        let spm = from_pretrained("mistral_v2").expect("bundled vocabulary loads");
+        let ids = [3, 7080, 29477, 2294, 4];
+        assert_eq!(spm.decode(&ids).expect("decodes"), "hello world");
+        assert_eq!(
+            spm.decode_with(&ids, SpecialDecode::Render)
+                .expect("decodes"),
+            "[INST] hello world[/INST]"
+        );
+
+        // The byte-level BPE shape, where the surfaces live in a separate
+        // special-token table rather than in the piece vector.
+        let bpe = from_pretrained("llama3").expect("bundled vocabulary loads");
+        let mut ids = vec![128000];
+        ids.extend(bpe.encode("hello"));
+        ids.push(128009);
+        assert_eq!(bpe.decode(&ids).expect("decodes"), "hello");
+        assert_eq!(
+            bpe.decode_with(&ids, SpecialDecode::Render)
+                .expect("decodes"),
+            "<|begin_of_text|>hello<|eot_id|>"
+        );
+    }
+
+    /// Whisper's timestamp block is `special: false` in `whisper-tiny`'s
+    /// `tokenizer.json` and `tokenizers` 0.22.1 renders it, so the skip set must
+    /// stop exactly at the first timestamp id — a blanket "skip everything in
+    /// `special_tokens`" would silently swallow every transcript timing.
+    #[test]
+    fn whisper_timestamp_tokens_are_not_decode_skipped() {
+        for (name, variant) in [
+            ("whisper_v1", WhisperVariant::V1Multilingual),
+            ("whisper_v2", WhisperVariant::V2Multilingual),
+            ("whisper_v3", WhisperVariant::V3Multilingual),
+        ] {
+            let tokenizer = from_pretrained(name).expect("bundled vocabulary loads");
+            let first = variant.first_timestamp_token_id();
+            assert_eq!(
+                tokenizer.decode(&[first]).expect("a timestamp id decodes"),
+                "<|0.00|>",
+                "{name}: the first timestamp token must still render"
+            );
+            assert_eq!(
+                tokenizer
+                    .decode(&[first + 1500])
+                    .expect("a timestamp id decodes"),
+                "<|30.00|>",
+                "{name}: the last timestamp token must still render"
+            );
+            assert_eq!(
+                tokenizer
+                    .decode(&[variant.notimestamps_token_id()])
+                    .expect("a control id decodes"),
+                "",
+                "{name}: `<|notimestamps|>` is a control token and is dropped"
+            );
+        }
     }
 
     #[test]

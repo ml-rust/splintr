@@ -30,7 +30,7 @@
 
 use serde_json::Value;
 use splintr::pretrained::from_pretrained;
-use splintr::{AnyTokenizer, Backend, PretrainedVocab, Tokenize, TokenizeError};
+use splintr::{AnyTokenizer, Backend, PretrainedVocab, SpecialDecode, Tokenize, TokenizeError};
 use std::fs;
 use std::path::Path;
 
@@ -244,6 +244,24 @@ fn stream_lossy<T: Tokenize>(
     Ok(out)
 }
 
+/// Feed `ids` in `chunk`-sized groups through a fresh strict decoder that
+/// *renders* the declared-special ids -- [`SpecialDecode::Render`].
+fn stream_rendering_specials<T: Tokenize>(
+    tokenizer: &T,
+    ids: &[u32],
+    chunk: usize,
+) -> Result<String, TokenizeError> {
+    let mut decoder = Tokenize::streaming_decoder_with(tokenizer, SpecialDecode::Render)?;
+    let mut out = String::new();
+    for part in ids.chunks(chunk.max(1)) {
+        if let Some(text) = decoder.add_tokens(part)? {
+            out.push_str(&text);
+        }
+    }
+    out.push_str(&decoder.flush());
+    Ok(out)
+}
+
 /// Assert the streaming contract for one backend over one id sequence, at
 /// every chunk size, and append a report per violation.
 fn check_one<T: Tokenize>(
@@ -255,6 +273,10 @@ fn check_one<T: Tokenize>(
 ) {
     let whole = Tokenize::decode(tokenizer, ids);
     let whole_lossy = tokenizer.decode_lossy(ids);
+    // The same sequence under `SpecialDecode::Render`, decoded once. `Err` here
+    // is the U+FFFD divergence handled below for the default mode, and means
+    // there is nothing for the rendering stream to be compared against.
+    let whole_rendered = Tokenize::decode_with(tokenizer, ids, SpecialDecode::Render).ok();
 
     // `chunks` needs a non-zero size and yields nothing for an empty slice, so
     // the empty sequence is still exercised once -- at chunk size 1, feeding no
@@ -309,6 +331,32 @@ fn check_one<T: Tokenize>(
                 escape(&whole_lossy),
                 escape(&lossy),
             ));
+        }
+
+        // The same contract under `SpecialDecode::Render`. It is a separate
+        // drive, not a variation on the one above: the mode changes the *skip
+        // set*, and a skipped id is precisely the thing a cursor has to handle
+        // without spending a leading separator or a first-token strip on it. So
+        // whether a stream still equals whole-sequence decode when those ids
+        // start rendering is a distinct question, and one this file is the only
+        // place that can answer for every bundled vocabulary at every chunking.
+        let Some(whole_rendered) = &whole_rendered else {
+            continue;
+        };
+        match stream_rendering_specials(tokenizer, ids, chunk) {
+            Ok(rendered) if &rendered == whole_rendered => {}
+            Ok(rendered) => failures.push(format!(
+                "{label}: {origin}: rendering-specials stream at chunk {chunk} disagrees with \
+                 decode_with(Render)\n    ids:      {}\n    expected: \"{}\"\n    streamed: \"{}\"",
+                format_ids(ids),
+                escape(whole_rendered),
+                escape(&rendered),
+            )),
+            Err(e) => failures.push(format!(
+                "{label}: {origin}: rendering-specials stream at chunk {chunk} failed: {e}\
+                 \n    ids: {}",
+                format_ids(ids)
+            )),
         }
     }
 }

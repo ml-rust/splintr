@@ -145,12 +145,16 @@ class TestLlama32VisionTokens:
         assert 128257 in tokens, "Should contain image_end (128257)"
 
     def test_image_decode(self, tokenizer):
-        """Test decoding image token."""
-        decoded = tokenizer.decode([128256])
-        assert decoded == "<|image|>"
+        """Marker tokens decode to nothing.
 
-        decoded = tokenizer.decode([128005])
-        assert decoded == "<|step_id|>"
+        ``<|step_id|>`` (128005) is one of the 256 added tokens Meta declares
+        ``special: true``; `tokenizers` 0.22.1 on `llama-3.2-1b/tokenizer.json`
+        gives ``decode([128005]) == ''``. ``<|image|>`` (128256) is splintr's
+        own addition one id block higher, with no reference of its own, so it
+        follows the rule the block below sets.
+        """
+        assert tokenizer.decode([128256]) == ""
+        assert tokenizer.decode([128005]) == ""
 
 
 class TestLlama3AgentTokens:
@@ -245,7 +249,19 @@ class TestLlama3ChatFormat:
         return Tokenizer.from_pretrained("llama3")
 
     def test_chat_format(self, tokenizer):
-        """Test Llama 3 chat format encoding/decoding."""
+        """Test Llama 3 chat format encoding/decoding.
+
+        The markers are dropped on the way out, which is what the reference
+        does. Measured with `tokenizers` 0.22.1 on `llama-3.2-1b/tokenizer.json`
+        over this exact string::
+
+            decode(ids)                            -> 'system\\n\\nYou are a helpful
+                                                       assistant.user\\n\\nHello!assistant\\n\\n'
+            decode(ids, skip_special_tokens=False) -> the full marked-up chat
+
+        The header words survive because they are ordinary text; only the
+        ``<|...|>`` ids go.
+        """
         chat = (
             "<|begin_of_text|>"
             "<|start_header_id|>system<|end_header_id|>\n\n"
@@ -265,9 +281,12 @@ class TestLlama3ChatFormat:
         assert 128007 in tokens  # end_header_id
         assert 128009 in tokens  # eot_id
 
-        # Verify roundtrip
         decoded = tokenizer.decode(tokens)
-        assert decoded == chat
+        assert decoded == (
+            "system\n\nYou are a helpful assistant."
+            "user\n\nHello!"
+            "assistant\n\n"
+        )
 
 
 class TestLlama3BatchEncoding:
@@ -298,31 +317,45 @@ class TestLlama3BatchEncoding:
 
 
 class TestLlama3SpecialTokenDecode:
-    """Test that special tokens decode correctly."""
+    """Special tokens decode to nothing, as the reference does.
+
+    Measured with `tokenizers` 0.22.1 on `llama-3.2-1b/tokenizer.json`, where
+    all 256 added tokens (128000-128255) are declared ``special: true``::
+
+        decode([128000]) == decode([128008]) == decode([128009])
+                         == decode([128010]) == ''
+        decode([128000, ...hello ids...], skip_special_tokens=False)
+                         -> '<|begin_of_text|>hello'
+
+    These previously asserted the spelling came back, which pinned splintr's own
+    output rather than a reference and made `Tokenizer.from_pretrained("llama3")`
+    disagree with `splintr.from_json` reading that same file.
+    """
 
     @pytest.fixture
     def tokenizer(self):
         return Tokenizer.from_pretrained("llama3")
 
     def test_decode_begin_of_text(self, tokenizer):
-        """Test decoding begin_of_text token."""
-        decoded = tokenizer.decode([128000])
-        assert decoded == "<|begin_of_text|>"
+        """begin_of_text renders as nothing."""
+        assert tokenizer.decode([128000]) == ""
 
     def test_decode_eot_id(self, tokenizer):
-        """Test decoding eot_id token."""
-        decoded = tokenizer.decode([128009])
-        assert decoded == "<|eot_id|>"
+        """eot_id renders as nothing."""
+        assert tokenizer.decode([128009]) == ""
 
     def test_decode_eom_id(self, tokenizer):
-        """Test decoding eom_id token."""
-        decoded = tokenizer.decode([128008])
-        assert decoded == "<|eom_id|>"
+        """eom_id renders as nothing."""
+        assert tokenizer.decode([128008]) == ""
 
     def test_decode_python_tag(self, tokenizer):
-        """Test decoding python_tag token."""
-        decoded = tokenizer.decode([128010])
-        assert decoded == "<|python_tag|>"
+        """python_tag renders as nothing."""
+        assert tokenizer.decode([128010]) == ""
+
+    def test_special_token_drops_out_of_text(self, tokenizer):
+        """A dropped marker takes none of the surrounding text with it."""
+        ids = [128000, *tokenizer.encode("hello"), 128009]
+        assert tokenizer.decode(ids) == "hello"
 
 
 class TestLlama3EdgeCases:
@@ -417,11 +450,18 @@ class TestLlama3StreamingDecoder:
         assert result == text
 
     def test_streaming_decoder_with_special_tokens(self, tokenizer):
-        """Test streaming decoder with special tokens."""
+        """Test streaming decoder with special tokens.
+
+        `streaming_decoder_with_special` is the stream that reproduces
+        `decode_with_special` — splintr's `skip_special_tokens=False` — so a
+        generation loop can watch `<|eot_id|>` go past. The default stream drops
+        it, matching `tokenizers` 0.22.1 on `llama-3.2-1b/tokenizer.json`, where
+        all 256 added tokens are ``special: true``; that half is covered below.
+        """
         text = "<|begin_of_text|>Hello<|eot_id|>"
         tokens = tokenizer.encode_with_special(text)
 
-        decoder = tokenizer.streaming_decoder()
+        decoder = tokenizer.streaming_decoder_with_special()
         result = ""
         for token in tokens:
             chunk = decoder.add_token(token)
@@ -430,3 +470,13 @@ class TestLlama3StreamingDecoder:
         result += decoder.flush()
 
         assert result == text
+
+    def test_streaming_decoder_drops_special_tokens_by_default(self, tokenizer):
+        """The default stream drops them, and still agrees with `decode`."""
+        tokens = tokenizer.encode_with_special("<|begin_of_text|>Hello<|eot_id|>")
+
+        decoder = tokenizer.streaming_decoder()
+        result = (decoder.add_tokens(tokens) or "") + decoder.flush()
+
+        assert result == "Hello"
+        assert result == tokenizer.decode(tokens)

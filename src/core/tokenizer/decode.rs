@@ -1,5 +1,6 @@
 use super::error::TokenizerError;
 use super::types::{ByteFallback, Tokenizer};
+use crate::core::policy::SpecialDecode;
 use crate::core::streaming::{
     ByteFallbackRule, DecodePost, DecodeState, Lead, RenderRules, Rendered, StreamingDecoder,
     Surfaces,
@@ -67,7 +68,17 @@ impl Tokenizer {
     /// Cheap to call — the vocabulary map is shared, not copied — and the
     /// result borrows nothing, so it can be moved into a generation task.
     pub fn streaming_decoder(&self) -> StreamingDecoder {
-        StreamingDecoder::new(Arc::new(self.decode_state()))
+        self.streaming_decoder_with(SpecialDecode::Skip)
+    }
+
+    /// A [`StreamingDecoder`] under an explicit [`SpecialDecode`] — see
+    /// [`Tokenize::streaming_decoder_with`](crate::Tokenize::streaming_decoder_with).
+    ///
+    /// Built from the very decode configuration
+    /// [`decode_with`](Self::decode_with) drives, so the stream reproduces it in
+    /// whichever mode is asked for.
+    pub fn streaming_decoder_with(&self, specials: SpecialDecode) -> StreamingDecoder {
+        StreamingDecoder::new(Arc::new(self.decode_state().with_special_decode(specials)))
     }
 
     /// Decode token IDs back to bytes.
@@ -129,7 +140,21 @@ impl Tokenizer {
     /// *what* an id renders to and what happens to the resulting text is
     /// decided by exactly the code a stream uses.
     pub fn decode(&self, tokens: &[u32]) -> Result<String, TokenizerError> {
-        let state = self.decode_state();
+        self.decode_with(tokens, SpecialDecode::Skip)
+    }
+
+    /// Decode token IDs to a string under an explicit [`SpecialDecode`] — see
+    /// [`Tokenize::decode_with`](crate::Tokenize::decode_with).
+    ///
+    /// The whole of [`decode`](Self::decode)'s body, which is now this method
+    /// under [`SpecialDecode::Skip`]: the two cannot answer differently about
+    /// anything but the declared-special ids.
+    pub fn decode_with(
+        &self,
+        tokens: &[u32],
+        specials: SpecialDecode,
+    ) -> Result<String, TokenizerError> {
+        let state = self.decode_state().with_special_decode(specials);
         let mut cursor = state.cursor_with_capacity(tokens.len() * 4);
 
         let emitted = cursor.feed_strict(

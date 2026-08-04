@@ -76,7 +76,17 @@ class TestMistralV2ControlTokens:
         return Tokenizer.from_pretrained("mistral_v2")
 
     def test_instruction_format(self, tokenizer):
-        """Test instruction format encoding."""
+        """Test instruction format encoding.
+
+        `decode` implements HuggingFace's default ``skip_special_tokens=True``,
+        so the markers do not come back. Measured on `mistral-7b-v0.3`, whose
+        vocabulary this is::
+
+            tokenizers 0.22.1:   decode(ids)  -> "Hello, how are you?I'm doing great!"
+            sentencepiece 0.2.0: sp.decode(ids) -> same
+            decode(ids, skip_special_tokens=False)
+                                              -> "[INST]Hello, how are you?[/INST]I'm doing great!"
+        """
         text = "[INST]Hello, how are you?[/INST]I'm doing great!"
         tokens = tokenizer.encode_with_special(text)
 
@@ -84,12 +94,15 @@ class TestMistralV2ControlTokens:
         assert 3 in tokens, "[INST] not found"
         assert 4 in tokens, "[/INST] not found"
 
-        # Verify roundtrip
         decoded = tokenizer.decode(tokens)
-        assert decoded == text
+        assert decoded == "Hello, how are you?I'm doing great!"
 
     def test_tool_calling_format(self, tokenizer):
-        """Test tool calling format encoding."""
+        """Test tool calling format encoding.
+
+        Both references decode these ids to ``'get_weatherget_weather()'`` --
+        every tool marker is a control token and renders as nothing.
+        """
         text = "[AVAILABLE_TOOLS]get_weather[/AVAILABLE_TOOLS][TOOL_CALLS]get_weather()"
         tokens = tokenizer.encode_with_special(text)
 
@@ -97,23 +110,36 @@ class TestMistralV2ControlTokens:
         assert 6 in tokens, "[AVAILABLE_TOOLS] not found"
 
         decoded = tokenizer.decode(tokens)
-        # Note: [/AVAILABLE_TOOLS] is not a special token, encoded as text
-        assert "[AVAILABLE_TOOLS]" in decoded
-        assert "[TOOL_CALLS]" in decoded
+        assert decoded == "get_weatherget_weather()"
 
     def test_decode_control_tokens(self, tokenizer):
-        """Test decoding control tokens."""
-        assert tokenizer.decode([3]) == "[INST]"
-        assert tokenizer.decode([4]) == "[/INST]"
-        assert tokenizer.decode([5]) == "[TOOL_CALLS]"
-        assert tokenizer.decode([6]) == "[AVAILABLE_TOOLS]"
+        """Control tokens decode to nothing, as both references do.
+
+        Measured on `mistral-7b-v0.3`, where `[INST]` is id 3 and declared
+        ``special: true``::
+
+            sentencepiece 0.2.0: sp.decode([3] + sp.encode("hello")) -> 'hello'
+            tokenizers 0.22.1:   decode([3, ...])                    -> 'hello'
+                                 decode([3, ...], skip_special_tokens=False)
+                                                                     -> '[INST] hello'
+
+        This previously asserted the spelling came back, which pinned splintr's
+        own output rather than a reference and made `from_pretrained` disagree
+        with `splintr.from_json` on that same `tokenizer.json`.
+        """
+        for token_id in (3, 4, 5, 6):
+            assert tokenizer.decode([token_id]) == ""
 
     def test_mixed_control_and_text(self, tokenizer):
-        """Test mixing control tokens with regular text."""
+        """Test mixing control tokens with regular text.
+
+        Reference (`tokenizers` 0.22.1 and `sentencepiece` 0.2.0 on
+        `mistral-7b-v0.3`): the text survives, the markers do not.
+        """
         text = "[INST]Write a poem about Rust[/INST]Rust is fast and safe..."
         tokens = tokenizer.encode_with_special(text)
         decoded = tokenizer.decode(tokens)
-        assert decoded == text
+        assert decoded == "Write a poem about RustRust is fast and safe..."
 
 
 class TestMistralV2Roundtrip:
@@ -193,9 +219,20 @@ class TestMistralV2SpecialTokens:
         assert tokens == [29473, 32783], f"unexpected <|function|> ids: {tokens}"
 
     def test_decode_agent_tokens(self, tokenizer):
-        """Test decoding agent tokens."""
-        assert tokenizer.decode([32773]) == "<|think|>"
-        assert tokenizer.decode([32783]) == "<|function|>"
+        """Agent tokens are control markers: `decode` drops them,
+        `decode_with_special` spells them out.
+
+        They are splintr's own additions above the vocabulary file's last piece,
+        so no reference names them -- but they are the same kind of marker
+        `mistral-7b-v0.3`'s `tokenizer.json` declares ``special: true`` and
+        `tokenizers` 0.22.1 drops (``decode([3, ...]) -> 'hello'``), so they
+        follow the same rule under the same explicit mode.
+        """
+        assert tokenizer.decode([32773]) == ""
+        assert tokenizer.decode([32783]) == ""
+
+        assert tokenizer.decode_with_special([32773]) == "<|think|>"
+        assert tokenizer.decode_with_special([32783]) == "<|function|>"
 
 
 class TestMistralV2VocabSize:

@@ -11,7 +11,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use thiserror::Error;
 
-use super::policy::{PolicyError, SpecialMode};
+use super::policy::{PolicyError, SpecialDecode, SpecialMode};
 use super::streaming::{DecodeState, StreamingDecoder};
 use super::tokenize::{token_bytes_of, token_text_of, TokenizeError};
 
@@ -466,7 +466,17 @@ impl SentencePieceTokenizer {
     /// Cheap to call — the piece vector is shared, not copied — and the result
     /// borrows nothing, so it can be moved into a generation task.
     pub fn streaming_decoder(&self) -> StreamingDecoder {
-        StreamingDecoder::new(Arc::new(self.decode_state()))
+        self.streaming_decoder_with(SpecialDecode::Skip)
+    }
+
+    /// A [`StreamingDecoder`] under an explicit [`SpecialDecode`] — see
+    /// [`Tokenize::streaming_decoder_with`](crate::Tokenize::streaming_decoder_with).
+    ///
+    /// Built from the very decode configuration
+    /// [`decode_with`](Self::decode_with) drives, so the stream reproduces it in
+    /// whichever mode is asked for.
+    pub fn streaming_decoder_with(&self, specials: SpecialDecode) -> StreamingDecoder {
+        StreamingDecoder::new(Arc::new(self.decode_state().with_special_decode(specials)))
     }
 
     /// Decode token IDs to text.
@@ -495,7 +505,23 @@ impl SentencePieceTokenizer {
     /// the SPM-BPE sibling, whose whole-sequence decode is strict. Only the
     /// unknown-id decision differs from [`decode_lossy`](Self::decode_lossy).
     pub fn decode(&self, ids: &[u32]) -> Result<String, SentencePieceError> {
-        let state = self.decode_state();
+        self.decode_with(ids, SpecialDecode::Skip)
+    }
+
+    /// Decode ids to text under an explicit [`SpecialDecode`] — see
+    /// [`Tokenize::decode_with`](crate::Tokenize::decode_with).
+    ///
+    /// The whole of [`decode`](Self::decode)'s body, which is now this method
+    /// under [`SpecialDecode::Skip`]. Under [`SpecialDecode::Render`] the
+    /// vocabulary's own BOS/EOS/`<unk>` come back alongside the declared
+    /// `special=true` ids: they are the same kind of marker and live in the same
+    /// skip set, and a caller asking to see the markers means all of them.
+    pub fn decode_with(
+        &self,
+        ids: &[u32],
+        specials: SpecialDecode,
+    ) -> Result<String, SentencePieceError> {
+        let state = self.decode_state().with_special_decode(specials);
         let mut cursor = state.cursor_with_capacity(ids.len() * 4);
 
         let mut text = cursor
@@ -571,6 +597,17 @@ impl super::tokenize::Tokenize for SentencePieceTokenizer {
             .map_err(|e| super::tokenize::TokenizeError::Other(e.to_string()))
     }
 
+    /// The inherent [`decode_with`](SentencePieceTokenizer::decode_with), which
+    /// [`decode`](SentencePieceTokenizer::decode) is itself a mode of.
+    fn decode_with(
+        &self,
+        ids: &[u32],
+        specials: SpecialDecode,
+    ) -> Result<String, super::tokenize::TokenizeError> {
+        SentencePieceTokenizer::decode_with(self, ids, specials)
+            .map_err(|e| super::tokenize::TokenizeError::Other(e.to_string()))
+    }
+
     /// Skips ids the vocabulary does not contain — the inherent
     /// [`decode_lossy`](SentencePieceTokenizer::decode_lossy), so the trait and
     /// the type can never disagree about what a sequence decodes to.
@@ -584,6 +621,18 @@ impl super::tokenize::Tokenize for SentencePieceTokenizer {
     /// [`AnyTokenizer`](crate::AnyTokenizer)'s sake.
     fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
         Ok(SentencePieceTokenizer::streaming_decoder(self))
+    }
+
+    /// The inherent
+    /// [`streaming_decoder_with`](SentencePieceTokenizer::streaming_decoder_with),
+    /// infallible here for the same reason its default-mode sibling is.
+    fn streaming_decoder_with(
+        &self,
+        specials: SpecialDecode,
+    ) -> Result<StreamingDecoder, TokenizeError> {
+        Ok(SentencePieceTokenizer::streaming_decoder_with(
+            self, specials,
+        ))
     }
 
     fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {
@@ -835,26 +884,31 @@ mod tests {
     /// instead of through a helper. Replaces the two `parse_byte_fallback` unit
     /// tests the helper had, which is the only behaviour they can still describe.
     ///
-    /// One case genuinely moved with the helper: the shared rule accepts any
-    /// hex that fits in a byte, so a piece spelled `<0x1>` is byte 0x01 where the
-    /// old two-digit-only parser rendered its literal spelling. `sp.decode`,
-    /// llama.cpp and HF's `ByteFallback` step all parse the spelling, and no
-    /// SentencePiece vocabulary spells a byte token any way but `<0xNN>`.
+    /// The shared rule is `decoder::parse_byte_token`, the same strict
+    /// two-hex-digit parse the declared `ByteFallback` step uses, so `<0x1>` is
+    /// text here as it is there. That is what the references do: `tokenizers`
+    /// 0.22.1's `decoders.ByteFallback` decodes `<0x4a>`/`<0x4A>` alike to `"J"`
+    /// and passes `<0x1>` and `<0x041>` through as their spelling, and no
+    /// SentencePiece vocabulary spells a byte token any way but two upper-case
+    /// hex digits — `mistral-7b-v0.3`'s `tokenizer.model` carries all 256 that
+    /// way.
     #[test]
     fn byte_fallback_spellings_resolve_to_their_byte_through_decode() {
         let tokens = vec![
-            "<unk>".to_string(),  // 0
-            "<s>".to_string(),    // 1
-            "</s>".to_string(),   // 2
-            "<0x0A>".to_string(), // 3
-            "<0xFF>".to_string(), // 4
-            "<0x00>".to_string(), // 5
-            "<0x7F>".to_string(), // 6
-            "<0xab>".to_string(), // 7  lowercase hex
-            "<0xZZ>".to_string(), // 8  not hex at all
-            "<0x0A".to_string(),  // 9  unterminated
-            "0x0A>".to_string(),  // 10 no opening marker
-            "<>".to_string(),     // 11
+            "<unk>".to_string(),   // 0
+            "<s>".to_string(),     // 1
+            "</s>".to_string(),    // 2
+            "<0x0A>".to_string(),  // 3
+            "<0xFF>".to_string(),  // 4
+            "<0x00>".to_string(),  // 5
+            "<0x7F>".to_string(),  // 6
+            "<0xab>".to_string(),  // 7  lowercase hex
+            "<0xZZ>".to_string(),  // 8  not hex at all
+            "<0x0A".to_string(),   // 9  unterminated
+            "0x0A>".to_string(),   // 10 no opening marker
+            "<>".to_string(),      // 11
+            "<0x1>".to_string(),   // 12 one hex digit — text, not byte 0x01
+            "<0x041>".to_string(), // 13 three hex digits — text too
         ];
         let scores = vec![0.0; tokens.len()];
         let tok = SentencePieceTokenizer::new(tokens, scores, Some(1), 2)
@@ -869,7 +923,14 @@ mod tests {
         assert_eq!(tok.decode(&[4]).unwrap(), "\u{FFFD}");
         assert_eq!(tok.decode(&[7]).unwrap(), "\u{FFFD}");
         // Anything that is not a byte spelling is ordinary surface text.
-        for (id, surface) in [(8u32, "<0xZZ>"), (9, "<0x0A"), (10, "0x0A>"), (11, "<>")] {
+        for (id, surface) in [
+            (8u32, "<0xZZ>"),
+            (9, "<0x0A"),
+            (10, "0x0A>"),
+            (11, "<>"),
+            (12, "<0x1>"),
+            (13, "<0x041>"),
+        ] {
             assert_eq!(tok.decode(&[id]).unwrap(), surface);
         }
     }

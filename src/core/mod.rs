@@ -60,7 +60,7 @@ pub use byte_level::{byte_level_decode, byte_level_decode_bytes, byte_level_enco
 pub use gguf::{from_gguf_vocab, GgufVocab, GgufVocabError};
 pub use hf_json::{from_json_bytes, from_json_path, HfJsonError};
 pub use normalizer::{NormOp, Normalizer};
-pub use policy::{PolicyError, SpecialMode, SpecialPolicy};
+pub use policy::{PolicyError, SpecialDecode, SpecialMode, SpecialPolicy};
 pub use precompiled::Precompiled;
 pub use pretokenizer::{PreTokStage, PreTokenizer, SplitBehavior, SplitPattern};
 pub use pretrained::{

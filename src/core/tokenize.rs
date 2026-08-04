@@ -3,7 +3,7 @@
 //! The `Tokenize` trait provides a common interface across BPE, SentencePiece,
 //! and WordPiece tokenizers, enabling generic code that works with any backend.
 
-use super::policy::{PolicyError, SpecialMode};
+use super::policy::{PolicyError, SpecialDecode, SpecialMode};
 use super::streaming::{RenderRules, StreamingDecoder};
 
 /// Common interface for all tokenizer backends.
@@ -28,6 +28,43 @@ pub trait Tokenize: Send + Sync {
     ///
     /// Returns an error if any token ID is invalid.
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError>;
+
+    /// Decode token IDs back to text under an explicit [`SpecialDecode`],
+    /// governing whether the ids the vocabulary declares special are rendered or
+    /// dropped.
+    ///
+    /// [`decode`](Self::decode) is this method under
+    /// [`SpecialDecode::Skip`] — HuggingFace's default — so this is the way to
+    /// ask for its `skip_special_tokens=False`: the round trip that shows a chat
+    /// template's markers, an inspection of what a model actually emitted, a
+    /// transcript rendered with its control tokens intact. Errors exactly as
+    /// [`decode`](Self::decode) does.
+    ///
+    /// Deliberately not defaulted, for the reason
+    /// [`encode_with`](Self::encode_with) is not: a default body would have to
+    /// ignore `specials` and answer as `decode` does, which is precisely the
+    /// mode the caller asked *not* to have — and it would do so silently, since
+    /// dropped markers read as ordinary text.
+    fn decode_with(&self, ids: &[u32], specials: SpecialDecode) -> Result<String, TokenizeError>;
+
+    /// A [`StreamingDecoder`] that reproduces this tokenizer's
+    /// [`decode_with`](Self::decode_with) under the same [`SpecialDecode`],
+    /// token by token.
+    ///
+    /// [`streaming_decoder`](Self::streaming_decoder) is this method under
+    /// [`SpecialDecode::Skip`]. A stream that could not render control markers
+    /// would leave a generation loop unable to see the very tokens it is
+    /// watching for, so the two decode entry points offer the mode alike and the
+    /// concatenate-equals-decode contract holds in both.
+    ///
+    /// Fallible for the same reason [`streaming_decoder`](Self::streaming_decoder)
+    /// is, and refuses on exactly the same declared pipelines.
+    ///
+    /// Deliberately not defaulted, for the same reason as above.
+    fn streaming_decoder_with(
+        &self,
+        specials: SpecialDecode,
+    ) -> Result<StreamingDecoder, TokenizeError>;
 
     /// Decode token IDs back to text, surviving whatever [`decode`](Self::decode)
     /// would report: an id in no table is skipped and bytes that cannot be valid

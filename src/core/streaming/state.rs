@@ -16,6 +16,7 @@
 use super::render::{ByteFallbackRule, Lead, RenderRules, Rendered, Surfaces};
 use super::utf8::{InvalidUtf8, Utf8Buffer};
 use crate::core::decoder::wordpiece_cleanup;
+use crate::core::policy::SpecialDecode;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Borrow;
 use std::sync::Arc;
@@ -143,6 +144,22 @@ impl DecodeState {
             ),
             post,
         )
+    }
+
+    /// This configuration under an explicit [`SpecialDecode`].
+    ///
+    /// [`Skip`](SpecialDecode::Skip) is the identity — the state a backend
+    /// builds already drops what it declares special — so the mode is applied
+    /// here rather than threaded through every constructor above: one place
+    /// decides what "render the specials" means, and whole-sequence decoding and
+    /// streaming reach it through the same call, which is what keeps a stream
+    /// agreeing with `decode` in *both* modes.
+    pub(crate) fn with_special_decode(mut self, specials: SpecialDecode) -> Self {
+        self.render = match specials {
+            SpecialDecode::Skip => self.render,
+            SpecialDecode::Render => self.render.rendering_specials(),
+        };
+        self
     }
 
     /// The per-id rendering rules, for a caller that wants bytes rather than
@@ -498,10 +515,11 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
 
 #[cfg(test)]
 mod tests {
-    use super::DecodeCursor;
+    use super::{DecodeCursor, DecodeState};
     use crate::core::tokenizer::Tokenizer;
-    use rustc_hash::FxHashMap;
+    use rustc_hash::{FxHashMap, FxHashSet};
     use std::convert::Infallible;
+    use std::sync::Arc;
 
     /// A raw BPE vocabulary whose single-byte tokens let a test split a
     /// multi-byte character across as many ids as it has bytes.
@@ -553,6 +571,54 @@ mod tests {
             }
             // ...and it is what whole-sequence decoding produces.
             assert_eq!(one_shot, tokenizer.decode_lossy(&ids), "text: {text:?}");
+        }
+    }
+
+    /// [`ByteFallbackRule::ParseSurface`] — the rule the SentencePiece-shaped
+    /// backends run — reads a surface with the *same* strict parser the declared
+    /// `ByteFallback` step uses: exactly two hex digits, either case. So `<0x1>`
+    /// is text on this path too, where a second, lenient parser once made it
+    /// byte `0x01` here and text under the declared step.
+    ///
+    /// Strictness measured against `tokenizers` 0.22.1: its
+    /// `decoders.ByteFallback` decodes `<0x4a>`/`<0x4A>` to `"J"` and passes
+    /// `<0x1>` and `<0x041>` through as their spelling. SentencePiece's own
+    /// vocabularies never disagree — `mistral-7b-v0.3/tokenizer.model` spells
+    /// all 256 byte pieces with two upper-case hex digits.
+    #[test]
+    fn parse_surface_byte_fallback_is_strict_two_hex_digits() {
+        let pieces = Arc::new(vec![
+            "<0x41>".to_string(),
+            "<0x4a>".to_string(),
+            "<0x1>".to_string(),
+            "<0x041>".to_string(),
+            "<0xG1>".to_string(),
+        ]);
+        let state = DecodeState::for_piece_vocab(&pieces, FxHashSet::default(), false);
+
+        let render = state.render();
+        // Two hex digits resolve to the byte, in either case.
+        assert_eq!(render.token_bytes(0), Some(vec![0x41]));
+        assert_eq!(render.token_bytes(1), Some(vec![0x4a]));
+        // Everything else is the surface itself.
+        assert_eq!(render.token_bytes(2), Some(b"<0x1>".to_vec()));
+        assert_eq!(render.token_bytes(3), Some(b"<0x041>".to_vec()));
+        assert_eq!(render.token_bytes(4), Some(b"<0xG1>".to_vec()));
+
+        // ...and the same through a drive, at every chunking.
+        let ids: Vec<u32> = (0..pieces.len() as u32).collect();
+        for chunk in 1..=ids.len() {
+            let mut cursor = state.cursor_with_capacity(ids.len() * 4);
+            let mut out = String::new();
+            for group in ids.chunks(chunk) {
+                let emitted = match cursor.feed(group, |_| Ok::<(), Infallible>(())) {
+                    Ok(text) => text,
+                    Err(never) => match never {},
+                };
+                out.push_str(&emitted.unwrap_or_default());
+            }
+            out.push_str(&cursor.flush());
+            assert_eq!(out, "AJ<0x1><0x041><0xG1>", "in chunks of {chunk}");
         }
     }
 }

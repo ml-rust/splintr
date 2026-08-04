@@ -7,7 +7,7 @@
 //!
 //! Handles `[CLS]`, `[SEP]`, `[PAD]`, `[UNK]` special tokens.
 
-use super::policy::{PolicyError, SpecialMode};
+use super::policy::{PolicyError, SpecialDecode, SpecialMode};
 use super::streaming::{
     ByteFallbackRule, DecodePost, DecodeState, RenderRules, StreamingDecoder, Surfaces,
     WordSeparator,
@@ -383,6 +383,12 @@ impl Tokenize for WordPieceTokenizer {
         self.decode(ids)
     }
 
+    /// The inherent [`decode_with`](WordPieceTokenizer::decode_with), which
+    /// [`decode`](WordPieceTokenizer::decode) is itself a mode of.
+    fn decode_with(&self, ids: &[u32], specials: SpecialDecode) -> Result<String, TokenizeError> {
+        WordPieceTokenizer::decode_with(self, ids, specials)
+    }
+
     /// Skips ids the vocabulary does not contain — the inherent
     /// [`decode_lossy`](WordPieceTokenizer::decode_lossy), so the trait and the
     /// type can never disagree about what a sequence decodes to.
@@ -396,6 +402,16 @@ impl Tokenize for WordPieceTokenizer {
     /// [`AnyTokenizer`](crate::AnyTokenizer)'s sake.
     fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
         Ok(WordPieceTokenizer::streaming_decoder(self))
+    }
+
+    /// The inherent
+    /// [`streaming_decoder_with`](WordPieceTokenizer::streaming_decoder_with),
+    /// infallible here for the same reason its default-mode sibling is.
+    fn streaming_decoder_with(
+        &self,
+        specials: SpecialDecode,
+    ) -> Result<StreamingDecoder, TokenizeError> {
+        Ok(WordPieceTokenizer::streaming_decoder_with(self, specials))
     }
 
     /// The token's own text, with any `##` continuation marker removed and
@@ -485,7 +501,17 @@ impl WordPieceTokenizer {
     /// Cheap to call — the surface vector is shared, not copied — and the result
     /// borrows nothing, so it can be moved into a generation task.
     pub fn streaming_decoder(&self) -> StreamingDecoder {
-        StreamingDecoder::new(Arc::new(self.decode_state()))
+        self.streaming_decoder_with(SpecialDecode::Skip)
+    }
+
+    /// A [`StreamingDecoder`] under an explicit [`SpecialDecode`] — see
+    /// [`Tokenize::streaming_decoder_with`].
+    ///
+    /// Built from the very decode configuration
+    /// [`decode_with`](Self::decode_with) drives, so the stream reproduces it in
+    /// whichever mode is asked for.
+    pub fn streaming_decoder_with(&self, specials: SpecialDecode) -> StreamingDecoder {
+        StreamingDecoder::new(Arc::new(self.decode_state().with_special_decode(specials)))
     }
 
     /// Decode token ids to text.
@@ -520,7 +546,22 @@ impl WordPieceTokenizer {
     /// an id renders to and what happens to the resulting text is decided by
     /// exactly the code [`streaming_decoder`](Self::streaming_decoder) uses.
     pub fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        self.drive(ids, |id| Err(TokenizeError::InvalidTokenId(id)))
+        self.decode_with(ids, SpecialDecode::Skip)
+    }
+
+    /// Decode ids to text under an explicit [`SpecialDecode`] — see
+    /// [`Tokenize::decode_with`].
+    ///
+    /// [`decode`](Self::decode) is this method under [`SpecialDecode::Skip`].
+    /// Under [`SpecialDecode::Render`] a `[CLS]`/`[SEP]`/`[PAD]` surface is
+    /// rendered like any other word-starting surface, separator included — which
+    /// is what `tokenizers` does under `skip_special_tokens=False`.
+    pub fn decode_with(
+        &self,
+        ids: &[u32],
+        specials: SpecialDecode,
+    ) -> Result<String, TokenizeError> {
+        self.drive(ids, specials, |id| Err(TokenizeError::InvalidTokenId(id)))
     }
 
     /// Decode token ids to text, skipping ids the vocabulary does not contain.
@@ -532,7 +573,7 @@ impl WordPieceTokenizer {
     /// is instantiated with [`Infallible`], letting the compiler prove the `Err`
     /// arm away rather than a runtime assertion claiming it.
     pub fn decode_lossy(&self, ids: &[u32]) -> String {
-        match self.drive(ids, |_| Ok::<(), Infallible>(())) {
+        match self.drive(ids, SpecialDecode::Skip, |_| Ok::<(), Infallible>(())) {
             Ok(text) => text,
             // `Infallible` has no values, so this match has no arms to write.
             Err(never) => match never {},
@@ -548,9 +589,10 @@ impl WordPieceTokenizer {
     fn drive<E>(
         &self,
         ids: &[u32],
+        specials: SpecialDecode,
         on_unknown: impl Fn(u32) -> Result<(), E>,
     ) -> Result<String, E> {
-        let state = self.decode_state();
+        let state = self.decode_state().with_special_decode(specials);
         let mut cursor = state.cursor_with_capacity(ids.len() * 4);
 
         let mut text = cursor.feed(ids, on_unknown)?.unwrap_or_default();

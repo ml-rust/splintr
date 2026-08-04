@@ -40,6 +40,18 @@ UNIFORM_METHODS = (
     "encode_batch",
 )
 
+#: The decode-side counterpart. `decode` is HuggingFace's default
+#: `skip_special_tokens=True`; `decode_with_special` and
+#: `streaming_decoder_with_special` are its `False`, and a class that offered
+#: only the default would leave a caller with no way to see the markers at all.
+#: Both must therefore exist on every class, exactly as the encode modes do.
+UNIFORM_DECODE_METHODS = (
+    "decode",
+    "decode_with_special",
+    "streaming_decoder",
+    "streaming_decoder_with_special",
+)
+
 #: A BERT-style WordPiece vocabulary whose `post_processor` really does wrap the
 #: content in `[CLS]`/`[SEP]` — the only way to tell `encode` and `encode_raw`
 #: apart, since a tokenizer with no template makes them identical by definition.
@@ -124,6 +136,47 @@ def test_every_class_exposes_the_uniform_method(name, method):
         f"{name} is missing {method}; the six encoding methods must mean the "
         "same thing on every tokenizer class"
     )
+
+
+@pytest.mark.parametrize("name", sorted(every_tokenizer_class()))
+@pytest.mark.parametrize("method", UNIFORM_DECODE_METHODS)
+def test_every_class_exposes_the_uniform_decode_method(name, method):
+    tokenizer = every_tokenizer_class()[name]
+    assert callable(getattr(tokenizer, method, None)), (
+        f"{name} is missing {method}; special-token handling on decode must be "
+        "spellable on every tokenizer class, not only on some of them"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(every_tokenizer_class()))
+def test_decode_with_special_only_adds_what_decode_drops(name):
+    """The two modes differ on exactly the declared-special ids, nowhere else.
+
+    Asserted as a relationship rather than as five per-class literals, because
+    the five fixtures are deliberately different shapes (`[CLS]`/`[SEP]` for the
+    BERT-family ones, `<s>`/`</s>`/`<unk>` for the SentencePiece-shaped ones, no
+    declared specials at all for the raw `Tokenizer`). Two clauses, and together
+    they pin the whole semantics:
+
+    * every id renders *something* under the explicit mode -- that is what makes
+      it a usable `skip_special_tokens=False`, since an id that vanished in both
+      modes would leave the caller no way to see it;
+    * where `decode` renders an id at all, the explicit mode renders it
+      identically -- so the mode only ever restores dropped markers and never
+      quietly changes ordinary text.
+    """
+    tokenizer = every_tokenizer_class()[name]
+    for token_id in range(5):
+        default = tokenizer.decode([token_id])
+        rendered = tokenizer.decode_with_special([token_id])
+        assert rendered != "", (
+            f"{name}: id {token_id} renders nothing even with specials on"
+        )
+        if default != "":
+            assert rendered == default, (
+                f"{name}: id {token_id} is not a declared special, so the two "
+                "modes must agree on it"
+            )
 
 
 @pytest.mark.parametrize("name", sorted(every_tokenizer_class()))

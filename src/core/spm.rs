@@ -27,7 +27,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::metaspace::{self, Prefix};
-use super::policy::{PolicyError, SpecialMode};
+use super::policy::{PolicyError, SpecialDecode, SpecialMode};
 use super::streaming::{DecodeState, StreamingDecoder};
 use super::tokenize::{Tokenize, TokenizeError};
 
@@ -712,7 +712,17 @@ impl SpmTokenizer {
     /// Cheap to call — the piece vector is shared, not copied — and the result
     /// borrows nothing, so it can be moved into a generation task.
     pub fn streaming_decoder(&self) -> StreamingDecoder {
-        StreamingDecoder::new(Arc::new(self.decode_state()))
+        self.streaming_decoder_with(SpecialDecode::Skip)
+    }
+
+    /// A [`StreamingDecoder`] under an explicit [`SpecialDecode`] — see
+    /// [`Tokenize::streaming_decoder_with`].
+    ///
+    /// Built from the very decode configuration
+    /// [`decode_with`](Self::decode_with) drives, so the stream reproduces it in
+    /// whichever mode is asked for.
+    pub fn streaming_decoder_with(&self, specials: SpecialDecode) -> StreamingDecoder {
+        StreamingDecoder::new(Arc::new(self.decode_state().with_special_decode(specials)))
     }
 
     /// Render the pieces, then strip the dummy prefix.
@@ -745,7 +755,23 @@ impl SpmTokenizer {
     /// id renders to and what happens to the resulting text is decided by
     /// exactly the code [`streaming_decoder`](Self::streaming_decoder) uses.
     pub fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        let state = self.decode_state();
+        self.decode_with(ids, SpecialDecode::Skip)
+    }
+
+    /// Decode ids to text under an explicit [`SpecialDecode`] — see
+    /// [`Tokenize::decode_with`].
+    ///
+    /// The whole of [`decode`](Self::decode)'s body, which is now this method
+    /// under [`SpecialDecode::Skip`]. Under [`SpecialDecode::Render`] the
+    /// vocabulary's own BOS/EOS/`<unk>` come back alongside the declared
+    /// `special=true` ids: they are the same kind of marker and live in the same
+    /// skip set, and a caller asking to see the markers means all of them.
+    pub fn decode_with(
+        &self,
+        ids: &[u32],
+        specials: SpecialDecode,
+    ) -> Result<String, TokenizeError> {
+        let state = self.decode_state().with_special_decode(specials);
         let mut cursor = state.cursor_with_capacity(ids.len() * 4);
 
         let emitted = cursor.feed_strict(
@@ -812,6 +838,12 @@ impl Tokenize for SpmTokenizer {
         self.decode(ids)
     }
 
+    /// The inherent [`decode_with`](SpmTokenizer::decode_with), which
+    /// [`decode`](SpmTokenizer::decode) is itself a mode of.
+    fn decode_with(&self, ids: &[u32], specials: SpecialDecode) -> Result<String, TokenizeError> {
+        SpmTokenizer::decode_with(self, ids, specials)
+    }
+
     /// Skips unknown ids and substitutes U+FFFD — the inherent
     /// [`decode_lossy`](SpmTokenizer::decode_lossy), so the trait and the type
     /// can never disagree about what a sequence decodes to.
@@ -825,6 +857,15 @@ impl Tokenize for SpmTokenizer {
     /// sake.
     fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
         Ok(SpmTokenizer::streaming_decoder(self))
+    }
+
+    /// The inherent [`streaming_decoder_with`](SpmTokenizer::streaming_decoder_with),
+    /// infallible here for the same reason its default-mode sibling is.
+    fn streaming_decoder_with(
+        &self,
+        specials: SpecialDecode,
+    ) -> Result<StreamingDecoder, TokenizeError> {
+        Ok(SpmTokenizer::streaming_decoder_with(self, specials))
     }
 
     fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {

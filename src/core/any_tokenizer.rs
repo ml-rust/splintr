@@ -1,6 +1,6 @@
 //! The tagged-union tokenizer handle returned by the HF json loader.
 
-use super::policy::{PolicyError, SpecialMode, SpecialPolicy};
+use super::policy::{PolicyError, SpecialDecode, SpecialMode, SpecialPolicy};
 use super::sentencepiece::SentencePieceTokenizer;
 use super::spm::SpmTokenizer;
 use super::streaming::{DecodeState, StreamingDecoder, Surfaces};
@@ -36,22 +36,35 @@ impl Backend {
         }
     }
 
-    /// The backend's own streaming decoder, configured from its own vocabulary.
+    /// The backend's own streaming decoder, configured from its own vocabulary
+    /// and from an explicit [`SpecialDecode`].
     ///
     /// Only ever reached when the json declared no `decoder` pipeline — the same
     /// condition under which `AnyTokenizer::decode_inner` delegates to that
     /// backend's whole-sequence decode.
-    fn streaming_decoder(&self) -> StreamingDecoder {
+    fn streaming_decoder_with(&self, specials: SpecialDecode) -> StreamingDecoder {
         match self {
-            Backend::Bpe(t) => t.streaming_decoder(),
-            Backend::Unigram(t) => t.streaming_decoder(),
-            Backend::WordPiece(t) => t.streaming_decoder(),
-            Backend::Spm(t) => t.streaming_decoder(),
+            Backend::Bpe(t) => t.streaming_decoder_with(specials),
+            Backend::Unigram(t) => t.streaming_decoder_with(specials),
+            Backend::WordPiece(t) => t.streaming_decoder_with(specials),
+            Backend::Spm(t) => t.streaming_decoder_with(specials),
+        }
+    }
+
+    /// The backend's own strict whole-sequence decode under an explicit
+    /// [`SpecialDecode`]. Reached under exactly the condition
+    /// [`streaming_decoder_with`](Self::streaming_decoder_with) is.
+    fn decode_with(&self, ids: &[u32], specials: SpecialDecode) -> Result<String, TokenizeError> {
+        match self {
+            Backend::Bpe(t) => Tokenize::decode_with(t, ids, specials),
+            Backend::Unigram(t) => Tokenize::decode_with(t, ids, specials),
+            Backend::WordPiece(t) => Tokenize::decode_with(t, ids, specials),
+            Backend::Spm(t) => Tokenize::decode_with(t, ids, specials),
         }
     }
 
     /// The backend's own lossy whole-sequence decode. Reached under exactly the
-    /// condition [`streaming_decoder`](Self::streaming_decoder) is.
+    /// condition [`streaming_decoder_with`](Self::streaming_decoder_with) is.
     fn decode_lossy(&self, ids: &[u32]) -> String {
         match self {
             Backend::Bpe(t) => Tokenize::decode_lossy(t, ids),
@@ -62,7 +75,7 @@ impl Backend {
     }
 
     /// The backend's own per-id rendering. Reached under exactly the condition
-    /// [`streaming_decoder`](Self::streaming_decoder) is.
+    /// [`streaming_decoder_with`](Self::streaming_decoder_with) is.
     fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {
         match self {
             Backend::Bpe(t) => Tokenize::decode_token_bytes(t, id),
@@ -313,22 +326,34 @@ impl AnyTokenizer {
     /// for a trait to spell. The trait impl delegates here, so the two can
     /// never disagree.
     pub fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        self.decode_inner(ids)
+        self.decode_inner(ids, SpecialDecode::Skip)
     }
 
-    /// The one decode implementation, shared by the inherent [`Self::decode`]
-    /// and the [`Tokenize`] impl so neither can drift from the other.
-    fn decode_inner(&self, ids: &[u32]) -> Result<String, TokenizeError> {
+    /// Decode ids back to text under an explicit [`SpecialDecode`] — see
+    /// [`Tokenize::decode_with`], whose contract this is.
+    ///
+    /// Inherent for the same reason [`decode`](Self::decode) is: the universal
+    /// handle should not be the one type whose decode needs a trait imported to
+    /// spell. Branches on `self.decoder` exactly as [`decode`](Self::decode)
+    /// does, so a declared pipeline answers in both modes and the backend's own
+    /// rules answer in both.
+    pub fn decode_with(
+        &self,
+        ids: &[u32],
+        specials: SpecialDecode,
+    ) -> Result<String, TokenizeError> {
+        self.decode_inner(ids, specials)
+    }
+
+    /// The one decode implementation, shared by the inherent [`Self::decode`],
+    /// [`Self::decode_with`] and the [`Tokenize`] impl so none of them can drift
+    /// from the others.
+    fn decode_inner(&self, ids: &[u32], specials: SpecialDecode) -> Result<String, TokenizeError> {
         // When the json declares a `decoder`, drive decoding from it.
         if let Some(decoder) = &self.decoder {
-            return Ok(self.decode_declared(decoder, ids));
+            return Ok(self.decode_declared(decoder, ids, specials));
         }
-        match &self.backend {
-            Backend::Bpe(t) => Tokenize::decode(t, ids),
-            Backend::Unigram(t) => Tokenize::decode(t, ids),
-            Backend::WordPiece(t) => Tokenize::decode(t, ids),
-            Backend::Spm(t) => Tokenize::decode(t, ids),
-        }
+        self.backend.decode_with(ids, specials)
     }
 
     /// The declared `decoder` pipeline's own decode: collect the surface strings
@@ -342,10 +367,23 @@ impl AnyTokenizer {
     /// lossy form to write — strict and lossy decoding through it are the same
     /// call, which is why [`decode_lossy`](Self::decode_lossy) shares this
     /// function rather than inventing one.
-    fn decode_declared(&self, decoder: &super::decoder::Decoder, ids: &[u32]) -> String {
+    fn decode_declared(
+        &self,
+        decoder: &super::decoder::Decoder,
+        ids: &[u32],
+        specials: SpecialDecode,
+    ) -> String {
         let surfaces: Vec<String> = ids
             .iter()
-            .filter(|id| !self.special_decode.contains(id))
+            // The one thing [`SpecialDecode`] changes on this path: under
+            // `Render` the declared-special ids keep their surface and go
+            // through the pipeline like any other token. An id with no surface
+            // at all still drops, in both modes — `filter_map` below, and there
+            // is nothing to render for it either way.
+            .filter(|id| match specials {
+                SpecialDecode::Skip => !self.special_decode.contains(id),
+                SpecialDecode::Render => true,
+            })
             .filter_map(|&id| self.backend.token_surface(id))
             .collect();
         decoder.decode(surfaces)
@@ -362,7 +400,7 @@ impl AnyTokenizer {
     /// backend branch has a distinct lenient drive to reach.
     pub fn decode_lossy(&self, ids: &[u32]) -> String {
         if let Some(decoder) = &self.decoder {
-            return self.decode_declared(decoder, ids);
+            return self.decode_declared(decoder, ids, SpecialDecode::Skip);
         }
         self.backend.decode_lossy(ids)
     }
@@ -481,14 +519,14 @@ impl AnyTokenizer {
             use rayon::prelude::*;
             token_lists
                 .par_iter()
-                .map(|ids| self.decode_inner(ids))
+                .map(|ids| self.decode_inner(ids, SpecialDecode::Skip))
                 .collect()
         }
         #[cfg(not(feature = "rayon"))]
         {
             token_lists
                 .iter()
-                .map(|ids| self.decode_inner(ids))
+                .map(|ids| self.decode_inner(ids, SpecialDecode::Skip))
                 .collect()
         }
     }
@@ -526,8 +564,23 @@ impl AnyTokenizer {
     /// [`add_token_lossy`](StreamingDecoder::add_token_lossy) — the same strict
     /// and lossy pair every backend's stream offers.
     pub fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
+        self.streaming_decoder_with(SpecialDecode::Skip)
+    }
+
+    /// A [`StreamingDecoder`] that reproduces this handle's
+    /// [`decode_with`](Self::decode_with) under the same [`SpecialDecode`] —
+    /// see [`Tokenize::streaming_decoder_with`], whose contract this is.
+    ///
+    /// The whole of [`streaming_decoder`](Self::streaming_decoder)'s body, which
+    /// is now this method under [`SpecialDecode::Skip`], so the stream and the
+    /// whole-sequence decode agree in both modes and refuse on exactly the same
+    /// declared pipelines.
+    pub fn streaming_decoder_with(
+        &self,
+        specials: SpecialDecode,
+    ) -> Result<StreamingDecoder, TokenizeError> {
         let Some(decoder) = &self.decoder else {
-            return Ok(self.backend.streaming_decoder());
+            return Ok(self.backend.streaming_decoder_with(specials));
         };
         let Some((rules, post)) = decoder.lower() else {
             // The two are exact complements of one lowering pass, so the
@@ -539,14 +592,23 @@ impl AnyTokenizer {
         };
 
         // The surfaces the declared pipeline runs over, exactly as
-        // `decode_inner` collects them: `token_surface` per id, `special_decode`
-        // dropped ahead of it. An id with no surface at all is dropped too —
-        // which is a *skip* here, since a rendering rule reads a dense table and
-        // an empty slot would otherwise render as an empty surface (and, on a
-        // WordPiece pipeline, carry a word separator with it).
+        // `decode_inner` collects them: `token_surface` per id, and
+        // `special_decode` dropped ahead of it under the same `specials` that
+        // path reads. An id with no surface at all is dropped too — which is a
+        // *skip* here, since a rendering rule reads a dense table and an empty
+        // slot would otherwise render as an empty surface (and, on a WordPiece
+        // pipeline, carry a word separator with it).
+        //
+        // Those surface-less ids stay skipped in *both* modes, which is why this
+        // path composes its own set rather than calling
+        // `DecodeState::with_special_decode` — that empties the skip set whole,
+        // which is right only where nothing but declared specials is in it.
         let vocab_size = Tokenize::vocab_size(self);
         let mut surfaces = Vec::with_capacity(vocab_size);
-        let mut skip = self.special_decode.clone();
+        let mut skip = match specials {
+            SpecialDecode::Skip => self.special_decode.clone(),
+            SpecialDecode::Render => rustc_hash::FxHashSet::default(),
+        };
         for id in 0..vocab_size {
             let id = id as u32;
             match self.backend.token_surface(id) {
@@ -597,7 +659,13 @@ impl Tokenize for AnyTokenizer {
     }
 
     fn decode(&self, ids: &[u32]) -> Result<String, TokenizeError> {
-        self.decode_inner(ids)
+        self.decode_inner(ids, SpecialDecode::Skip)
+    }
+
+    /// The inherent [`decode_with`](AnyTokenizer::decode_with), which
+    /// [`decode`](AnyTokenizer::decode) is itself a mode of.
+    fn decode_with(&self, ids: &[u32], specials: SpecialDecode) -> Result<String, TokenizeError> {
+        self.decode_inner(ids, specials)
     }
 
     fn decode_lossy(&self, ids: &[u32]) -> String {
@@ -610,6 +678,16 @@ impl Tokenize for AnyTokenizer {
     /// widening.
     fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
         AnyTokenizer::streaming_decoder(self)
+    }
+
+    /// The inherent
+    /// [`streaming_decoder_with`](AnyTokenizer::streaming_decoder_with), which
+    /// refuses on exactly the pipelines its default-mode sibling refuses on.
+    fn streaming_decoder_with(
+        &self,
+        specials: SpecialDecode,
+    ) -> Result<StreamingDecoder, TokenizeError> {
+        AnyTokenizer::streaming_decoder_with(self, specials)
     }
 
     fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {

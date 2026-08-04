@@ -48,7 +48,7 @@ use crate::core::hf_json::{
 };
 use crate::core::spm::SpmTokenizer;
 use crate::core::wordpiece::WordPieceTokenizer;
-use crate::core::{AnyTokenizer, Backend, SpecialMode, SpecialPolicy};
+use crate::core::{AnyTokenizer, Backend, SpecialDecode, SpecialMode, SpecialPolicy};
 use crate::core::{StreamingDecoder, Tokenize, Tokenizer};
 
 // Special tokens are defined in crate::core::pretrained module.
@@ -377,6 +377,36 @@ impl PyTokenizer {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Decode token IDs to a string, rendering the vocabulary's special tokens
+    /// instead of dropping them.
+    ///
+    /// `decode` implements HuggingFace's default `skip_special_tokens=True`, so
+    /// a control marker (`[INST]`, `<|eot_id|>`, `<s>`) renders as nothing.
+    /// This is its `skip_special_tokens=False`: every declared special id comes
+    /// back as its own spelling, which is what a chat-template round trip, an
+    /// inspection of raw model output, or a transcript that must keep its
+    /// markers needs.
+    ///
+    /// Args:
+    ///     tokens: List of token IDs
+    ///
+    /// Returns:
+    ///     Decoded string, control markers included
+    ///
+    /// Raises:
+    ///     ValueError: Exactly as `decode` does
+    ///
+    /// Example:
+    ///     tok = Tokenizer.from_pretrained("mistral_v2")
+    ///     ids = tok.encode_with_special("[INST]Hi[/INST]")
+    ///     tok.decode(ids)               # "Hi"
+    ///     tok.decode_with_special(ids)  # "[INST]Hi[/INST]"
+    fn decode_with_special(&self, tokens: Vec<u32>) -> PyResult<String> {
+        self.inner
+            .decode_with(&tokens, SpecialDecode::Render)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Decode token IDs to bytes.
     ///
     /// Args:
@@ -495,6 +525,18 @@ impl PyTokenizer {
     ///     print(decoder.flush())
     fn streaming_decoder(&self) -> PyStreamingDecoder {
         PyStreamingDecoder::new(self.inner.streaming_decoder())
+    }
+
+    /// A streaming decoder that renders special tokens instead of dropping them.
+    ///
+    /// `streaming_decoder` reproduces `decode`; this one reproduces
+    /// `decode_with_special`, so a generation loop can watch the control markers
+    /// go past. `"".join(chunks) + flush()` equals `decode_with_special(ids)`.
+    ///
+    /// Returns:
+    ///     StreamingDecoder instance
+    fn streaming_decoder_with_special(&self) -> PyStreamingDecoder {
+        PyStreamingDecoder::new(self.inner.streaming_decoder_with(SpecialDecode::Render))
     }
 
     /// Clear the encoding cache.
@@ -700,6 +742,36 @@ impl PySentencePieceTokenizer {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Decode token IDs to a string, rendering the vocabulary's special tokens
+    /// instead of dropping them.
+    ///
+    /// `decode` implements HuggingFace's default `skip_special_tokens=True`, so
+    /// a control marker (`[INST]`, `<|eot_id|>`, `<s>`) renders as nothing.
+    /// This is its `skip_special_tokens=False`: every declared special id comes
+    /// back as its own spelling, which is what a chat-template round trip, an
+    /// inspection of raw model output, or a transcript that must keep its
+    /// markers needs.
+    ///
+    /// Args:
+    ///     ids: List of token IDs
+    ///
+    /// Returns:
+    ///     Decoded string, control markers included
+    ///
+    /// Raises:
+    ///     ValueError: Exactly as `decode` does
+    ///
+    /// Example:
+    ///     tok = Tokenizer.from_pretrained("mistral_v2")
+    ///     ids = tok.encode_with_special("[INST]Hi[/INST]")
+    ///     tok.decode(ids)               # "Hi"
+    ///     tok.decode_with_special(ids)  # "[INST]Hi[/INST]"
+    fn decode_with_special(&self, ids: Vec<u32>) -> PyResult<String> {
+        self.inner
+            .decode_with(&ids, SpecialDecode::Render)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Decode token IDs to text, skipping invalid IDs.
     ///
     /// Args:
@@ -744,6 +816,18 @@ impl PySentencePieceTokenizer {
     ///     StreamingDecoder instance
     fn streaming_decoder(&self) -> PyStreamingDecoder {
         PyStreamingDecoder::new(self.inner.streaming_decoder())
+    }
+
+    /// A streaming decoder that renders special tokens instead of dropping them.
+    ///
+    /// `streaming_decoder` reproduces `decode`; this one reproduces
+    /// `decode_with_special`, so a generation loop can watch the control markers
+    /// go past. `"".join(chunks) + flush()` equals `decode_with_special(ids)`.
+    ///
+    /// Returns:
+    ///     StreamingDecoder instance
+    fn streaming_decoder_with_special(&self) -> PyStreamingDecoder {
+        PyStreamingDecoder::new(self.inner.streaming_decoder_with(SpecialDecode::Render))
     }
 
     fn __repr__(&self) -> String {
@@ -944,6 +1028,35 @@ impl PySpmTokenizer {
         Tokenize::decode(&self.inner, &ids).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Decode token IDs to a string, rendering the vocabulary's special tokens
+    /// instead of dropping them.
+    ///
+    /// `decode` implements HuggingFace's default `skip_special_tokens=True`, so
+    /// a control marker (`[INST]`, `<|eot_id|>`, `<s>`) renders as nothing.
+    /// This is its `skip_special_tokens=False`: every declared special id comes
+    /// back as its own spelling, which is what a chat-template round trip, an
+    /// inspection of raw model output, or a transcript that must keep its
+    /// markers needs.
+    ///
+    /// Args:
+    ///     ids: List of token IDs
+    ///
+    /// Returns:
+    ///     Decoded string, control markers included
+    ///
+    /// Raises:
+    ///     ValueError: Exactly as `decode` does
+    ///
+    /// Example:
+    ///     tok = Tokenizer.from_pretrained("mistral_v2")
+    ///     ids = tok.encode_with_special("[INST]Hi[/INST]")
+    ///     tok.decode(ids)               # "Hi"
+    ///     tok.decode_with_special(ids)  # "[INST]Hi[/INST]"
+    fn decode_with_special(&self, ids: Vec<u32>) -> PyResult<String> {
+        Tokenize::decode_with(&self.inner, &ids, SpecialDecode::Render)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Get vocabulary size.
     #[getter]
     fn vocab_size(&self) -> usize {
@@ -972,6 +1085,18 @@ impl PySpmTokenizer {
     ///     StreamingDecoder instance
     fn streaming_decoder(&self) -> PyStreamingDecoder {
         PyStreamingDecoder::new(self.inner.streaming_decoder())
+    }
+
+    /// A streaming decoder that renders special tokens instead of dropping them.
+    ///
+    /// `streaming_decoder` reproduces `decode`; this one reproduces
+    /// `decode_with_special`, so a generation loop can watch the control markers
+    /// go past. `"".join(chunks) + flush()` equals `decode_with_special(ids)`.
+    ///
+    /// Returns:
+    ///     StreamingDecoder instance
+    fn streaming_decoder_with_special(&self) -> PyStreamingDecoder {
+        PyStreamingDecoder::new(self.inner.streaming_decoder_with(SpecialDecode::Render))
     }
 
     fn __repr__(&self) -> String {
@@ -1146,6 +1271,35 @@ impl PyWordPieceTokenizer {
         Tokenize::decode(&self.inner, &ids).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Decode token IDs to a string, rendering the vocabulary's special tokens
+    /// instead of dropping them.
+    ///
+    /// `decode` implements HuggingFace's default `skip_special_tokens=True`, so
+    /// a control marker (`[INST]`, `<|eot_id|>`, `<s>`) renders as nothing.
+    /// This is its `skip_special_tokens=False`: every declared special id comes
+    /// back as its own spelling, which is what a chat-template round trip, an
+    /// inspection of raw model output, or a transcript that must keep its
+    /// markers needs.
+    ///
+    /// Args:
+    ///     ids: List of token IDs
+    ///
+    /// Returns:
+    ///     Decoded string, control markers included
+    ///
+    /// Raises:
+    ///     ValueError: Exactly as `decode` does
+    ///
+    /// Example:
+    ///     tok = Tokenizer.from_pretrained("mistral_v2")
+    ///     ids = tok.encode_with_special("[INST]Hi[/INST]")
+    ///     tok.decode(ids)               # "Hi"
+    ///     tok.decode_with_special(ids)  # "[INST]Hi[/INST]"
+    fn decode_with_special(&self, ids: Vec<u32>) -> PyResult<String> {
+        Tokenize::decode_with(&self.inner, &ids, SpecialDecode::Render)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Vocabulary size.
     fn vocab_size(&self) -> usize {
         Tokenize::vocab_size(&self.inner)
@@ -1178,6 +1332,18 @@ impl PyWordPieceTokenizer {
     ///     StreamingDecoder instance
     fn streaming_decoder(&self) -> PyStreamingDecoder {
         PyStreamingDecoder::new(self.inner.streaming_decoder())
+    }
+
+    /// A streaming decoder that renders special tokens instead of dropping them.
+    ///
+    /// `streaming_decoder` reproduces `decode`; this one reproduces
+    /// `decode_with_special`, so a generation loop can watch the control markers
+    /// go past. `"".join(chunks) + flush()` equals `decode_with_special(ids)`.
+    ///
+    /// Returns:
+    ///     StreamingDecoder instance
+    fn streaming_decoder_with_special(&self) -> PyStreamingDecoder {
+        PyStreamingDecoder::new(self.inner.streaming_decoder_with(SpecialDecode::Render))
     }
 }
 
@@ -1385,6 +1551,35 @@ impl PyAnyTokenizer {
         Tokenize::decode(&self.inner, &ids).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Decode token IDs to a string, rendering the vocabulary's special tokens
+    /// instead of dropping them.
+    ///
+    /// `decode` implements HuggingFace's default `skip_special_tokens=True`, so
+    /// a control marker (`[INST]`, `<|eot_id|>`, `<s>`) renders as nothing.
+    /// This is its `skip_special_tokens=False`: every declared special id comes
+    /// back as its own spelling, which is what a chat-template round trip, an
+    /// inspection of raw model output, or a transcript that must keep its
+    /// markers needs.
+    ///
+    /// Args:
+    ///     ids: List of token IDs
+    ///
+    /// Returns:
+    ///     Decoded string, control markers included
+    ///
+    /// Raises:
+    ///     ValueError: Exactly as `decode` does
+    ///
+    /// Example:
+    ///     tok = Tokenizer.from_pretrained("mistral_v2")
+    ///     ids = tok.encode_with_special("[INST]Hi[/INST]")
+    ///     tok.decode(ids)               # "Hi"
+    ///     tok.decode_with_special(ids)  # "[INST]Hi[/INST]"
+    fn decode_with_special(&self, ids: Vec<u32>) -> PyResult<String> {
+        Tokenize::decode_with(&self.inner, &ids, SpecialDecode::Render)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Batch decode multiple token lists — the batch form of `decode`, running
     /// the same declared `decoder` pipeline and the same `special=true` skip.
     ///
@@ -1540,6 +1735,24 @@ impl PyAnyTokenizer {
     fn streaming_decoder(&self) -> PyResult<PyStreamingDecoder> {
         self.inner
             .streaming_decoder()
+            .map(PyStreamingDecoder::new)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// A streaming decoder that renders special tokens instead of dropping them.
+    ///
+    /// `streaming_decoder` reproduces `decode`; this one reproduces
+    /// `decode_with_special`, so a generation loop can watch the control markers
+    /// go past. `"".join(chunks) + flush()` equals `decode_with_special(ids)`.
+    ///
+    /// Returns:
+    ///     StreamingDecoder instance
+    ///
+    /// Raises:
+    ///     ValueError: Exactly as `streaming_decoder` does
+    fn streaming_decoder_with_special(&self) -> PyResult<PyStreamingDecoder> {
+        self.inner
+            .streaming_decoder_with(SpecialDecode::Render)
             .map(PyStreamingDecoder::new)
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }

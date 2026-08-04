@@ -67,6 +67,36 @@ pub enum SpecialMode<'a> {
     Allow(&'a FxHashSet<String>),
 }
 
+/// Whether decoding renders the ids a vocabulary declares special, or drops
+/// them — HuggingFace's `skip_special_tokens`, as an explicit mode.
+///
+/// The decode-side counterpart of [`SpecialMode`], and named the same way for
+/// the same reason: special-token handling is a caller's decision, not a
+/// property of the vocabulary, so it is spelled out at the call rather than
+/// inferred. `decode` is [`Skip`](Self::Skip) — what every reference tokenizer
+/// does by default, and what a chat server wants, since a control marker is an
+/// instruction to the model and not text for a user to read. A caller that is
+/// inspecting model output, round-tripping a chat template, or rendering a
+/// transcript with its markers intact asks for [`Render`](Self::Render).
+///
+/// Deliberately *not* a bool: `decode(ids, false)` at a call site says nothing
+/// about which way round the flag runs, and this is exactly the decision whose
+/// two answers differ silently — both produce plausible text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialDecode {
+    /// Drop every id the vocabulary declares special, rendering nothing in its
+    /// place. HuggingFace's `skip_special_tokens=True`, and what
+    /// [`Tokenize::decode`](crate::Tokenize::decode) does.
+    Skip,
+    /// Render each declared-special id's own spelling, exactly as any ordinary
+    /// token is rendered. HuggingFace's `skip_special_tokens=False`.
+    ///
+    /// Only the *declared special* ids come back. An id that carries no surface
+    /// at all is still dropped — there is nothing to render — which is the same
+    /// decision every decode path here already makes for it.
+    Render,
+}
+
 /// Candidate contents for the end-of-sequence token, most specific first.
 ///
 /// Shared with the Unigram backend's own eos fallback in `mod.rs`, which needs

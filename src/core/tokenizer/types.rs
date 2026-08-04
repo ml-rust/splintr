@@ -1,5 +1,5 @@
 use crate::core::added::AddedTokens;
-use crate::core::policy::{PolicyError, SpecialMode};
+use crate::core::policy::{PolicyError, SpecialDecode, SpecialMode};
 use crate::core::streaming::StreamingDecoder;
 use crate::core::tokenize::{token_bytes_of, token_text_of, Tokenize, TokenizeError};
 use lru::LruCache;
@@ -298,6 +298,23 @@ impl crate::core::tokenize::Tokenize for Tokenizer {
         })
     }
 
+    /// The inherent [`decode_with`](Tokenizer::decode_with), which
+    /// [`decode`](Tokenizer::decode) is itself a mode of, so all three agree by
+    /// construction.
+    fn decode_with(
+        &self,
+        ids: &[u32],
+        specials: SpecialDecode,
+    ) -> Result<String, crate::core::tokenize::TokenizeError> {
+        self.decode_with(ids, specials).map_err(|e| match e {
+            TokenizerError::Utf8Error => crate::core::tokenize::TokenizeError::Utf8Error,
+            TokenizerError::InvalidTokenId(id) => {
+                crate::core::tokenize::TokenizeError::InvalidTokenId(id)
+            }
+            other => crate::core::tokenize::TokenizeError::Other(other.to_string()),
+        })
+    }
+
     /// Skips unknown ids and substitutes U+FFFD — the inherent
     /// [`decode_lossy`](Tokenizer::decode_lossy), so the trait and the type can
     /// never disagree about what a sequence decodes to.
@@ -310,6 +327,15 @@ impl crate::core::tokenize::Tokenize for Tokenizer {
     /// the trait's shape needs for [`AnyTokenizer`](crate::AnyTokenizer)'s sake.
     fn streaming_decoder(&self) -> Result<StreamingDecoder, TokenizeError> {
         Ok(Tokenizer::streaming_decoder(self))
+    }
+
+    /// The inherent [`streaming_decoder_with`](Tokenizer::streaming_decoder_with),
+    /// infallible here for the same reason its default-mode sibling is.
+    fn streaming_decoder_with(
+        &self,
+        specials: SpecialDecode,
+    ) -> Result<StreamingDecoder, TokenizeError> {
+        Ok(Tokenizer::streaming_decoder_with(self, specials))
     }
 
     fn decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError> {

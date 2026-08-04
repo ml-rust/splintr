@@ -151,9 +151,17 @@ class TestMistralV1SpecialTokens:
         assert tokens == [32015], f"unexpected <|function|> ids: {tokens}"
 
     def test_decode_agent_tokens(self, tokenizer):
-        """Test decoding agent tokens."""
-        assert tokenizer.decode([32005]) == "<|think|>"
-        assert tokenizer.decode([32015]) == "<|function|>"
+        """Agent tokens decode to nothing, like every other control marker.
+
+        These 54 ids are splintr's own additions above the vocabulary file's
+        last piece, so no reference tokenizer names them -- but they are control
+        markers of exactly the kind `mistral-7b-v0.3`'s `tokenizer.json`
+        declares ``special: true`` and `tokenizers` 0.22.1 drops
+        (``decode([3, ...]) -> 'hello'``), so they follow the same rule. Ask
+        ``special_token_id`` for the spelling; `decode` gives model output.
+        """
+        assert tokenizer.decode([32005]) == ""
+        assert tokenizer.decode([32015]) == ""
 
 
 class TestMistralV1VocabSize:

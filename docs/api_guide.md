@@ -237,6 +237,25 @@ text = tokenizer.decode(tokens)
 print(text)  # "Hello, world!"
 ```
 
+Control tokens render as nothing — HuggingFace's default
+`skip_special_tokens=True`, which every loader implements, so the same
+vocabulary decodes the same way whether it came from `from_pretrained`, from a
+`tokenizer.json` or from a GGUF file:
+
+```python
+tok = Tokenizer.from_pretrained("mistral_v2")
+tok.decode([3])                          # ""  — [INST]
+tok.decode(tok.encode_with_special("[INST]Hi[/INST]"))  # "Hi"
+```
+
+What counts as a control token is the vocabulary's own declaration, not a guess:
+DeepSeek marks `<｜User｜>` and `<｜Assistant｜>` as ordinary added tokens, so
+those still render, and Whisper's timestamp tokens (`<|0.00|>`…`<|30.00|>`) are
+transcript content and render too. The OpenAI vocabularies (`cl100k_base`,
+`o200k_base`) follow `tiktoken`, which renders `<|endoftext|>` and its siblings.
+Use `special_token_id(name)` when you want a marker's spelling or id rather than
+its decoded text.
+
 #### `decode_bytes(tokens: list[int]) -> bytes`
 
 Decode token IDs to raw bytes without UTF-8 validation. Needs the byte-level BPE
@@ -438,12 +457,15 @@ families. (Rust: `splintr::from_json_path` / `from_json_bytes`.)
 
 A streaming decoder is essential for real-time LLM applications where tokens arrive one at a time. It handles the critical problem of BPE tokens not aligning with UTF-8 character boundaries.
 
-There is exactly one decoder class, `StreamingDecoder`, and exactly one way to get it: `streaming_decoder()` on the tokenizer whose stream you are decoding. Every tokenizer class has it — `Tokenizer`, `SentencePieceTokenizer`, `SpmTokenizer`, `WordPieceTokenizer` and `AnyTokenizer` — and the decoder it hands back carries that tokenizer's own decode rules: the ByteLevel alphabet (DeepSeek V3, GPT-2), `<0xNN>` byte fallback, the `▁` metaspace substitution, and the `special=true` ids `decode` drops.
+There is exactly one decoder class, `StreamingDecoder`, and two ways to get it — `streaming_decoder()` and `streaming_decoder_with_special()`, on the tokenizer whose stream you are decoding. They differ only in the mode `decode` and `decode_with_special` differ in: the first drops the control tokens, the second renders them, so a generation loop that needs to *see* `<|eot_id|>` go past has a stream that shows it. Every tokenizer class has it — `Tokenizer`, `SentencePieceTokenizer`, `SpmTokenizer`, `WordPieceTokenizer` and `AnyTokenizer` — and the decoder it hands back carries that tokenizer's own decode rules: the ByteLevel alphabet (DeepSeek V3, GPT-2), `<0xNN>` byte fallback, the `▁` metaspace substitution, and the `special=true` ids `decode` drops.
 
-That is what makes the guarantee below hold on every vocabulary, and it is why there is nothing to choose:
+That is what makes the guarantee below hold on every vocabulary, and it is why there is nothing else to choose:
 
 ```python
 "".join(chunks) + decoder.flush() == tokenizer.decode(ids)
+
+# ...and, for the sibling factory, against the sibling decode:
+"".join(chunks) + decoder.flush() == tokenizer.decode_with_special(ids)
 ```
 
 ### Why You Need This

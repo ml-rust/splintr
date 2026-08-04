@@ -33,9 +33,23 @@ from splintr import (
 )
 
 
-def stream_one_by_one(tokenizer, ids):
+def make_decoder(tokenizer, special):
+    """The tokenizer's own decoder, in the special-token mode under test.
+
+    `special=False` is `streaming_decoder()`, which reproduces `decode`;
+    `special=True` is `streaming_decoder_with_special()`, which reproduces
+    `decode_with_special` (HuggingFace's `skip_special_tokens=False`). The
+    property below holds in both, which is the point of threading the flag
+    through rather than testing only the default.
+    """
+    if special:
+        return tokenizer.streaming_decoder_with_special()
+    return tokenizer.streaming_decoder()
+
+
+def stream_one_by_one(tokenizer, ids, special=False):
     """Drive `ids` through the tokenizer's own decoder, one token at a time."""
-    decoder = tokenizer.streaming_decoder()
+    decoder = make_decoder(tokenizer, special)
     out = ""
     for token_id in ids:
         if chunk := decoder.add_token(token_id):
@@ -43,17 +57,21 @@ def stream_one_by_one(tokenizer, ids):
     return out + decoder.flush()
 
 
-def stream_in_one_call(tokenizer, ids):
+def stream_in_one_call(tokenizer, ids, special=False):
     """The same ids through `add_tokens` — grouping must not change the text."""
-    decoder = tokenizer.streaming_decoder()
+    decoder = make_decoder(tokenizer, special)
     return (decoder.add_tokens(list(ids)) or "") + decoder.flush()
 
 
-def assert_stream_matches_decode(tokenizer, ids):
-    """The property, under both groupings."""
-    expected = tokenizer.decode(list(ids))
-    assert stream_one_by_one(tokenizer, ids) == expected
-    assert stream_in_one_call(tokenizer, ids) == expected
+def assert_stream_matches_decode(tokenizer, ids, special=False):
+    """The property, under both groupings and in the given mode."""
+    expected = (
+        tokenizer.decode_with_special(list(ids))
+        if special
+        else tokenizer.decode(list(ids))
+    )
+    assert stream_one_by_one(tokenizer, ids, special) == expected
+    assert stream_in_one_call(tokenizer, ids, special) == expected
     return expected
 
 
@@ -120,9 +138,21 @@ class TestByteLevelVocabulary:
         assert assert_stream_matches_decode(tokenizer, tokenizer.encode(text)) == text
 
     def test_stream_matches_decode_with_special_tokens(self, tokenizer):
+        """The markers survive the stream when the stream is asked to render
+        them — and the property (stream == whole-sequence decode) holds either
+        way.
+
+        `<｜User｜>` is ``special: false`` in DeepSeek's own `tokenizer.json` and
+        renders in both modes; the `<|think|>` agent markers are control tokens
+        and only the explicit mode shows them.
+        """
         text = "<｜User｜>你好!<|think|>reasoning<|/think|>"
         ids = tokenizer.encode_with_special(text)
-        assert assert_stream_matches_decode(tokenizer, ids) == text
+        assert assert_stream_matches_decode(tokenizer, ids, special=True) == text
+        assert (
+            assert_stream_matches_decode(tokenizer, ids)
+            == "<｜User｜>你好!reasoning"
+        )
 
 
 class TestRawVocabulary:
@@ -254,6 +284,14 @@ class TestSpecialTokensDecodeSkips:
     def test_special_ids_are_skipped_by_the_stream_as_by_decode(self, tokenizer):
         assert assert_stream_matches_decode(tokenizer, [1, 3, 4, 2]) == "helloworld"
 
+    def test_the_explicit_mode_streams_them_back(self, tokenizer):
+        """...and `streaming_decoder_with_special` puts them back, still
+        agreeing with `decode_with_special` under both groupings."""
+        assert (
+            assert_stream_matches_decode(tokenizer, [1, 3, 4, 2], special=True)
+            == "<s>helloworld</s>"
+        )
+
 
 class TestDeclaredDecoderPipelineStreams:
     """Mistral's declared chain, driven one token at a time.
@@ -306,6 +344,20 @@ class TestDeclaredDecoderPipelineStreams:
 
     def test_stream_skips_the_special_ids_decode_skips(self, tokenizer):
         assert assert_stream_matches_decode(tokenizer, [1, 3, 4, 2]) == "hello world"
+
+    def test_the_explicit_mode_runs_the_pipeline_over_the_specials_too(self, tokenizer):
+        """The declared pipeline is the branch with its own skip-set logic.
+
+        Under `SpecialDecode::Render` the `<s>`/`</s>` surfaces go through the
+        chain like any other token — `Replace ▁→" "`, `Fuse`, then the leading
+        `Strip`, which finds no leading space to take once `<s>` renders first.
+        Ids with no surface at all stay dropped in both modes, which is why this
+        branch composes its skip set rather than emptying it.
+        """
+        assert (
+            assert_stream_matches_decode(tokenizer, [1, 3, 4, 2], special=True)
+            == "<s> hello world</s>"
+        )
 
     def test_byte_fallback_char_reassembles_across_add_token_calls(self, tokenizer):
         """`𐍈` arrives as four `<0xNN>` tokens; nothing is emitted until it is
