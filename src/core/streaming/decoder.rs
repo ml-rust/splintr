@@ -1,17 +1,11 @@
-//! UTF-8 safe streaming decoder for token-by-token LLM output.
+//! The streaming decoders themselves: raw-byte and ByteLevel-encoded.
 //!
-//! This module provides a stateful decoder that buffers incomplete UTF-8 sequences
-//! and only emits complete, valid UTF-8 characters. This is critical for streaming
-//! LLM output where token boundaries may not align with character boundaries.
-//!
-//! # ByteLevel Support
-//!
-//! For tokenizers using ByteLevel encoding (GPT-2, Llama, DeepSeek V3), the
-//! [`ByteLevelStreamingDecoder`] handles the ByteLevel-to-bytes conversion
-//! before UTF-8 assembly.
+//! Both buffer their bytes in a `Utf8Buffer`, so the incremental UTF-8 logic
+//! lives in exactly one place; they differ only in how a token id becomes bytes.
 
-use super::byte_level::byte_level_decode_bytes;
-use super::tokenizer::Tokenizer;
+use super::utf8::Utf8Buffer;
+use crate::core::byte_level::byte_level_decode_bytes;
+use crate::core::tokenizer::Tokenizer;
 
 /// A streaming decoder that handles incomplete UTF-8 sequences across token boundaries.
 ///
@@ -41,7 +35,7 @@ use super::tokenizer::Tokenizer;
 /// ```
 pub struct StreamingDecoder<'a> {
     tokenizer: &'a Tokenizer,
-    buffer: Vec<u8>,
+    buffer: Utf8Buffer,
 }
 
 impl<'a> StreamingDecoder<'a> {
@@ -49,7 +43,7 @@ impl<'a> StreamingDecoder<'a> {
     pub fn new(tokenizer: &'a Tokenizer) -> Self {
         Self {
             tokenizer,
-            buffer: Vec::with_capacity(16),
+            buffer: Utf8Buffer::new(),
         }
     }
 
@@ -69,10 +63,10 @@ impl<'a> StreamingDecoder<'a> {
         };
 
         // Add to buffer
-        self.buffer.extend_from_slice(bytes);
+        self.buffer.push(bytes);
 
         // Try to extract complete UTF-8 characters
-        self.extract_complete_utf8()
+        self.buffer.take_complete()
     }
 
     /// Add multiple tokens at once and return complete UTF-8 characters.
@@ -87,10 +81,10 @@ impl<'a> StreamingDecoder<'a> {
                 continue;
             };
 
-            self.buffer.extend_from_slice(bytes);
+            self.buffer.push(bytes);
         }
 
-        self.extract_complete_utf8()
+        self.buffer.take_complete()
     }
 
     /// Flush any remaining buffered bytes.
@@ -98,13 +92,7 @@ impl<'a> StreamingDecoder<'a> {
     /// If there are incomplete UTF-8 sequences in the buffer, they will be
     /// replaced with the Unicode replacement character (U+FFFD).
     pub fn flush(&mut self) -> String {
-        if self.buffer.is_empty() {
-            return String::new();
-        }
-
-        let result = String::from_utf8_lossy(&self.buffer).into_owned();
-        self.buffer.clear();
-        result
+        self.buffer.flush()
     }
 
     /// Reset the decoder state, discarding any buffered bytes.
@@ -114,105 +102,12 @@ impl<'a> StreamingDecoder<'a> {
 
     /// Check if there are buffered bytes waiting for completion.
     pub fn has_pending(&self) -> bool {
-        !self.buffer.is_empty()
+        self.buffer.has_pending()
     }
 
     /// Get the number of pending bytes in the buffer.
     pub fn pending_bytes(&self) -> usize {
-        self.buffer.len()
-    }
-
-    /// Extract complete UTF-8 characters from the buffer.
-    ///
-    /// This function finds the longest valid UTF-8 prefix of the buffer,
-    /// returns it as a string, and keeps any incomplete trailing bytes.
-    fn extract_complete_utf8(&mut self) -> Option<String> {
-        if self.buffer.is_empty() {
-            return None;
-        }
-
-        // Find the longest valid UTF-8 prefix
-        let valid_len = self.find_valid_utf8_len();
-
-        if valid_len == 0 {
-            return None;
-        }
-
-        // Extract the valid portion
-        let valid_bytes: Vec<u8> = self.buffer.drain(..valid_len).collect();
-
-        // SAFETY: We've verified this is valid UTF-8
-        let result = unsafe { String::from_utf8_unchecked(valid_bytes) };
-
-        Some(result)
-    }
-
-    /// Find the length of the longest valid UTF-8 prefix.
-    ///
-    /// This accounts for incomplete multi-byte sequences at the end.
-    fn find_valid_utf8_len(&self) -> usize {
-        let bytes = &self.buffer;
-        let len = bytes.len();
-
-        if len == 0 {
-            return 0;
-        }
-
-        // First, try to validate the entire buffer
-        if std::str::from_utf8(bytes).is_ok() {
-            return len;
-        }
-
-        // Find how many bytes at the end might be an incomplete sequence
-        // UTF-8 sequences can be 1-4 bytes long
-        // We need to check if the last 1-3 bytes could be the start of an incomplete sequence
-
-        for incomplete_len in 1..=3.min(len) {
-            let check_len = len - incomplete_len;
-            if check_len == 0 {
-                continue;
-            }
-
-            // Check if prefix is valid UTF-8
-            if std::str::from_utf8(&bytes[..check_len]).is_ok() {
-                // Check if the trailing bytes could be an incomplete sequence
-                if self.could_be_incomplete_sequence(&bytes[check_len..]) {
-                    return check_len;
-                }
-            }
-        }
-
-        // If nothing works, find the last position that's valid
-        // This handles cases with invalid bytes in the middle
-        for i in (0..len).rev() {
-            if std::str::from_utf8(&bytes[..=i]).is_ok() {
-                return i + 1;
-            }
-        }
-
-        0
-    }
-
-    /// Check if bytes could be the start of an incomplete UTF-8 sequence.
-    fn could_be_incomplete_sequence(&self, bytes: &[u8]) -> bool {
-        if bytes.is_empty() {
-            return false;
-        }
-
-        let first = bytes[0];
-
-        // Check if first byte indicates a multi-byte sequence
-        // and we don't have all the continuation bytes
-        match first {
-            // 2-byte sequence: 110xxxxx
-            0xC0..=0xDF => bytes.len() < 2,
-            // 3-byte sequence: 1110xxxx
-            0xE0..=0xEF => bytes.len() < 3,
-            // 4-byte sequence: 11110xxx
-            0xF0..=0xF7 => bytes.len() < 4,
-            // Continuation byte or invalid - not the start of an incomplete sequence
-            _ => false,
-        }
+        self.buffer.pending_len()
     }
 }
 
@@ -244,7 +139,7 @@ impl<'a> StreamingDecoder<'a> {
 /// ```
 pub struct ByteLevelStreamingDecoder<'a> {
     tokenizer: &'a Tokenizer,
-    buffer: Vec<u8>,
+    buffer: Utf8Buffer,
 }
 
 impl<'a> ByteLevelStreamingDecoder<'a> {
@@ -252,7 +147,7 @@ impl<'a> ByteLevelStreamingDecoder<'a> {
     pub fn new(tokenizer: &'a Tokenizer) -> Self {
         Self {
             tokenizer,
-            buffer: Vec::with_capacity(16),
+            buffer: Utf8Buffer::new(),
         }
     }
 
@@ -268,19 +163,19 @@ impl<'a> ByteLevelStreamingDecoder<'a> {
         if let Some(encoded_bytes) = self.tokenizer.decoder().get(&token_id) {
             // Decode ByteLevel encoding to raw bytes
             if let Some(raw_bytes) = byte_level_decode_bytes(encoded_bytes) {
-                self.buffer.extend_from_slice(&raw_bytes);
+                self.buffer.push(&raw_bytes);
             } else {
                 // Fallback: treat as raw bytes if ByteLevel decode fails
-                self.buffer.extend_from_slice(encoded_bytes);
+                self.buffer.push(encoded_bytes);
             }
         } else {
             // Special tokens are NOT ByteLevel-encoded, add directly.
             let special = self.tokenizer.special_tokens_decoder().get(&token_id)?;
-            self.buffer.extend_from_slice(special.as_bytes());
+            self.buffer.push(special.as_bytes());
         }
 
         // Try to extract complete UTF-8 characters
-        self.extract_complete_utf8()
+        self.buffer.take_complete()
     }
 
     /// Add multiple tokens at once and return complete UTF-8 characters.
@@ -289,16 +184,16 @@ impl<'a> ByteLevelStreamingDecoder<'a> {
             if let Some(encoded_bytes) = self.tokenizer.decoder().get(&token_id) {
                 // Decode ByteLevel encoding to raw bytes
                 if let Some(raw_bytes) = byte_level_decode_bytes(encoded_bytes) {
-                    self.buffer.extend_from_slice(&raw_bytes);
+                    self.buffer.push(&raw_bytes);
                 } else {
-                    self.buffer.extend_from_slice(encoded_bytes);
+                    self.buffer.push(encoded_bytes);
                 }
             } else if let Some(special) = self.tokenizer.special_tokens_decoder().get(&token_id) {
-                self.buffer.extend_from_slice(special.as_bytes());
+                self.buffer.push(special.as_bytes());
             }
         }
 
-        self.extract_complete_utf8()
+        self.buffer.take_complete()
     }
 
     /// Flush any remaining buffered bytes.
@@ -306,13 +201,7 @@ impl<'a> ByteLevelStreamingDecoder<'a> {
     /// If there are incomplete UTF-8 sequences in the buffer, they will be
     /// replaced with the Unicode replacement character (U+FFFD).
     pub fn flush(&mut self) -> String {
-        if self.buffer.is_empty() {
-            return String::new();
-        }
-
-        let result = String::from_utf8_lossy(&self.buffer).into_owned();
-        self.buffer.clear();
-        result
+        self.buffer.flush()
     }
 
     /// Reset the decoder state, discarding any buffered bytes.
@@ -322,88 +211,12 @@ impl<'a> ByteLevelStreamingDecoder<'a> {
 
     /// Check if there are buffered bytes waiting for completion.
     pub fn has_pending(&self) -> bool {
-        !self.buffer.is_empty()
+        self.buffer.has_pending()
     }
 
     /// Get the number of pending bytes in the buffer.
     pub fn pending_bytes(&self) -> usize {
-        self.buffer.len()
-    }
-
-    /// Extract complete UTF-8 characters from the buffer.
-    fn extract_complete_utf8(&mut self) -> Option<String> {
-        if self.buffer.is_empty() {
-            return None;
-        }
-
-        // Find the longest valid UTF-8 prefix
-        let valid_len = self.find_valid_utf8_len();
-
-        if valid_len == 0 {
-            return None;
-        }
-
-        // Extract the valid portion
-        let valid_bytes: Vec<u8> = self.buffer.drain(..valid_len).collect();
-
-        // SAFETY: We've verified this is valid UTF-8
-        let result = unsafe { String::from_utf8_unchecked(valid_bytes) };
-
-        Some(result)
-    }
-
-    /// Find the length of the longest valid UTF-8 prefix.
-    fn find_valid_utf8_len(&self) -> usize {
-        let bytes = &self.buffer;
-        let len = bytes.len();
-
-        if len == 0 {
-            return 0;
-        }
-
-        // First, try to validate the entire buffer
-        if std::str::from_utf8(bytes).is_ok() {
-            return len;
-        }
-
-        // Find how many bytes at the end might be an incomplete sequence
-        for incomplete_len in 1..=3.min(len) {
-            let check_len = len - incomplete_len;
-            if check_len == 0 {
-                continue;
-            }
-
-            if std::str::from_utf8(&bytes[..check_len]).is_ok()
-                && self.could_be_incomplete_sequence(&bytes[check_len..])
-            {
-                return check_len;
-            }
-        }
-
-        // Find the last position that's valid
-        for i in (0..len).rev() {
-            if std::str::from_utf8(&bytes[..=i]).is_ok() {
-                return i + 1;
-            }
-        }
-
-        0
-    }
-
-    /// Check if bytes could be the start of an incomplete UTF-8 sequence.
-    fn could_be_incomplete_sequence(&self, bytes: &[u8]) -> bool {
-        if bytes.is_empty() {
-            return false;
-        }
-
-        let first = bytes[0];
-
-        match first {
-            0xC0..=0xDF => bytes.len() < 2, // 2-byte sequence
-            0xE0..=0xEF => bytes.len() < 3, // 3-byte sequence
-            0xF0..=0xF7 => bytes.len() < 4, // 4-byte sequence
-            _ => false,
-        }
+        self.buffer.pending_len()
     }
 }
 
@@ -524,7 +337,7 @@ mod tests {
     // ByteLevelStreamingDecoder tests
     // =========================================================================
 
-    use super::super::byte_level::byte_level_encode;
+    use crate::core::byte_level::byte_level_encode;
 
     fn make_byte_level_tokenizer() -> Tokenizer {
         let mut encoder = FxHashMap::default();
