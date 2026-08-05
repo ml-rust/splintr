@@ -144,6 +144,7 @@ impl AnyTokenizer {
     /// `Some` only for [`Backend::Bpe`], where pre-tokenization is a distinct
     /// stage — see [`Tokenizer::pre_tokenize`] for what `text` must already be
     /// (normalized, unprefixed) and which byte space the pieces come back in.
+    /// [`normalize`](Self::normalize) is the stage that produces it.
     ///
     /// `None` is the honest answer rather than a fabricated one for the rest.
     /// [`Backend::Unigram`] and [`Backend::Spm`] are SentencePiece: they have no
@@ -156,6 +157,45 @@ impl AnyTokenizer {
         match &self.backend {
             Backend::Bpe(t) => Some(t.pre_tokenize(text)),
             Backend::Unigram(_) | Backend::WordPiece(_) | Backend::Spm(_) => None,
+        }
+    }
+
+    /// The input as this handle's normalization stage leaves it, or `None` when
+    /// this backend has no such stage to report.
+    ///
+    /// This is the text every later stage is driven with, and therefore what
+    /// [`pre_tokenize`](Self::pre_tokenize) — which sits *after* it and
+    /// deliberately does not normalize — must be handed instead of the raw input.
+    ///
+    /// Where exactly the line between "normalization" and "the model" falls is
+    /// each backend's reference implementation's to draw, and each variant
+    /// reports the stage its own reference exposes:
+    ///
+    /// - [`Backend::Bpe`] and [`Backend::Unigram`] — the declared HF `normalizer`
+    ///   pipeline's output, matching `tokenizers`' `normalizer.normalize_str`;
+    ///   the input unchanged when no normalizer is declared, which is the case
+    ///   for every vocabulary in [`crate::pretrained`]. `add_prefix_space` and
+    ///   the metaspace escaping are *not* included: HuggingFace hangs both off
+    ///   pre-tokenizer nodes.
+    /// - [`Backend::Spm`] — the metaspace escaping *and* the dummy prefix,
+    ///   matching `sentencepiece`'s own `SentencePieceProcessor.normalize`. This
+    ///   backend has nothing between that and the merge loop, so here the string
+    ///   really is what the model sees. It is also the only coverage that stage
+    ///   can have: SentencePiece has no pre-tokenizer split, so `pre_tokenize`
+    ///   reports `None`.
+    /// - [`Backend::WordPiece`] — `None`. Its BertNormalizer is real but fused
+    ///   into its own encode as flags rather than exposed as a stage, exactly as
+    ///   its splitting is, and reconstructing it here would pin a copy instead of
+    ///   the thing that runs.
+    ///
+    /// Added-token extraction runs upstream of all of this, on the raw input;
+    /// what is reported is what one content gap becomes.
+    pub fn normalize(&self, text: &str) -> Option<String> {
+        match &self.backend {
+            Backend::Bpe(t) => Some(t.normalize(text)),
+            Backend::Unigram(t) => Some(t.normalize(text)),
+            Backend::Spm(t) => Some(t.normalize(text)),
+            Backend::WordPiece(_) => None,
         }
     }
 

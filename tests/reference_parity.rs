@@ -44,9 +44,28 @@
 //! Both columns are optional and skipped when absent: `pieces` is missing for
 //! the SentencePiece-backed vocabularies, which have no pre-tokenizer stage at
 //! all, and for individual cases that split into nothing. `normalized`, when
-//! present, is the reference normalizer's output — the text the reference's
-//! split actually ran on, and therefore what `pre_tokenize` (which does not
-//! normalize; see its docs) must be driven with instead of `input`.
+//! present, is the reference's own normalization stage's output.
+//!
+//! # Why the normalization stage is checked too
+//!
+//! `normalized` does double duty, and the two uses are the same fact read from
+//! two sides rather than two meanings of one column:
+//!
+//! * It is the *input* to the split comparison — the text the reference's own
+//!   split ran on, and therefore what [`AnyTokenizer::pre_tokenize`] (which
+//!   does not normalize; see its docs) must be driven with instead of `input`.
+//! * It is the *expected output* of [`AnyTokenizer::normalize`], which is the
+//!   stage that produces exactly that text.
+//!
+//! So a fixture stating both columns pins the two stages and their hand-off in
+//! one go, and a disagreement is reported against whichever of the two is
+//! actually wrong instead of surfacing only as a confusing split diff.
+//!
+//! This is what covers the SentencePiece-backed vocabularies' front end, which
+//! is otherwise pinned by ids alone: they have no pre-tokenizer to report, and
+//! their `▁` escaping and dummy prefix are the whole of the stage between input
+//! and merge loop. `sentencepiece` exposes precisely that as
+//! `SentencePieceProcessor.normalize`.
 //!
 //! This file intentionally duplicates a small amount of fixture-parsing and
 //! mode-selection logic from `examples/verify_pretrained.rs` rather than
@@ -98,8 +117,9 @@ struct Case {
     /// reference with no pre-tokenizer stage, and for a case that splits into
     /// nothing — see the module docs.
     pieces: Option<Vec<String>>,
-    /// The reference normalizer's output, recorded only where it differs from
-    /// `input`; that is the text `pieces` is a split of.
+    /// The reference's normalization-stage output, recorded only where it
+    /// differs from `input`; that is both the text `pieces` is a split of and
+    /// what `AnyTokenizer::normalize` has to produce — see the module docs.
     normalized: Option<String>,
 }
 
@@ -302,7 +322,8 @@ fn escape(text: &str) -> String {
 
 /// Diff every bundled-vocabulary fixture in `tests/fixtures/pretrained/`
 /// against the independent reference-tokenizer output it was generated from
-/// (see `scripts/extract_reference_cases.py`), on both ids and decoded text.
+/// (see `scripts/extract_reference_cases.py`), on ids, decoded text and — where
+/// the fixture states them — the normalization stage and pre-tokenizer split.
 ///
 /// Fails loudly (rather than vacuously passing) if the fixtures directory is
 /// missing or contains no `.json` files, so an accidental deletion of the
@@ -405,6 +426,51 @@ fn pretrained_vocabularies_match_reference_tokenizers() {
                     escape(&case.input),
                     format_ids(&case.expected),
                     escape(&case.decoded),
+                ));
+            }
+            failure_reports.push(detail);
+        }
+
+        // The normalization stage, scored independently of the encode mode for
+        // the same reason decode is. Cases with no `normalized` are skipped,
+        // not failed: the column is written only where the reference's
+        // normalization changed the input, so its absence asserts nothing --
+        // and asserting the identity everywhere else would turn "this reference
+        // does not normalize" into a claim about splintr's backend.
+        let normalize_failures: Vec<(usize, Option<String>)> = fixture
+            .cases
+            .iter()
+            .enumerate()
+            .filter_map(|(index, case)| {
+                let expected = case.normalized.as_ref()?;
+                match tokenizer.normalize(&case.input) {
+                    Some(actual) if actual == *expected => None,
+                    outcome => Some((index, outcome)),
+                }
+            })
+            .collect();
+
+        if !normalize_failures.is_empty() {
+            let mut detail = format!(
+                "vocab {:?} ({}): {}/{} cases normalized differently from the reference:",
+                fixture.vocab,
+                path.display(),
+                normalize_failures.len(),
+                fixture.cases.len(),
+            );
+            for (index, outcome) in &normalize_failures {
+                let case = &fixture.cases[*index];
+                let actual = match outcome {
+                    Some(text) => format!("\"{}\"", escape(text)),
+                    // The fixture states a normalization this backend cannot
+                    // report at all -- a wrong reference pairing, not a wrong
+                    // pipeline.
+                    None => "<this backend exposes no normalization stage>".to_owned(),
+                };
+                detail.push_str(&format!(
+                    "\n  [case {index}] input: \"{}\"\n    expected: \"{}\"\n    actual:   {actual}",
+                    escape(&case.input),
+                    escape(case.normalized.as_deref().unwrap_or_default()),
                 ));
             }
             failure_reports.push(detail);

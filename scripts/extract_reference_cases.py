@@ -33,15 +33,38 @@ The decode column is not decoration. Encode and decode are separate pipelines
 of them unpinned -- which is where a large share of this crate's real
 divergences have been. `tests/reference_parity.rs` asserts both columns.
 
-# THE `pieces` COLUMN
+# THE `pieces` AND `normalized` COLUMNS
 
-For the same reason there is a third column: the reference's *pre-tokenizer
-split* of the input, one string per piece, written as `"pieces"` (plus
-`"normalized"` when the reference's normalizer changed the input before the
-split saw it -- the pieces are always the split of that normalized text). A
-pre-tokenizer pattern that drifts from the one a vocabulary was trained with
-is invisible in the id column until it happens to move a token id, and
-`tests/reference_parity.rs` compares it against `AnyTokenizer::pre_tokenize`.
+For the same reason there are two more columns, both optional, pinning the
+stage *between* the two ends: the reference's *pre-tokenizer split* of the
+input, one string per piece, written as `"pieces"`, and the output of the
+reference's own *normalization* stage, written as `"normalized"`. A
+pre-tokenizer pattern -- or a normalizer pipeline -- that drifts from the one a
+vocabulary was trained with is invisible in the id column until it happens to
+move a token id. `tests/reference_parity.rs` compares `pieces` against
+`AnyTokenizer::pre_tokenize` and `normalized` against `AnyTokenizer::normalize`,
+and drives the former with the latter, which is what the two columns mean
+together: `pieces` is always the split of `normalized`, never of `input`.
+
+`normalized` is written only where it differs from `input`, so what "no
+`normalized` key" means is "this reference's normalization stage is the
+identity on this case", not "there is no such stage".
+
+What each reference's normalization stage *is*:
+
+  * `tokenizers` -- `normalizer.normalize_str(text)`, and nothing else: HF hangs
+    `add_prefix_space` and the metaspace escaping off its pre-tokenizer nodes
+    instead, so those show up in `pieces`. Every bundled `.tiktoken` vocabulary
+    declares no normalizer at all, so in practice this key never appears in
+    those fixtures.
+  * `tiktoken` -- no normalization stage exists; the key never appears.
+  * `sentencepiece` -- `SentencePieceProcessor.normalize(text)`: the space ->
+    `▁` escaping *and* the `add_dummy_prefix` marker. This is the column that
+    stands in for the pre-tokenizer split the format does not have (see below):
+    it is the only stage between the input and the merge loop, so without it
+    SentencePiece's whole front end is pinned by ids alone, which cannot say
+    which stage moved them. It differs from `input` for essentially every
+    non-empty case, which is the expected shape here, not a red flag.
 
 Where the pieces come from, and what that does and does not prove:
 
@@ -67,7 +90,8 @@ Where the pieces come from, and what that does and does not prove:
     string goes to the merge loop. The `mistral`/`mistral_v2` fixtures
     therefore carry no `pieces` key at all. This is an omission on purpose, not
     a gap waiting to be filled -- and it is an omitted key rather than an empty
-    list, which would falsely assert "splits into zero pieces".
+    list, which would falsely assert "splits into zero pieces". The stage those
+    fixtures pin instead is `normalized`, above.
 
 An individual case with an empty split (the empty-string corpus entry) omits
 the key for that same reason.
@@ -562,7 +586,7 @@ def unmap_pieces(pieces: list[str], normalized: str) -> list[str]:
     )
 
 
-def build_cases(encode, decode, split=None) -> list[dict[str, object]]:
+def build_cases(encode, decode, split=None, normalize=None) -> list[dict[str, object]]:
     """Run `REFERENCE_CORPUS` through one reference's encode, decode and split.
 
     `decode` is handed the ids `encode` just produced, not the original text,
@@ -573,15 +597,22 @@ def build_cases(encode, decode, split=None) -> list[dict[str, object]]:
     does, never what it "should" do.
 
     `split`, when the reference has a pre-tokenizer at all, returns
-    `(normalized-or-None, pieces)` for one input -- see the module docstring's
-    "THE `pieces` COLUMN". Both extra keys are omitted rather than written
-    empty: no `normalized` when the normalizer changed nothing, no `pieces`
-    when the split produced none.
+    `(normalized-or-None, pieces)` for one input; `normalize` is the same
+    `normalized` half on its own, for a reference that normalizes but does not
+    split -- see the module docstring's "THE `pieces` AND `normalized` COLUMNS".
+    A reference supplies at most one of the two, since the split's own
+    normalized text is the one the pieces belong to. Every optional key is
+    omitted rather than written empty: no `normalized` when the normalization
+    stage changed nothing, no `pieces` when the split produced none.
     """
     cases: list[dict[str, object]] = []
     for text in REFERENCE_CORPUS:
         ids = [int(i) for i in encode(text)]
         case: dict[str, object] = {"input": text, "expected": ids, "decoded": decode(ids)}
+        if normalize is not None:
+            normalized = normalize(text)
+            if normalized != text:
+                case["normalized"] = normalized
         if split is not None:
             normalized, pieces = split(text)
             if normalized is not None:
@@ -632,15 +663,19 @@ def hf_reference(reference_json: Path):
 
 
 def spm_reference(reference_model: Path):
-    """`(processor, encode, decode)` for `sentencepiece` over a `tokenizer.model`.
+    """`(processor, encode, decode, normalize)` for `sentencepiece` over a `tokenizer.model`.
 
     `add_bos`/`add_eos` are left off, the SentencePiece equivalent of
     `add_special_tokens=False`: `SpmTokenizer` on the Rust side emits neither
     from `encode_raw`, the policy places them.
 
     No `split` is returned, deliberately: SentencePiece has no pre-tokenizer
-    stage to split with (see the module docstring's "THE `pieces` COLUMN"), so
-    these fixtures carry no `pieces` column.
+    stage to split with, so these fixtures carry no `pieces` column. What they
+    carry instead is `normalize` -- `SentencePieceProcessor.normalize`, the
+    space -> `▁` escaping plus the `add_dummy_prefix` marker, which is the only
+    stage this format has between the input and the merge loop and therefore
+    the one that stands in for the split it does not have. See the module
+    docstring's "THE `pieces` AND `normalized` COLUMNS".
     """
     import sentencepiece
 
@@ -652,7 +687,10 @@ def spm_reference(reference_model: Path):
     def decode(ids: list[int]) -> str:
         return processor.decode(ids)
 
-    return processor, encode, decode
+    def normalize(text: str) -> str:
+        return processor.normalize(text)
+
+    return processor, encode, decode, normalize
 
 
 def tiktoken_reference(encoding_name: str):
@@ -752,7 +790,7 @@ def run_spm(vocab: str, reference_model: Path) -> tuple[dict[str, object], list[
     except ImportError:
         sys.exit("error: the 'sentencepiece' package is required (pip install sentencepiece)")
 
-    processor, encode, decode = spm_reference(reference_model)
+    processor, encode, decode, normalize = spm_reference(reference_model)
     spm_lines = read_spm_lines(spm_path)
     try:
         sanity_check_spm_pairing(vocab, spm_lines, processor)
@@ -763,10 +801,15 @@ def run_spm(vocab: str, reference_model: Path) -> tuple[dict[str, object], list[
         "source": "sentencepiece",
         "path": str(reference_model.resolve()),
         "sentencepiece_version": sentencepiece.__version__,
+        "normalized": (
+            "SentencePieceProcessor.normalize -- the space -> U+2581 escaping and the "
+            "add_dummy_prefix marker, the one stage this format has between the input and "
+            "the merge loop, standing in for the pre-tokenizer split it does not have"
+        ),
     }
     # No `split` argument, so no `pieces` column: SentencePiece has no
     # pre-tokenizer stage at all. See the module docstring.
-    return block, build_cases(encode, decode), f"pieces={len(spm_lines)}"
+    return block, build_cases(encode, decode, normalize=normalize), f"pieces={len(spm_lines)}"
 
 
 def run_tiktoken(vocab: str, encoding_name: str) -> tuple[dict[str, object], list[dict[str, object]], str]:

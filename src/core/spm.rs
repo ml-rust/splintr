@@ -350,14 +350,24 @@ impl SpmTokenizer {
         }
     }
 
+    /// Metaspace-escape one stretch of the input — the whole of this backend's
+    /// normalization, and the only form of the text the merge loop ever sees.
+    ///
+    /// Spaces are never collapsed: this backend's vocabularies carry the
+    /// whitespace-run pieces (`▁▁`, …) and merge them themselves. That decision
+    /// lives here rather than at each call site so that
+    /// [`normalize`](Self::normalize) cannot report an escaping the merge loop
+    /// was not actually handed.
+    fn escape(&self, text: &str, prefix: Prefix) -> String {
+        metaspace::escape(text, prefix, false)
+    }
+
     /// Escape one stretch of the input and merge it into pieces.
     ///
     /// Which stretches get a `prefix` other than [`Prefix::None`] is the
     /// [`SpmPrefixScheme`]'s decision — see [`gap_encoder`](Self::gap_encoder).
-    /// Spaces themselves are never collapsed: this backend's vocabularies carry
-    /// the whitespace-run pieces (`▁▁`, …) and merge them themselves.
     fn encode_segment(&self, text: &str, prefix: Prefix) -> Vec<u32> {
-        let escaped = metaspace::escape(text, prefix, false);
+        let escaped = self.escape(text, prefix);
         let mut out = Vec::new();
         for symbol in self.merge(&escaped) {
             self.emit(&escaped[symbol.start..symbol.start + symbol.len], &mut out);
@@ -463,6 +473,34 @@ impl SpmTokenizer {
             return Vec::new();
         }
         self.encode_segment(text, self.prefix())
+    }
+
+    /// The input as SentencePiece's normalization leaves it: every space rewritten
+    /// as `▁` and the dummy prefix in place — literally the string the merge loop
+    /// runs over, since this backend has no stage between the two.
+    ///
+    /// Exists because that stage is otherwise unobservable from outside the
+    /// crate. SentencePiece has no pre-tokenizer split for
+    /// `AnyTokenizer::pre_tokenize` to pin (it reports `None` here), so without
+    /// this the escaping and the dummy prefix — the whole front end — are covered
+    /// only indirectly, through ids that cannot say which stage moved them.
+    /// `tests/reference_parity.rs` pins this against `sentencepiece`'s own
+    /// `SentencePieceProcessor.normalize`, which is exactly this stage.
+    ///
+    /// # What it does and does not include
+    ///
+    /// The escaping and the dummy prefix that
+    /// [`encode_ordinary`](Self::encode_ordinary) applies, under the same
+    /// empty-input guard: an empty input reaches the merge loop as nothing at
+    /// all, not as a lone marker, and that is what is reported. Added-token
+    /// matching is *not* included — this is the ordinary path, one stretch
+    /// starting at byte 0 — so the [`SpmPrefixScheme`] question of which *later*
+    /// stretches carry a prefix does not arise.
+    pub fn normalize(&self, text: &str) -> String {
+        if text.is_empty() {
+            return String::new();
+        }
+        self.escape(text, self.prefix())
     }
 
     /// Whether the whole-input dummy prefix must surface as a standalone `▁`

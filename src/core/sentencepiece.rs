@@ -200,8 +200,19 @@ impl SentencePieceTokenizer {
         self
     }
 
-    /// Apply the configured normalizer pipeline to an input string.
-    fn normalize(&self, text: &str) -> String {
+    /// Apply the configured normalizer pipeline to an input string — the text
+    /// [`encode_ordinary`](Self::encode_ordinary) metaspace-escapes and segments.
+    ///
+    /// Public because the stage is otherwise unobservable from outside the crate,
+    /// which is how a normalizer pipeline that drifts from the `tokenizer.json`
+    /// it was parsed out of stays invisible until it happens to move a token id.
+    /// The metaspace escaping is deliberately *not* included: this backend's
+    /// reference is HuggingFace `tokenizers`, which puts that in its `Metaspace`
+    /// pre-tokenizer node and reports only the pipeline below as
+    /// `normalizer.normalize_str`. (SentencePiece's own `normalize` draws the line
+    /// elsewhere, and [`SpmTokenizer::normalize`](super::spm::SpmTokenizer::normalize)
+    /// follows *it* — each backend reports the stage its own reference defines.)
+    pub fn normalize(&self, text: &str) -> String {
         if self.normalizer.is_empty() {
             text.to_string()
         } else {

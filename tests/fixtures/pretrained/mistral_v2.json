@@ -3,7 +3,8 @@
  "reference": {
   "source": "sentencepiece",
   "path": "/home/farhan/Projects/models/mistral-7b-v0.3/tokenizer.model",
-  "sentencepiece_version": "0.2.0"
+  "sentencepiece_version": "0.2.0",
+  "normalized": "SentencePieceProcessor.normalize -- the space -> U+2581 escaping and the add_dummy_prefix marker, the one stage this format has between the input and the merge loop, standing in for the pre-tokenizer split it does not have"
  },
  "cases": [
   {
@@ -16,28 +17,32 @@
    "expected": [
     1027
    ],
-   "decoded": " "
+   "decoded": " ",
+   "normalized": "▁▁"
   },
   {
    "input": "  ",
    "expected": [
     3055
    ],
-   "decoded": "  "
+   "decoded": "  ",
+   "normalized": "▁▁▁"
   },
   {
    "input": "   ",
    "expected": [
     1028
    ],
-   "decoded": "   "
+   "decoded": "   ",
+   "normalized": "▁▁▁▁"
   },
   {
    "input": "a",
    "expected": [
     1032
    ],
-   "decoded": "a"
+   "decoded": "a",
+   "normalized": "▁a"
   },
   {
    "input": " a",
@@ -45,7 +50,8 @@
     29473,
     1032
    ],
-   "decoded": " a"
+   "decoded": " a",
+   "normalized": "▁▁a"
   },
   {
    "input": "a ",
@@ -53,7 +59,8 @@
     1032,
     29473
    ],
-   "decoded": "a "
+   "decoded": "a ",
+   "normalized": "▁a▁"
   },
   {
    "input": " a ",
@@ -62,7 +69,8 @@
     1032,
     29473
    ],
-   "decoded": " a "
+   "decoded": " a ",
+   "normalized": "▁▁a▁"
   },
   {
    "input": "hello world",
@@ -71,7 +79,8 @@
     29477,
     2294
    ],
-   "decoded": "hello world"
+   "decoded": "hello world",
+   "normalized": "▁hello▁world"
   },
   {
    "input": "Hello World!",
@@ -80,7 +89,8 @@
     4072,
     29576
    ],
-   "decoded": "Hello World!"
+   "decoded": "Hello World!",
+   "normalized": "▁Hello▁World!"
   },
   {
    "input": "the quick brown fox jumps over the lazy dog",
@@ -97,7 +107,8 @@
     18666,
     4682
    ],
-   "decoded": "the quick brown fox jumps over the lazy dog"
+   "decoded": "the quick brown fox jumps over the lazy dog",
+   "normalized": "▁the▁quick▁brown▁fox▁jumps▁over▁the▁lazy▁dog"
   },
   {
    "input": "\tindented\twith\ttabs",
@@ -111,7 +122,8 @@
     780,
     25624
    ],
-   "decoded": "\tindented\twith\ttabs"
+   "decoded": "\tindented\twith\ttabs",
+   "normalized": "▁\tindented\twith\ttabs"
   },
   {
    "input": "line one\nline two\nline three",
@@ -125,7 +137,8 @@
     1849,
     2480
    ],
-   "decoded": "line one\nline two\nline three"
+   "decoded": "line one\nline two\nline three",
+   "normalized": "▁line▁one\nline▁two\nline▁three"
   },
   {
    "input": "\n\n\n",
@@ -135,7 +148,8 @@
     781,
     781
    ],
-   "decoded": "\n\n\n"
+   "decoded": "\n\n\n",
+   "normalized": "▁\n\n\n"
   },
   {
    "input": "trailing whitespace   ",
@@ -145,7 +159,8 @@
     3412,
     3055
    ],
-   "decoded": "trailing whitespace   "
+   "decoded": "trailing whitespace   ",
+   "normalized": "▁trailing▁whitespace▁▁▁"
   },
   {
    "input": "   leading whitespace",
@@ -155,7 +170,8 @@
     20487,
     3412
    ],
-   "decoded": "   leading whitespace"
+   "decoded": "   leading whitespace",
+   "normalized": "▁▁▁▁leading▁whitespace"
   },
   {
    "input": "multiple   internal    spaces",
@@ -166,7 +182,8 @@
     3055,
     11367
    ],
-   "decoded": "multiple   internal    spaces"
+   "decoded": "multiple   internal    spaces",
+   "normalized": "▁multiple▁▁▁internal▁▁▁▁spaces"
   },
   {
    "input": "I've got it, don't worry.",
@@ -183,7 +200,8 @@
     8748,
     29491
    ],
-   "decoded": "I've got it, don't worry."
+   "decoded": "I've got it, don't worry.",
+   "normalized": "▁I've▁got▁it,▁don't▁worry."
   },
   {
    "input": "it's a test — isn't it?",
@@ -200,7 +218,8 @@
     1146,
     29572
    ],
-   "decoded": "it's a test — isn't it?"
+   "decoded": "it's a test — isn't it?",
+   "normalized": "▁it's▁a▁test▁—▁isn't▁it?"
   },
   {
    "input": "punctuation: ,.!?;:'\"()[]{}",
@@ -218,7 +237,8 @@
     2770,
     7165
    ],
-   "decoded": "punctuation: ,.!?;:'\"()[]{}"
+   "decoded": "punctuation: ,.!?;:'\"()[]{}",
+   "normalized": "▁punctuation:▁,.!?;:'\"()[]{}"
   },
   {
    "input": "hyphenated-word and em—dash",
@@ -233,7 +253,8 @@
     29589,
     25685
    ],
-   "decoded": "hyphenated-word and em—dash"
+   "decoded": "hyphenated-word and em—dash",
+   "normalized": "▁hyphenated-word▁and▁em—dash"
   },
   {
    "input": "こんにちは世界",
@@ -247,7 +268,8 @@
     30818,
     30590
    ],
-   "decoded": "こんにちは世界"
+   "decoded": "こんにちは世界",
+   "normalized": "▁こんにちは世界"
   },
   {
    "input": "日本語のテキストです。",
@@ -265,7 +287,8 @@
     29894,
     29712
    ],
-   "decoded": "日本語のテキストです。"
+   "decoded": "日本語のテキストです。",
+   "normalized": "▁日本語のテキストです。"
   },
   {
    "input": "你好，世界！",
@@ -278,7 +301,8 @@
     30590,
     30035
    ],
-   "decoded": "你好，世界！"
+   "decoded": "你好，世界！",
+   "normalized": "▁你好，世界！"
   },
   {
    "input": "안녕하세요 세계",
@@ -295,7 +319,8 @@
     30489,
     30874
    ],
-   "decoded": "안녕하세요 세계"
+   "decoded": "안녕하세요 세계",
+   "normalized": "▁안녕하세요▁세계"
   },
   {
    "input": "emoji test 😀🎉🚀",
@@ -308,7 +333,8 @@
     32630,
     30780
    ],
-   "decoded": "emoji test 😀🎉🚀"
+   "decoded": "emoji test 😀🎉🚀",
+   "normalized": "▁emoji▁test▁😀🎉🚀"
   },
   {
    "input": "family: 👨‍👩‍👧‍👦",
@@ -336,7 +362,8 @@
     916,
     937
    ],
-   "decoded": "family: 👨‍👩‍👧‍👦"
+   "decoded": "family: 👨‍👩‍👧‍👦",
+   "normalized": "▁family:▁👨‍👩‍👧‍👦"
   },
   {
    "input": "flag: 🏳️‍🌈",
@@ -355,7 +382,8 @@
     911,
     907
    ],
-   "decoded": "flag: 🏳️‍🌈"
+   "decoded": "flag: 🏳️‍🌈",
+   "normalized": "▁flag:▁🏳️‍🌈"
   },
   {
    "input": "café résumé naïve",
@@ -368,7 +396,8 @@
     29688,
     1101
    ],
-   "decoded": "café résumé naïve"
+   "decoded": "café résumé naïve",
+   "normalized": "▁café▁résumé▁naïve"
   },
   {
    "input": "Zürich Ångström Curaçao",
@@ -385,7 +414,8 @@
     29625,
     5812
    ],
-   "decoded": "Zürich Ångström Curaçao"
+   "decoded": "Zürich Ångström Curaçao",
+   "normalized": "▁Zürich▁Ångström▁Curaçao"
   },
   {
    "input": "0123456789",
@@ -402,7 +432,8 @@
     29551,
     29542
    ],
-   "decoded": "0123456789"
+   "decoded": "0123456789",
+   "normalized": "▁0123456789"
   },
   {
    "input": "the year 2024 had 365 days",
@@ -421,7 +452,8 @@
     29550,
     2970
    ],
-   "decoded": "the year 2024 had 365 days"
+   "decoded": "the year 2024 had 365 days",
+   "normalized": "▁the▁year▁2024▁had▁365▁days"
   },
   {
    "input": "price: $19.99, quantity: 42",
@@ -441,7 +473,8 @@
     29549,
     29518
    ],
-   "decoded": "price: $19.99, quantity: 42"
+   "decoded": "price: $19.99, quantity: 42",
+   "normalized": "▁price:▁$19.99,▁quantity:▁42"
   },
   {
    "input": "def add(a, b):\n    return a + b\n",
@@ -461,7 +494,8 @@
     1055,
     781
    ],
-   "decoded": "def add(a, b):\n    return a + b\n"
+   "decoded": "def add(a, b):\n    return a + b\n",
+   "normalized": "▁def▁add(a,▁b):\n▁▁▁▁return▁a▁+▁b\n"
   },
   {
    "input": "if (x == 42) { print(\"hi\"); }",
@@ -481,7 +515,8 @@
     1809,
     1211
    ],
-   "decoded": "if (x == 42) { print(\"hi\"); }"
+   "decoded": "if (x == 42) { print(\"hi\"); }",
+   "normalized": "▁if▁(x▁==▁42)▁{▁print(\"hi\");▁}"
   },
   {
    "input": "Mixed 混合 текст with 日本語 and English.",
@@ -503,7 +538,8 @@
     5068,
     29491
    ],
-   "decoded": "Mixed 混合 текст with 日本語 and English."
+   "decoded": "Mixed 混合 текст with 日本語 and English.",
+   "normalized": "▁Mixed▁混合▁текст▁with▁日本語▁and▁English."
   },
   {
    "input": "русский текст с числами 123",
@@ -522,7 +558,8 @@
     29518,
     29538
    ],
-   "decoded": "русский текст с числами 123"
+   "decoded": "русский текст с числами 123",
+   "normalized": "▁русский▁текст▁с▁числами▁123"
   },
   {
    "input": "a\tb\nc d",
@@ -534,7 +571,8 @@
     29485,
     1049
    ],
-   "decoded": "a\tb\nc d"
+   "decoded": "a\tb\nc d",
+   "normalized": "▁a\tb\nc▁d"
   },
   {
    "input": "   \t\n   ",
@@ -544,7 +582,8 @@
     781,
     3055
    ],
-   "decoded": "   \t\n   "
+   "decoded": "   \t\n   ",
+   "normalized": "▁▁▁▁\t\n▁▁▁"
   },
   {
    "input": "The quick fox",
@@ -555,7 +594,8 @@
     29768,
     24080
    ],
-   "decoded": "The quick fox"
+   "decoded": "The quick fox",
+   "normalized": "▁The quick fox"
   },
   {
    "input": "getUserName",
@@ -564,7 +604,8 @@
     1498,
     1720
    ],
-   "decoded": "getUserName"
+   "decoded": "getUserName",
+   "normalized": "▁getUserName"
   },
   {
    "input": "myVariableName",
@@ -573,7 +614,8 @@
     11284,
     1720
    ],
-   "decoded": "myVariableName"
+   "decoded": "myVariableName",
+   "normalized": "▁myVariableName"
   },
   {
    "input": "HTTPRequestHandler",
@@ -582,7 +624,8 @@
     2980,
     4957
    ],
-   "decoded": "HTTPRequestHandler"
+   "decoded": "HTTPRequestHandler",
+   "normalized": "▁HTTPRequestHandler"
   },
   {
    "input": "XMLHttpRequest",
@@ -591,7 +634,8 @@
     6543,
     2980
    ],
-   "decoded": "XMLHttpRequest"
+   "decoded": "XMLHttpRequest",
+   "normalized": "▁XMLHttpRequest"
   },
   {
    "input": "isFooBarBaz123",
@@ -606,7 +650,8 @@
     29518,
     29538
    ],
-   "decoded": "isFooBarBaz123"
+   "decoded": "isFooBarBaz123",
+   "normalized": "▁isFooBarBaz123"
   },
   {
    "input": "aB1cD2eF3",
@@ -621,7 +666,8 @@
     29533,
     29538
    ],
-   "decoded": "aB1cD2eF3"
+   "decoded": "aB1cD2eF3",
+   "normalized": "▁aB1cD2eF3"
   },
   {
    "input": "camelCaseVariable_with_snake",
@@ -636,14 +682,16 @@
     7481,
     1389
    ],
-   "decoded": "camelCaseVariable_with_snake"
+   "decoded": "camelCaseVariable_with_snake",
+   "normalized": "▁camelCaseVariable_with_snake"
   },
   {
    "input": "toString",
    "expected": [
     27065
    ],
-   "decoded": "toString"
+   "decoded": "toString",
+   "normalized": "▁toString"
   },
   {
    "input": ".isValidEmail",
@@ -652,7 +700,8 @@
     29158,
     11763
    ],
-   "decoded": ".isValidEmail"
+   "decoded": ".isValidEmail",
+   "normalized": "▁.isValidEmail"
   },
   {
    "input": "config.getValue()",
@@ -662,7 +711,8 @@
     13216,
     1238
    ],
-   "decoded": "config.getValue()"
+   "decoded": "config.getValue()",
+   "normalized": "▁config.getValue()"
   },
   {
    "input": "self.assertEqual(x, 42)",
@@ -678,7 +728,8 @@
     29518,
     29499
    ],
-   "decoded": "self.assertEqual(x, 42)"
+   "decoded": "self.assertEqual(x, 42)",
+   "normalized": "▁self.assertEqual(x,▁42)"
   },
   {
    "input": "user_id.toString()",
@@ -690,7 +741,8 @@
     7895,
     1238
    ],
-   "decoded": "user_id.toString()"
+   "decoded": "user_id.toString()",
+   "normalized": "▁user_id.toString()"
   },
   {
    "input": "(parenthesizedWord)",
@@ -702,7 +754,8 @@
     15938,
     29499
    ],
-   "decoded": "(parenthesizedWord)"
+   "decoded": "(parenthesizedWord)",
+   "normalized": "▁(parenthesizedWord)"
   },
   {
    "input": "#hashtagWord",
@@ -713,7 +766,8 @@
     1125,
     15938
    ],
-   "decoded": "#hashtagWord"
+   "decoded": "#hashtagWord",
+   "normalized": "▁#hashtagWord"
   },
   {
    "input": "@mentionUser",
@@ -723,7 +777,8 @@
     1064,
     1498
    ],
-   "decoded": "@mentionUser"
+   "decoded": "@mentionUser",
+   "normalized": "▁@mentionUser"
   },
   {
    "input": "12345678901234567890",
@@ -750,7 +805,8 @@
     29542,
     29502
    ],
-   "decoded": "12345678901234567890"
+   "decoded": "12345678901234567890",
+   "normalized": "▁12345678901234567890"
   },
   {
    "input": "9999999999",
@@ -767,7 +823,8 @@
     29542,
     29542
    ],
-   "decoded": "9999999999"
+   "decoded": "9999999999",
+   "normalized": "▁9999999999"
   },
   {
    "input": "3.14159265358979",
@@ -790,7 +847,8 @@
     29555,
     29542
    ],
-   "decoded": "3.14159265358979"
+   "decoded": "3.14159265358979",
+   "normalized": "▁3.14159265358979"
   },
   {
    "input": "phone: 1234567890123",
@@ -812,7 +870,8 @@
     29518,
     29538
    ],
-   "decoded": "phone: 1234567890123"
+   "decoded": "phone: 1234567890123",
+   "normalized": "▁phone:▁1234567890123"
   },
   {
    "input": "id_000111222333444",
@@ -835,7 +894,8 @@
     29549,
     29549
    ],
-   "decoded": "id_000111222333444"
+   "decoded": "id_000111222333444",
+   "normalized": "▁id_000111222333444"
   },
   {
    "input": "binary 1010101010101010",
@@ -859,7 +919,8 @@
     29508,
     29502
    ],
-   "decoded": "binary 1010101010101010"
+   "decoded": "binary 1010101010101010",
+   "normalized": "▁binary▁1010101010101010"
   },
   {
    "input": "北京市海淀区",
@@ -874,7 +935,8 @@
     899,
     29977
    ],
-   "decoded": "北京市海淀区"
+   "decoded": "北京市海淀区",
+   "normalized": "▁北京市海淀区"
   },
   {
    "input": "こんにちはカタカナ",
@@ -890,7 +952,8 @@
     30413,
     30849
    ],
-   "decoded": "こんにちはカタカナ"
+   "decoded": "こんにちはカタカナ",
+   "normalized": "▁こんにちはカタカナ"
   },
   {
    "input": "東京タワーは高い",
@@ -905,7 +968,8 @@
     30134,
     29900
    ],
-   "decoded": "東京タワーは高い"
+   "decoded": "東京タワーは高い",
+   "normalized": "▁東京タワーは高い"
   },
   {
    "input": "한국어와中文混合",
@@ -920,7 +984,8 @@
     32261,
     30002
    ],
-   "decoded": "한국어와中文混合"
+   "decoded": "한국어와中文混合",
+   "normalized": "▁한국어와中文混合"
   },
   {
    "input": "ひらがなカタカナ漢字",
@@ -939,7 +1004,8 @@
     933,
     29799
    ],
-   "decoded": "ひらがなカタカナ漢字"
+   "decoded": "ひらがなカタカナ漢字",
+   "normalized": "▁ひらがなカタカナ漢字"
   },
   {
    "input": "台北101大樓",
@@ -955,7 +1021,8 @@
     939,
     918
    ],
-   "decoded": "台北101大樓"
+   "decoded": "台北101大樓",
+   "normalized": "▁台北101大樓"
   },
   {
    "input": "Mixed混合Text文字",
@@ -968,7 +1035,8 @@
     29787,
     29799
    ],
-   "decoded": "Mixed混合Text文字"
+   "decoded": "Mixed混合Text文字",
+   "normalized": "▁Mixed混合Text文字"
   },
   {
    "input": "Löwe löwe Léopard 狮子",
@@ -988,7 +1056,8 @@
     945,
     29937
    ],
-   "decoded": "Löwe löwe Léopard 狮子"
+   "decoded": "Löwe löwe Léopard 狮子",
+   "normalized": "▁Löwe▁löwe▁Léopard▁狮子"
   },
   {
    "input": "user123名前test",
@@ -1001,7 +1070,8 @@
     29855,
     2381
    ],
-   "decoded": "user123名前test"
+   "decoded": "user123名前test",
+   "normalized": "▁user123名前test"
   },
   {
    "input": "GitHub仓库clone",
@@ -1012,7 +1082,8 @@
     30349,
     11287
    ],
-   "decoded": "GitHub仓库clone"
+   "decoded": "GitHub仓库clone",
+   "normalized": "▁GitHub仓库clone"
   },
   {
    "input": "日本語123English",
@@ -1026,7 +1097,8 @@
     29538,
     28639
    ],
-   "decoded": "日本語123English"
+   "decoded": "日本語123English",
+   "normalized": "▁日本語123English"
   },
   {
    "input": "emoji😀letterRun日本語",
@@ -1040,7 +1112,8 @@
     29887,
     31089
    ],
-   "decoded": "emoji😀letterRun日本語"
+   "decoded": "emoji😀letterRun日本語",
+   "normalized": "▁emoji😀letterRun日本語"
   },
   {
    "input": "PascalCase北京市camelCase",
@@ -1055,7 +1128,8 @@
     1069,
     6928
    ],
-   "decoded": "PascalCase北京市camelCase"
+   "decoded": "PascalCase北京市camelCase",
+   "normalized": "▁PascalCase北京市camelCase"
   }
  ]
 }

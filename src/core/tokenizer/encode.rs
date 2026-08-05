@@ -39,6 +39,47 @@ impl Tokenizer {
         }
     }
 
+    /// Apply the declared HF `normalizer` to an input, borrowing when none is.
+    ///
+    /// The one place the pipeline normalizes, so that
+    /// [`normalize`](Self::normalize) reports the same string
+    /// [`encode_content`](Self::encode_content) goes on to split rather than a
+    /// second rendering of it — HF's `Prepend` and `Replace` normalizers are not
+    /// idempotent, so a drifted copy would not merely be stale, it would be
+    /// unrecoverable from the outside.
+    #[inline]
+    fn normalized<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        match &self.normalizer {
+            Some(norm) => std::borrow::Cow::Owned(norm.normalize(text)),
+            None => std::borrow::Cow::Borrowed(text),
+        }
+    }
+
+    /// The input as this tokenizer's `normalizer` leaves it — the text the rest
+    /// of the encode path, [`pre_tokenize`](Self::pre_tokenize) included, is
+    /// driven with.
+    ///
+    /// Exists for the same reason [`pre_tokenize`](Self::pre_tokenize) does: the
+    /// stage is otherwise unobservable from outside the crate, so a normalizer
+    /// pipeline that drifts from the `tokenizer.json` it was parsed out of stays
+    /// invisible until it happens to move a token id.
+    /// `tests/reference_parity.rs` pins this against the reference tokenizers'
+    /// own `normalizer.normalize_str`.
+    ///
+    /// # What it does and does not include
+    ///
+    /// The declared `normalizer` and nothing else. `add_prefix_space` is *not*
+    /// applied here — HuggingFace hangs that flag off its `ByteLevel` /
+    /// `Metaspace` pre-tokenizer nodes, and so does this crate, which is why
+    /// [`pre_tokenize`](Self::pre_tokenize) applies it instead. Added-token
+    /// extraction is not included either: it runs upstream on the raw input, and
+    /// this is what one content gap becomes. A tokenizer that declares no
+    /// normalizer (every vocabulary in [`crate::pretrained`]) returns `text`
+    /// unchanged.
+    pub fn normalize(&self, text: &str) -> String {
+        self.normalized(text).into_owned()
+    }
+
     /// Split `text` into pre-token spans.
     ///
     /// The overwhelmingly common case is a single pre-tokenizer expression, and
@@ -505,13 +546,8 @@ impl Tokenizer {
         // Apply the HF `normalizer` (e.g. NFC) to content before splitting. This
         // runs on content gaps (special tokens are extracted upstream), matching
         // HuggingFace's extract-then-normalize order.
-        let normalized;
-        let text = if let Some(norm) = &self.normalizer {
-            normalized = norm.normalize(text);
-            normalized.as_str()
-        } else {
-            text
-        };
+        let normalized = self.normalized(text);
+        let text = normalized.as_ref();
 
         // Multi-stage pre-tokenizer path (Digits/Punctuation/Sequence/…): the
         // engine produces already byte-level-encoded pieces; BPE each directly.
