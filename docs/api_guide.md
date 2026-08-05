@@ -283,6 +283,48 @@ text = tokenizer.decode_lossy(tokens)
 # Invalid UTF-8 sequences become �
 ```
 
+#### `decode_token_bytes(id: int) -> bytes`
+
+A single id's own contribution to the decoded stream — ByteLevel alphabet
+unmapped and `<0xNN>` byte fallback resolved — for callers that need to
+attribute output to one token rather than render a sequence: logprob display,
+token-level highlighting, debugging a vocabulary. Available on every
+tokenizer class (`Tokenizer`, `SentencePieceTokenizer`, `SpmTokenizer`,
+`WordPieceTokenizer`, `AnyTokenizer`).
+
+No sequence-level post-processing runs — no leading-space strip, no
+first-token rule, no word separator — so **concatenating this over a sequence
+of ids is not the same as calling `decode` on that sequence**. Use
+[`streaming_decoder()`](#streaming-decoder) to render a whole stream.
+
+An id in the vocabulary that carries no surface (a control token `decode`
+drops, say) returns empty bytes, not an error; `ValueError` is reserved for an
+id outside the vocabulary altogether.
+
+```python
+tok = Tokenizer.from_pretrained("cl100k_base")
+ids = tok.encode("Hello, world!")
+tok.decode_token_bytes(ids[0])  # b'Hello'
+
+# Concatenating per-token bytes is not `decode`'s output — see above.
+b"".join(tok.decode_token_bytes(i) for i in ids) == tok.decode(ids).encode()
+# not guaranteed, and false on vocabularies with a separator or byte fallback
+```
+
+#### `decode_token(id: int) -> str`
+
+`decode_token_bytes` as text. Raises far more often than `decode` does: a
+single `<0xNN>` byte-fallback id, or a token holding one byte of a
+multi-byte character, is not valid UTF-8 standing alone — that is the
+expected signal to stop decoding id-at-a-time and use `streaming_decoder()`,
+which buffers exactly those partial sequences across tokens.
+
+```python
+tok = Tokenizer.from_pretrained("cl100k_base")
+ids = tok.encode("Hello, world!")
+tok.decode_token(ids[0])  # "Hello"
+```
+
 ### Properties
 
 #### `vocab_size: int`
@@ -690,7 +732,7 @@ the wrapped ids and cutting off the trailing `[SEP]`/EOS.
 
 ### Per-Token Decoding
 
-`Tokenize` also gives you a single id's own contribution, for callers that need to attribute output to one token rather than render a sequence — logprob display, token-level highlighting, debugging a vocabulary — as opposed to [`streaming_decoder()`](#streaming-decoder), which renders a whole stream. Rust-only: the Python bindings do not expose these two methods.
+`Tokenize` also gives you a single id's own contribution, for callers that need to attribute output to one token rather than render a sequence — logprob display, token-level highlighting, debugging a vocabulary — as opposed to [`streaming_decoder()`](#streaming-decoder), which renders a whole stream. Exposed to Python too, as `decode_token_bytes`/`decode_token` on every tokenizer class — see [Decoding Methods](#decoding-methods) in the Python API Reference.
 
 - `decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError>`: the bytes `id` contributes — ByteLevel alphabet unmapped and `<0xNN>` byte fallback resolved — with no sequence-level post-processing applied (no leading-space strip, no first-token rule, no word separator). An id in the **skip** set (a special that the pipeline drops, such as a control token) returns an **empty** `Vec`, not an error; `TokenizeError::InvalidTokenId` is reserved for an id outside the vocabulary altogether.
 - `decode_token(&self, id: u32) -> Result<String, TokenizeError>`: `decode_token_bytes` as text. Errors with `InvalidTokenId` as above, and with `TokenizeError::Utf8Error` when the id's bytes are not valid UTF-8 standing alone — the normal case for a lone `<0xNN>` byte-fallback id or a token holding one byte of a multi-byte character, and the signal to decode the surrounding ids together (or use `streaming_decoder()`) instead of one id at a time.

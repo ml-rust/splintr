@@ -434,6 +434,54 @@ impl PyTokenizer {
         self.inner.decode_lossy(&tokens)
     }
 
+    /// The bytes `id` contributes to the decoded stream — the ByteLevel
+    /// alphabet unmapped and `<0xNN>` byte fallback resolved, and nothing
+    /// else: no leading-space strip, no first-token rule, no word separator.
+    ///
+    /// An id in the vocabulary that carries no surface (a special this
+    /// tokenizer's decode drops, say) returns **empty** bytes, not an error.
+    /// Because of that, concatenating this over a sequence of ids is *not*
+    /// what `decode` returns for the same sequence — `decode` layers
+    /// post-processing this method deliberately skips. Use
+    /// `streaming_decoder` to render a sequence.
+    ///
+    /// Args:
+    ///     id: Token ID
+    ///
+    /// Returns:
+    ///     The id's raw bytes, or `b""` if it carries no surface
+    ///
+    /// Raises:
+    ///     ValueError: If `id` is outside the vocabulary
+    fn decode_token_bytes(&self, id: u32) -> PyResult<Vec<u8>> {
+        self.inner
+            .decode_token_bytes(id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// `decode_token_bytes` as text.
+    ///
+    /// Raises far more often than `decode` does: a single `<0xNN>`
+    /// byte-fallback id, or a token holding one byte of a multi-byte
+    /// character, is not valid UTF-8 standing alone — that is the expected
+    /// signal to stop decoding id-at-a-time and use `streaming_decoder`,
+    /// which buffers exactly those partial sequences across tokens.
+    ///
+    /// Args:
+    ///     id: Token ID
+    ///
+    /// Returns:
+    ///     The id's text, or `""` if it carries no surface
+    ///
+    /// Raises:
+    ///     ValueError: If `id` is outside the vocabulary, or if its bytes are
+    ///         not valid UTF-8 on their own
+    fn decode_token(&self, id: u32) -> PyResult<String> {
+        self.inner
+            .decode_token(id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Batch form of `encode` — model-ready ids for each text.
     ///
     /// Uses Rayon to parallelize encoding across texts. Each result carries the
@@ -783,6 +831,54 @@ impl PySentencePieceTokenizer {
         self.inner.decode_lossy(&ids)
     }
 
+    /// The bytes `id` contributes to the decoded stream — `▁` unmapped and
+    /// `<0xNN>` byte fallback resolved, and nothing else: no leading-space
+    /// strip, no first-token rule, no word separator.
+    ///
+    /// An id in the vocabulary that carries no surface (a special this
+    /// tokenizer's decode drops, say) returns **empty** bytes, not an error.
+    /// Because of that, concatenating this over a sequence of ids is *not*
+    /// what `decode` returns for the same sequence — `decode` layers
+    /// post-processing this method deliberately skips. Use
+    /// `streaming_decoder` to render a sequence.
+    ///
+    /// Args:
+    ///     id: Token ID
+    ///
+    /// Returns:
+    ///     The id's raw bytes, or `b""` if it carries no surface
+    ///
+    /// Raises:
+    ///     ValueError: If `id` is outside the vocabulary
+    fn decode_token_bytes(&self, id: u32) -> PyResult<Vec<u8>> {
+        self.inner
+            .decode_token_bytes(id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// `decode_token_bytes` as text.
+    ///
+    /// Raises far more often than `decode` does: a single `<0xNN>`
+    /// byte-fallback id, or a token holding one byte of a multi-byte
+    /// character, is not valid UTF-8 standing alone — that is the expected
+    /// signal to stop decoding id-at-a-time and use `streaming_decoder`,
+    /// which buffers exactly those partial sequences across tokens.
+    ///
+    /// Args:
+    ///     id: Token ID
+    ///
+    /// Returns:
+    ///     The id's text, or `""` if it carries no surface
+    ///
+    /// Raises:
+    ///     ValueError: If `id` is outside the vocabulary, or if its bytes are
+    ///         not valid UTF-8 on their own
+    fn decode_token(&self, id: u32) -> PyResult<String> {
+        self.inner
+            .decode_token(id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Get vocabulary size.
     #[getter]
     fn vocab_size(&self) -> usize {
@@ -1057,6 +1153,51 @@ impl PySpmTokenizer {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// The bytes `id` contributes to the decoded stream — `▁` unmapped and
+    /// `<0xNN>` byte fallback resolved, and nothing else: no leading-space
+    /// strip, no first-token rule, no word separator.
+    ///
+    /// An id in the vocabulary that carries no surface (a special this
+    /// tokenizer's decode drops, say) returns **empty** bytes, not an error.
+    /// Because of that, concatenating this over a sequence of ids is *not*
+    /// what `decode` returns for the same sequence — `decode` layers
+    /// post-processing this method deliberately skips. Use
+    /// `streaming_decoder` to render a sequence.
+    ///
+    /// Args:
+    ///     id: Token ID
+    ///
+    /// Returns:
+    ///     The id's raw bytes, or `b""` if it carries no surface
+    ///
+    /// Raises:
+    ///     ValueError: If `id` is outside the vocabulary
+    fn decode_token_bytes(&self, id: u32) -> PyResult<Vec<u8>> {
+        Tokenize::decode_token_bytes(&self.inner, id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// `decode_token_bytes` as text.
+    ///
+    /// Raises far more often than `decode` does: a single `<0xNN>`
+    /// byte-fallback id, or a token holding one byte of a multi-byte
+    /// character, is not valid UTF-8 standing alone — that is the expected
+    /// signal to stop decoding id-at-a-time and use `streaming_decoder`,
+    /// which buffers exactly those partial sequences across tokens.
+    ///
+    /// Args:
+    ///     id: Token ID
+    ///
+    /// Returns:
+    ///     The id's text, or `""` if it carries no surface
+    ///
+    /// Raises:
+    ///     ValueError: If `id` is outside the vocabulary, or if its bytes are
+    ///         not valid UTF-8 on their own
+    fn decode_token(&self, id: u32) -> PyResult<String> {
+        Tokenize::decode_token(&self.inner, id).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Get vocabulary size.
     #[getter]
     fn vocab_size(&self) -> usize {
@@ -1298,6 +1439,52 @@ impl PyWordPieceTokenizer {
     fn decode_with_special(&self, ids: Vec<u32>) -> PyResult<String> {
         Tokenize::decode_with(&self.inner, &ids, SpecialDecode::Render)
             .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// The token's own bytes, with any `##` continuation marker removed and
+    /// **without** the word separator a word-starting token carries: that
+    /// separator sits between two tokens, so it belongs to the sequence and
+    /// not to this id.
+    ///
+    /// An id in the vocabulary that carries no surface (a special this
+    /// tokenizer's decode drops, say) returns **empty** bytes, not an error.
+    /// Because of that, concatenating this over a sequence of ids is *not*
+    /// what `decode` returns for the same sequence — `decode` layers
+    /// post-processing this method deliberately skips. Use
+    /// `streaming_decoder` to render a sequence.
+    ///
+    /// Args:
+    ///     id: Token ID
+    ///
+    /// Returns:
+    ///     The id's raw bytes, or `b""` if it carries no surface
+    ///
+    /// Raises:
+    ///     ValueError: If `id` is outside the vocabulary
+    fn decode_token_bytes(&self, id: u32) -> PyResult<Vec<u8>> {
+        Tokenize::decode_token_bytes(&self.inner, id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// `decode_token_bytes` as text.
+    ///
+    /// Raises far more often than `decode` does: a token holding one byte of
+    /// a multi-byte character is not valid UTF-8 standing alone — that is the
+    /// expected signal to stop decoding id-at-a-time and use
+    /// `streaming_decoder`, which buffers exactly those partial sequences
+    /// across tokens.
+    ///
+    /// Args:
+    ///     id: Token ID
+    ///
+    /// Returns:
+    ///     The id's text, or `""` if it carries no surface
+    ///
+    /// Raises:
+    ///     ValueError: If `id` is outside the vocabulary, or if its bytes are
+    ///         not valid UTF-8 on their own
+    fn decode_token(&self, id: u32) -> PyResult<String> {
+        Tokenize::decode_token(&self.inner, id).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Vocabulary size.
@@ -1647,6 +1834,59 @@ impl PyAnyTokenizer {
     ///     ValueError: Under the same conditions as `decode_bytes`
     fn decode_batch_lossy(&self, token_lists: Vec<Vec<u32>>) -> PyResult<Vec<String>> {
         Ok(self.bpe_raw()?.decode_batch_lossy(&token_lists))
+    }
+
+    /// The bytes `id` contributes to the decoded stream — running the
+    /// declared `decoder` pipeline when there is one, and the backend's own
+    /// rules otherwise, exactly as `decode` branches. No sequence-level
+    /// post-processing runs: no leading-space strip, no first-token rule, no
+    /// word separator.
+    ///
+    /// An id in the vocabulary that carries no surface (a special this
+    /// tokenizer's decode drops, say) returns **empty** bytes, not an error.
+    /// Because of that, concatenating this over a sequence of ids is *not*
+    /// what `decode` returns for the same sequence — `decode` layers
+    /// post-processing this method deliberately skips. Use
+    /// `streaming_decoder` to render a sequence.
+    ///
+    /// Args:
+    ///     id: Token ID
+    ///
+    /// Returns:
+    ///     The id's raw bytes, or `b""` if it carries no surface
+    ///
+    /// Raises:
+    ///     ValueError: If `id` is outside the vocabulary entirely, or — only
+    ///         when this tokenizer declares a `decoder` pipeline holding a
+    ///         step that cannot be evaluated one token at a time — under the
+    ///         same conditions as `streaming_decoder`
+    fn decode_token_bytes(&self, id: u32) -> PyResult<Vec<u8>> {
+        self.inner
+            .decode_token_bytes(id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// `decode_token_bytes` as text.
+    ///
+    /// Raises far more often than `decode` does: a single `<0xNN>`
+    /// byte-fallback id, or a token holding one byte of a multi-byte
+    /// character, is not valid UTF-8 standing alone — that is the expected
+    /// signal to stop decoding id-at-a-time and use `streaming_decoder`,
+    /// which buffers exactly those partial sequences across tokens.
+    ///
+    /// Args:
+    ///     id: Token ID
+    ///
+    /// Returns:
+    ///     The id's text, or `""` if it carries no surface
+    ///
+    /// Raises:
+    ///     ValueError: Under the same conditions as `decode_token_bytes`, and
+    ///         also if the id's bytes are not valid UTF-8 on their own
+    fn decode_token(&self, id: u32) -> PyResult<String> {
+        self.inner
+            .decode_token(id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Switch this tokenizer's regex backend between regexr and PCRE2.

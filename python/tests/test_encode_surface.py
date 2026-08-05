@@ -50,6 +50,8 @@ UNIFORM_DECODE_METHODS = (
     "decode_with_special",
     "streaming_decoder",
     "streaming_decoder_with_special",
+    "decode_token_bytes",
+    "decode_token",
 )
 
 #: A BERT-style WordPiece vocabulary whose `post_processor` really does wrap the
@@ -246,3 +248,121 @@ class TestNoTemplateMeansIdentical:
     def test_batch_is_the_batch_form_of_encode(self, tokenizer):
         texts = ["Hello, world!", "How are you?"]
         assert tokenizer.encode_batch(texts) == [tokenizer.encode(t) for t in texts]
+
+
+#: Per-class fixture data for `decode_token`/`decode_token_bytes`: an id that
+#: renders ordinary content, its expected text, an id that carries no surface
+#: (a special every fixture's `decode` already drops — see
+#: `test_decode_with_special_only_adds_what_decode_drops` above), and an id
+#: nowhere in the vocabulary.
+#:
+#: `normal_text` is not always the token's own spelling: `SpmTokenizer` and
+#: `SentencePieceTokenizer` render their `▁` word-start marker as a leading
+#: space per id (that substitution is part of a single id's rendering, not a
+#: sequence-level post-op), while the single-leading-space *strip* `decode`
+#: applies is a sequence-level post-op `decode_token` never runs — which is
+#: exactly what `test_decode_token_concatenation_is_not_decode` below pins.
+DECODE_TOKEN_CASES = {
+    "Tokenizer": (8, "hello", 100, 1_000_000),
+    "AnyTokenizer": (3, "hello", 1, 99),
+    "SpmTokenizer": (3, " hello", 1, 99),
+    "SentencePieceTokenizer": (3, " Hello", 1, 99),
+    "WordPieceTokenizer": (3, "hello", 1, 99),
+}
+
+
+@pytest.mark.parametrize("name", sorted(DECODE_TOKEN_CASES))
+def test_decode_token_bytes_returns_bytes(name):
+    """`decode_token_bytes` is `bytes`, not a list of ints."""
+    tokenizer = every_tokenizer_class()[name]
+    normal_id, normal_text, _empty_id, _oor_id = DECODE_TOKEN_CASES[name]
+    result = tokenizer.decode_token_bytes(normal_id)
+    assert isinstance(result, bytes)
+    assert result == normal_text.encode()
+
+
+@pytest.mark.parametrize("name", sorted(DECODE_TOKEN_CASES))
+def test_decode_token_normal_id(name):
+    """An ordinary content id renders its text through `decode_token` too."""
+    tokenizer = every_tokenizer_class()[name]
+    normal_id, normal_text, _empty_id, _oor_id = DECODE_TOKEN_CASES[name]
+    assert tokenizer.decode_token(normal_id) == normal_text
+
+
+#: The classes whose fixture actually has an id that renders to nothing — one
+#: its `decode` drops. The plain `Tokenizer` fixture is excluded because it has
+#: no such id: `from_bytes` declares `<|endoftext|>` as a special but nothing as
+#: decode-skipped, and a special that is not skipped renders its own spelling
+#: (`b"<|endoftext|>"`), which is the same answer `decode` gives. That mirrors
+#: the bundled OpenAI vocabularies, whose skip set is empty by measurement —
+#: `tiktoken` has no `skip_special_tokens` mode and renders every special.
+EMPTY_RENDERING_IDS = {
+    name: case[2] for name, case in DECODE_TOKEN_CASES.items() if name != "Tokenizer"
+}
+
+
+@pytest.mark.parametrize("name", sorted(EMPTY_RENDERING_IDS))
+def test_decode_token_empty_id_is_not_an_error(name):
+    """An id in the vocabulary with no surface renders empty, not a raise."""
+    tokenizer = every_tokenizer_class()[name]
+    empty_id = EMPTY_RENDERING_IDS[name]
+    assert tokenizer.decode_token_bytes(empty_id) == b""
+    assert tokenizer.decode_token(empty_id) == ""
+
+
+def test_decode_token_renders_an_unskipped_special_verbatim():
+    """The other side of the rule above, pinned rather than left implicit."""
+    tokenizer = every_tokenizer_class()["Tokenizer"]
+    assert tokenizer.decode_token_bytes(100) == b"<|endoftext|>"
+    assert tokenizer.decode_token(100) == "<|endoftext|>"
+
+
+@pytest.mark.parametrize("name", sorted(DECODE_TOKEN_CASES))
+def test_decode_token_out_of_range_raises(name):
+    """An id outside the vocabulary altogether raises on both methods."""
+    tokenizer = every_tokenizer_class()[name]
+    _normal_id, _normal_text, _empty_id, oor_id = DECODE_TOKEN_CASES[name]
+    with pytest.raises(ValueError):
+        tokenizer.decode_token_bytes(oor_id)
+    with pytest.raises(ValueError):
+        tokenizer.decode_token(oor_id)
+
+
+#: Classes/vocabularies where concatenating `decode_token` over a real
+#: sequence is *known* to differ from `decode` on the same ids: `SpmTokenizer`
+#: and `SentencePieceTokenizer` strip a single leading space (the
+#: `add_prefix_space` dummy prefix) only in `decode`'s sequence-level post-op,
+#: and `WordPieceTokenizer`/`AnyTokenizer` (WordPiece here) insert the
+#: word-separator space between tokens only when assembling the whole
+#: sequence. The plain `Tokenizer` fixture is excluded on purpose: its
+#: ByteLevel vocabulary bakes spaces directly into token surfaces (` world`
+#: is its own token), so there is no separator or byte-fallback step for this
+#: particular vocabulary to disagree over — asserting a difference there would
+#: assert something that is not true of this fixture.
+NON_REASSEMBLY_CASES = {
+    "AnyTokenizer": [3, 4],
+    "SpmTokenizer": [3, 4],
+    "SentencePieceTokenizer": [3, 4],
+    "WordPieceTokenizer": [3, 4],
+}
+
+
+@pytest.mark.parametrize("name", sorted(NON_REASSEMBLY_CASES))
+def test_decode_token_concatenation_is_not_decode(name):
+    """`decode_token` is deliberately not composable into `decode`'s output.
+
+    `Tokenize::decode_token_bytes` documents this: no leading-space strip, no
+    first-token rule, no word separator runs per id, so concatenating it over
+    a sequence gives the pre-post-processing bytes `decode` starts from, not
+    `decode`'s own output. `streaming_decoder` is the way to render a
+    sequence; this test exists to make sure nobody reaches for `decode_token`
+    instead and gets a silently wrong string.
+    """
+    tokenizer = every_tokenizer_class()[name]
+    ids = NON_REASSEMBLY_CASES[name]
+    reassembled = "".join(tokenizer.decode_token(i) for i in ids)
+    assert reassembled != tokenizer.decode(ids), (
+        f"{name}: decode_token concatenation unexpectedly matches decode; "
+        "the non-reassembly property this test exists to pin does not hold "
+        "for this fixture"
+    )
