@@ -3,7 +3,8 @@
  "reference": {
   "source": "tokenizers",
   "path": "/home/farhan/Projects/models/deepseek-v3-tokenizer/tokenizer.json",
-  "tokenizers_version": "0.22.1"
+  "tokenizers_version": "0.22.1",
+  "pieces": "pre_tokenizer.pre_tokenize_str over the normalizer's output, un-mapped from the ByteLevel alphabet back to raw text"
  },
  "cases": [
   {
@@ -16,35 +17,50 @@
    "expected": [
     223
    ],
-   "decoded": " "
+   "decoded": " ",
+   "pieces": [
+    " "
+   ]
   },
   {
    "input": "  ",
    "expected": [
     262
    ],
-   "decoded": "  "
+   "decoded": "  ",
+   "pieces": [
+    "  "
+   ]
   },
   {
    "input": "   ",
    "expected": [
     361
    ],
-   "decoded": "   "
+   "decoded": "   ",
+   "pieces": [
+    "   "
+   ]
   },
   {
    "input": "a",
    "expected": [
     67
    ],
-   "decoded": "a"
+   "decoded": "a",
+   "pieces": [
+    "a"
+   ]
   },
   {
    "input": " a",
    "expected": [
     260
    ],
-   "decoded": " a"
+   "decoded": " a",
+   "pieces": [
+    " a"
+   ]
   },
   {
    "input": "a ",
@@ -52,7 +68,11 @@
     67,
     223
    ],
-   "decoded": "a "
+   "decoded": "a ",
+   "pieces": [
+    "a",
+    " "
+   ]
   },
   {
    "input": " a ",
@@ -60,7 +80,11 @@
     260,
     223
    ],
-   "decoded": " a "
+   "decoded": " a ",
+   "pieces": [
+    " a",
+    " "
+   ]
   },
   {
    "input": "hello world",
@@ -68,7 +92,11 @@
     33310,
     2058
    ],
-   "decoded": "hello world"
+   "decoded": "hello world",
+   "pieces": [
+    "hello",
+    " world"
+   ]
   },
   {
    "input": "Hello World!",
@@ -77,7 +105,12 @@
     4495,
     3
    ],
-   "decoded": "Hello World!"
+   "decoded": "Hello World!",
+   "pieces": [
+    "Hello",
+    " World",
+    "!"
+   ]
   },
   {
    "input": "the quick brown fox jumps over the lazy dog",
@@ -92,7 +125,18 @@
     41638,
     6397
    ],
-   "decoded": "the quick brown fox jumps over the lazy dog"
+   "decoded": "the quick brown fox jumps over the lazy dog",
+   "pieces": [
+    "the",
+    " quick",
+    " brown",
+    " fox",
+    " jumps",
+    " over",
+    " the",
+    " lazy",
+    " dog"
+   ]
   },
   {
    "input": "\tindented\twith\ttabs",
@@ -105,7 +149,12 @@
     17299,
     10284
    ],
-   "decoded": "\tindented\twith\ttabs"
+   "decoded": "\tindented\twith\ttabs",
+   "pieces": [
+    "\tindented",
+    "\twith",
+    "\ttabs"
+   ]
   },
   {
    "input": "line one\nline two\nline three",
@@ -119,14 +168,27 @@
     1836,
     2038
    ],
-   "decoded": "line one\nline two\nline three"
+   "decoded": "line one\nline two\nline three",
+   "pieces": [
+    "line",
+    " one",
+    "\n",
+    "line",
+    " two",
+    "\n",
+    "line",
+    " three"
+   ]
   },
   {
    "input": "\n\n\n",
    "expected": [
     6328
    ],
-   "decoded": "\n\n\n"
+   "decoded": "\n\n\n",
+   "pieces": [
+    "\n\n\n"
+   ]
   },
   {
    "input": "trailing whitespace   ",
@@ -137,7 +199,12 @@
     5790,
     361
    ],
-   "decoded": "trailing whitespace   "
+   "decoded": "trailing whitespace   ",
+   "pieces": [
+    "trailing",
+    " whitespace",
+    "   "
+   ]
   },
   {
    "input": "   leading whitespace",
@@ -147,7 +214,12 @@
     37899,
     5790
    ],
-   "decoded": "   leading whitespace"
+   "decoded": "   leading whitespace",
+   "pieces": [
+    "  ",
+    " leading",
+    " whitespace"
+   ]
   },
   {
    "input": "multiple   internal    spaces",
@@ -158,7 +230,14 @@
     361,
     13564
    ],
-   "decoded": "multiple   internal    spaces"
+   "decoded": "multiple   internal    spaces",
+   "pieces": [
+    "multiple",
+    "  ",
+    " internal",
+    "   ",
+    " spaces"
+   ]
   },
   {
    "input": "I've got it, don't worry.",
@@ -173,7 +252,18 @@
     14129,
     16
    ],
-   "decoded": "I've got it, don't worry."
+   "decoded": "I've got it, don't worry.",
+   "pieces": [
+    "I",
+    "'ve",
+    " got",
+    " it",
+    ",",
+    " don",
+    "'t",
+    " worry",
+    "."
+   ]
   },
   {
    "input": "it's a test — isn't it?",
@@ -188,7 +278,18 @@
     436,
     33
    ],
-   "decoded": "it's a test — isn't it?"
+   "decoded": "it's a test — isn't it?",
+   "pieces": [
+    "it",
+    "'s",
+    " a",
+    " test",
+    " —",
+    " isn",
+    "'t",
+    " it",
+    "?"
+   ]
   },
   {
    "input": "punctuation: ,.!?;:'\"()[]{}",
@@ -206,7 +307,12 @@
     5071,
     25902
    ],
-   "decoded": "punctuation: ,.!?;:'\"()[]{}"
+   "decoded": "punctuation: ,.!?;:'\"()[]{}",
+   "pieces": [
+    "punctuation",
+    ":",
+    " ,.!?;:'\"()[]{}"
+   ]
   },
   {
    "input": "hyphenated-word and em—dash",
@@ -221,7 +327,15 @@
     70,
     1844
    ],
-   "decoded": "hyphenated-word and em—dash"
+   "decoded": "hyphenated-word and em—dash",
+   "pieces": [
+    "hyphenated",
+    "-word",
+    " and",
+    " em",
+    "—",
+    "dash"
+   ]
   },
   {
    "input": "こんにちは世界",
@@ -233,7 +347,10 @@
     2841,
     3427
    ],
-   "decoded": "こんにちは世界"
+   "decoded": "こんにちは世界",
+   "pieces": [
+    "こんにちは世界"
+   ]
   },
   {
    "input": "日本語のテキストです。",
@@ -246,7 +363,11 @@
     8262,
     320
    ],
-   "decoded": "日本語のテキストです。"
+   "decoded": "日本語のテキストです。",
+   "pieces": [
+    "日本語のテキストです",
+    "。"
+   ]
   },
   {
    "input": "你好，世界！",
@@ -256,7 +377,13 @@
     3427,
     1175
    ],
-   "decoded": "你好，世界！"
+   "decoded": "你好，世界！",
+   "pieces": [
+    "你好",
+    "，",
+    "世界",
+    "！"
+   ]
   },
   {
    "input": "안녕하세요 세계",
@@ -268,7 +395,11 @@
     73527,
     76878
    ],
-   "decoded": "안녕하세요 세계"
+   "decoded": "안녕하세요 세계",
+   "pieces": [
+    "안녕하세요",
+    " 세계"
+   ]
   },
   {
    "input": "emoji test 😀🎉🚀",
@@ -283,7 +414,12 @@
     74287,
     225
    ],
-   "decoded": "emoji test 😀🎉🚀"
+   "decoded": "emoji test 😀🎉🚀",
+   "pieces": [
+    "emoji",
+    " test",
+    " 😀🎉🚀"
+   ]
   },
   {
    "input": "family: 👨‍👩‍👧‍👦",
@@ -302,7 +438,18 @@
     25730,
     102
    ],
-   "decoded": "family: 👨‍👩‍👧‍👦"
+   "decoded": "family: 👨‍👩‍👧‍👦",
+   "pieces": [
+    "family",
+    ":",
+    " 👨",
+    "‍",
+    "👩",
+    "‍",
+    "👧",
+    "‍",
+    "👦"
+   ]
   },
   {
    "input": "flag: 🏳️‍🌈",
@@ -316,7 +463,15 @@
     46088,
     110659
    ],
-   "decoded": "flag: 🏳️‍🌈"
+   "decoded": "flag: 🏳️‍🌈",
+   "pieces": [
+    "flag",
+    ":",
+    " 🏳",
+    "️",
+    "‍",
+    "🌈"
+   ]
   },
   {
    "input": "café résumé naïve",
@@ -328,7 +483,12 @@
     90902,
     112752
    ],
-   "decoded": "café résumé naïve"
+   "decoded": "café résumé naïve",
+   "pieces": [
+    "café",
+    " résumé",
+    " naïve"
+   ]
   },
   {
    "input": "Zürich Ångström Curaçao",
@@ -344,7 +504,12 @@
     2341,
     7136
    ],
-   "decoded": "Zürich Ångström Curaçao"
+   "decoded": "Zürich Ångström Curaçao",
+   "pieces": [
+    "Zürich",
+    " Ångström",
+    " Curaçao"
+   ]
   },
   {
    "input": "0123456789",
@@ -354,7 +519,13 @@
     27183,
     27
    ],
-   "decoded": "0123456789"
+   "decoded": "0123456789",
+   "pieces": [
+    "012",
+    "345",
+    "678",
+    "9"
+   ]
   },
   {
    "input": "the year 2024 had 365 days",
@@ -369,7 +540,18 @@
     15551,
     3137
    ],
-   "decoded": "the year 2024 had 365 days"
+   "decoded": "the year 2024 had 365 days",
+   "pieces": [
+    "the",
+    " year",
+    " ",
+    "202",
+    "4",
+    " had",
+    " ",
+    "365",
+    " days"
+   ]
   },
   {
    "input": "price: $19.99, quantity: 42",
@@ -386,7 +568,20 @@
     223,
     3180
    ],
-   "decoded": "price: $19.99, quantity: 42"
+   "decoded": "price: $19.99, quantity: 42",
+   "pieces": [
+    "price",
+    ":",
+    " $",
+    "19",
+    ".",
+    "99",
+    ",",
+    " quantity",
+    ":",
+    " ",
+    "42"
+   ]
   },
   {
    "input": "def add(a, b):\n    return a + b\n",
@@ -404,7 +599,21 @@
     291,
     201
    ],
-   "decoded": "def add(a, b):\n    return a + b\n"
+   "decoded": "def add(a, b):\n    return a + b\n",
+   "pieces": [
+    "def",
+    " add",
+    "(a",
+    ",",
+    " b",
+    "):\n",
+    "   ",
+    " return",
+    " a",
+    " +",
+    " b",
+    "\n"
+   ]
   },
   {
    "input": "if (x == 42) { print(\"hi\"); }",
@@ -423,7 +632,22 @@
     30839,
     837
    ],
-   "decoded": "if (x == 42) { print(\"hi\"); }"
+   "decoded": "if (x == 42) { print(\"hi\"); }",
+   "pieces": [
+    "if",
+    " (",
+    "x",
+    " ==",
+    " ",
+    "42",
+    ")",
+    " {",
+    " print",
+    "(\"",
+    "hi",
+    "\");",
+    " }"
+   ]
   },
   {
    "input": "Mixed 混合 текст with 日本語 and English.",
@@ -439,7 +663,19 @@
     3947,
     16
    ],
-   "decoded": "Mixed 混合 текст with 日本語 and English."
+   "decoded": "Mixed 混合 текст with 日本語 and English.",
+   "pieces": [
+    "Mixed",
+    " ",
+    "混合",
+    " текст",
+    " with",
+    " ",
+    "日本語",
+    " and",
+    " English",
+    "."
+   ]
   },
   {
    "input": "русский текст с числами 123",
@@ -453,7 +689,15 @@
     223,
     6895
    ],
-   "decoded": "русский текст с числами 123"
+   "decoded": "русский текст с числами 123",
+   "pieces": [
+    "русский",
+    " текст",
+    " с",
+    " числами",
+    " ",
+    "123"
+   ]
   },
   {
    "input": "a\tb\nc d",
@@ -464,7 +708,14 @@
     69,
     283
    ],
-   "decoded": "a\tb\nc d"
+   "decoded": "a\tb\nc d",
+   "pieces": [
+    "a",
+    "\tb",
+    "\n",
+    "c",
+    " d"
+   ]
   },
   {
    "input": "   \t\n   ",
@@ -473,7 +724,11 @@
     7028,
     361
    ],
-   "decoded": "   \t\n   "
+   "decoded": "   \t\n   ",
+   "pieces": [
+    "   \t\n",
+    "   "
+   ]
   },
   {
    "input": "The quick fox",
@@ -484,7 +739,12 @@
     2162,
     47971
    ],
-   "decoded": "The quick fox"
+   "decoded": "The quick fox",
+   "pieces": [
+    "The",
+    " quick",
+    " fox"
+   ]
   },
   {
    "input": "getUserName",
@@ -492,7 +752,10 @@
     1133,
     110280
    ],
-   "decoded": "getUserName"
+   "decoded": "getUserName",
+   "pieces": [
+    "getUserName"
+   ]
   },
   {
    "input": "myVariableName",
@@ -501,7 +764,10 @@
     40736,
     3240
    ],
-   "decoded": "myVariableName"
+   "decoded": "myVariableName",
+   "pieces": [
+    "myVariableName"
+   ]
   },
   {
    "input": "HTTPRequestHandler",
@@ -510,7 +776,10 @@
     8546,
     17275
    ],
-   "decoded": "HTTPRequestHandler"
+   "decoded": "HTTPRequestHandler",
+   "pieces": [
+    "HTTPRequestHandler"
+   ]
   },
   {
    "input": "XMLHttpRequest",
@@ -519,7 +788,10 @@
     15718,
     8546
    ],
-   "decoded": "XMLHttpRequest"
+   "decoded": "XMLHttpRequest",
+   "pieces": [
+    "XMLHttpRequest"
+   ]
   },
   {
    "input": "isFooBarBaz123",
@@ -531,7 +803,11 @@
     1521,
     6895
    ],
-   "decoded": "isFooBarBaz123"
+   "decoded": "isFooBarBaz123",
+   "pieces": [
+    "isFooBarBaz",
+    "123"
+   ]
   },
   {
    "input": "aB1cD2eF3",
@@ -546,7 +822,15 @@
     40,
     21
    ],
-   "decoded": "aB1cD2eF3"
+   "decoded": "aB1cD2eF3",
+   "pieces": [
+    "aB",
+    "1",
+    "cD",
+    "2",
+    "eF",
+    "3"
+   ]
   },
   {
    "input": "camelCaseVariable_with_snake",
@@ -559,14 +843,22 @@
     4731,
     100695
    ],
-   "decoded": "camelCaseVariable_with_snake"
+   "decoded": "camelCaseVariable_with_snake",
+   "pieces": [
+    "camelCaseVariable",
+    "_with",
+    "_snake"
+   ]
   },
   {
    "input": "toString",
    "expected": [
     52936
    ],
-   "decoded": "toString"
+   "decoded": "toString",
+   "pieces": [
+    "toString"
+   ]
   },
   {
    "input": ".isValidEmail",
@@ -575,7 +867,10 @@
     20237,
     20371
    ],
-   "decoded": ".isValidEmail"
+   "decoded": ".isValidEmail",
+   "pieces": [
+    ".isValidEmail"
+   ]
   },
   {
    "input": "config.getValue()",
@@ -584,7 +879,12 @@
     95011,
     1393
    ],
-   "decoded": "config.getValue()"
+   "decoded": "config.getValue()",
+   "pieces": [
+    "config",
+    ".getValue",
+    "()"
+   ]
   },
   {
    "input": "self.assertEqual(x, 42)",
@@ -597,7 +897,16 @@
     3180,
     11
    ],
-   "decoded": "self.assertEqual(x, 42)"
+   "decoded": "self.assertEqual(x, 42)",
+   "pieces": [
+    "self",
+    ".assertEqual",
+    "(x",
+    ",",
+    " ",
+    "42",
+    ")"
+   ]
   },
   {
    "input": "user_id.toString()",
@@ -607,7 +916,13 @@
     32129,
     1393
    ],
-   "decoded": "user_id.toString()"
+   "decoded": "user_id.toString()",
+   "pieces": [
+    "user",
+    "_id",
+    ".toString",
+    "()"
+   ]
   },
   {
    "input": "(parenthesizedWord)",
@@ -618,7 +933,11 @@
     21412,
     11
    ],
-   "decoded": "(parenthesizedWord)"
+   "decoded": "(parenthesizedWord)",
+   "pieces": [
+    "(parenthesizedWord",
+    ")"
+   ]
   },
   {
    "input": "#hashtagWord",
@@ -629,7 +948,10 @@
     409,
     21412
    ],
-   "decoded": "#hashtagWord"
+   "decoded": "#hashtagWord",
+   "pieces": [
+    "#hashtagWord"
+   ]
   },
   {
    "input": "@mentionUser",
@@ -638,7 +960,10 @@
     124452,
     6756
    ],
-   "decoded": "@mentionUser"
+   "decoded": "@mentionUser",
+   "pieces": [
+    "@mentionUser"
+   ]
   },
   {
    "input": "12345678901234567890",
@@ -651,7 +976,16 @@
     27183,
     2225
    ],
-   "decoded": "12345678901234567890"
+   "decoded": "12345678901234567890",
+   "pieces": [
+    "123",
+    "456",
+    "789",
+    "012",
+    "345",
+    "678",
+    "90"
+   ]
   },
   {
    "input": "9999999999",
@@ -661,7 +995,13 @@
     8834,
     27
    ],
-   "decoded": "9999999999"
+   "decoded": "9999999999",
+   "pieces": [
+    "999",
+    "999",
+    "999",
+    "9"
+   ]
   },
   {
    "input": "3.14159265358979",
@@ -674,7 +1014,16 @@
     27471,
     3981
    ],
-   "decoded": "3.14159265358979"
+   "decoded": "3.14159265358979",
+   "pieces": [
+    "3",
+    ".",
+    "141",
+    "592",
+    "653",
+    "589",
+    "79"
+   ]
   },
   {
    "input": "phone: 1234567890123",
@@ -688,7 +1037,17 @@
     16993,
     21
    ],
-   "decoded": "phone: 1234567890123"
+   "decoded": "phone: 1234567890123",
+   "pieces": [
+    "phone",
+    ":",
+    " ",
+    "123",
+    "456",
+    "789",
+    "012",
+    "3"
+   ]
   },
   {
    "input": "id_000111222333444",
@@ -701,7 +1060,16 @@
     11722,
     18966
    ],
-   "decoded": "id_000111222333444"
+   "decoded": "id_000111222333444",
+   "pieces": [
+    "id",
+    "_",
+    "000",
+    "111",
+    "222",
+    "333",
+    "444"
+   ]
   },
   {
    "input": "binary 1010101010101010",
@@ -715,7 +1083,17 @@
     4460,
     18
    ],
-   "decoded": "binary 1010101010101010"
+   "decoded": "binary 1010101010101010",
+   "pieces": [
+    "binary",
+    " ",
+    "101",
+    "010",
+    "101",
+    "010",
+    "101",
+    "0"
+   ]
   },
   {
    "input": "北京市海淀区",
@@ -724,7 +1102,10 @@
     106025,
     1369
    ],
-   "decoded": "北京市海淀区"
+   "decoded": "北京市海淀区",
+   "pieces": [
+    "北京市海淀区"
+   ]
   },
   {
    "input": "こんにちはカタカナ",
@@ -739,7 +1120,10 @@
     15961,
     27071
    ],
-   "decoded": "こんにちはカタカナ"
+   "decoded": "こんにちはカタカナ",
+   "pieces": [
+    "こんにちはカタカナ"
+   ]
   },
   {
    "input": "東京タワーは高い",
@@ -751,7 +1135,10 @@
     2841,
     73742
    ],
-   "decoded": "東京タワーは高い"
+   "decoded": "東京タワーは高い",
+   "pieces": [
+    "東京タワーは高い"
+   ]
   },
   {
    "input": "한국어와中文混合",
@@ -763,7 +1150,11 @@
     21134,
     14769
    ],
-   "decoded": "한국어와中文混合"
+   "decoded": "한국어와中文混合",
+   "pieces": [
+    "한국어와",
+    "中文混合"
+   ]
   },
   {
    "input": "ひらがなカタカナ漢字",
@@ -779,7 +1170,10 @@
     29069,
     2024
    ],
-   "decoded": "ひらがなカタカナ漢字"
+   "decoded": "ひらがなカタカナ漢字",
+   "pieces": [
+    "ひらがなカタカナ漢字"
+   ]
   },
   {
    "input": "台北101大樓",
@@ -789,7 +1183,12 @@
     547,
     24747
    ],
-   "decoded": "台北101大樓"
+   "decoded": "台北101大樓",
+   "pieces": [
+    "台北",
+    "101",
+    "大樓"
+   ]
   },
   {
    "input": "Mixed混合Text文字",
@@ -799,7 +1198,13 @@
     7233,
     10541
    ],
-   "decoded": "Mixed混合Text文字"
+   "decoded": "Mixed混合Text文字",
+   "pieces": [
+    "Mixed",
+    "混合",
+    "Text",
+    "文字"
+   ]
   },
   {
    "input": "Löwe löwe Léopard 狮子",
@@ -814,7 +1219,14 @@
     223,
     46078
    ],
-   "decoded": "Löwe löwe Léopard 狮子"
+   "decoded": "Löwe löwe Léopard 狮子",
+   "pieces": [
+    "Löwe",
+    " löwe",
+    " Léopard",
+    " ",
+    "狮子"
+   ]
   },
   {
    "input": "user123名前test",
@@ -824,7 +1236,13 @@
     101813,
     7958
    ],
-   "decoded": "user123名前test"
+   "decoded": "user123名前test",
+   "pieces": [
+    "user",
+    "123",
+    "名前",
+    "test"
+   ]
   },
   {
    "input": "GitHub仓库clone",
@@ -834,7 +1252,12 @@
     34836,
     102131
    ],
-   "decoded": "GitHub仓库clone"
+   "decoded": "GitHub仓库clone",
+   "pieces": [
+    "GitHub",
+    "仓库",
+    "clone"
+   ]
   },
   {
    "input": "日本語123English",
@@ -843,7 +1266,12 @@
     6895,
     17530
    ],
-   "decoded": "日本語123English"
+   "decoded": "日本語123English",
+   "pieces": [
+    "日本語",
+    "123",
+    "English"
+   ]
   },
   {
    "input": "emoji😀letterRun日本語",
@@ -856,7 +1284,13 @@
     29382,
     88768
    ],
-   "decoded": "emoji😀letterRun日本語"
+   "decoded": "emoji😀letterRun日本語",
+   "pieces": [
+    "emoji",
+    "😀",
+    "letterRun",
+    "日本語"
+   ]
   },
   {
    "input": "PascalCase北京市camelCase",
@@ -869,7 +1303,12 @@
     31105,
     15434
    ],
-   "decoded": "PascalCase北京市camelCase"
+   "decoded": "PascalCase北京市camelCase",
+   "pieces": [
+    "PascalCase",
+    "北京市",
+    "camelCase"
+   ]
   }
  ]
 }

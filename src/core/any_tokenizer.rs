@@ -138,6 +138,27 @@ impl AnyTokenizer {
         self.backend
     }
 
+    /// The pre-token pieces this handle's encode path splits `text` into, or
+    /// `None` when this backend has no such stage to report.
+    ///
+    /// `Some` only for [`Backend::Bpe`], where pre-tokenization is a distinct
+    /// stage — see [`Tokenizer::pre_tokenize`] for what `text` must already be
+    /// (normalized, unprefixed) and which byte space the pieces come back in.
+    ///
+    /// `None` is the honest answer rather than a fabricated one for the rest.
+    /// [`Backend::Unigram`] and [`Backend::Spm`] are SentencePiece: they have no
+    /// pre-tokenizer split at all, the vocabulary itself carries the word
+    /// boundary as `▁`. [`Backend::WordPiece`]'s whitespace/punctuation
+    /// splitting is real but fused into its own encode rather than exposed as a
+    /// stage, and reconstructing it here would pin a copy instead of the thing
+    /// that runs.
+    pub fn pre_tokenize(&self, text: &str) -> Option<Vec<String>> {
+        match &self.backend {
+            Backend::Bpe(t) => Some(t.pre_tokenize(text)),
+            Backend::Unigram(_) | Backend::WordPiece(_) | Backend::Spm(_) => None,
+        }
+    }
+
     /// The special-token policy parsed from the json.
     pub fn policy(&self) -> &SpecialPolicy {
         &self.policy

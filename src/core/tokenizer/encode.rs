@@ -5,7 +5,7 @@ use crate::core::bpe::{
     byte_pair_encode_pieces, byte_pair_encode_pieces_presegmented, byte_pair_encode_pieces_seeded,
     Piece, Seed,
 };
-use crate::core::byte_level::byte_level_encode;
+use crate::core::byte_level::{byte_level_decode, byte_level_encode};
 use crate::core::policy::{PolicyError, SpecialMode};
 use crate::core::precompiled::utf8_len;
 #[cfg(feature = "rayon")]
@@ -67,6 +67,62 @@ impl Tokenizer {
             spans = subdivide(pass, text, &spans);
         }
         spans
+    }
+
+    /// The pre-token pieces this tokenizer's encode path splits `text` into,
+    /// before any BPE merge runs.
+    ///
+    /// Exists because the split is otherwise unobservable from outside the
+    /// crate — only the ids that come out the far end of BPE are — so a
+    /// pre-tokenizer pattern that drifts from the reference it was transcribed
+    /// from stays invisible until it happens to move a token id.
+    /// `tests/reference_parity.rs` pins these pieces against the reference
+    /// tokenizers' own split for exactly that reason.
+    ///
+    /// This calls the same two steps `encode` calls — the `add_prefix_space`
+    /// guard and then the pre-tokenizer — rather than reconstructing them, so
+    /// the answer here and the split BPE is actually fed cannot drift apart.
+    ///
+    /// # What `text` must already be
+    ///
+    /// The text as the *pre-tokenizer* sees it. `encode` runs the configured HF
+    /// `normalizer` first and this deliberately does not, so a caller holding a
+    /// reference implementation's normalizer output can pass it straight in
+    /// without normalizing twice — HF's `Prepend` and `Replace` normalizers are
+    /// not idempotent, so doing it twice is not harmless. A tokenizer that
+    /// declares no normalizer (every vocabulary in [`crate::pretrained`]) makes
+    /// the distinction moot.
+    ///
+    /// `add_prefix_space` sits on the other side of that line: it is applied
+    /// *here*, which is where HuggingFace puts it too (its `ByteLevel` and
+    /// `Metaspace` pre-tokenizer nodes own the flag), so a prepended space
+    /// shows up in the first piece exactly as it does in the reference's.
+    ///
+    /// # Piece space
+    ///
+    /// Raw input text, never the ByteLevel alphabet — the two forks of the
+    /// encode path disagree on this internally and are reconciled here. The
+    /// regex fork slices the text and maps each chunk through
+    /// [`byte_level_encode`](crate::core::byte_level::byte_level_encode) only
+    /// later; the multi-stage pre-tokenizer engine maps up front, and that
+    /// mapping (a bijection over the same bytes) is undone below.
+    pub fn pre_tokenize(&self, text: &str) -> Vec<String> {
+        if let Some(pt) = &self.pre_tokenizer {
+            return pt
+                .split(text)
+                .into_iter()
+                .map(|piece| unmap_byte_level(piece, self.use_byte_level))
+                .collect();
+        }
+
+        let text = self.prefixed(text);
+        self.split_chunks(&text)
+            .into_iter()
+            // `get` rather than indexing: the spans are on char boundaries by
+            // construction, and `subdivide` already skips a span it cannot
+            // resolve rather than panicking.
+            .filter_map(|(start, end)| text.get(start..end).map(str::to_owned))
+            .collect()
     }
 
     /// Run BPE on a piece, honoring a separate merge-rank map when present,
@@ -651,4 +707,21 @@ impl Tokenizer {
                 .collect()
         }
     }
+}
+
+/// Undo the ByteLevel mapping a pre-tokenizer engine applied to a piece.
+///
+/// `byte_level` is the tokenizer's own flag, which the loader keeps equal to
+/// the engine's (`with_pre_tokenizer`), so `false` means the piece is already
+/// raw text. When it is `true` the piece is one span of
+/// `byte_level_encode(text)` and the inverse is total; the piece is returned
+/// unchanged rather than panicking if a future engine ever breaks that
+/// invariant.
+fn unmap_byte_level(piece: String, byte_level: bool) -> String {
+    if !byte_level {
+        return piece;
+    }
+    byte_level_decode(&piece)
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or(piece)
 }

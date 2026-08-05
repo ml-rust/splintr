@@ -31,6 +31,23 @@
 //! *reference's* ids rather than splintr's, so a decode failure is reported as
 //! a decode failure even when encode already disagrees.
 //!
+//! # Why the pre-tokenizer split is checked too
+//!
+//! Ids and decoded text pin the two ends of the pipeline but say nothing
+//! directly about the stage between them. A pre-tokenizer pattern transcribed
+//! from a `tokenizer.json` can drift from it — a lowered quantifier, a dropped
+//! alternation branch — and stay completely invisible until the drift happens
+//! to move a token id on some input nobody tested. So every case whose
+//! reference *has* a pre-tokenizer also carries that reference's own split,
+//! piece for piece, asserted against [`AnyTokenizer::pre_tokenize`].
+//!
+//! Both columns are optional and skipped when absent: `pieces` is missing for
+//! the SentencePiece-backed vocabularies, which have no pre-tokenizer stage at
+//! all, and for individual cases that split into nothing. `normalized`, when
+//! present, is the reference normalizer's output — the text the reference's
+//! split actually ran on, and therefore what `pre_tokenize` (which does not
+//! normalize; see its docs) must be driven with instead of `input`.
+//!
 //! This file intentionally duplicates a small amount of fixture-parsing and
 //! mode-selection logic from `examples/verify_pretrained.rs` rather than
 //! sharing a module: the example is a standalone diagnostic binary and this
@@ -70,12 +87,20 @@ impl Mode {
     }
 }
 
-/// One reference case: input text, the reference tokenizer's ids, and the
-/// reference tokenizer's own decode of exactly those ids.
+/// One reference case: input text, the reference tokenizer's ids, the
+/// reference tokenizer's own decode of exactly those ids, and — when that
+/// reference has a pre-tokenizer — its own split of the input.
 struct Case {
     input: String,
     expected: Vec<u32>,
     decoded: String,
+    /// The reference's pre-tokenizer pieces, as raw text. `None` for a
+    /// reference with no pre-tokenizer stage, and for a case that splits into
+    /// nothing — see the module docs.
+    pieces: Option<Vec<String>>,
+    /// The reference normalizer's output, recorded only where it differs from
+    /// `input`; that is the text `pieces` is a split of.
+    normalized: Option<String>,
 }
 
 /// A whole fixture: the bundled vocabulary name plus every case for it.
@@ -160,10 +185,50 @@ fn load_fixture(path: &Path) -> Fixture {
                     )
                 })
                 .to_owned();
+            // Optional, unlike `decoded`: a reference with no pre-tokenizer
+            // stage has nothing to state here, and an empty array would assert
+            // "splits into zero pieces" instead. A present-but-malformed one is
+            // still a hard error.
+            let pieces = entry.get("pieces").map(|value| {
+                value
+                    .as_array()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "reference_parity: {}: case {index}: `pieces` is not an array",
+                            path.display()
+                        )
+                    })
+                    .iter()
+                    .enumerate()
+                    .map(|(piece_index, v)| {
+                        v.as_str()
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "reference_parity: {}: case {index}: pieces[{piece_index}] is not a string",
+                                    path.display()
+                                )
+                            })
+                            .to_owned()
+                    })
+                    .collect()
+            });
+            let normalized = entry.get("normalized").map(|value| {
+                value
+                    .as_str()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "reference_parity: {}: case {index}: `normalized` is not a string",
+                            path.display()
+                        )
+                    })
+                    .to_owned()
+            });
             Case {
                 input,
                 expected,
                 decoded,
+                pieces,
+                normalized,
             }
         })
         .collect();
@@ -171,8 +236,8 @@ fn load_fixture(path: &Path) -> Fixture {
     Fixture { vocab, cases }
 }
 
-/// The first index at which two id sequences disagree, length included.
-fn first_diff(expected: &[u32], actual: &[u32]) -> Option<usize> {
+/// The first index at which two sequences disagree, length included.
+fn first_diff<T: PartialEq>(expected: &[T], actual: &[T]) -> Option<usize> {
     let shared = expected.len().min(actual.len());
     for i in 0..shared {
         if expected[i] != actual[i] {
@@ -195,6 +260,24 @@ fn at_or_end(ids: &[u32], index: usize) -> String {
 
 fn format_ids(ids: &[u32]) -> String {
     ids.iter().map(u32::to_string).collect::<Vec<_>>().join(" ")
+}
+
+/// [`at_or_end`] for pre-tokenizer pieces, quoted and whitespace-escaped —
+/// they differ from one another almost exclusively in leading spaces.
+fn piece_at_or_end(pieces: &[String], index: usize) -> String {
+    match pieces.get(index) {
+        Some(piece) => format!("\"{}\"", escape(piece)),
+        None => "<end>".to_owned(),
+    }
+}
+
+/// [`format_ids`] for pre-tokenizer pieces.
+fn format_pieces(pieces: &[String]) -> String {
+    pieces
+        .iter()
+        .map(|piece| format!("\"{}\"", escape(piece)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Render text with whitespace visible -- most reference cases differ only
@@ -323,6 +406,68 @@ fn pretrained_vocabularies_match_reference_tokenizers() {
                     format_ids(&case.expected),
                     escape(&case.decoded),
                 ));
+            }
+            failure_reports.push(detail);
+        }
+
+        // The pre-tokenizer split, scored independently of the encode mode for
+        // the same reason decode is: it is a stage the boundary template never
+        // touches. Cases with no `pieces` are skipped, not failed.
+        let piece_failures: Vec<(usize, Option<Vec<String>>)> = fixture
+            .cases
+            .iter()
+            .enumerate()
+            .filter_map(|(index, case)| {
+                let expected = case.pieces.as_ref()?;
+                let text = case.normalized.as_deref().unwrap_or(&case.input);
+                match tokenizer.pre_tokenize(text) {
+                    Some(actual) if actual == *expected => None,
+                    outcome => Some((index, outcome)),
+                }
+            })
+            .collect();
+
+        if !piece_failures.is_empty() {
+            let mut detail = format!(
+                "vocab {:?} ({}): {}/{} cases pre-tokenized differently from the reference:",
+                fixture.vocab,
+                path.display(),
+                piece_failures.len(),
+                fixture.cases.len(),
+            );
+            for (index, outcome) in &piece_failures {
+                let case = &fixture.cases[*index];
+                let expected = case.pieces.as_deref().unwrap_or(&[]);
+                let text = case.normalized.as_deref().unwrap_or(&case.input);
+                detail.push_str(&format!(
+                    "\n  [case {index}] input: \"{}\"\n    expected ({:>3}): {}",
+                    escape(text),
+                    expected.len(),
+                    format_pieces(expected),
+                ));
+                match outcome {
+                    Some(actual) => {
+                        detail.push_str(&format!(
+                            "\n    actual   ({:>3}): {}",
+                            actual.len(),
+                            format_pieces(actual),
+                        ));
+                        match first_diff(expected, actual) {
+                            Some(at) => detail.push_str(&format!(
+                                "\n    first differs at index {at}: expected {}, got {}",
+                                piece_at_or_end(expected, at),
+                                piece_at_or_end(actual, at)
+                            )),
+                            None => {
+                                detail.push_str("\n    (sequences compare equal -- unreachable)")
+                            }
+                        }
+                    }
+                    // The fixture states a split this backend cannot report at
+                    // all -- a wrong reference pairing, not a wrong pattern.
+                    None => detail
+                        .push_str("\n    actual: <this backend exposes no pre-tokenizer split>"),
+                }
             }
             failure_reports.push(detail);
         }

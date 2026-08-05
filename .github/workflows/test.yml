@@ -191,6 +191,16 @@ jobs:
       - name: Check parity against tiktoken
         run: .venv/bin/python scripts/ci/check_tiktoken_parity.py
 
+      # The fixture tests replay a fixed corpus; this generates fresh strings
+      # from each vocabulary's own special tokens every run, which is where the
+      # boundary bugs live. Only the bundled OpenAI vocabularies run here — the
+      # rest of the fuzzer's targets need model directories no runner has. The
+      # seed is fixed so a failure is reproducible from the log alone.
+      - name: Fuzz against tiktoken
+        run: |
+          .venv/bin/python scripts/fuzz_reference.py cl100k_base o200k_base \
+            --cases 2000 --seed 20260805
+
   # ─────────────────────────────────────────────────────────────────────────
   features:
     name: Feature matrix (${{ matrix.label }})

@@ -58,14 +58,15 @@ therefore explicit, one table per reference, and never inferred:
   with a stated reason, when the directory has no `tokenizer.json`.
 
 `tiktoken` (the bundled OpenAI vocabularies) -- 3 modes:
-    encode_ordinary  ref.encode_ordinary(t)                       == sp.encode(t)
+    encode_ordinary  ref.encode_ordinary(t)                       == sp.encode_ordinary(t)
     encode_special   ref.encode(t, allowed_special="all")          == sp.encode_with_special(t)
     decode           ref.decode(ids_special)                       == sp.decode(ids_special)
   tiktoken's plain `encode` raises on any special token appearing in the text,
   so it is never the right call for a fuzzer whose whole point is putting
   special tokens in the text. `encode_ordinary` (specials stay literal text)
-  is what splintr's `Tokenizer.encode` does; `allowed_special="all"` is what
-  `encode_with_special` does. The special fragments are drawn from tiktoken's
+  is what splintr's `encode_ordinary` does — not its `encode`, which applies
+  the special-token policy and resolves a spelled-out special to its id;
+  `allowed_special="all"` is what `encode_with_special` does. The special fragments are drawn from tiktoken's
   own special set, not splintr's -- splintr adds 54 agent tokens the reference
   has never heard of, and feeding those in would be a divergence by
   construction rather than a bug.
@@ -510,7 +511,10 @@ def load_tiktoken_target(name: str) -> tuple[list[Mode], list[str]]:
     modes = [
         Mode(
             "encode_ordinary",
-            lambda t: (reference.encode_ordinary(t), guarded(subject.encode)(t)),
+            lambda t: (
+                reference.encode_ordinary(t),
+                guarded(subject.encode_ordinary)(t),
+            ),
         ),
         Mode(
             "encode_special",

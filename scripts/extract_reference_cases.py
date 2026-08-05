@@ -33,6 +33,45 @@ The decode column is not decoration. Encode and decode are separate pipelines
 of them unpinned -- which is where a large share of this crate's real
 divergences have been. `tests/reference_parity.rs` asserts both columns.
 
+# THE `pieces` COLUMN
+
+For the same reason there is a third column: the reference's *pre-tokenizer
+split* of the input, one string per piece, written as `"pieces"` (plus
+`"normalized"` when the reference's normalizer changed the input before the
+split saw it -- the pieces are always the split of that normalized text). A
+pre-tokenizer pattern that drifts from the one a vocabulary was trained with
+is invisible in the id column until it happens to move a token id, and
+`tests/reference_parity.rs` compares it against `AnyTokenizer::pre_tokenize`.
+
+Where the pieces come from, and what that does and does not prove:
+
+  * `tiktoken` -- `regex.finditer(encoding._pat_str, text)`, reading the
+    pattern **live off the installed encoding object** with the `regex`
+    package, the same trust class (and the same `_`-prefixed attribute) as the
+    exhaustive rank gate below. This proves splintr's `CL100K_BASE_PATTERN` /
+    `O200K_BASE_PATTERN` constants have not drifted from the installed
+    tiktoken's own pattern, and that splintr's regex engine executes that
+    pattern identically to Python's `regex` module. It does **not**
+    independently verify OpenAI's intent: both sides are then reading the same
+    string from the same package.
+  * `tokenizers` -- `pre_tokenizer.pre_tokenize_str(normalized)`, keeping the
+    piece strings and dropping the offsets. These come back mapped into the
+    ByteLevel alphabet (`Ġ` for a space), because every modern HF BPE pipeline
+    ends in a `ByteLevel` stage; splintr's split yields raw text, so they are
+    un-mapped back through the same GPT-2 table `decode_byte_level` already
+    implements. Un-mapping is done here, in the generator, rather than in the
+    Rust test, so the committed fixture reads as text and every fixture's
+    `pieces` column means one thing.
+  * `sentencepiece` -- nothing. SentencePiece has no pre-tokenizer split: the
+    `▁` word-boundary marker lives in the vocabulary, and the whole normalized
+    string goes to the merge loop. The `mistral`/`mistral_v2` fixtures
+    therefore carry no `pieces` key at all. This is an omission on purpose, not
+    a gap waiting to be filled -- and it is an omitted key rather than an empty
+    list, which would falsely assert "splits into zero pieces".
+
+An individual case with an empty split (the empty-string corpus entry) omits
+the key for that same reason.
+
 Usage:
     python scripts/extract_reference_cases.py \\
         --vocab deepseek_v3 \\
@@ -136,7 +175,8 @@ exists. `scripts/verify_external_models.py` carries the same gap as a
 inference from the Mistral family rather than a measurement.
 
 Requires the `tokenizers`, `sentencepiece` and/or `tiktoken` package
-depending on which reference is asked for.
+depending on which reference is asked for (`tiktoken` additionally needs
+`regex`, which it already depends on).
 """
 
 from __future__ import annotations
@@ -493,8 +533,37 @@ def sanity_check_hf_pairing(
         )
 
 
-def build_cases(encode, decode) -> list[dict[str, object]]:
-    """Run `REFERENCE_CORPUS` through one reference's encode and decode.
+def unmap_pieces(pieces: list[str], normalized: str) -> list[str]:
+    """A reference's pre-tokenizer pieces as raw text, ByteLevel mapping undone.
+
+    Which of the two spaces a piece list is in is not declared anywhere, so it
+    is *measured*: a split partitions the text it was handed, so exactly one of
+    the two readings reassembles into `normalized` (or into `normalized` with
+    the pre-tokenizer's own `add_prefix_space` leading space). The un-mapped
+    reading is tried first because for plain ASCII the two are identical and
+    either answer is correct.
+
+    Raises `ValueError` if neither reassembles -- a piece list that does not
+    add back up to its input is not something to guess about.
+    """
+    try:
+        unmapped: list[str] | None = [decode_byte_level(p).decode("utf-8") for p in pieces]
+    except (ValueError, UnicodeDecodeError):
+        unmapped = None
+
+    for candidate in (unmapped, pieces):
+        if candidate is not None and "".join(candidate) in (normalized, " " + normalized):
+            return candidate
+
+    raise ValueError(
+        f"reference pre-tokenizer pieces {pieces[:8]!r} do not reassemble into "
+        f"{normalized!r}, mapped or un-mapped -- refusing to record a `pieces` column "
+        f"whose byte space cannot be established"
+    )
+
+
+def build_cases(encode, decode, split=None) -> list[dict[str, object]]:
+    """Run `REFERENCE_CORPUS` through one reference's encode, decode and split.
 
     `decode` is handed the ids `encode` just produced, not the original text,
     so the `decoded` column is the reference's own round trip -- which is the
@@ -502,16 +571,29 @@ def build_cases(encode, decode) -> list[dict[str, object]]:
     (SentencePiece drops the dummy prefix and normalizes whitespace runs) the
     lossy result is what gets recorded: the fixture states what the reference
     does, never what it "should" do.
+
+    `split`, when the reference has a pre-tokenizer at all, returns
+    `(normalized-or-None, pieces)` for one input -- see the module docstring's
+    "THE `pieces` COLUMN". Both extra keys are omitted rather than written
+    empty: no `normalized` when the normalizer changed nothing, no `pieces`
+    when the split produced none.
     """
     cases: list[dict[str, object]] = []
     for text in REFERENCE_CORPUS:
         ids = [int(i) for i in encode(text)]
-        cases.append({"input": text, "expected": ids, "decoded": decode(ids)})
+        case: dict[str, object] = {"input": text, "expected": ids, "decoded": decode(ids)}
+        if split is not None:
+            normalized, pieces = split(text)
+            if normalized is not None:
+                case["normalized"] = normalized
+            if pieces:
+                case["pieces"] = pieces
+        cases.append(case)
     return cases
 
 
 def hf_reference(reference_json: Path):
-    """`(encode, decode)` for the `tokenizers` package over a `tokenizer.json`.
+    """`(tokenizer, encode, decode, split)` for `tokenizers` over a `tokenizer.json`.
 
     `add_special_tokens=False` matches `AnyTokenizer::encode_raw` on the Rust
     side, which is what `examples/verify_pretrained.rs` diffs these cases
@@ -531,15 +613,34 @@ def hf_reference(reference_json: Path):
     def decode(ids: list[int]) -> str:
         return tokenizer.decode(ids, skip_special_tokens=False)
 
-    return tokenizer, encode, decode
+    def split(text: str) -> tuple[str | None, list[str]]:
+        # Normalizer first, pre-tokenizer second -- HuggingFace's own order, and
+        # the reason `normalized` is recorded: it, not `input`, is what the
+        # pieces below are a split of.
+        normalized = text
+        if tokenizer.normalizer is not None:
+            normalized = tokenizer.normalizer.normalize_str(text)
+        if tokenizer.pre_tokenizer is None:
+            return (normalized if normalized != text else None), []
+        pieces = [piece for piece, _offsets in tokenizer.pre_tokenizer.pre_tokenize_str(normalized)]
+        return (
+            (normalized if normalized != text else None),
+            unmap_pieces(pieces, normalized),
+        )
+
+    return tokenizer, encode, decode, split
 
 
 def spm_reference(reference_model: Path):
-    """`(encode, decode)` for the `sentencepiece` package over a `tokenizer.model`.
+    """`(processor, encode, decode)` for `sentencepiece` over a `tokenizer.model`.
 
     `add_bos`/`add_eos` are left off, the SentencePiece equivalent of
     `add_special_tokens=False`: `SpmTokenizer` on the Rust side emits neither
     from `encode_raw`, the policy places them.
+
+    No `split` is returned, deliberately: SentencePiece has no pre-tokenizer
+    stage to split with (see the module docstring's "THE `pieces` COLUMN"), so
+    these fixtures carry no `pieces` column.
     """
     import sentencepiece
 
@@ -555,7 +656,7 @@ def spm_reference(reference_model: Path):
 
 
 def tiktoken_reference(encoding_name: str):
-    """`(encode, decode)` for the `tiktoken` package.
+    """`(encoding, encode, decode, split)` for the `tiktoken` package.
 
     `encode_ordinary` rather than `encode`: it is the entry point that treats
     special-token spellings as ordinary text, which is what an untemplated
@@ -563,7 +664,15 @@ def tiktoken_reference(encoding_name: str):
     U+FFFD, matching `AnyTokenizer::decode_lossy`'s tail behaviour -- no case
     in `REFERENCE_CORPUS` reaches it, since every id sequence here came from
     encoding valid UTF-8.
+
+    `split` runs the encoding's *own* pattern -- read off the object, not
+    re-typed here -- through the `regex` package, which is the module tiktoken
+    itself pre-tokenizes with. `finditer(...).group(0)` rather than `findall`
+    so a pattern that ever grows a capturing group still yields whole matches
+    instead of group tuples. tiktoken has no normalizer, so the first element
+    is always `None`.
     """
+    import regex
     import tiktoken
 
     encoding = tiktoken.get_encoding(encoding_name)
@@ -574,7 +683,11 @@ def tiktoken_reference(encoding_name: str):
     def decode(ids: list[int]) -> str:
         return encoding.decode(ids)
 
-    return encoding, encode, decode
+    def split(text: str) -> tuple[str | None, list[str]]:
+        pattern = encoding._pat_str  # noqa: SLF001 - no public accessor
+        return None, [match.group(0) for match in regex.finditer(pattern, text)]
+
+    return encoding, encode, decode, split
 
 
 def run_hf(vocab: str, reference_json: Path) -> tuple[dict[str, object], list[dict[str, object]], str]:
@@ -597,7 +710,7 @@ def run_hf(vocab: str, reference_json: Path) -> tuple[dict[str, object], list[di
     except ImportError:
         sys.exit("error: the 'tokenizers' package is required (pip install tokenizers)")
 
-    tokenizer, encode, decode = hf_reference(reference_json)
+    tokenizer, encode, decode, split = hf_reference(reference_json)
     tiktoken_lines = read_tiktoken_lines(tiktoken_path)
     try:
         sanity_check_hf_pairing(vocab, tiktoken_lines, byte_level, tokenizer, reference_json)
@@ -608,8 +721,16 @@ def run_hf(vocab: str, reference_json: Path) -> tuple[dict[str, object], list[di
         "source": "tokenizers",
         "path": str(reference_json.resolve()),
         "tokenizers_version": tokenizers.__version__,
+        "pieces": (
+            "pre_tokenizer.pre_tokenize_str over the normalizer's output, un-mapped from "
+            "the ByteLevel alphabet back to raw text"
+        ),
     }
-    return block, build_cases(encode, decode), f"byte_level={byte_level} tokens={len(tiktoken_lines)}"
+    try:
+        cases = build_cases(encode, decode, split)
+    except ValueError as exc:
+        sys.exit(f"error: {exc}")
+    return block, cases, f"byte_level={byte_level} tokens={len(tiktoken_lines)}"
 
 
 def run_spm(vocab: str, reference_model: Path) -> tuple[dict[str, object], list[dict[str, object]], str]:
@@ -643,6 +764,8 @@ def run_spm(vocab: str, reference_model: Path) -> tuple[dict[str, object], list[
         "path": str(reference_model.resolve()),
         "sentencepiece_version": sentencepiece.__version__,
     }
+    # No `split` argument, so no `pieces` column: SentencePiece has no
+    # pre-tokenizer stage at all. See the module docstring.
     return block, build_cases(encode, decode), f"pieces={len(spm_lines)}"
 
 
@@ -665,7 +788,7 @@ def run_tiktoken(vocab: str, encoding_name: str) -> tuple[dict[str, object], lis
         sys.exit("error: the 'tiktoken' package is required (pip install tiktoken)")
 
     try:
-        encoding, encode, decode = tiktoken_reference(encoding_name)
+        encoding, encode, decode, split = tiktoken_reference(encoding_name)
     except Exception as exc:  # noqa: BLE001 - unknown encoding name, or no cached vocabulary
         sys.exit(f"error: tiktoken could not load encoding {encoding_name!r}: {exc}")
 
@@ -679,8 +802,18 @@ def run_tiktoken(vocab: str, encoding_name: str) -> tuple[dict[str, object], lis
         "source": "tiktoken",
         "encoding": encoding_name,
         "tiktoken_version": tiktoken.__version__,
+        "pieces": (
+            "regex.finditer over the installed encoding's own _pat_str -- proves splintr's "
+            "pattern constant has not drifted from it and that splintr's regex engine runs "
+            "that pattern like Python's `regex` module; it does not independently verify "
+            "OpenAI's intent"
+        ),
     }
-    return block, build_cases(encode, decode), f"byte_level={byte_level} tokens={len(tiktoken_lines)}"
+    try:
+        cases = build_cases(encode, decode, split)
+    except ValueError as exc:
+        sys.exit(f"error: {exc}")
+    return block, cases, f"byte_level={byte_level} tokens={len(tiktoken_lines)}"
 
 
 def main() -> int:

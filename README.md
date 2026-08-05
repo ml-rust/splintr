@@ -596,7 +596,7 @@ CI runs all of the above on Linux, macOS and Windows, plus a `wasm32-unknown-unk
 
 Unit tests fix the behaviour splintr already knows about; correctness against the real tokenizers is established differentially, on three levels.
 
-**In CI, with no model files and no Python.** `tests/reference_parity.rs` diffs every bundled vocabulary against committed fixtures in `tests/fixtures/pretrained/`, on both token ids _and_ decoded text — encode and decode are separate pipelines, and pinning only ids leaves byte-level unmapping, byte fallback and the SentencePiece dummy-prefix strip unpinned. Each fixture is captured by `scripts/extract_reference_cases.py` from whichever tool is authoritative for that vocabulary, and the script refuses to write one unless the reference provably _is_ the vocabulary splintr embeds:
+**In CI, with no model files and no Python.** `tests/reference_parity.rs` diffs every bundled vocabulary against committed fixtures in `tests/fixtures/pretrained/`, on token ids, decoded text _and_ the pre-tokenizer split — these are separate pipelines, and pinning only ids leaves byte-level unmapping, byte fallback, the SentencePiece dummy-prefix strip and the pre-tokenizer pattern itself unpinned. The split is compared piece for piece against the reference's own, through `AnyTokenizer::pre_tokenize`, for every vocabulary that has one (SentencePiece has no pre-tokenizer stage, so those fixtures state none rather than an empty one). Each fixture is captured by `scripts/extract_reference_cases.py` from whichever tool is authoritative for that vocabulary, and the script refuses to write one unless the reference provably _is_ the vocabulary splintr embeds:
 
 ```bash
 # OpenAI vocabularies: the `tiktoken` package, gated on every mergeable rank
@@ -621,7 +621,7 @@ python3 scripts/verify_external_models.py --models-dir ~/Projects/models
 python3 scripts/verify_external_models.py --models-dir ~/Projects/models --only bge-m3 --verbose
 ```
 
-**To find new bugs.** `scripts/fuzz_reference.py` diffs splintr against `tokenizers`, `transformers` (slow, sentencepiece-backed) or `tiktoken` — auto-detected per target — using random strings assembled from each vocabulary's _own_ added and special tokens, joined with no separator. That is the shape prose corpora cannot reach and where the bugs actually live (`lstrip`/`rstrip` on added tokens, the SentencePiece dummy prefix, decoder pipelines). Runs are deterministic via `--seed`, and a failing case is shrunk fragment-by-fragment to a minimal reproducer before it is printed.
+**To find new bugs.** `scripts/fuzz_reference.py` diffs splintr against `tokenizers`, `transformers` (slow, sentencepiece-backed) or `tiktoken` — auto-detected per target — using random strings assembled from each vocabulary's _own_ added and special tokens, joined with no separator. That is the shape prose corpora cannot reach and where the bugs actually live (`lstrip`/`rstrip` on added tokens, the SentencePiece dummy prefix, decoder pipelines). Runs are deterministic via `--seed`, and a failing case is shrunk fragment-by-fragment to a minimal reproducer before it is printed. This now runs in CI, not only by hand: the "Fuzz against tiktoken" step in `.github/workflows/test.yml` runs it against the two bundled OpenAI vocabularies, 2000 fresh cases per mode with a fixed seed, on every push — the rest of the targets below need a local model directory no CI runner has, so those remain maintainer-run before a release.
 
 ```bash
 # a HuggingFace tokenizer.json (reference auto-detected as `tokenizers`)

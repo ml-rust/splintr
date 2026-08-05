@@ -13,6 +13,7 @@ This guide provides comprehensive documentation for using Splintr's Python and R
   - [Sizing against the reference vocabulary](#sizing-against-the-reference-vocabulary)
   - [SentencePiece Tokenizer Class](#sentencepiece-tokenizer-class) (Unigram)
   - [Loading any model from `tokenizer.json`](#loading-any-model-from-tokenizerjson)
+- [Guarantees](#guarantees)
 - [Streaming Decoder](#streaming-decoder)
   - [Basic Usage](#basic-usage)
   - [ByteLevel Vocabularies](#bytelevel-vocabularies)
@@ -21,6 +22,7 @@ This guide provides comprehensive documentation for using Splintr's Python and R
 - [Rust API Reference](#rust-api-reference)
   - [Loading a bundled vocabulary](#loading-a-bundled-vocabulary)
   - [Tokenize Trait](#tokenize-trait)
+  - [Per-Token Decoding](#per-token-decoding)
   - [AnyTokenizer](#anytokenizer)
   - [SpecialMode](#specialmode)
   - [BPE Tokenizer](#bpe-tokenizer)
@@ -454,6 +456,20 @@ would produce wrong tokens with no signal), `from_json` raises:
 Output is verified id-for-id against HuggingFace `tokenizers` across all three
 families. (Rust: `splintr::from_json_path` / `from_json_bytes`.)
 
+## Guarantees
+
+What follows is a list of properties splintr's own test suite pins, not an aspirational list — each line names the test that fails if the property stops holding. A claim that seemed true but had no test enforcing it is left out entirely, or marked as such, rather than stated as fact.
+
+- **Encode pipeline order.** Content runs through the declared normalizer, then the pre-tokenizer split (`add_prefix_space` applied at that stage, matching where HuggingFace's `ByteLevel`/`Metaspace` nodes own the flag — see `Tokenizer::prefixed` in `src/core/tokenizer/encode.rs`), then the BPE/Unigram/WordPiece model; special tokens are extracted before any of that runs. This is exercised end to end, not as an isolated ordering check: `tests/reference_parity.rs::pretrained_vocabularies_match_reference_tokenizers` asserts `encode`/`encode_raw` ids against each reference tokenizer's own ids for every bundled vocabulary, which cannot pass if a stage runs out of order or `add_prefix_space` is applied on the wrong side of the split.
+- **Streaming decode agrees with whole-sequence decode, for any chunking.** Concatenating every `add_token`/`add_tokens` emission plus the final `flush()` equals `decode`/`decode_lossy` on the same ids, regardless of how the ids are grouped into chunks. Pinned for every bundled vocabulary and backend by `tests/decode_agreement.rs::streaming_decode_agrees_with_whole_sequence_decode`, and as a property test per backend: `src/core/streaming/decoder.rs::prop_chunking_matches_decode_cl100k_base` / `prop_chunking_matches_decode_deepseek_v3` / `prop_arbitrary_ids_match_decode_lossy`, `src/core/spm.rs::prop_chunking_matches_decode_mistral` / `prop_chunking_matches_decode_mistral_v2`, `src/core/sentencepiece.rs::prop_chunking_matches_decode`, and `src/core/wordpiece.rs::prop_chunking_matches_decode` / `prop_chunking_matches_decode_without_prefix`. `reset()` producing a decoder byte-identical to a fresh one is covered by the corresponding `prop_reset_matches_a_fresh_decoder` in each of those modules.
+- **The UTF-8 reassembly buffer matches `String::from_utf8_lossy`.** Byte-at-a-time or arbitrarily chunked, the buffer's lossy output is exactly what `String::from_utf8_lossy` would produce on the same bytes fed whole. Pinned by `src/core/streaming/utf8.rs::prop_byte_at_a_time_matches_lossy` and `prop_arbitrary_chunking_matches_lossy`.
+- **The pre-tokenizer split matches the reference tool's split — for bundled vocabularies that have a pre-tokenizer stage.** `AnyTokenizer::pre_tokenize` is asserted piece-for-piece against each reference's own split by `tests/reference_parity.rs::pretrained_vocabularies_match_reference_tokenizers`. The reference and its authority differ by vocabulary: for `cl100k_base`/`o200k_base` it is `regex.finditer` over the *installed* `tiktoken` encoding's own `_pat_str`, which proves splintr's pattern constant has not drifted from it and that splintr's regex engine executes that pattern identically to Python's `regex` module — it does **not** independently verify OpenAI's intent behind the pattern. For `llama3`/`deepseek_v3`/`whisper` it is HuggingFace `tokenizers`' `pre_tokenizer.pre_tokenize_str` over the normalizer's own output. `mistral` and `mistral_v2` have no split pinned here — SentencePiece has no pre-tokenizer stage, so those fixtures carry no `pieces` field at all.
+- **Ids and decoded text match the reference tokenizers, for the bundled vocabularies, over the fixture corpus.** Also `tests/reference_parity.rs::pretrained_vocabularies_match_reference_tokenizers`, against `tests/fixtures/pretrained/*.json` captured by `scripts/extract_reference_cases.py` from `tiktoken` (OpenAI vocabularies), `tokenizers` (HF-published vocabularies) or `sentencepiece` (Mistral). This is a fixture-corpus guarantee, not a universal one: it holds over the cases committed to that corpus, not over all possible input. A broader, non-CI sweep against real model directories is `scripts/verify_external_models.py`; `scripts/fuzz_reference.py` looks for the corpus's blind spots (see the [README's differential testing section](../README.md#differential-testing-against-the-reference-implementations)).
+- **Concatenating `decode_token`/`decode_token_bytes` over a sequence is *not* `decode` — this is a deliberate non-guarantee, not an oversight.** Per-id decoding never includes the inter-token separator a surface may carry (WordPiece's `##` continuation spacing, a leading-space rule that only fires past the first token), because that separator is a fact about where in the sequence an id sits, not about the id itself. See [Per-Token Decoding](#per-token-decoding) for the exact contract of `decode_token`/`decode_token_bytes`.
+- **`encode_ordinary` never promotes a special token's literal spelling in untrusted text.** Under `SpecialMode::Ordinary`, text that spells out `<|endoftext|>` (or any other configured special token) is tokenized as ordinary content and round-trips through `decode` unchanged — it can never become that token's control id. Pinned by `src/core/tokenizer/tests.rs::encode_with_all_vs_ordinary_diverge_on_a_special_token`. The model's own boundary tokens (BOS/EOS/`[CLS]`/`[SEP]`) are a separate concern: they come from the `post_processor` template under every mode, `Ordinary` included, and are unaffected by this guarantee — see [Special tokens in untrusted text](#special-tokens-in-untrusted-text).
+
+Not currently pinned by a dedicated test: the streaming-decode identity above covers only the bundled vocabularies and backends reachable through `from_pretrained`; agreement for a `from_json`-loaded tokenizer's declared `decoder` pipeline is checked out of band by `scripts/verify_external_models.py` and `scripts/fuzz_reference.py`, not by an in-repo `cargo test`.
+
 ## Streaming Decoder
 
 A streaming decoder is essential for real-time LLM applications where tokens arrive one at a time. It handles the critical problem of BPE tokens not aligning with UTF-8 character boundaries.
@@ -671,6 +687,15 @@ first: `policy().single_overhead()` is how many special tokens `encode` adds
 around the content (2 for `[CLS] A [SEP]`, 1 for a lone BOS, 0 for none), so
 truncate the content to `max_len - single_overhead()` rather than truncating
 the wrapped ids and cutting off the trailing `[SEP]`/EOS.
+
+### Per-Token Decoding
+
+`Tokenize` also gives you a single id's own contribution, for callers that need to attribute output to one token rather than render a sequence — logprob display, token-level highlighting, debugging a vocabulary — as opposed to [`streaming_decoder()`](#streaming-decoder), which renders a whole stream. Rust-only: the Python bindings do not expose these two methods.
+
+- `decode_token_bytes(&self, id: u32) -> Result<Vec<u8>, TokenizeError>`: the bytes `id` contributes — ByteLevel alphabet unmapped and `<0xNN>` byte fallback resolved — with no sequence-level post-processing applied (no leading-space strip, no first-token rule, no word separator). An id in the **skip** set (a special that the pipeline drops, such as a control token) returns an **empty** `Vec`, not an error; `TokenizeError::InvalidTokenId` is reserved for an id outside the vocabulary altogether.
+- `decode_token(&self, id: u32) -> Result<String, TokenizeError>`: `decode_token_bytes` as text. Errors with `InvalidTokenId` as above, and with `TokenizeError::Utf8Error` when the id's bytes are not valid UTF-8 standing alone — the normal case for a lone `<0xNN>` byte-fallback id or a token holding one byte of a multi-byte character, and the signal to decode the surrounding ids together (or use `streaming_decoder()`) instead of one id at a time.
+
+The inter-token separator a surface may carry (WordPiece's `##` continuation spacing, a leading-space rule that only fires past the first token) is deliberately **not** included in either method's answer: that separator is a fact about the *sequence* — where in it this id sits — not about the id itself. So concatenating `decode_token`/`decode_token_bytes` over a sequence of ids is **not** the same as calling `decode` on that sequence; it gives you each id's own bytes, not the assembled text.
 
 ### SpecialMode
 
@@ -1108,7 +1133,7 @@ print("\nDone!")
 
 4. **Clear cache if memory is tight**: Use `clear_cache()` if you're processing millions of unique texts and memory becomes a concern.
 
-5. **Use streaming decoders for real-time output**: Don't decode each token individually. Use `streaming_decoder()` to handle UTF-8 boundaries correctly.
+5. **Use `streaming_decoder()` to render a sequence**: for real-time output of a token stream, decode through the streaming decoder rather than calling decode on each id and concatenating the results yourself — it buffers incomplete UTF-8 sequences across token boundaries so multi-byte characters split across tokens render correctly. Reach for the Rust-only `decode_token`/`decode_token_bytes` (see [Per-Token Decoding](#per-token-decoding)) instead when you need one id's own contribution — logprob display, token-level highlighting — and keep in mind that concatenating those does not reassemble `decode`'s output, since the inter-token separator is a property of the sequence, not of any one id.
 
 6. **Choose the right special token encoding**: Use `encode_with_special()` only when your text actually contains special tokens. For regular text, `encode()` is faster.
 
