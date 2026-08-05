@@ -6,6 +6,22 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [0.13.0] - 2026-08-05
+
+### Added
+
+- `pre_tokenize` on `Tokenizer` and `AnyTokenizer` — the pre-tokenizer's pieces for a text.
+- `normalize` on `Tokenizer`, `SpmTokenizer`, `SentencePieceTokenizer` and `AnyTokenizer` — the text after normalization, before the model.
+- Python `decode_token_bytes` and `decode_token` on every tokenizer class.
+- The reference fixtures pin the pre-tokenizer split and the normalization stage alongside ids and decoded text. SentencePiece has no split, so `mistral`/`mistral_v2` pin normalization only.
+- The differential fuzzer runs in CI against the bundled OpenAI vocabularies.
+- A `Guarantees` section in the API guide, each entry citing the test that enforces it.
+
+### Fixed
+
+- The differential fuzzer compared `tiktoken`'s `encode_ordinary` against splintr's `encode` rather than its `encode_ordinary`, so one of its three modes checked the wrong pair.
+- `maturin develop --features pcre2` is documented with the `python` feature it also needs.
+
 ## [0.12.0] - 2026-08-04
 
 Breaking: `decode` drops declared special tokens by default on every bundled vocabulary; `Tokenize` gained required methods; `ByteLevelStreamingDecoder` and `StreamingDecoder::new` are gone; `decode_bytes` returns a `Result`; streaming `add_token`/`add_tokens` are strict.
