@@ -11,7 +11,7 @@
   10-12x faster than tiktoken on batches, and verified id-for-id against
   <code>tiktoken</code>, <code>tokenizers</code> and <code>sentencepiece</code>.
 </p>
- 
+
 <p>
   <a href="https://docs.rs/splintr"><strong>API Docs</strong></a>
   ·
