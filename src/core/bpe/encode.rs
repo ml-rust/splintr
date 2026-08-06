@@ -2,6 +2,7 @@ use rustc_hash::FxHashMap;
 
 use super::merge::{merge_and_collect, merge_and_collect_ids_into, SCAN_SYMBOL_LIMIT};
 use super::nodes::Node;
+use super::ranks::RankLookup;
 
 /// Perform byte-pair encoding on a piece of text using a linked-list approach.
 ///
@@ -40,7 +41,13 @@ pub fn byte_pair_encode_with_ranks(
     // and a `filter_map` whose size hint is not exact, so the output vector
     // grows by doubling.
     let mut out = Vec::new();
-    byte_pair_encode_ids_seeded_into(piece, merge_ranks, id_encoder, false, &mut out);
+    byte_pair_encode_ids_seeded_into(
+        piece,
+        RankLookup::new(merge_ranks),
+        id_encoder,
+        false,
+        &mut out,
+    );
     out
 }
 /// One output of the merge phase: either a resolved token, or a run of bytes
@@ -81,7 +88,7 @@ pub(crate) enum Piece {
 /// byte at a time, which is exactly HuggingFace's ByteFallback behavior.
 pub(crate) fn byte_pair_encode_pieces_seeded(
     piece: &[u8],
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    merge_ranks: RankLookup<'_>,
     id_encoder: &FxHashMap<Vec<u8>, u32>,
     char_granular: bool,
 ) -> Vec<Piece> {
@@ -128,7 +135,7 @@ pub(crate) fn byte_pair_encode_pieces_seeded(
 /// allocation is noise against the merge itself.
 pub(crate) fn byte_pair_encode_ids_seeded_into(
     piece: &[u8],
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    merge_ranks: RankLookup<'_>,
     id_encoder: &FxHashMap<Vec<u8>, u32>,
     char_granular: bool,
     out: &mut Vec<u32>,
@@ -249,7 +256,7 @@ pub(crate) struct Seed {
 pub(crate) fn byte_pair_encode_pieces_presegmented(
     piece: &[u8],
     seeds: &[Seed],
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    merge_ranks: RankLookup<'_>,
     id_encoder: &FxHashMap<Vec<u8>, u32>,
 ) -> Vec<Piece> {
     if seeds.is_empty() {

@@ -2,6 +2,8 @@ use super::*;
 use proptest::prelude::*;
 use rustc_hash::FxHashMap;
 
+use super::ranks::{BytePairRanks, RankLookup};
+
 /// `byte_pair_encode_ids_seeded_into` collected, so the property below can
 /// compare it against the piece-reporting form as a value.
 fn ids_seeded(
@@ -11,7 +13,13 @@ fn ids_seeded(
     char_granular: bool,
 ) -> Vec<u32> {
     let mut out = Vec::new();
-    byte_pair_encode_ids_seeded_into(piece, merge_ranks, id_encoder, char_granular, &mut out);
+    byte_pair_encode_ids_seeded_into(
+        piece,
+        RankLookup::new(merge_ranks),
+        id_encoder,
+        char_granular,
+        &mut out,
+    );
     out
 }
 
@@ -308,7 +316,10 @@ fn test_tiebreak_leftmost_wins_multibyte_chars() {
     let piece = "▁▁▁".as_bytes();
     assert_eq!(
         tokens_only(byte_pair_encode_pieces_seeded(
-            piece, &encoder, &encoder, true
+            piece,
+            RankLookup::new(&encoder),
+            &encoder,
+            true
         )),
         vec![1, 0]
     );
@@ -485,7 +496,7 @@ fn ac_only_encoder() -> FxHashMap<Vec<u8>, u32> {
 fn test_pieces_reports_unresolved_span() {
     let encoder = ac_only_encoder();
     assert_eq!(
-        byte_pair_encode_pieces_seeded(b"abc", &encoder, &encoder, false),
+        byte_pair_encode_pieces_seeded(b"abc", RankLookup::new(&encoder), &encoder, false),
         vec![
             Piece::Token(0),
             Piece::Unresolved { start: 1, len: 1 },
@@ -503,7 +514,7 @@ fn test_pieces_coalesce_consecutive_unresolved() {
     encoder.insert(b"a".to_vec(), 0);
     encoder.insert(b"d".to_vec(), 1);
     assert_eq!(
-        byte_pair_encode_pieces_seeded(b"abcd", &encoder, &encoder, false),
+        byte_pair_encode_pieces_seeded(b"abcd", RankLookup::new(&encoder), &encoder, false),
         vec![
             Piece::Token(0),
             Piece::Unresolved { start: 1, len: 2 },
@@ -517,7 +528,7 @@ fn test_pieces_unresolved_at_start_and_end() {
     let encoder = ac_only_encoder();
     // "bab" style: missing byte at the very start and the very end.
     assert_eq!(
-        byte_pair_encode_pieces_seeded(b"bab", &encoder, &encoder, false),
+        byte_pair_encode_pieces_seeded(b"bab", RankLookup::new(&encoder), &encoder, false),
         vec![
             Piece::Unresolved { start: 0, len: 1 },
             Piece::Token(0),
@@ -530,7 +541,8 @@ fn test_pieces_unresolved_at_start_and_end() {
 fn test_pieces_full_coverage_has_no_unresolved() {
     let encoder = prop_encoder();
     for piece in [&b""[..], b"a", b"abcd", b"aabbccdd", b"dcbadcba"] {
-        let pieces = byte_pair_encode_pieces_seeded(piece, &encoder, &encoder, false);
+        let pieces =
+            byte_pair_encode_pieces_seeded(piece, RankLookup::new(&encoder), &encoder, false);
         assert!(
             pieces.iter().all(|p| matches!(p, Piece::Token(_))),
             "piece {piece:?} produced {pieces:?}"
@@ -543,15 +555,15 @@ fn test_pieces_single_byte_and_empty_fast_paths() {
     let encoder = ac_only_encoder();
     let empty: Vec<Piece> = vec![];
     assert_eq!(
-        byte_pair_encode_pieces_seeded(b"", &encoder, &encoder, false),
+        byte_pair_encode_pieces_seeded(b"", RankLookup::new(&encoder), &encoder, false),
         empty
     );
     assert_eq!(
-        byte_pair_encode_pieces_seeded(b"a", &encoder, &encoder, false),
+        byte_pair_encode_pieces_seeded(b"a", RankLookup::new(&encoder), &encoder, false),
         vec![Piece::Token(0)]
     );
     assert_eq!(
-        byte_pair_encode_pieces_seeded(b"b", &encoder, &encoder, false),
+        byte_pair_encode_pieces_seeded(b"b", RankLookup::new(&encoder), &encoder, false),
         vec![Piece::Unresolved { start: 0, len: 1 }]
     );
 }
@@ -606,7 +618,7 @@ proptest! {
         piece in prop::collection::vec(any::<u8>(), 0..200)
     ) {
         let encoder = prop_encoder();
-        let tokens_only: Vec<u32> = byte_pair_encode_pieces_seeded(&piece, &encoder, &encoder, false)
+        let tokens_only: Vec<u32> = byte_pair_encode_pieces_seeded(&piece, RankLookup::new(&encoder), &encoder, false)
             .into_iter()
             .filter_map(|p| match p {
                 Piece::Token(id) => Some(id),
@@ -631,9 +643,31 @@ proptest! {
         let text: String = chars.into_iter().collect();
         let piece = text.as_bytes();
         prop_assert_eq!(
-            tokens_only(byte_pair_encode_pieces_seeded(piece, &merge_ranks, &id_encoder, true)),
+            tokens_only(byte_pair_encode_pieces_seeded(piece, RankLookup::new(&merge_ranks), &id_encoder, true)),
             byte_pair_encode_reference_seeded(piece, &merge_ranks, &id_encoder, true)
         );
+    }
+
+    /// The two-byte index must answer exactly what the map answers.
+    ///
+    /// It fronts the map for a subset of keys, so it is only safe if it is
+    /// indistinguishable from it — including the cases where the two could
+    /// plausibly disagree: a two-byte key absent from the map, and a two-byte
+    /// key the vocabulary maps to the `u32::MAX` sentinel, which the map path
+    /// reports as unmergeable and the table stores as its own "absent" marker.
+    #[test]
+    fn prop_byte_pair_table_agrees_with_the_map(
+        entries in prop::collection::vec(
+            (prop::collection::vec(any::<u8>(), 1..5), any::<u32>()), 0..40),
+        probes in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..5), 1..40)
+    ) {
+        let map: FxHashMap<Vec<u8>, u32> = entries.into_iter().collect();
+        let pairs = BytePairRanks::build(&map);
+        let plain = RankLookup::new(&map);
+        let fronted = RankLookup::with_pairs(&map, &pairs);
+        for probe in &probes {
+            prop_assert_eq!(fronted.get(probe), plain.get(probe), "diverged on {:?}", probe);
+        }
     }
 
     /// The id-only entry point must equal the piece-reporting one filtered
@@ -653,8 +687,7 @@ proptest! {
         let (merge_ranks, id_encoder) = prop_two_maps();
         prop_assert_eq!(
             ids_seeded(&piece, &merge_ranks, &id_encoder, char_granular),
-            tokens_only(byte_pair_encode_pieces_seeded(
-                &piece, &merge_ranks, &id_encoder, char_granular
+            tokens_only(byte_pair_encode_pieces_seeded(&piece, RankLookup::new(&merge_ranks), &id_encoder, char_granular
             ))
         );
     }

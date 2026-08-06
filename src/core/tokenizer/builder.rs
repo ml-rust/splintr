@@ -3,6 +3,7 @@ use super::cache::ChunkCache;
 use super::error::TokenizerError;
 use super::types::{ByteFallback, Tokenizer};
 use crate::core::added::{AddedTokenSet, AddedTokens};
+use crate::core::bpe::BytePairRanks;
 use crate::core::vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file};
 use regexr::RegexBuilder;
 use rustc_hash::FxHashMap;
@@ -218,10 +219,13 @@ impl Tokenizer {
             .collect();
 
         let chunk_cache = ChunkCache::new(cache_size);
+        // Ranks come from the encoder until `with_merge_ranks` replaces the source.
+        let byte_pair_ranks = Arc::new(BytePairRanks::build(&encoder));
 
         Ok(Self {
             encoder,
             merge_ranks: None,
+            byte_pair_ranks,
             decoder: Arc::new(decoder),
             special_tokens,
             special_tokens_decoder: Arc::new(special_tokens_decoder),
@@ -249,6 +253,10 @@ impl Tokenizer {
     /// by this order rather than by token id. Use for HuggingFace BPE models
     /// whose ids don't follow merge order (e.g. RoBERTa).
     pub fn with_merge_ranks(mut self, merge_ranks: FxHashMap<Vec<u8>, u32>) -> Self {
+        // The rank source just changed, so the two-byte index derived from it
+        // has to be rebuilt — leaving the encoder-derived one in place would
+        // answer with the wrong ranks.
+        self.byte_pair_ranks = Arc::new(BytePairRanks::build(&merge_ranks));
         self.merge_ranks = Some(merge_ranks);
         self
     }
@@ -468,10 +476,13 @@ impl Tokenizer {
             .collect();
 
         let chunk_cache = ChunkCache::new(DEFAULT_CACHE_SIZE);
+        // Ranks come from the encoder until `with_merge_ranks` replaces the source.
+        let byte_pair_ranks = Arc::new(BytePairRanks::build(&encoder));
 
         Ok(Self {
             encoder,
             merge_ranks: None,
+            byte_pair_ranks,
             decoder: Arc::new(decoder),
             special_tokens,
             special_tokens_decoder: Arc::new(special_tokens_decoder),

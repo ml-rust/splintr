@@ -1,5 +1,6 @@
 use super::cache::ChunkCache;
 use crate::core::added::AddedTokens;
+use crate::core::bpe::BytePairRanks;
 use crate::core::policy::{PolicyError, SpecialDecode, SpecialMode};
 use crate::core::streaming::StreamingDecoder;
 use crate::core::tokenize::{token_bytes_of, token_text_of, Tokenize, TokenizeError};
@@ -158,6 +159,10 @@ pub struct Tokenizer {
     /// BPE models whose ids don't follow merge order (e.g. RoBERTa). `None`
     /// means tiktoken-style (id doubles as merge rank).
     pub(super) merge_ranks: Option<FxHashMap<Vec<u8>, u32>>,
+    /// Two-byte merge ranks of whichever map [`Tokenizer::bpe_into`] reads
+    /// ranks from, indexed directly rather than hashed. Shared on clone: it is
+    /// derived state, 256 KB of it, and never mutated after construction.
+    pub(super) byte_pair_ranks: Arc<BytePairRanks>,
     /// Behind an `Arc` so a clone — and every
     /// [`StreamingDecoder`](crate::StreamingDecoder) built from this tokenizer —
     /// shares the id→bytes table instead of copying a vocabulary-sized map.
@@ -244,6 +249,7 @@ impl Clone for Tokenizer {
         Self {
             encoder: self.encoder.clone(),
             merge_ranks: self.merge_ranks.clone(),
+            byte_pair_ranks: Arc::clone(&self.byte_pair_ranks),
             // Immutable once built, so the clone shares the table rather than
             // duplicating it (the same reasoning as the compiled regex above).
             decoder: Arc::clone(&self.decoder),

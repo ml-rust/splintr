@@ -3,6 +3,7 @@ use std::collections::BinaryHeap;
 
 use super::encode::{Piece, Seed};
 use super::nodes::{Merge, Node};
+use super::ranks::RankLookup;
 
 /// Symbol count at or below which merges are selected by scanning a
 /// stack-resident rank table instead of a heap.
@@ -29,24 +30,23 @@ pub(super) const SCAN_SYMBOL_LIMIT: usize = 64;
 /// Merge rank of the pair `(left, right)`, or `u32::MAX` when the vocabulary
 /// cannot merge it.
 ///
-/// `u32::MAX` doubles as the "unmergeable" sentinel, so a vocabulary that maps
-/// a token to it is treated as unmergeable too. Both selection strategies go
-/// through here, which is what keeps them bit-exact with each other.
+/// Both selection strategies go through here, which is what keeps them
+/// bit-exact with each other. The `u32::MAX` sentinel and its handling live in
+/// [`RankLookup::get`].
 #[inline]
 fn rank_of(
     piece: &[u8],
     nodes: &[Node],
     left: usize,
     right: usize,
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    merge_ranks: RankLookup<'_>,
 ) -> u32 {
     if left == usize::MAX || right == usize::MAX {
         return u32::MAX;
     }
     let (l, r) = (&nodes[left], &nodes[right]);
     let len = l.len + r.len;
-    let slice = &piece[l.start..l.start + len];
-    merge_ranks.get(slice).copied().unwrap_or(u32::MAX)
+    merge_ranks.get(&piece[l.start..l.start + len])
 }
 
 /// Absorb `right` into `left` and unlink it, returning the node that follows.
@@ -71,7 +71,7 @@ fn absorb(nodes: &mut [Node], left: usize, right: usize) -> usize {
 /// assigned in list order and never reassigned, an absorbed node is tombstoned
 /// to `u32::MAX`, and so the lowest-ranked live index is exactly the leftmost
 /// lowest-ranked pair in the list — the tie-break tiktoken requires.
-fn merge_by_scan(piece: &[u8], nodes: &mut [Node], merge_ranks: &FxHashMap<Vec<u8>, u32>) -> usize {
+fn merge_by_scan(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) -> usize {
     let count = nodes.len();
     let mut ranks = [u32::MAX; SCAN_SYMBOL_LIMIT];
     for (i, rank) in ranks.iter_mut().enumerate().take(count.saturating_sub(1)) {
@@ -113,7 +113,7 @@ fn merge_by_scan(piece: &[u8], nodes: &mut [Node], merge_ranks: &FxHashMap<Vec<u
 /// Superseded entries are left in the heap and discarded on pop, so no entry
 /// ever has to be found and removed. Each merge pushes at most two new
 /// candidates, so the heap holds O(N) entries over the whole run.
-fn merge_by_heap(piece: &[u8], nodes: &mut [Node], merge_ranks: &FxHashMap<Vec<u8>, u32>) -> usize {
+fn merge_by_heap(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) -> usize {
     let count = nodes.len();
 
     // Queue a pair as a merge candidate, if the vocabulary can merge it. A pair
@@ -171,11 +171,7 @@ fn merge_by_heap(piece: &[u8], nodes: &mut [Node], merge_ranks: &FxHashMap<Vec<u
 /// many nodes are still live.
 ///
 /// `nodes` arrives with `start`/`len` set and `prev`/`next` ignored.
-fn link_and_merge(
-    piece: &[u8],
-    nodes: &mut [Node],
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
-) -> usize {
+fn link_and_merge(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) -> usize {
     let count = nodes.len();
     for (i, node) in nodes.iter_mut().enumerate() {
         node.prev = if i == 0 { usize::MAX } else { i - 1 };
@@ -221,7 +217,7 @@ fn resolve(
 pub(super) fn merge_and_collect(
     piece: &[u8],
     mut nodes: Vec<Node>,
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    merge_ranks: RankLookup<'_>,
     id_encoder: &FxHashMap<Vec<u8>, u32>,
     seeds: Option<&[Seed]>,
 ) -> Vec<Piece> {
@@ -313,7 +309,7 @@ pub(super) fn merge_and_collect(
 pub(super) fn merge_and_collect_ids_into(
     piece: &[u8],
     nodes: &mut [Node],
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
+    merge_ranks: RankLookup<'_>,
     id_encoder: &FxHashMap<Vec<u8>, u32>,
     out: &mut Vec<u32>,
 ) {

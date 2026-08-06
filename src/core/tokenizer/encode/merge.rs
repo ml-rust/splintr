@@ -1,11 +1,23 @@
 use super::super::types::{ByteFallback, Tokenizer};
 use crate::core::bpe::{
     byte_pair_encode_ids_seeded_into, byte_pair_encode_pieces_presegmented,
-    byte_pair_encode_pieces_seeded, Piece, Seed,
+    byte_pair_encode_pieces_seeded, Piece, RankLookup, Seed,
 };
 use crate::core::precompiled::utf8_len;
 
 impl Tokenizer {
+    /// Where the merge loop reads ranks from.
+    ///
+    /// A model's own `merges` list when it has one, the encoder otherwise
+    /// (tiktoken-style vocabularies, where a token's id *is* its rank), fronted
+    /// by the two-byte index built from whichever of the two that was.
+    #[inline]
+    fn rank_lookup(&self) -> RankLookup<'_> {
+        RankLookup::with_pairs(
+            self.merge_ranks.as_ref().unwrap_or(&self.encoder),
+            &self.byte_pair_ranks,
+        )
+    }
     /// Run BPE on a piece, honoring a separate merge-rank map when present,
     /// and rendering any span the vocabulary could not represent through the
     /// [`ByteFallback`](super::types::ByteFallback) resolution when one is
@@ -52,7 +64,7 @@ impl Tokenizer {
         //   entirely ≤2 UTF-8 bytes and therefore unaffected by the ≥3-byte
         //   stranding character seeding exists to fix.
         let char_granular = self.merge_ranks.is_some() && !self.use_byte_level;
-        let ranks = self.merge_ranks.as_ref().unwrap_or(&self.encoder);
+        let ranks = self.rank_lookup();
 
         let Some(fallback) = fallback else {
             // No fallback configured: an unrepresentable span is dropped,
@@ -183,7 +195,10 @@ impl Tokenizer {
     /// resolve. The caller then keeps the resolve-after-merge path, which is
     /// this method's answer too in all of those cases.
     fn bpe_fallback_first(&self, bytes: &[u8], fallback: &ByteFallback) -> Option<Vec<u32>> {
-        let ranks = self.merge_ranks.as_ref()?;
+        // Presence of a merge list is what makes this path meaningful at all;
+        // the lookup itself then reads through the same source `bpe_into` uses.
+        self.merge_ranks.as_ref()?;
+        let ranks = self.rank_lookup();
         let text = std::str::from_utf8(bytes).ok()?;
 
         // The rewritten buffer: input characters the vocabulary has, and the
