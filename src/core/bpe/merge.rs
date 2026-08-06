@@ -74,8 +74,8 @@ fn absorb(nodes: &mut [Node], left: usize, right: usize) -> usize {
 fn merge_by_scan(piece: &[u8], nodes: &mut [Node], merge_ranks: &FxHashMap<Vec<u8>, u32>) -> usize {
     let count = nodes.len();
     let mut ranks = [u32::MAX; SCAN_SYMBOL_LIMIT];
-    for i in 0..count.saturating_sub(1) {
-        ranks[i] = rank_of(piece, nodes, i, i + 1, merge_ranks);
+    for (i, rank) in ranks.iter_mut().enumerate().take(count.saturating_sub(1)) {
+        *rank = rank_of(piece, nodes, i, i + 1, merge_ranks);
     }
 
     let mut live = count;

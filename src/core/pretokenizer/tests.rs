@@ -3,7 +3,7 @@ use super::pipeline::PreTokenizer;
 use super::spec::{Behavior, PreTokStage, SplitBehavior, SplitPattern};
 use super::split::{split_digits, split_punctuation, split_regex};
 use regexr::RegexBuilder;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 /// Run a splitter and collect its borrowed pieces as owned strings, so the
 /// assertions below can keep comparing against `vec!["a", "b"]` literals.
