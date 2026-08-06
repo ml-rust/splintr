@@ -8,12 +8,12 @@
 //! When a `ByteLevel` stage is present the pieces come out byte-level-encoded
 //! (each byte mapped to a printable code point), ready for BPE against a
 //! byte-level vocab — so the consumer must NOT byte-level-encode again.
-
 //!
-//! The pipeline is split by role: [`spec`] is the public description a caller
-//! builds, [`stage`] is its compiled counterpart, [`split`] holds the splitters
-//! every stage is made of, [`pipeline`] runs them in order, and [`parse`] reads
-//! a HuggingFace `pre_tokenizer` JSON node into a spec.
+//! The pipeline is split by role: `spec` is the public description a caller
+//! builds, `stage` is its compiled counterpart, `split` holds the splitters
+//! every stage is made of, `pipeline` runs them in order, and `parse` reads
+//! a HuggingFace `pre_tokenizer` JSON node into a spec. Those modules are
+//! private, so they are named here rather than linked.
 
 mod parse;
 mod pipeline;

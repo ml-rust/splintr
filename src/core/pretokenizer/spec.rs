@@ -49,7 +49,8 @@ pub enum SplitPattern {
 }
 
 /// One pre-tokenizer stage as a *description*: regexes are given as patterns and
-/// compiled by [`PreTokenizer::new`], so a caller never has to name a regex type.
+/// compiled by [`PreTokenizer::new`](super::PreTokenizer::new), so a caller
+/// never has to name a regex type.
 ///
 /// `#[non_exhaustive]`: this enum tracks HuggingFace's pre-tokenizer spec and
 /// grows as new pre-tokenizer types are added there, so adding a variant must
@@ -83,8 +84,8 @@ pub enum PreTokStage {
 }
 
 /// The compiled counterpart of [`SplitBehavior`], produced by
-/// [`PreTokenizer::new`] and stored in a [`Stage`] so `apply` never has to
-/// convert on the hot path.
+/// [`PreTokenizer::new`](super::PreTokenizer::new) and stored in the private
+/// `Stage` so `apply` never has to convert on the hot path.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum Behavior {
     /// Delimiter becomes its own piece.
