@@ -15,7 +15,9 @@ categories = ["text-processing", "encoding"]
 # fails to compile on the consumer's machine. `tests/` and `examples/` are
 # carried too (184 KB against a 15 MB payload) so a vendored copy stays
 # verifiable. The Python packaging tree, benchmarks, scripts and docs are not
-# the crate's business and stay out.
+# the crate's business and stay out. `benches/` is the exception among those: it
+# is declared as a `[[bench]]` target below, so a package without it fails to
+# verify.
 # Paths are anchored with a leading `/`: these are gitignore-style globs, so a
 # bare `README.md` matches that name at ANY depth and would drag in a vendored
 # third party's README and LICENSE from `research/`.
@@ -23,6 +25,7 @@ include = [
     "/src/**/*.rs",
     "/tests/**/*.rs",
     "/examples/**/*.rs",
+    "/benches/**/*.rs",
     "/vocabs/*.tiktoken",
     "/vocabs/*.spm",
     "/Cargo.toml",
@@ -80,6 +83,14 @@ serde_json = "1.0"
 # Property-based testing: the BPE merge loop is checked against a slow,
 # obviously-correct reference implementation over generated inputs.
 proptest = "1"
+# Encode-path benchmarks. `tests/encode_cost.rs` guards the shapes a
+# performance regression takes; `benches/encode.rs` measures the constants it
+# deliberately does not.
+fluxbench = "0.1"
+
+[[bench]]
+name = "encode"
+harness = false
 
 [profile.release]
 opt-level = 3
