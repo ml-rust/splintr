@@ -1,6 +1,7 @@
 mod agent_tokens;
 mod backend;
 mod builder;
+mod cache;
 mod decode;
 mod encode;
 mod error;

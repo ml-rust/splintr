@@ -1,14 +1,12 @@
 use super::backend::{compile_pattern, RegexBackend};
+use super::cache::ChunkCache;
 use super::error::TokenizerError;
 use super::types::{ByteFallback, Tokenizer};
 use crate::core::added::{AddedTokenSet, AddedTokens};
 use crate::core::vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file};
-use lru::LruCache;
 use regexr::RegexBuilder;
-use rustc_hash::{FxHashMap, FxHasher};
-use std::hash::BuildHasherDefault;
-use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 /// Default cache size for encoded chunks
 const DEFAULT_CACHE_SIZE: usize = 4096;
@@ -219,13 +217,7 @@ impl Tokenizer {
             .map(|(k, v)| (*v, k.clone()))
             .collect();
 
-        // Initialize LRU cache
-        // `.max(1)` already guarantees a nonzero value; the fallback is unreachable.
-        let cache_size_nz = NonZeroUsize::new(cache_size.max(1)).unwrap_or(NonZeroUsize::MIN);
-        let chunk_cache = Mutex::new(LruCache::with_hasher(
-            cache_size_nz,
-            BuildHasherDefault::<FxHasher>::default(),
-        ));
+        let chunk_cache = ChunkCache::new(cache_size);
 
         Ok(Self {
             encoder,
@@ -475,14 +467,7 @@ impl Tokenizer {
             .map(|(k, v)| (*v, k.clone()))
             .collect();
 
-        // Initialize LRU cache
-        // `.max(1)` already guarantees a nonzero value; the fallback is unreachable.
-        let cache_size_nz =
-            NonZeroUsize::new(DEFAULT_CACHE_SIZE.max(1)).unwrap_or(NonZeroUsize::MIN);
-        let chunk_cache = Mutex::new(LruCache::with_hasher(
-            cache_size_nz,
-            BuildHasherDefault::<FxHasher>::default(),
-        ));
+        let chunk_cache = ChunkCache::new(DEFAULT_CACHE_SIZE);
 
         Ok(Self {
             encoder,

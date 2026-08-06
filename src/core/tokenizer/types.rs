@@ -1,12 +1,10 @@
+use super::cache::ChunkCache;
 use crate::core::added::AddedTokens;
 use crate::core::policy::{PolicyError, SpecialDecode, SpecialMode};
 use crate::core::streaming::StreamingDecoder;
 use crate::core::tokenize::{token_bytes_of, token_text_of, Tokenize, TokenizeError};
-use lru::LruCache;
-use rustc_hash::{FxHashMap, FxHasher};
-use std::hash::BuildHasherDefault;
-use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 use super::backend::RegexBackend;
 use super::error::TokenizerError;
@@ -19,7 +17,7 @@ use super::error::TokenizerError;
 /// a single `model.unk_token` id. Either half may be missing — a vocabulary
 /// with only some `<0xNN>` entries is a valid file, not a malformed one — so
 /// both are optional here and a character neither half can render is dropped,
-/// which is `byte_pair_encode_pieces`' behavior without any fallback at all.
+/// which is `byte_pair_encode_pieces_seeded`' behavior without any fallback at all.
 ///
 /// An entirely empty `byte_ids` with a `Some(unk_id)` is the ordinary shape for
 /// a `tokenizer.json` that declares `model.unk_token` without
@@ -194,7 +192,7 @@ pub struct Tokenizer {
     /// hashes AND compares the key, making a wrong-chunk hit structurally
     /// impossible. FxHash stays as the hasher for throughput on this hot
     /// path; only the key type changed.
-    pub(super) chunk_cache: Mutex<LruCache<Vec<u8>, Vec<u32>, BuildHasherDefault<FxHasher>>>,
+    pub(super) chunk_cache: ChunkCache,
     pub(super) use_byte_level: bool,
     /// BPE with a metaspace (▁) decoder — see [`Tokenizer::new_with_metaspace_decoder`].
     /// This is NOT SentencePiece (Unigram/Viterbi); for that use
@@ -235,13 +233,7 @@ impl Clone for Tokenizer {
         let regex = Arc::clone(&self.regex);
 
         // Create a new empty cache (caches are not shared).
-        // `.max(1)` guarantees the value is already >= 1, so `new` cannot
-        // fail; `unwrap_or` avoids an unwrap on the (unreachable) None arm.
-        let cache_size_nz = NonZeroUsize::new(self.cache_size.max(1)).unwrap_or(NonZeroUsize::MIN);
-        let chunk_cache = Mutex::new(LruCache::with_hasher(
-            cache_size_nz,
-            BuildHasherDefault::<FxHasher>::default(),
-        ));
+        let chunk_cache = ChunkCache::new(self.cache_size);
 
         // Clone the already-built matcher directly: `AddedTokens` is `Clone`,
         // rebuilding here would mean this infallible `Clone` impl would need to
@@ -407,14 +399,12 @@ impl Tokenizer {
 
     /// Clear the encoding cache.
     pub fn clear_cache(&self) {
-        if let Ok(mut cache) = self.chunk_cache.lock() {
-            cache.clear();
-        }
+        self.chunk_cache.clear();
     }
 
     /// Get the current cache size.
     pub fn cache_len(&self) -> usize {
-        self.chunk_cache.lock().map(|c| c.len()).unwrap_or(0)
+        self.chunk_cache.len()
     }
 
     /// Whether this tokenizer has a [`ByteFallback`] configured, so a piece the

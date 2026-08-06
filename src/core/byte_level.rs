@@ -107,7 +107,19 @@ static CHAR_TO_BYTE: LazyLock<FxHashMap<char, u8>> = LazyLock::new(|| {
 /// ```
 #[inline]
 pub fn byte_level_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|&b| BYTE_TO_CHAR[b as usize]).collect()
+    // Reserve for the worst case up front instead of collecting straight from
+    // the iterator. `collect::<String>()` reserves the iterator's length hint —
+    // one BYTE per element — but every alphabet character from U+0080 up is two
+    // bytes in UTF-8, so a chunk of mostly-high bytes reallocates its way to
+    // twice the reserved size. That put a growing number of allocations on
+    // every ByteLevel chunk, which is every chunk of every GPT-2-style
+    // vocabulary.
+    //
+    // `2 * len` is exact, not a guess: the alphabet is U+0021..=U+017F, whose
+    // members are one or two UTF-8 bytes and never more.
+    let mut out = String::with_capacity(bytes.len() * 2);
+    out.extend(bytes.iter().map(|&b| BYTE_TO_CHAR[b as usize]));
+    out
 }
 
 /// Decode a ByteLevel-encoded string back to raw bytes.
