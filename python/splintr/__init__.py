@@ -180,4 +180,4 @@ __all__ = [
     "MISTRAL_V2_AGENT_TOKENS",
     "MISTRAL_V3_AGENT_TOKENS",
 ]
-__version__ = "0.13.0"
+__version__ = "0.14.0"

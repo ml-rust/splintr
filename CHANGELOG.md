@@ -6,6 +6,25 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [0.14.0] - 2026-08-06
+
+Short-chunk encoding regressed 20–38% in `0.12.0` and is now faster than `0.11.0`; `encode_batch` scales with its cores instead of serializing on one lock.
+
+### Fixed
+
+- Merge selection scans below 64 symbols and uses the heap above, instead of always heaping — `0.12.0` optimized an asymptote that pre-tokenized chunks never reach.
+- `encode_batch` serialized every worker on a single chunk-cache mutex; the cache is now sharded.
+- `byte_level_encode` under-reserved, reallocating on every ByteLevel chunk.
+- A chunk's ids were built into a fresh vector and copied; they now write through to one buffer, with the merge's node list on the stack for short pieces.
+- The pre-tokenizer copied the input to seed its pipeline and again per piece; splitting stages now yield subslices.
+- Two-byte merge ranks come from a direct-indexed table rather than a hash lookup — about a third of all rank lookups.
+
+### Added
+
+- `NO_SPLIT_PATTERN`, what a `tokenizer.json` with `pre_tokenizer: null` loads as.
+- `tests/encode_cost.rs` — allocation-flat merging, sub-quadratic unsplit pieces, real batch parallelism.
+- `benches/encode.rs`, a `fluxbench` suite over short chunks, cached chunks, unsplit pieces and batch scaling.
+
 ## [0.13.0] - 2026-08-05
 
 ### Added

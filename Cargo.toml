@@ -1,6 +1,6 @@
 [package]
 name = "splintr"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 description = "Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings"
 license = "MIT"
