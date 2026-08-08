@@ -216,7 +216,7 @@ impl SentencePieceTokenizer {
         if self.normalizer.is_empty() {
             text.to_string()
         } else {
-            self.normalizer.normalize(text)
+            self.normalizer.normalize(text).into_owned()
         }
     }
 

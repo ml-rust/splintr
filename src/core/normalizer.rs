@@ -7,8 +7,11 @@
 //! order so nothing is silently dropped or reordered.
 
 use regexr::RegexBuilder;
+use std::borrow::Cow;
 use unicode_general_category::{get_general_category, GeneralCategory};
-use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::{
+    is_nfc_quick, is_nfd_quick, is_nfkc_quick, is_nfkd_quick, IsNormalized, UnicodeNormalization,
+};
 
 use super::precompiled::Precompiled;
 
@@ -47,46 +50,98 @@ pub enum NormOp {
 }
 
 impl NormOp {
-    fn apply(&self, s: String) -> String {
+    /// Apply this step, borrowing through when it leaves the text unchanged.
+    ///
+    /// Every arm that can answer "nothing to do" cheaply does so before
+    /// allocating. The normalization forms use the crate's quick checks, which
+    /// answer `Yes` outright for ASCII and for the already-normalized text that
+    /// makes up nearly all real input; the rest test for the one thing they
+    /// would change.
+    fn apply<'a>(&self, s: Cow<'a, str>) -> Cow<'a, str> {
         match self {
-            NormOp::Nfc => s.nfc().collect(),
-            NormOp::Nfd => s.nfd().collect(),
-            NormOp::Nfkc => s.nfkc().collect(),
-            NormOp::Nfkd => s.nfkd().collect(),
-            NormOp::Lowercase => s.to_lowercase(),
+            NormOp::Nfc => match is_nfc_quick(s.chars()) {
+                IsNormalized::Yes => s,
+                _ => Cow::Owned(s.nfc().collect()),
+            },
+            NormOp::Nfd => match is_nfd_quick(s.chars()) {
+                IsNormalized::Yes => s,
+                _ => Cow::Owned(s.nfd().collect()),
+            },
+            NormOp::Nfkc => match is_nfkc_quick(s.chars()) {
+                IsNormalized::Yes => s,
+                _ => Cow::Owned(s.nfkc().collect()),
+            },
+            NormOp::Nfkd => match is_nfkd_quick(s.chars()) {
+                IsNormalized::Yes => s,
+                _ => Cow::Owned(s.nfkd().collect()),
+            },
+            NormOp::Lowercase => match s.chars().any(char::is_uppercase) {
+                true => Cow::Owned(s.to_lowercase()),
+                false => s,
+            },
             // Matches HuggingFace's `StripAccents`: drop only Nonspacing_Mark (Mn)
             // characters. Decomposition (NFD/NFKD) is a separate, preceding op in
             // the sequence. Filtering all combining marks would corrupt spacing
             // marks (Mc) used by scripts like Devanagari/Thai.
-            NormOp::StripAccents => s
-                .chars()
-                .filter(|c| get_general_category(*c) != GeneralCategory::NonspacingMark)
-                .collect(),
-            NormOp::ReplaceStr { from, to } => {
-                if from.is_empty() {
-                    s
-                } else {
-                    s.replace(from.as_str(), to)
+            NormOp::StripAccents => {
+                let has_mark = s
+                    .chars()
+                    .any(|c| get_general_category(c) == GeneralCategory::NonspacingMark);
+                match has_mark {
+                    true => Cow::Owned(
+                        s.chars()
+                            .filter(|c| get_general_category(*c) != GeneralCategory::NonspacingMark)
+                            .collect(),
+                    ),
+                    false => s,
                 }
             }
-            NormOp::ReplaceRegex { re, to } => re.replace_all(&s, to).into_owned(),
+            NormOp::ReplaceStr { from, to } => {
+                if from.is_empty() || !s.contains(from.as_str()) {
+                    s
+                } else {
+                    Cow::Owned(s.replace(from.as_str(), to))
+                }
+            }
+            NormOp::ReplaceRegex { re, to } => match re.replace_all(&s, to) {
+                Cow::Borrowed(_) => s,
+                Cow::Owned(out) => Cow::Owned(out),
+            },
             NormOp::Prepend(p) => {
                 let mut out = p.clone();
                 out.push_str(&s);
-                out
+                Cow::Owned(out)
             }
             NormOp::Strip { left, right } => {
-                let mut t = s.as_str();
+                let mut t = s.as_ref();
                 if *left {
                     t = t.trim_start();
                 }
                 if *right {
                     t = t.trim_end();
                 }
-                t.to_string()
+                if t.len() == s.len() {
+                    s
+                } else {
+                    Cow::Owned(t.to_string())
+                }
             }
-            NormOp::Nmt => nmt(&s),
-            NormOp::Precompiled(pc) => pc.normalize(&s),
+            NormOp::Nmt => {
+                let out = nmt(&s);
+                if out == s.as_ref() {
+                    s
+                } else {
+                    Cow::Owned(out)
+                }
+            }
+            NormOp::Precompiled(pc) => {
+                let out = pc.normalize(&s);
+                if out == s.as_ref() {
+                    s
+                } else {
+                    Cow::Owned(out)
+                }
+            }
         }
     }
 
@@ -120,8 +175,15 @@ impl Normalizer {
     }
 
     /// Apply every step in order.
-    pub fn normalize(&self, text: &str) -> String {
-        let mut s = text.to_string();
+    ///
+    /// Borrows straight through when nothing changes. That is the common case
+    /// and it used to cost a full copy of the input regardless: a `tokenizer.json`
+    /// declaring `NFC` — Qwen's does, most HuggingFace files do — paid one
+    /// allocation plus a whole normalization pass on every encode, even though
+    /// text that is already NFC (all ASCII, and nearly all real input) comes out
+    /// byte-identical.
+    pub fn normalize<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        let mut s = Cow::Borrowed(text);
         for op in &self.ops {
             s = op.apply(s);
         }
@@ -160,25 +222,40 @@ mod tests {
     fn nfc_and_nfd_roundtrip() {
         // "é" as base 'e' + combining acute (U+0301).
         let decomposed = "e\u{0301}";
-        assert_eq!(NormOp::Nfc.apply(decomposed.to_string()), "é");
-        assert_eq!(NormOp::Nfd.apply("é".to_string()), decomposed);
+        assert_eq!(
+            NormOp::Nfc.apply(std::borrow::Cow::Owned(decomposed.to_string())),
+            "é"
+        );
+        assert_eq!(
+            NormOp::Nfd.apply(std::borrow::Cow::Owned("é".to_string())),
+            decomposed
+        );
     }
 
     #[test]
     fn nfkc_folds_compatibility_chars() {
         // U+FB01 LATIN SMALL LIGATURE FI -> "fi".
-        assert_eq!(NormOp::Nfkc.apply("\u{FB01}".to_string()), "fi");
+        assert_eq!(
+            NormOp::Nfkc.apply(std::borrow::Cow::Owned("\u{FB01}".to_string())),
+            "fi"
+        );
     }
 
     #[test]
     fn lowercase_lowercases() {
-        assert_eq!(NormOp::Lowercase.apply("HeLLo".to_string()), "hello");
+        assert_eq!(
+            NormOp::Lowercase.apply(std::borrow::Cow::Owned("HeLLo".to_string())),
+            "hello"
+        );
     }
 
     #[test]
     fn strip_accents_drops_nonspacing_marks() {
         // 'a' + combining macron (U+0304, Mn) -> the mark is removed.
-        assert_eq!(NormOp::StripAccents.apply("a\u{0304}".to_string()), "a");
+        assert_eq!(
+            NormOp::StripAccents.apply(std::borrow::Cow::Owned("a\u{0304}".to_string())),
+            "a"
+        );
     }
 
     #[test]
@@ -186,7 +263,10 @@ mod tests {
         // Devanagari "की": KA (U+0915) + vowel sign II (U+0940, a spacing Mc mark)
         // must be preserved, unlike a blanket combining-mark filter.
         let s = "\u{0915}\u{0940}";
-        assert_eq!(NormOp::StripAccents.apply(s.to_string()), s);
+        assert_eq!(
+            NormOp::StripAccents.apply(std::borrow::Cow::Owned(s.to_string())),
+            s
+        );
     }
 
     #[test]
@@ -195,25 +275,31 @@ mod tests {
             from: " ".to_string(),
             to: "_".to_string(),
         };
-        assert_eq!(op.apply("a b c".to_string()), "a_b_c");
+        assert_eq!(
+            op.apply(std::borrow::Cow::Owned("a b c".to_string())),
+            "a_b_c"
+        );
         // Empty `from` is a no-op (avoids infinite/unexpected expansion).
         let empty = NormOp::ReplaceStr {
             from: String::new(),
             to: "x".to_string(),
         };
-        assert_eq!(empty.apply("ab".to_string()), "ab");
+        assert_eq!(empty.apply(std::borrow::Cow::Owned("ab".to_string())), "ab");
     }
 
     #[test]
     fn replace_regex_compiles_and_applies() {
         let op = NormOp::replace_regex(r"\s+", "_".to_string()).expect("regex builds");
-        assert_eq!(op.apply("a   b".to_string()), "a_b");
+        assert_eq!(
+            op.apply(std::borrow::Cow::Owned("a   b".to_string())),
+            "a_b"
+        );
     }
 
     #[test]
     fn prepend_prefixes() {
         assert_eq!(
-            NormOp::Prepend("▁".to_string()).apply("hi".to_string()),
+            NormOp::Prepend("▁".to_string()).apply(std::borrow::Cow::Owned("hi".to_string())),
             "▁hi"
         );
     }
@@ -224,12 +310,18 @@ mod tests {
             left: true,
             right: true,
         };
-        assert_eq!(both.apply("  hi  ".to_string()), "hi");
+        assert_eq!(
+            both.apply(std::borrow::Cow::Owned("  hi  ".to_string())),
+            "hi"
+        );
         let left_only = NormOp::Strip {
             left: true,
             right: false,
         };
-        assert_eq!(left_only.apply("  hi  ".to_string()), "hi  ");
+        assert_eq!(
+            left_only.apply(std::borrow::Cow::Owned("  hi  ".to_string())),
+            "hi  "
+        );
     }
 
     #[test]

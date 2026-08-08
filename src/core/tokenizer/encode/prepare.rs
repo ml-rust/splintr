@@ -41,7 +41,7 @@ impl Tokenizer {
     #[inline]
     pub(super) fn normalized<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
         match &self.normalizer {
-            Some(norm) => std::borrow::Cow::Owned(norm.normalize(text)),
+            Some(norm) => norm.normalize(text),
             None => std::borrow::Cow::Borrowed(text),
         }
     }
