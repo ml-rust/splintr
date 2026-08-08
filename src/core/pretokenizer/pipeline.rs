@@ -182,6 +182,72 @@ impl PreTokenizer {
             .collect()
     }
 
+    /// Hands each final piece to `f`, allocating nothing per piece where it can.
+    ///
+    /// The pieces of a `tokenizer.json` pipeline are consumed by BPE the moment
+    /// they are produced and never stored, yet [`PreTokenizer::split_pieces`]
+    /// must give every one an owned `String` as soon as a rewriting stage runs —
+    /// one allocation per token, which profiling put at roughly a tenth of
+    /// encode time between `byte_level_encode` and the allocator itself.
+    ///
+    /// The shape that matters is a run of cutting stages ending in exactly one
+    /// `ByteLevel`, which is what every GPT-2-style file is: the cutting stages
+    /// already produce subslices of the input, and the ByteLevel encoding goes
+    /// through one reusable buffer. Anything else — a rewriting stage that is
+    /// not last — falls back to the owned path, which is still correct.
+    pub(crate) fn for_each_piece(&self, text: &str, mut f: impl FnMut(&str)) {
+        // The prefix space is the one input the pieces cannot borrow from
+        // `text`, so that branch runs over a local instead.
+        if self.add_prefix_space && !text.starts_with(' ') {
+            let prefixed = format!(" {text}");
+            self.for_each_piece_inner(&prefixed, &mut f);
+        } else {
+            self.for_each_piece_inner(text, &mut f);
+        }
+    }
+
+    fn for_each_piece_inner(&self, text: &str, f: &mut impl FnMut(&str)) {
+        let rewrite_at = self
+            .compiled
+            .iter()
+            .position(Stage::rewrites_content)
+            .unwrap_or(self.compiled.len());
+
+        // A rewriting stage that is not the last one has to feed further stages,
+        // which needs somewhere to put its output.
+        if rewrite_at + 1 < self.compiled.len() {
+            for piece in self.run(text) {
+                if !piece.is_empty() {
+                    f(&piece);
+                }
+            }
+            return;
+        }
+
+        let mut cut: Vec<&str> = vec![text];
+        for stage in &self.compiled[..rewrite_at] {
+            let mut next = Vec::with_capacity(cut.len());
+            for piece in &cut {
+                stage.cut(piece, &mut next);
+            }
+            cut = next;
+        }
+
+        if rewrite_at == self.compiled.len() {
+            for piece in cut {
+                if !piece.is_empty() {
+                    f(piece);
+                }
+            }
+            return;
+        }
+
+        let mut scratch = String::new();
+        for piece in &cut {
+            self.compiled[rewrite_at].byte_level_for_each(piece, &mut scratch, f);
+        }
+    }
+
     /// Whether a ByteLevel stage byte-encodes the pieces (so BPE skips encoding).
     ///
     /// Derived from the stage list rather than settable: a caller who could set

@@ -27,10 +27,12 @@ impl Tokenizer {
         // immediately and never stored, so materializing a `String` for each
         // one is pure waste on the path every `tokenizer.json` model takes.
         if let Some(pt) = &self.pre_tokenizer {
-            let pieces = pt.split_pieces(text);
-
             #[cfg(feature = "rayon")]
             if parallel {
+                // Splitting into a `Vec` first is what lets the pieces be shared
+                // out across threads; the streaming path below cannot, since it
+                // hands back one reused buffer.
+                let pieces = pt.split_pieces(text);
                 return pieces
                     .par_iter()
                     .fold(Vec::new, |mut acc, piece| {
@@ -43,12 +45,10 @@ impl Tokenizer {
                     });
             }
 
-            // One id per piece is the floor, so this usually holds the whole
-            // text without regrowing.
-            let mut out = Vec::with_capacity(pieces.len());
-            for piece in &pieces {
-                self.encode_chunk_into(piece.as_bytes(), &mut out);
-            }
+            let mut out = Vec::new();
+            pt.for_each_piece(text, |piece| {
+                self.encode_chunk_into(piece.as_bytes(), &mut out)
+            });
             return out;
         }
 

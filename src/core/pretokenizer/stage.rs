@@ -1,6 +1,6 @@
 use super::spec::Behavior;
 use super::split::{split_digits, split_punctuation, split_regex};
-use crate::core::byte_level::byte_level_encode;
+use crate::core::byte_level::{byte_level_encode, byte_level_encode_into};
 
 /// Where a `Split` stage's matches come from.
 ///
@@ -88,6 +88,40 @@ impl Stage {
             Stage::ByteLevel { .. } => {
                 unreachable!("ByteLevel rewrites content and is driven through apply_owned")
             }
+        }
+    }
+
+    /// Apply a trailing `ByteLevel` stage, handing each piece to `f` through one
+    /// reusable buffer.
+    ///
+    /// The encoded piece is consumed by BPE and never stored, so nothing needs
+    /// to own it. Only valid on `ByteLevel`, which is why it is separate from
+    /// [`Stage::apply_owned`].
+    pub(super) fn byte_level_for_each(
+        &self,
+        piece: &str,
+        scratch: &mut String,
+        f: &mut impl FnMut(&str),
+    ) {
+        let Stage::ByteLevel { re } = self else {
+            unreachable!("byte_level_for_each is only called on a ByteLevel stage")
+        };
+        let mut emit = |raw: &str, scratch: &mut String| {
+            scratch.clear();
+            byte_level_encode_into(scratch, raw.as_bytes());
+            if !scratch.is_empty() {
+                f(scratch);
+            }
+        };
+        match re {
+            Some(re) => {
+                let mut raw: Vec<&str> = Vec::new();
+                split_regex(piece, re, Behavior::Isolated, false, &mut raw);
+                for r in raw {
+                    emit(r, scratch);
+                }
+            }
+            None => emit(piece, scratch),
         }
     }
 

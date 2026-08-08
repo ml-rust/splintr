@@ -118,8 +118,19 @@ pub fn byte_level_encode(bytes: &[u8]) -> String {
     // `2 * len` is exact, not a guess: the alphabet is U+0021..=U+017F, whose
     // members are one or two UTF-8 bytes and never more.
     let mut out = String::with_capacity(bytes.len() * 2);
-    out.extend(bytes.iter().map(|&b| BYTE_TO_CHAR[b as usize]));
+    byte_level_encode_into(&mut out, bytes);
     out
+}
+
+/// [`byte_level_encode`] appending into an existing buffer.
+///
+/// The encoded piece is consumed immediately by BPE and never stored, so a
+/// caller that walks many pieces can reuse one buffer instead of allocating a
+/// `String` per piece — which, on a `tokenizer.json` pipeline ending in
+/// ByteLevel, is one allocation per token.
+pub fn byte_level_encode_into(out: &mut String, bytes: &[u8]) {
+    out.reserve(bytes.len() * 2);
+    out.extend(bytes.iter().map(|&b| BYTE_TO_CHAR[b as usize]));
 }
 
 /// Decode a ByteLevel-encoded string back to raw bytes.

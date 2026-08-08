@@ -11,6 +11,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 ### Changed
 
 - Pre-tokenization runs a direct scanner instead of the regex engine, making single-text encode 1.4-2x faster. Token ids are unchanged.
+- Tokenizers loaded with `from_json` no longer allocate a string per pre-token, making them 1.5-1.7x faster on single texts and 1.2x on batches.
 
 ## [0.14.3] - 2026-08-08
 
