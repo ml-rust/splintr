@@ -9,7 +9,7 @@ use super::spec::Behavior;
 /// and code across the bundled vocabularies; being wrong only costs the growth
 /// this avoids.
 #[inline]
-pub(super) fn estimated_pieces(piece: &str) -> usize {
+pub(crate) fn estimated_pieces(piece: &str) -> usize {
     piece.len() / 4 + 8
 }
 

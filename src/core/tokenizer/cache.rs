@@ -20,7 +20,7 @@ use lru::LruCache;
 use rustc_hash::FxHasher;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use std::sync::RwLock;
 
 /// Number of independently-locked shards.
 ///
@@ -32,7 +32,7 @@ use std::sync::Mutex;
 /// therefore the contention — low.
 const SHARDS: usize = 64;
 
-type Shard = Mutex<LruCache<Vec<u8>, Vec<u32>, BuildHasherDefault<FxHasher>>>;
+type Shard = RwLock<LruCache<Vec<u8>, Vec<u32>, BuildHasherDefault<FxHasher>>>;
 
 /// A chunk → token-ids cache striped across [`SHARDS`] independently-locked
 /// LRUs.
@@ -63,7 +63,7 @@ impl ChunkCache {
         Self {
             shards: (0..SHARDS)
                 .map(|_| {
-                    Mutex::new(LruCache::with_hasher(
+                    RwLock::new(LruCache::with_hasher(
                         per_shard,
                         BuildHasherDefault::default(),
                     ))
@@ -96,10 +96,22 @@ impl ChunkCache {
     /// The lookup itself allocates nothing either, borrowing via
     /// `Vec<u8>: Borrow<[u8]>`.
     pub(crate) fn extend_into(&self, key: &[u8], out: &mut Vec<u32>) -> bool {
-        let Ok(mut shard) = self.shard(key).lock() else {
+        // A read lock, and `peek` rather than `get`, so concurrent hits do not
+        // serialise. `get` would bump recency, which needs `&mut` and therefore
+        // a writer — turning every *read* into an exclusive section. Under
+        // `encode_batch` that was the difference between the cache paying for
+        // itself and not: measured on a 24-core machine, disabling the cache
+        // entirely cost 91% more instructions yet ran at the same wall-clock,
+        // because contention was eating everything it saved.
+        //
+        // The cost is that recency now only advances on insert, so eviction is
+        // closer to insertion order than to true LRU. For a chunk cache that is
+        // a fair trade: the hot set is small and stable, so the entries an LRU
+        // would keep are the ones that keep being re-inserted anyway.
+        let Ok(shard) = self.shard(key).read() else {
             return false;
         };
-        match shard.get(key) {
+        match shard.peek(key) {
             Some(ids) => {
                 out.extend_from_slice(ids);
                 true
@@ -110,7 +122,7 @@ impl ChunkCache {
 
     /// Cache `ids` for `key`.
     pub(crate) fn put(&self, key: &[u8], ids: &[u32]) {
-        if let Ok(mut shard) = self.shard(key).lock() {
+        if let Ok(mut shard) = self.shard(key).write() {
             shard.put(key.to_vec(), ids.to_vec());
         }
     }
@@ -118,7 +130,7 @@ impl ChunkCache {
     /// Drop every entry.
     pub(crate) fn clear(&self) {
         for shard in &self.shards {
-            if let Ok(mut shard) = shard.lock() {
+            if let Ok(mut shard) = shard.write() {
                 shard.clear();
             }
         }
@@ -128,7 +140,7 @@ impl ChunkCache {
     pub(crate) fn len(&self) -> usize {
         self.shards
             .iter()
-            .map(|shard| shard.lock().map(|s| s.len()).unwrap_or(0))
+            .map(|shard| shard.read().map(|s| s.len()).unwrap_or(0))
             .sum()
     }
 }

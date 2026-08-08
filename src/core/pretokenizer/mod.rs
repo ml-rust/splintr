@@ -26,3 +26,4 @@ mod tests;
 pub(crate) use parse::parse;
 pub use pipeline::PreTokenizer;
 pub use spec::{PreTokStage, SplitBehavior, SplitPattern};
+pub(crate) use split::estimated_pieces;

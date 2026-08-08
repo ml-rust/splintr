@@ -45,7 +45,11 @@ impl Tokenizer {
                     });
             }
 
-            let mut out = Vec::new();
+            // One id per pre-token is the floor, so sizing from the text holds
+            // the whole result without regrowing. The streaming path has no
+            // piece count to size from — that was the point of not building one
+            // — so it estimates from the same rule the pipeline uses.
+            let mut out = Vec::with_capacity(crate::core::pretokenizer::estimated_pieces(text));
             pt.for_each_piece(text, |piece| {
                 self.encode_chunk_into(piece.as_bytes(), &mut out)
             });

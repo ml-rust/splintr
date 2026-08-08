@@ -13,6 +13,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - Pre-tokenization runs a direct scanner instead of the regex engine, making single-text encode 1.4-2x faster. Token ids are unchanged.
 - Tokenizers loaded with `from_json` no longer allocate a string per pre-token, size their buffers up front, and skip the segment bookkeeping their split behaviour discards, making them 2x faster on single texts.
 - Normalizers that leave the text unchanged no longer copy it. A vocabulary declaring `NFC`, as most HuggingFace files do, encodes up to 2.4x faster.
+- Chunk-cache hits take a shared lock instead of an exclusive one, making `encode_batch` 1.2-1.3x faster. Cache eviction is now nearer insertion order than least-recently-used.
 
 ## [0.14.3] - 2026-08-08
 
