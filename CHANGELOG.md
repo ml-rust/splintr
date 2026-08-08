@@ -6,7 +6,7 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
-## [Unreleased]
+## [0.15.0] - 2026-08-09
 
 ### Added
 

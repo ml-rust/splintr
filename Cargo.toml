@@ -1,6 +1,6 @@
 [package]
 name = "splintr"
-version = "0.14.4"
+version = "0.15.0"
 edition = "2021"
 description = "Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings"
 license = "MIT"
@@ -41,7 +41,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 # Every bundled vocabulary is on by default: `from_pretrained` is the crate's
 # headline entry point, and a name that silently stops resolving because a
-# feature defaulted off is worse than the ~15 MB the whole set weighs. Turning
+# feature defaulted off is worse than the ~20 MB the whole set weighs. Turning
 # them off is an explicit, deliberate act — `default-features = false` plus the
 # families actually needed.
 default = [
