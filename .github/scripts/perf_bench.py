@@ -119,7 +119,16 @@ def load_engine(engine, spec):
     if engine == "gigatoken":
         import gigatoken as gt
 
-        tok = gt.Tokenizer.from_json(open(spec).read()) if spec.endswith(".json") else gt.Tokenizer(spec)
+        # Only a `tokenizer.json`: a bare name is a HuggingFace repo id to
+        # gigatoken, not a tiktoken encoding, and `from_tiktoken` wants a path to
+        # a rank file. Both would compare against a different vocabulary than the
+        # one the suite names, so refuse rather than quietly measure the wrong
+        # thing — the OpenAI suites run gigatoken through their `.json` form.
+        if not spec.endswith(".json"):
+            raise SystemExit(
+                f"gigatoken needs a tokenizer.json, got {spec!r}"
+            )
+        tok = gt.Tokenizer.from_json(open(spec).read())
         # `encode_batch` hands back an awkward Array, which is cheaper than the
         # Python lists every other engine builds — comparing against it would
         # charge them for object construction gigatoken skips. `encode_batch_list`

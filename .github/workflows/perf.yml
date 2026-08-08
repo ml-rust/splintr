@@ -4,21 +4,31 @@ name: perf
 # versions. Manual only — it is a decision tool and a regression check, not
 # something to run on every push.
 #
-# Suites fix a vocabulary so each comparison is like for like:
-#   qwen3         Qwen3-8B tokenizer.json — splintr vs HuggingFace `tokenizers`
-#   cl100k_base   OpenAI GPT-4            — splintr vs `tiktoken`
-#   o200k_base    OpenAI GPT-4o           — splintr vs `tiktoken`
+# Suites fix a vocabulary so each comparison is like for like. Two kinds:
+#
+#   cl100k_base   OpenAI GPT-4  — splintr vs `tiktoken`, each on its own loader
+#   o200k_base    OpenAI GPT-4o — splintr vs `tiktoken`
+#
+#   cl100k        the same GPT-4 vocabulary, but every engine loading the SAME
+#   o200k         `tokenizer.json` — the only way to put `gigatoken` and
+#   qwen3         HuggingFace `tokenizers` beside splintr with no loader
+#                 asymmetry to argue about
 #
 # Every version input defaults to `latest`, i.e. whatever pip resolves today.
 # Pin one only to answer a specific question — a regression check sets
 # `splintr_baseline` to the previous release and leaves the rest alone.
+#
+# `splintr: local` builds the checked-out tree instead of installing a release,
+# which is what makes this usable on a branch: without it the workflow can only
+# ever measure what is already on PyPI, so a change cannot be validated until
+# after it ships.
 
 on:
   workflow_dispatch:
     inputs:
       splintr:
-        description: "splintr-rs version, or 'latest'"
-        default: "latest"
+        description: "splintr-rs version, 'latest', or 'local' to build this checkout"
+        default: "local"
         type: string
       splintr_baseline:
         description: "second splintr-rs version to compare against, or empty to skip"
@@ -30,6 +40,10 @@ on:
         type: string
       tiktoken:
         description: "tiktoken version, or 'latest'"
+        default: "latest"
+        type: string
+      gigatoken:
+        description: "gigatoken version, 'latest', or empty to skip"
         default: "latest"
         type: string
       rounds:
@@ -49,6 +63,7 @@ jobs:
       SPLINTR_BASELINE: ${{ inputs.splintr_baseline }}
       TOKENIZERS: ${{ inputs.tokenizers }}
       TIKTOKEN: ${{ inputs.tiktoken }}
+      GIGATOKEN: ${{ inputs.gigatoken }}
       ROUNDS: ${{ inputs.rounds }}
     steps:
       - uses: actions/checkout@v4
@@ -71,6 +86,13 @@ jobs:
         run: |
           curl -sSfL -o qwen3.json \
             https://huggingface.co/Qwen/Qwen3-8B/resolve/main/tokenizer.json
+          # The OpenAI vocabularies as `tokenizer.json`, so every engine can load
+          # the same file. `tiktoken` keeps its own loader in its own suites; it
+          # has no way to read one of these.
+          curl -sSfL -o cl100k.json \
+            https://huggingface.co/Xenova/gpt-4/resolve/main/tokenizer.json
+          curl -sSfL -o o200k.json \
+            https://huggingface.co/Xenova/gpt-4o/resolve/main/tokenizer.json
 
       - name: Install each library in its own venv
         run: |
@@ -78,11 +100,25 @@ jobs:
           spec() { [ "$2" = "latest" ] && echo "$1" || echo "$1==$2"; }
 
           python -m venv venv-splintr
-          ./venv-splintr/bin/pip -q install "$(spec splintr-rs "$SPLINTR")"
+          if [ "$SPLINTR" = "local" ]; then
+            # Build the checkout rather than install a release, so a branch can
+            # be measured before it ships. The wheel is installed from a local
+            # directory with the index disabled, so nothing can silently resolve
+            # a PyPI build instead of the one just compiled.
+            ./venv-splintr/bin/pip -q install maturin
+            ./venv-splintr/bin/maturin build --release --out dist
+            ./venv-splintr/bin/pip -q install --no-index --find-links dist splintr-rs
+          else
+            ./venv-splintr/bin/pip -q install "$(spec splintr-rs "$SPLINTR")"
+          fi
           python -m venv venv-tokenizers
           ./venv-tokenizers/bin/pip -q install "$(spec tokenizers "$TOKENIZERS")"
           python -m venv venv-tiktoken
           ./venv-tiktoken/bin/pip -q install "$(spec tiktoken "$TIKTOKEN")"
+          if [ -n "$GIGATOKEN" ]; then
+            python -m venv venv-gigatoken
+            ./venv-gigatoken/bin/pip -q install "$(spec gigatoken "$GIGATOKEN")"
+          fi
           if [ -n "$SPLINTR_BASELINE" ]; then
             python -m venv venv-baseline
             ./venv-baseline/bin/pip -q install "splintr-rs==$SPLINTR_BASELINE"
@@ -90,38 +126,48 @@ jobs:
 
           {
             echo "VERSIONS<<EOF"
-            for v in splintr tokenizers tiktoken; do
+            for v in splintr tokenizers tiktoken gigatoken; do
+              [ -d "venv-$v" ] || continue
               "./venv-$v/bin/pip" list 2>/dev/null \
-                | grep -Ei "^(splintr-rs|tokenizers|tiktoken) " | sed 's/  */ /g'
+                | grep -Ei "^(splintr-rs|tokenizers|tiktoken|gigatoken) " | sed 's/  */ /g'
             done
+            if [ "$SPLINTR" = "local" ]; then echo "splintr-rs built from ${GITHUB_SHA:0:12}"; fi
             if [ -n "$SPLINTR_BASELINE" ]; then echo "splintr-rs $SPLINTR_BASELINE (baseline)"; fi
             echo "EOF"
           } >> "$GITHUB_ENV"
 
       - name: Check the engines agree before timing them
         run: |
-          ./venv-splintr/bin/python .github/scripts/perf_bench.py \
-            qwen3 splintr splintr qwen3.json --check > ids-s-hf.json
-          ./venv-tokenizers/bin/python .github/scripts/perf_bench.py \
-            qwen3 tokenizers tokenizers qwen3.json --check > ids-hf.json
-          ./venv-splintr/bin/python .github/scripts/perf_bench.py \
-            cl100k_base splintr splintr cl100k_base --check > ids-s-tt.json
-          ./venv-tiktoken/bin/python .github/scripts/perf_bench.py \
-            cl100k_base tiktoken tiktoken cl100k_base --check > ids-tt.json
-          ./venv-splintr/bin/python .github/scripts/perf_bench.py \
-            o200k_base splintr splintr o200k_base --check > ids-s-o2.json
-          ./venv-tiktoken/bin/python .github/scripts/perf_bench.py \
-            o200k_base tiktoken tiktoken o200k_base --check > ids-o2.json
+          check() { "./venv-$1/bin/python" .github/scripts/perf_bench.py "$2" "$3" x "$4" --check > "ids-$5.json"; }
+
+          # Native loaders, against tiktoken.
+          check splintr  cl100k_base splintr  cl100k_base s-tt
+          check tiktoken cl100k_base tiktoken cl100k_base tt
+          check splintr  o200k_base  splintr  o200k_base  s-o2
+          check tiktoken o200k_base  tiktoken o200k_base  o2
+
+          # Shared `tokenizer.json`, so gigatoken and HF sit beside splintr with
+          # the same vocabulary bytes behind all three.
+          for f in cl100k o200k qwen3; do
+            check splintr    "$f" splintr    "$f.json" "s-$f"
+            check tokenizers "$f" tokenizers "$f.json" "h-$f"
+            if [ -n "$GIGATOKEN" ]; then
+              check gigatoken "$f" gigatoken "$f.json" "g-$f"
+            fi
+          done
 
           python - <<'PY' >> "$GITHUB_ENV"
-          import json, sys
+          import json, os, sys
           def same(a, b):
               return json.load(open(a))["ids"] == json.load(open(b))["ids"]
           checks = {
-              "qwen3: splintr == tokenizers": same("ids-s-hf.json", "ids-hf.json"),
               "cl100k_base: splintr == tiktoken": same("ids-s-tt.json", "ids-tt.json"),
               "o200k_base: splintr == tiktoken": same("ids-s-o2.json", "ids-o2.json"),
           }
+          for f in ("cl100k", "o200k", "qwen3"):
+              checks[f"{f}: splintr == tokenizers"] = same(f"ids-s-{f}.json", f"ids-h-{f}.json")
+              if os.environ.get("GIGATOKEN"):
+                  checks[f"{f}: splintr == gigatoken"] = same(f"ids-s-{f}.json", f"ids-g-{f}.json")
           print("PARITY<<EOF")
           for name, ok in checks.items():
               print(f"- {name}: {'yes' if ok else 'NO'}")
@@ -133,16 +179,24 @@ jobs:
       - name: Benchmark
         run: |
           run() { "./venv-$1/bin/python" .github/scripts/perf_bench.py "$2" "$3" "$4" "$5" >> rounds.jsonl; }
+          # Interleaved rather than engine-by-engine: a runner that slows down
+          # partway through then penalises whichever engine happened to be last.
           for r in $(seq 1 "${ROUNDS:-3}"); do
-            if [ -n "$SPLINTR_BASELINE" ]; then
-              run baseline qwen3 splintr "splintr $SPLINTR_BASELINE" qwen3.json
-            fi
-            run splintr    qwen3       splintr    "splintr"       qwen3.json
-            run tokenizers qwen3       tokenizers "HF tokenizers" qwen3.json
-            run splintr    cl100k_base splintr    "splintr"       cl100k_base
-            run tiktoken   cl100k_base tiktoken   "tiktoken"      cl100k_base
-            run splintr    o200k_base  splintr    "splintr"       o200k_base
-            run tiktoken   o200k_base  tiktoken   "tiktoken"      o200k_base
+            run splintr  cl100k_base splintr  "splintr"  cl100k_base
+            run tiktoken cl100k_base tiktoken "tiktoken" cl100k_base
+            run splintr  o200k_base  splintr  "splintr"  o200k_base
+            run tiktoken o200k_base  tiktoken "tiktoken" o200k_base
+
+            for f in cl100k o200k qwen3; do
+              if [ -n "$SPLINTR_BASELINE" ]; then
+                run baseline "$f" splintr "splintr $SPLINTR_BASELINE" "$f.json"
+              fi
+              run splintr    "$f" splintr    "splintr"       "$f.json"
+              run tokenizers "$f" tokenizers "HF tokenizers" "$f.json"
+              if [ -n "$GIGATOKEN" ]; then
+                run gigatoken "$f" gigatoken "gigatoken" "$f.json"
+              fi
+            done
           done
 
       - name: Report
