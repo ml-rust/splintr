@@ -6,6 +6,12 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [0.14.3] - 2026-08-08
+
+### Fixed
+
+- A `tokenizer.json` whose `Split` sets `"invert": true` is split again. Its matches are contiguous, so deriving the content by complementing the gaps left one span and the text was never pre-tokenized — wrong ids for any whitespace run, Phi-4, OLMo 2 and the Xenova GPT-4/GPT-4o exports among the vocabularies affected.
+
 ## [0.14.2] - 2026-08-08
 
 ### Changed
