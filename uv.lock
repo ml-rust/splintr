@@ -3,5 +3,5 @@ requires-python = ">=3.8"
 
 [[package]]
 name = "splintr-rs"
-version = "0.14.3"
+version = "0.14.4"
 source = { editable = "." }
