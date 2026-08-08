@@ -1,5 +1,18 @@
 use super::spec::Behavior;
 
+/// A starting capacity for a piece's worth of pre-tokens.
+///
+/// Sizing the output from the *input* piece count instead — which is 1 for the
+/// first stage, since it is handed the whole text — meant growing from one
+/// element to a few dozen on every call, and that reallocation was a tenth of
+/// `from_json` encode time. Four bytes per pre-token is about right for prose
+/// and code across the bundled vocabularies; being wrong only costs the growth
+/// this avoids.
+#[inline]
+pub(super) fn estimated_pieces(piece: &str) -> usize {
+    piece.len() / 4 + 8
+}
+
 /// Split `piece` by `matcher`. The matched spans are the delimiters and
 /// everything between them is content; with `invert`, the matches are the
 /// content and the spans between them are the delimiters. The delimiters are
@@ -11,8 +24,60 @@ pub(super) fn split_regex<'p>(
     invert: bool,
     out: &mut Vec<&'p str>,
 ) {
-    let mut matches: Vec<(usize, usize)> = Vec::new();
+    let mut matches: Vec<(usize, usize)> = Vec::with_capacity(estimated_pieces(piece));
     matcher.matches(piece, &mut matches);
+
+    // Two shapes cover every bundled `tokenizer.json`, and neither needs a
+    // `Segment` built and classified only to be emitted or dropped wholesale.
+    match behavior {
+        // Keeps every segment, delimiter or not, so the result is just the piece
+        // partitioned at the match edges. Which side is the delimiter never
+        // comes up, `invert` included: it only swaps a label nothing reads.
+        // Qwen's file is this shape.
+        Behavior::Isolated => {
+            let mut last = 0;
+            for (s, e) in matches {
+                if s > last {
+                    out.push(&piece[last..s]);
+                }
+                if e > s {
+                    out.push(&piece[s..e]);
+                }
+                last = e;
+            }
+            if last < piece.len() {
+                out.push(&piece[last..]);
+            }
+            return;
+        }
+        // Drops the delimiters, so exactly one side survives — the matches when
+        // inverted, the gaps between them otherwise. Both OpenAI files are the
+        // inverted form, which makes this the hot path for GPT-4 and GPT-4o:
+        // the output is the match list and nothing else.
+        Behavior::Removed => {
+            if invert {
+                for (s, e) in matches {
+                    if e > s {
+                        out.push(&piece[s..e]);
+                    }
+                }
+            } else {
+                let mut last = 0;
+                for (s, e) in matches {
+                    if s > last {
+                        out.push(&piece[last..s]);
+                    }
+                    last = e;
+                }
+                if last < piece.len() {
+                    out.push(&piece[last..]);
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
+
     // At most one gap segment before each match, plus a trailing one.
     let mut segs: Vec<Segment> = Vec::with_capacity(matches.len() * 2 + 1);
 

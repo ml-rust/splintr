@@ -147,7 +147,9 @@ impl PreTokenizer {
         // Phase 1: cutting stages, entirely in subslices of `text`.
         let mut cut: Vec<&'p str> = vec![text];
         for stage in &self.compiled[..rewrite_at] {
-            let mut next = Vec::with_capacity(cut.len());
+            // Sized from the text rather than from `cut.len()` — see
+            // `for_each_piece_inner` for why one is nowhere near the other.
+            let mut next = Vec::with_capacity(super::split::estimated_pieces(text));
             for piece in &cut {
                 stage.cut(piece, &mut next);
             }
@@ -226,7 +228,11 @@ impl PreTokenizer {
 
         let mut cut: Vec<&str> = vec![text];
         for stage in &self.compiled[..rewrite_at] {
-            let mut next = Vec::with_capacity(cut.len());
+            // Sized from the text, not from `cut.len()`: the first stage is
+            // handed the whole text as one piece and returns a pre-token for
+            // roughly every four bytes of it, so taking the input count as the
+            // estimate meant regrowing from a single element every time.
+            let mut next = Vec::with_capacity(super::split::estimated_pieces(text));
             for piece in &cut {
                 stage.cut(piece, &mut next);
             }
