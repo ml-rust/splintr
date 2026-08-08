@@ -2,7 +2,7 @@ use super::parse::{gpt2_regex, parse};
 use super::pipeline::PreTokenizer;
 use super::spec::{Behavior, PreTokStage, SplitBehavior, SplitPattern};
 use super::split::{split_digits, split_punctuation, split_regex};
-use regexr::RegexBuilder;
+use super::stage::SplitMatcher;
 use serde_json::Value;
 
 /// Run a splitter and collect its borrowed pieces as owned strings, so the
@@ -48,14 +48,14 @@ fn punctuation_isolated_and_contiguous() {
 
 #[test]
 fn split_merge_behaviors() {
-    let re = RegexBuilder::new(r"\s+").jit(true).build().unwrap();
+    let re = SplitMatcher::compile(r"\s+").unwrap();
     let go = |b| split("a b c", |p, o| split_regex(p, &re, b, false, o));
     assert_eq!(go(Behavior::Isolated), vec!["a", " ", "b", " ", "c"]);
     assert_eq!(go(Behavior::Removed), vec!["a", "b", "c"]);
     assert_eq!(go(Behavior::MergedWithPrevious), vec!["a ", "b ", "c"]);
     assert_eq!(go(Behavior::MergedWithNext), vec!["a", " b", " c"]);
     // Adjacent delimiters merge under Contiguous.
-    let re2 = RegexBuilder::new(r"\s").jit(true).build().unwrap();
+    let re2 = SplitMatcher::compile(r"\s").unwrap();
     assert_eq!(
         split("a  b", |p, o| split_regex(
             p,
@@ -99,7 +99,7 @@ fn pipeline_digits_then_byte_level() {
 #[test]
 fn split_invert_keeps_each_match_when_matches_are_contiguous() {
     let split_with = |pattern: &str, behavior, text: &'static str| {
-        let re = Box::new(RegexBuilder::new(pattern).build().expect("compiles"));
+        let re = SplitMatcher::compile(pattern).expect("compiles");
         let mut out = Vec::new();
         split_regex(text, &re, behavior, true, &mut out);
         out.into_iter().map(str::to_owned).collect::<Vec<_>>()
@@ -124,7 +124,7 @@ fn split_invert_keeps_each_match_when_matches_are_contiguous() {
 
 #[test]
 fn split_invert_partitions_the_whole_piece() {
-    let re = Box::new(gpt2_regex().expect("GPT2_PATTERN compiles"));
+    let re = gpt2_regex().expect("GPT2_PATTERN compiles");
     let mut out = Vec::new();
     split_regex(
         "def f(x):\n    return x",

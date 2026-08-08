@@ -1,10 +1,8 @@
 use std::borrow::Cow;
 
-use regexr::RegexBuilder;
-
 use super::parse::{gpt2_regex, whitespace_regex};
 use super::spec::{PreTokStage, SplitPattern};
-use super::stage::Stage;
+use super::stage::{SplitMatcher, Stage};
 use crate::core::tokenizer::TokenizerError;
 
 /// An ordered pre-tokenizer pipeline.
@@ -48,14 +46,13 @@ impl PreTokenizer {
                     // cannot drift apart. `Cow` avoids cloning the `Regex` arm's
                     // pattern just to unify it with the `Literal` arm's owned,
                     // escaped one.
-                    re: Box::new(
-                        RegexBuilder::new(&match pattern {
-                            SplitPattern::Literal(s) => Cow::Owned(regexr::escape(s)),
-                            SplitPattern::Regex(s) => Cow::Borrowed(s.as_str()),
-                        })
-                        .jit(true)
-                        .build()?,
-                    ),
+                    // A file carrying one of the expressions splintr already
+                    // scans directly gets the scanner; anything else, even a
+                    // near-miss, keeps the engine.
+                    matcher: SplitMatcher::compile(&match pattern {
+                        SplitPattern::Literal(s) => Cow::Owned(regexr::escape(s)),
+                        SplitPattern::Regex(s) => Cow::Borrowed(s.as_str()),
+                    })?,
                     behavior: (*behavior).into(),
                     invert: *invert,
                 },
@@ -67,7 +64,7 @@ impl PreTokenizer {
                     add_prefix_space |= *prefix;
                     Stage::ByteLevel {
                         re: match use_regex {
-                            true => Some(Box::new(gpt2_regex()?)),
+                            true => Some(gpt2_regex()?),
                             false => None,
                         },
                     }
@@ -80,7 +77,7 @@ impl PreTokenizer {
                 },
                 PreTokStage::WhitespaceSplit => Stage::WhitespaceSplit,
                 PreTokStage::Whitespace => Stage::Whitespace {
-                    re: Box::new(whitespace_regex()?),
+                    re: whitespace_regex()?,
                 },
             });
         }

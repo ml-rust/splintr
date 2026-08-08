@@ -6,6 +6,12 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [Unreleased]
+
+### Changed
+
+- Pre-tokenization runs a direct scanner instead of the regex engine, making single-text encode 1.4-2x faster. Token ids are unchanged.
+
 ## [0.14.3] - 2026-08-08
 
 ### Fixed

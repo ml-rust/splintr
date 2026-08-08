@@ -8,6 +8,12 @@ use super::error::TokenizerError;
 /// Regex backend enum for switching between regexr (default) and PCRE2 (optional)
 pub(super) enum RegexBackend {
     Regexr(Box<RegexrRegex>),
+    /// A bundled pre-tokenizer expression, split by [`super::scanner`] rather
+    /// than by the engine. The expression is not compiled at all on this path,
+    /// which also takes it off the tokenizer's load time; the scanner's
+    /// differential test compiles it separately and holds the two to the same
+    /// spans.
+    Scanner(super::scanner::SpanScanner),
     #[cfg(feature = "pcre2")]
     Pcre2(Pcre2Regex),
 }
@@ -16,6 +22,11 @@ impl RegexBackend {
     /// Find all matches in the given text, returning (start, end) byte offsets
     pub(super) fn find_iter<'a>(&'a self, text: &'a str) -> Vec<(usize, usize)> {
         match self {
+            RegexBackend::Scanner(scan) => {
+                let mut spans = Vec::new();
+                scan(text, &mut spans);
+                spans
+            }
             RegexBackend::Regexr(regex) => regex
                 .find_iter(text)
                 .map(|m| (m.start(), m.end()))
@@ -52,6 +63,18 @@ pub(super) fn compile_pattern(
     }
     #[cfg(not(feature = "pcre2"))]
     let _ = use_pcre2;
+
+    // Matched on exact expression text, so a caller passing a *different*
+    // expression that merely looks similar keeps the engine: each scanner is
+    // only proven equivalent to the one string it is paired with here, and that
+    // pairing is what the differential test checks.
+    //
+    // DeepSeek's first two passes stay on the engine. They are single runs
+    // rather than alternations, so the engine has little to do and a scanner
+    // would win little.
+    if let Some(scan) = super::scanner::for_pattern(pattern) {
+        return Ok(RegexBackend::Scanner(scan));
+    }
 
     let regex = RegexBuilder::new(pattern).jit(use_jit).build()?;
     Ok(RegexBackend::Regexr(Box::new(regex)))

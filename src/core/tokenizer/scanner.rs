@@ -1,0 +1,1110 @@
+//! Direct scanners for the bundled pre-tokenizer patterns.
+//!
+//! These patterns are fixed, known alternations, so running them on a general
+//! regex engine pays for machinery they never need: the engine tries branches in
+//! order at every position, and each trial is a call. Profiling single-text
+//! encode put ~55% of the time inside the tagged-NFA interpreter for exactly
+//! that reason. Here the branch is chosen from the first byte through a
+//! 256-entry class table, and runs are scanned eight bytes at a time.
+//!
+//! Every scanner must agree with its expression byte-for-byte — same language,
+//! different recogniser — so the tests below diff each one against the compiled
+//! regex rather than against hand-written expectations. The regex is the
+//! definition of correctness: `tests/fixtures/pretrained/` pins *it* against the
+//! reference tokenizers.
+
+use unicode_general_category::{get_general_category, GeneralCategory};
+
+/// First-byte class, used only to pick a branch. ASCII only; every byte with the
+/// high bit set is `Lead` and resolved by decoding the character.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Class {
+    /// Not whitespace, letter or digit.
+    Punct = 0,
+    Letter = 1,
+    Digit = 2,
+    /// Whitespace other than `\r`/`\n`.
+    Space = 3,
+    /// `\r` or `\n`, which several branches treat specially.
+    Newline = 4,
+    /// Start of a multi-byte character.
+    Lead = 5,
+}
+
+const CLASS: [Class; 256] = {
+    let mut table = [Class::Punct; 256];
+    let mut b = 0usize;
+    while b < 256 {
+        table[b] = if b >= 0x80 {
+            Class::Lead
+        } else if (b >= b'a' as usize && b <= b'z' as usize)
+            || (b >= b'A' as usize && b <= b'Z' as usize)
+        {
+            Class::Letter
+        } else if b >= b'0' as usize && b <= b'9' as usize {
+            Class::Digit
+        } else if b == b'\r' as usize || b == b'\n' as usize {
+            Class::Newline
+        } else if b == b' ' as usize || b == b'\t' as usize || b == 0x0b || b == 0x0c {
+            Class::Space
+        } else {
+            Class::Punct
+        };
+        b += 1;
+    }
+    table
+};
+
+// --- SWAR ------------------------------------------------------------------
+//
+// Eight bytes are loaded as a `u64` and tested together with ordinary
+// arithmetic, which needs no target-specific intrinsics and so behaves the same
+// on x86-64 and aarch64. Every helper below assumes the word holds only ASCII;
+// callers check that first, because the range tricks rely on the high bit of
+// each byte being clear before the subtraction.
+
+const ONES: u64 = 0x0101_0101_0101_0101;
+const HIGH: u64 = 0x8080_8080_8080_8080;
+
+/// High bit set in each byte lane whose value is `< n`.
+///
+/// The classic borrow trick: subtracting `n` from a byte below `n` borrows into
+/// the high bit, and `& !x` discards lanes whose high bit was already set. Only
+/// valid for `n <= 128` and lanes `< 128`.
+#[inline(always)]
+fn lanes_below(x: u64, n: u8) -> u64 {
+    x.wrapping_sub(ONES.wrapping_mul(n as u64)) & !x & HIGH
+}
+
+/// High bit set in each byte lane holding an ASCII letter.
+#[inline(always)]
+fn ascii_letter_lanes(word: u64) -> u64 {
+    // Case-folding first means one range test rather than two.
+    let lowered = word | 0x2020_2020_2020_2020;
+    let below_a = lanes_below(lowered, b'a');
+    let at_most_z = lanes_below(lowered, b'z' + 1);
+    at_most_z & !below_a & HIGH
+}
+
+/// Reads eight bytes at `pos` as a little-endian word, or `None` near the end.
+#[inline(always)]
+fn word_at(bytes: &[u8], pos: usize) -> Option<u64> {
+    bytes
+        .get(pos..pos + 8)
+        .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("slice of exactly eight bytes")))
+}
+
+/// Advances over ASCII letters eight at a time, stopping at the first byte that
+/// is not one (including any non-ASCII lead byte, left to the caller).
+#[inline]
+fn swar_skip_ascii_letters(bytes: &[u8], mut pos: usize) -> usize {
+    while let Some(word) = word_at(bytes, pos) {
+        // A non-ASCII byte anywhere in the word invalidates the range trick, so
+        // hand the whole word back to the scalar loop.
+        if word & HIGH != 0 {
+            break;
+        }
+        let not_letters = !ascii_letter_lanes(word) & HIGH;
+        if not_letters != 0 {
+            // Lane index of the first non-letter; byte 0 is the low lane.
+            return pos + (not_letters.trailing_zeros() / 8) as usize;
+        }
+        pos += 8;
+    }
+    while pos < bytes.len() && (bytes[pos] | 0x20).wrapping_sub(b'a') < 26 {
+        pos += 1;
+    }
+    pos
+}
+
+/// Advances to the first byte that is not plain ASCII.
+///
+/// The whole point of DeepSeek's CJK/kana pass: every character it can match
+/// lives in U+3040..U+30FF or U+4E00..U+9FA5, so no ASCII byte can ever start a
+/// match and prose in a Latin script is skipped eight bytes at a time.
+#[inline]
+fn swar_skip_ascii(bytes: &[u8], mut pos: usize) -> usize {
+    while let Some(word) = word_at(bytes, pos) {
+        let high = word & HIGH;
+        if high != 0 {
+            return pos + (high.trailing_zeros() / 8) as usize;
+        }
+        pos += 8;
+    }
+    while pos < bytes.len() && bytes[pos] < 0x80 {
+        pos += 1;
+    }
+    pos
+}
+
+/// Advances to the first byte that is an ASCII digit or starts a multi-byte
+/// character — the two ways `\p{N}` can begin.
+#[inline]
+fn swar_skip_to_number(bytes: &[u8], mut pos: usize) -> usize {
+    while let Some(word) = word_at(bytes, pos) {
+        // Any non-ASCII byte could begin a non-ASCII `\p{N}`, and it also
+        // invalidates the range trick, so stop the word there either way.
+        if word & HIGH != 0 {
+            break;
+        }
+        let digits = lanes_below(word, b'9' + 1) & !lanes_below(word, b'0') & HIGH;
+        if digits != 0 {
+            return pos + (digits.trailing_zeros() / 8) as usize;
+        }
+        pos += 8;
+    }
+    while pos < bytes.len() && bytes[pos] < 0x80 && !bytes[pos].is_ascii_digit() {
+        pos += 1;
+    }
+    pos
+}
+
+// --- character predicates ---------------------------------------------------
+
+/// `\p{L}`.
+#[inline]
+fn is_letter_char(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::UppercaseLetter
+            | GeneralCategory::LowercaseLetter
+            | GeneralCategory::TitlecaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter
+    )
+}
+
+/// `\p{N}`.
+#[inline]
+fn is_number_char(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::DecimalNumber
+            | GeneralCategory::LetterNumber
+            | GeneralCategory::OtherNumber
+    )
+}
+
+/// `\p{M}`.
+#[inline]
+fn is_mark_char(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::NonspacingMark
+            | GeneralCategory::SpacingMark
+            | GeneralCategory::EnclosingMark
+    )
+}
+
+/// `\p{P}` or `\p{S}`, the classes DeepSeek's third pass runs on.
+#[inline]
+fn is_punct_or_symbol_char(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::ConnectorPunctuation
+            | GeneralCategory::DashPunctuation
+            | GeneralCategory::OpenPunctuation
+            | GeneralCategory::ClosePunctuation
+            | GeneralCategory::InitialPunctuation
+            | GeneralCategory::FinalPunctuation
+            | GeneralCategory::OtherPunctuation
+            | GeneralCategory::MathSymbol
+            | GeneralCategory::CurrencySymbol
+            | GeneralCategory::ModifierSymbol
+            | GeneralCategory::OtherSymbol
+    )
+}
+
+/// Uppercase half of o200k's case-split letter run:
+/// `[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]`.
+#[inline]
+fn is_upper_run_char(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::UppercaseLetter
+            | GeneralCategory::TitlecaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter
+    ) || is_mark_char(c)
+}
+
+/// Lowercase half: `[\p{Ll}\p{Lm}\p{Lo}\p{M}]`.
+#[inline]
+fn is_lower_run_char(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::LowercaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter
+    ) || is_mark_char(c)
+}
+
+/// Character at `pos`, which must be a char boundary, and its UTF-8 length.
+#[inline]
+fn char_at(text: &str, pos: usize) -> (char, usize) {
+    let c = text[pos..]
+        .chars()
+        .next()
+        .expect("pos is a char boundary inside the string");
+    (c, c.len_utf8())
+}
+
+/// Length of the character at `pos` when it satisfies `pred`.
+///
+/// The ASCII shortcut is the point: `pred` is only reached for a multi-byte
+/// character, so the common path never decodes or looks up a category.
+#[inline]
+fn char_len_if(
+    text: &str,
+    bytes: &[u8],
+    pos: usize,
+    ascii: impl Fn(Class) -> bool,
+    pred: impl Fn(char) -> bool,
+) -> Option<usize> {
+    let class = CLASS[bytes[pos] as usize];
+    if class == Class::Lead {
+        let (c, len) = char_at(text, pos);
+        pred(c).then_some(len)
+    } else {
+        ascii(class).then_some(1)
+    }
+}
+
+#[inline]
+fn letter_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    char_len_if(text, bytes, pos, |c| c == Class::Letter, is_letter_char)
+}
+
+#[inline]
+fn number_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    char_len_if(text, bytes, pos, |c| c == Class::Digit, is_number_char)
+}
+
+#[inline]
+fn space_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    char_len_if(
+        text,
+        bytes,
+        pos,
+        |c| matches!(c, Class::Space | Class::Newline),
+        char::is_whitespace,
+    )
+}
+
+/// `[^\s\p{L}\p{N}]`.
+#[inline]
+fn punct_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    char_len_if(
+        text,
+        bytes,
+        pos,
+        |c| c == Class::Punct,
+        |c| !c.is_whitespace() && !is_letter_char(c) && !is_number_char(c),
+    )
+}
+
+/// `[\p{L}\p{M}]`, DeepSeek's letter class.
+#[inline]
+fn letter_or_mark_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    char_len_if(
+        text,
+        bytes,
+        pos,
+        |c| c == Class::Letter,
+        |c| is_letter_char(c) || is_mark_char(c),
+    )
+}
+
+/// `[\p{P}\p{S}]`, DeepSeek's punctuation class. Wider than `punct_at`: it
+/// excludes digits and whitespace by category rather than by exclusion, so a
+/// character in neither class (a control code, say) belongs to neither run.
+#[inline]
+fn punct_or_symbol_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    let class = CLASS[bytes[pos] as usize];
+    if class == Class::Lead {
+        let (c, len) = char_at(text, pos);
+        is_punct_or_symbol_char(c).then_some(len)
+    } else {
+        // ASCII punctuation is exactly the printable non-alphanumeric set.
+        let b = bytes[pos];
+        (class == Class::Punct && b.is_ascii_graphic()).then_some(1)
+    }
+}
+
+// --- run scanners -----------------------------------------------------------
+
+/// End of the maximal `\p{L}+` run starting at `pos`.
+#[inline]
+fn scan_letters(text: &str, bytes: &[u8], mut pos: usize) -> usize {
+    loop {
+        pos = swar_skip_ascii_letters(bytes, pos);
+        if pos >= bytes.len() || bytes[pos] < 0x80 {
+            return pos;
+        }
+        match letter_at(text, bytes, pos) {
+            Some(n) => pos += n,
+            None => return pos,
+        }
+    }
+}
+
+/// End of the maximal run of characters satisfying `at`, starting at `pos`.
+#[inline]
+fn scan_run(
+    text: &str,
+    bytes: &[u8],
+    mut pos: usize,
+    at: impl Fn(&str, &[u8], usize) -> Option<usize>,
+) -> usize {
+    while pos < bytes.len() {
+        match at(text, bytes, pos) {
+            Some(n) => pos += n,
+            None => break,
+        }
+    }
+    pos
+}
+
+/// Case-insensitive `'s|'t|'re|'ve|'m|'ll|'d` at `pos`, including the quote.
+#[inline]
+fn contraction_len(bytes: &[u8], pos: usize) -> Option<usize> {
+    if bytes.get(pos) != Some(&b'\'') {
+        return None;
+    }
+    let lower = |i: usize| bytes.get(i).map(|b| b | 0x20);
+    match lower(pos + 1)? {
+        b's' | b'd' | b'm' | b't' => Some(2),
+        b'l' if lower(pos + 2) == Some(b'l') => Some(3),
+        b'v' | b'r' if lower(pos + 2) == Some(b'e') => Some(3),
+        _ => None,
+    }
+}
+
+/// Which whitespace branch an alternation reaches first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WhitespaceOrder {
+    /// cl100k: `\s+$` precedes `\s*[\r\n]`, so a run that both contains a
+    /// newline and reaches the end of the text is taken whole.
+    EndOfTextFirst,
+    /// llama3/o200k/deepseek: `\s*[\r\n]+` precedes `\s+(?!\S)`, so the same run
+    /// is cut after its last newline.
+    NewlineFirst,
+}
+
+/// Resolves a whitespace run to the span its alternation would match.
+///
+/// All four patterns end in the same three or four whitespace branches, and the
+/// only thing that varies is which comes first.
+#[inline]
+fn whitespace_span(text: &str, bytes: &[u8], pos: usize, order: WhitespaceOrder) -> (usize, usize) {
+    let len = bytes.len();
+    let run_end = scan_run(text, bytes, pos, space_at);
+
+    let last_newline = bytes[pos..run_end]
+        .iter()
+        .rposition(|&b| b == b'\r' || b == b'\n')
+        .map(|offset| pos + offset + 1);
+
+    match order {
+        // `\s+$` — the whole run, when it reaches the end of the text.
+        WhitespaceOrder::EndOfTextFirst if run_end == len => return (pos, run_end),
+        // `\s*[\r\n]` / `\s*[\r\n]+` — greedy `\s*` backtracks to the last
+        // newline, so the token ends just past it.
+        _ => {
+            if let Some(end) = last_newline {
+                return (pos, end);
+            }
+        }
+    }
+
+    // `\s+(?!\S)` — at the end of the text the lookahead holds with nothing
+    // given back, so the run is taken whole; otherwise one character is given
+    // back so the lookahead sees whitespace rather than the character that ends
+    // the run. That needs at least two characters.
+    if run_end == len {
+        return (pos, run_end);
+    }
+    let last_char_len = text[pos..run_end]
+        .chars()
+        .next_back()
+        .map(char::len_utf8)
+        .unwrap_or(1);
+    if run_end - pos > last_char_len {
+        return (pos, run_end - last_char_len);
+    }
+
+    // `\s` / `\s+` — a single character, which is the whole run here.
+    (pos, run_end)
+}
+
+// --- the cl100k family ------------------------------------------------------
+
+/// Shape shared by cl100k_base, Llama 3 and Qwen 2.
+#[derive(Clone, Copy)]
+struct Family {
+    /// `\p{N}{1,3}` versus Qwen's single `\p{N}`.
+    max_digits: u32,
+    whitespace: WhitespaceOrder,
+}
+
+const CL100K: Family = Family {
+    max_digits: 3,
+    whitespace: WhitespaceOrder::EndOfTextFirst,
+};
+const LLAMA3: Family = Family {
+    max_digits: 3,
+    whitespace: WhitespaceOrder::NewlineFirst,
+};
+const QWEN2: Family = Family {
+    max_digits: 1,
+    whitespace: WhitespaceOrder::NewlineFirst,
+};
+
+/// Splits by a cl100k-shaped pattern:
+/// `contraction | [^\r\n\p{L}\p{N}]?\p{L}+ | \p{N}{1,n} | ?[^\s\p{L}\p{N}]+[\r\n]* | whitespace`
+fn family_spans(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0usize;
+
+    while pos < len {
+        let start = pos;
+
+        // Contractions. cl100k writes this as `'(?i:[sdmt]|ll|ve|re)` and
+        // Llama 3 as `(?i:'s|'t|…)`; the accepted set is the same.
+        if let Some(n) = contraction_len(bytes, pos) {
+            pos += n;
+            out.push((start, pos));
+            continue;
+        }
+
+        // `[^\r\n\p{L}\p{N}]?\p{L}+` — the optional prefix is any single
+        // character that is not CR, LF, a letter or a digit, so a space and a
+        // punctuation mark both qualify: " word" and "!word" are each one token.
+        // It is only taken when a letter run actually follows.
+        if let Some(n) = letter_at(text, bytes, pos) {
+            pos = scan_letters(text, bytes, pos + n);
+            out.push((start, pos));
+            continue;
+        }
+        if let Some(prefix) = prefix_len(text, bytes, pos) {
+            if let Some(n) = pos
+                .checked_add(prefix)
+                .filter(|&p| p < len)
+                .and_then(|p| letter_at(text, bytes, p))
+            {
+                pos = scan_letters(text, bytes, pos + prefix + n);
+                out.push((start, pos));
+                continue;
+            }
+        }
+
+        // `\p{N}{1,n}` — no leading space, unlike the letter branch.
+        if let Some(n) = number_at(text, bytes, pos) {
+            pos += n;
+            for _ in 1..scheme.max_digits {
+                match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
+                    Some(n) => pos += n,
+                    None => break,
+                }
+            }
+            out.push((start, pos));
+            continue;
+        }
+
+        // ` ?[^\s\p{L}\p{N}]+[\r\n]*`
+        let after_space = if bytes[pos] == b' ' { pos + 1 } else { pos };
+        if after_space < len && punct_at(text, bytes, after_space).is_some() {
+            pos = scan_run(text, bytes, after_space, punct_at);
+            while pos < len && (bytes[pos] == b'\r' || bytes[pos] == b'\n') {
+                pos += 1;
+            }
+            out.push((start, pos));
+            continue;
+        }
+
+        if space_at(text, bytes, pos).is_some() {
+            let (s, e) = whitespace_span(text, bytes, pos, scheme.whitespace);
+            pos = e;
+            out.push((s, e));
+            continue;
+        }
+
+        // No branch matches here, which the engine handles by trying the next
+        // position. Nothing is emitted.
+        let (_, l) = char_at(text, pos);
+        pos += l;
+    }
+}
+
+/// `[^\r\n\p{L}\p{N}]?` — length of the optional prefix character at `pos`.
+///
+/// Letters are excluded as well as digits and the two newline characters. The
+/// cl100k family only reaches this after `letter_at` has already failed, so the
+/// distinction is invisible there, but o200k asks the question directly: without
+/// it the prefix would swallow the `i` of `iPhone` and the branch would go on to
+/// match `Phone`, giving one token where the expression gives two.
+#[inline]
+fn prefix_len(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    match CLASS[bytes[pos] as usize] {
+        Class::Newline | Class::Digit | Class::Letter => None,
+        Class::Lead => {
+            let (c, l) = char_at(text, pos);
+            (!is_letter_char(c) && !is_number_char(c)).then_some(l)
+        }
+        _ => Some(1),
+    }
+}
+
+pub(super) fn cl100k_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    family_spans(text, out, CL100K)
+}
+
+pub(super) fn llama3_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    family_spans(text, out, LLAMA3)
+}
+
+pub(super) fn qwen2_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    family_spans(text, out, QWEN2)
+}
+
+// --- o200k ------------------------------------------------------------------
+
+/// Splits by the o200k_base pattern.
+///
+/// Its two leading branches split a letter run on the case boundary — an
+/// uppercase head followed by a lowercase tail — which is why `XMLHttpRequest`
+/// becomes `XMLHttp` + `Request` here but stays whole under Llama 3.
+pub(super) fn o200k_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0usize;
+
+    while pos < len {
+        let start = pos;
+
+        if let Some(end) = o200k_letter_branches(text, bytes, pos) {
+            pos = end;
+            out.push((start, pos));
+            continue;
+        }
+
+        if let Some(n) = number_at(text, bytes, pos) {
+            pos += n;
+            for _ in 1..3 {
+                match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
+                    Some(n) => pos += n,
+                    None => break,
+                }
+            }
+            out.push((start, pos));
+            continue;
+        }
+
+        // ` ?[^\s\p{L}\p{N}]+[\r\n/]*` — note the `/`, which o200k includes in
+        // the trailing class and the other patterns do not.
+        let after_space = if bytes[pos] == b' ' { pos + 1 } else { pos };
+        if after_space < len && punct_at(text, bytes, after_space).is_some() {
+            pos = scan_run(text, bytes, after_space, punct_at);
+            while pos < len && matches!(bytes[pos], b'\r' | b'\n' | b'/') {
+                pos += 1;
+            }
+            out.push((start, pos));
+            continue;
+        }
+
+        if space_at(text, bytes, pos).is_some() {
+            let (s, e) = whitespace_span(text, bytes, pos, WhitespaceOrder::NewlineFirst);
+            pos = e;
+            out.push((s, e));
+            continue;
+        }
+
+        let (_, l) = char_at(text, pos);
+        pos += l;
+    }
+}
+
+/// The two case-split letter branches, in the alternation's order.
+///
+/// A: `[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|…)?`
+/// B: `[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|…)?`
+///
+/// Each optional prefix is greedy, so a branch is tried with the prefix before
+/// without it.
+fn o200k_letter_branches(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    let with_prefix = prefix_len(text, bytes, pos).map(|p| pos + p);
+
+    // Branch A, prefix first then without.
+    for &q in [with_prefix, Some(pos)].iter().flatten() {
+        if q < bytes.len() {
+            if let Some(end) = o200k_branch_a(text, bytes, q) {
+                return Some(end);
+            }
+        }
+    }
+    // Branch B, likewise.
+    for &q in [with_prefix, Some(pos)].iter().flatten() {
+        if q < bytes.len() {
+            if let Some(end) = o200k_branch_b(text, bytes, q) {
+                return Some(end);
+            }
+        }
+    }
+    None
+}
+
+/// `U* L+` — greedy `U*` gives characters back until a lowercase-class run can
+/// start, because the two classes overlap on `\p{Lm}`, `\p{Lo}` and `\p{M}`.
+fn o200k_branch_a(text: &str, bytes: &[u8], start: usize) -> Option<usize> {
+    let upper_end = scan_run(text, bytes, start, upper_run_at);
+
+    // Try the longest `U*` first, then shorter ones, as the engine does.
+    let mut boundary = upper_end;
+    loop {
+        if boundary < bytes.len() {
+            if let Some(n) = lower_run_at(text, bytes, boundary) {
+                let lower_end = scan_run(text, bytes, boundary + n, lower_run_at);
+                return Some(lower_end + trailing_contraction(bytes, lower_end));
+            }
+        }
+        if boundary <= start {
+            return None;
+        }
+        boundary = prev_char_boundary(text, start, boundary);
+    }
+}
+
+/// `U+ L*` — no backtracking needed: the greedy `U+` succeeds or the branch
+/// fails, and `L*` may be empty.
+fn o200k_branch_b(text: &str, bytes: &[u8], start: usize) -> Option<usize> {
+    let upper_end = scan_run(text, bytes, start, upper_run_at);
+    if upper_end == start {
+        return None;
+    }
+    let lower_end = scan_run(text, bytes, upper_end, lower_run_at);
+    Some(lower_end + trailing_contraction(bytes, lower_end))
+}
+
+#[inline]
+fn upper_run_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    if bytes[pos] < 0x80 {
+        bytes[pos].is_ascii_uppercase().then_some(1)
+    } else {
+        let (c, l) = char_at(text, pos);
+        is_upper_run_char(c).then_some(l)
+    }
+}
+
+#[inline]
+fn lower_run_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    if bytes[pos] < 0x80 {
+        bytes[pos].is_ascii_lowercase().then_some(1)
+    } else {
+        let (c, l) = char_at(text, pos);
+        is_lower_run_char(c).then_some(l)
+    }
+}
+
+#[inline]
+fn trailing_contraction(bytes: &[u8], pos: usize) -> usize {
+    contraction_len(bytes, pos).unwrap_or(0)
+}
+
+/// Start of the character preceding `pos`, never going below `floor`.
+#[inline]
+fn prev_char_boundary(text: &str, floor: usize, pos: usize) -> usize {
+    let mut p = pos.saturating_sub(1);
+    while p > floor && !text.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
+// --- DeepSeek V3, third pass ------------------------------------------------
+
+/// Splits by the third DeepSeek V3 expression.
+///
+/// The first two passes (`\p{N}{1,3}` and a CJK/kana range) stay on the engine:
+/// they are single runs rather than alternations, so they cost the engine little
+/// and gain little here. This pass is the alternation, and it is the same shape
+/// as the cl100k family over different classes — `[\p{L}\p{M}]` for letters and
+/// `[\p{P}\p{S}]` for punctuation, with an extra leading branch pairing one
+/// ASCII punctuation mark with an ASCII letter run.
+pub(super) fn deepseek_v3_pass3_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0usize;
+
+    while pos < len {
+        let start = pos;
+
+        // `[!-/:-@\[-`{-~][A-Za-z]+` — one ASCII punctuation mark followed by
+        // ASCII letters.
+        if bytes[pos].is_ascii_graphic()
+            && CLASS[bytes[pos] as usize] == Class::Punct
+            && pos + 1 < len
+            && bytes[pos + 1].is_ascii_alphabetic()
+        {
+            pos = swar_skip_ascii_letters(bytes, pos + 1);
+            out.push((start, pos));
+            continue;
+        }
+
+        // `[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+` — the prefix class differs from
+        // the cl100k family's: it excludes punctuation and symbols rather than
+        // digits, so a digit *can* introduce a letter run here.
+        if let Some(n) = letter_or_mark_at(text, bytes, pos) {
+            pos = scan_run(text, bytes, pos + n, letter_or_mark_at);
+            out.push((start, pos));
+            continue;
+        }
+        if let Some(prefix) = deepseek_prefix_len(text, bytes, pos) {
+            if let Some(n) = (pos + prefix < len)
+                .then(|| letter_or_mark_at(text, bytes, pos + prefix))
+                .flatten()
+            {
+                pos = scan_run(text, bytes, pos + prefix + n, letter_or_mark_at);
+                out.push((start, pos));
+                continue;
+            }
+        }
+
+        // ` ?[\p{P}\p{S}]+[\r\n]*`
+        let after_space = if bytes[pos] == b' ' { pos + 1 } else { pos };
+        if after_space < len && punct_or_symbol_at(text, bytes, after_space).is_some() {
+            pos = scan_run(text, bytes, after_space, punct_or_symbol_at);
+            while pos < len && (bytes[pos] == b'\r' || bytes[pos] == b'\n') {
+                pos += 1;
+            }
+            out.push((start, pos));
+            continue;
+        }
+
+        if space_at(text, bytes, pos).is_some() {
+            let (s, e) = whitespace_span(text, bytes, pos, WhitespaceOrder::NewlineFirst);
+            pos = e;
+            out.push((s, e));
+            continue;
+        }
+
+        // A digit not followed by letters reaches no branch, so the engine moves
+        // on without emitting. Passes 1 and 2 are what claim those characters.
+        let (_, l) = char_at(text, pos);
+        pos += l;
+    }
+}
+
+/// `[^\r\n\p{L}\p{P}\p{S}]?`.
+#[inline]
+fn deepseek_prefix_len(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    if CLASS[bytes[pos] as usize] == Class::Newline {
+        return None;
+    }
+    let (c, l) = if bytes[pos] < 0x80 {
+        (bytes[pos] as char, 1)
+    } else {
+        char_at(text, pos)
+    };
+    (!is_letter_char(c) && !is_punct_or_symbol_char(c)).then_some(l)
+}
+
+/// Splits by DeepSeek V3's first pass, `\p{N}{1,3}`.
+///
+/// Not an alternation, so the engine has less to lose here than on the third
+/// pass — but the pass still walks the whole text to find sparse digit runs, and
+/// that walk is what `swar_skip_to_number` removes.
+pub(super) fn deepseek_v3_pass1_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0usize;
+
+    while pos < len {
+        pos = swar_skip_to_number(bytes, pos);
+        if pos >= len {
+            break;
+        }
+        let Some(n) = number_at(text, bytes, pos) else {
+            // A non-ASCII character that is not `\p{N}`; step over it whole.
+            let (_, l) = char_at(text, pos);
+            pos += l;
+            continue;
+        };
+        let start = pos;
+        pos += n;
+        for _ in 1..3 {
+            match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
+                Some(n) => pos += n,
+                None => break,
+            }
+        }
+        out.push((start, pos));
+    }
+}
+
+/// Splits by DeepSeek V3's second pass, the CJK/hiragana/katakana run.
+pub(super) fn deepseek_v3_pass2_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0usize;
+
+    while pos < len {
+        pos = swar_skip_ascii(bytes, pos);
+        if pos >= len {
+            break;
+        }
+        let (c, l) = char_at(text, pos);
+        if !is_deepseek_cjk(c) {
+            pos += l;
+            continue;
+        }
+        let start = pos;
+        pos += l;
+        while pos < len && bytes[pos] >= 0x80 {
+            let (c, l) = char_at(text, pos);
+            if !is_deepseek_cjk(c) {
+                break;
+            }
+            pos += l;
+        }
+        out.push((start, pos));
+    }
+}
+
+/// `[\u{4E00}-\u{9FA5}\u{3040}-\u{309F}\u{30A0}-\u{30FF}]`.
+#[inline]
+fn is_deepseek_cjk(c: char) -> bool {
+    matches!(c, '\u{4E00}'..='\u{9FA5}' | '\u{3040}'..='\u{30FF}')
+}
+
+/// Appends the pre-token spans of `text` as `(start, end)` byte offsets.
+pub(crate) type SpanScanner = fn(&str, &mut Vec<(usize, usize)>);
+
+/// The scanner equivalent to `pattern`, if one has been proven against it.
+///
+/// Keyed on the exact expression text rather than on a vocabulary name, so a
+/// tokenizer built from a `tokenizer.json` that happens to carry one of these
+/// expressions gets the scanner too, and one carrying a near-miss does not.
+pub(crate) fn for_pattern(pattern: &str) -> Option<SpanScanner> {
+    use crate::core::tokenizer::patterns as p;
+
+    // `match` cannot bind against non-literal constants, hence the chain.
+    if pattern == p::CL100K_BASE_PATTERN {
+        Some(cl100k_spans)
+    } else if pattern == p::LLAMA3_PATTERN {
+        Some(llama3_spans)
+    } else if pattern == p::QWEN2_PATTERN {
+        Some(qwen2_spans)
+    } else if pattern == p::O200K_BASE_PATTERN {
+        Some(o200k_spans)
+    } else if pattern == p::DEEPSEEK_V3_PATTERNS[0] {
+        Some(deepseek_v3_pass1_spans)
+    } else if pattern == p::DEEPSEEK_V3_PATTERNS[1] {
+        Some(deepseek_v3_pass2_spans)
+    } else if pattern == p::DEEPSEEK_V3_PATTERNS[2] {
+        Some(deepseek_v3_pass3_spans)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::tokenizer::patterns::{
+        CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, LLAMA3_PATTERN, O200K_BASE_PATTERN,
+        QWEN2_PATTERN,
+    };
+
+    type Scanner = fn(&str, &mut Vec<(usize, usize)>);
+
+    /// Every scanner against the expression it replaces.
+    fn all_scanners() -> Vec<(&'static str, &'static str, Scanner)> {
+        vec![
+            ("cl100k", CL100K_BASE_PATTERN, cl100k_spans as Scanner),
+            ("llama3", LLAMA3_PATTERN, llama3_spans as Scanner),
+            ("qwen2", QWEN2_PATTERN, qwen2_spans as Scanner),
+            ("o200k", O200K_BASE_PATTERN, o200k_spans as Scanner),
+            (
+                "deepseek-pass1",
+                DEEPSEEK_V3_PATTERNS[0],
+                deepseek_v3_pass1_spans as Scanner,
+            ),
+            (
+                "deepseek-pass2",
+                DEEPSEEK_V3_PATTERNS[1],
+                deepseek_v3_pass2_spans as Scanner,
+            ),
+            (
+                "deepseek-pass3",
+                DEEPSEEK_V3_PATTERNS[2],
+                deepseek_v3_pass3_spans as Scanner,
+            ),
+        ]
+    }
+
+    fn assert_agrees(name: &str, pattern: &str, scan: Scanner, input: &str) {
+        let re = regexr::RegexBuilder::new(pattern)
+            .jit(true)
+            .build()
+            .expect("pattern compiles");
+        let expected: Vec<(usize, usize)> =
+            re.find_iter(input).map(|m| (m.start(), m.end())).collect();
+        let mut got = Vec::new();
+        scan(input, &mut got);
+        assert_eq!(
+            got,
+            expected,
+            "{name} scanner disagrees with its regex on {input:?}\n  scanner: {:?}\n  regex:   {:?}",
+            got.iter().map(|&(s, e)| &input[s..e]).collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|&(s, e)| &input[s..e])
+                .collect::<Vec<_>>()
+        );
+    }
+
+    const SHAPED: &[&str] = &[
+        "",
+        " ",
+        "  ",
+        "   ",
+        "\n",
+        "\n\n",
+        " \n",
+        " \n ",
+        "\t\n\t",
+        "hello world",
+        " hello",
+        "!hello",
+        "hello!",
+        "don't stop",
+        "DON'T STOP",
+        "it's o'clock 'tis",
+        "'s 'S 'll 'LL 've 're 'd 'm 't",
+        "'x 'zz '",
+        "123",
+        "1234",
+        "12345678",
+        " 123",
+        "abc123def",
+        "a1b2c3",
+        "!!!",
+        " !!!",
+        "!!!\n\n",
+        " ...\r\n",
+        "( )",
+        "{\"key\": \"value\", \"n\": 42}",
+        "def f(x):\n    return x + 1\n",
+        "trailing   ",
+        "trailing\n",
+        "trailing \n ",
+        "  leading",
+        "a  b",
+        "a   b",
+        "a \n b",
+        "中文测试",
+        " 中文",
+        "中文 abc",
+        "café naïve",
+        "emoji 🚀 here",
+        "🚀🚀",
+        " 🚀",
+        "Ⅷ Ⅸ",
+        "½ ¾",
+        "\u{3000}abc",
+        "a\u{00a0}b",
+        "x\u{2028}y",
+        "\r\n\r\n",
+        "a\r\nb",
+        "  \r\n  ",
+        "word\u{0301} mark",
+        // Case splits, for o200k's two leading branches.
+        "XMLHttpRequest",
+        "camelCase",
+        "PascalCase",
+        "ALLCAPS",
+        "ALLCAPSthenLower",
+        "aB",
+        "Ab",
+        "A",
+        "AB",
+        "iPhone",
+        "McDonald's",
+        "HTTPServer's",
+        "ÉCOLE école",
+        // Slashes, for o200k's trailing class.
+        "path/to/file",
+        "a//b",
+        "!/",
+        " //\n",
+        // Digit runs and CJK/kana, for DeepSeek's first two passes. The digit
+        // cases straddle the 1..3 grouping and the SWAR skip; the script cases
+        // sit on the edges of the three ranges the second pass accepts.
+        "1",
+        "12",
+        "1234567",
+        "abc 1234567 def",
+        "a1234567890b",
+        "\u{4e00}\u{9fa5}",
+        "\u{4dff}\u{4e00}",
+        "\u{9fa5}\u{9fa6}",
+        "\u{303f}\u{3040}",
+        "\u{30ff}\u{3100}",
+        "\u{3040}\u{309f}\u{30a0}\u{30ff}",
+        "ひらがな カタカナ 漢字",
+        "long ascii prefix before 漢字 appears",
+        "漢字123ひらがな",
+        // Long ASCII letter runs, to exercise the SWAR path and its tail.
+        "abcdefg",
+        "abcdefgh",
+        "abcdefghi",
+        "abcdefghijklmnopqrstuvwxyz",
+        "abcdefghijklmnopqrstuvwxyz0",
+        "Supercalifragilisticexpialidocious and more words here",
+        "aaaaaaaa\u{4e2d}",
+        "aaaaaaaaaaaaaaaa\u{4e2d}bbbbbbbb",
+    ];
+
+    #[test]
+    fn scanners_agree_with_their_regex_on_shaped_inputs() {
+        for (name, pattern, scan) in all_scanners() {
+            for input in SHAPED {
+                assert_agrees(name, pattern, scan, input);
+            }
+        }
+    }
+
+    #[test]
+    fn scanners_agree_with_their_regex_on_random_inputs() {
+        // Assembled from the character kinds the branches turn on, rather than
+        // from prose: disagreements live at run boundaries.
+        const ALPHABET: &[&str] = &[
+            "a", "z", "A", "Z", "1", "9", " ", "  ", "\t", "\n", "\r", "\r\n", "'", "!", ".", ",",
+            "-", "_", "/", "中", "é", "É", "🚀", "\u{00a0}", "\u{3000}", "Ⅷ", "½", "\u{0301}", "«",
+            "€", "\u{05d0}",
+        ];
+
+        // xorshift64*, so a failure is reproducible from the seed alone.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+
+        let scanners = all_scanners();
+        for _ in 0..3000 {
+            let pieces = 1 + (next() % 14) as usize;
+            let mut input = String::new();
+            for _ in 0..pieces {
+                input.push_str(ALPHABET[(next() % ALPHABET.len() as u64) as usize]);
+            }
+            for &(name, pattern, scan) in &scanners {
+                assert_agrees(name, pattern, scan, &input);
+            }
+        }
+    }
+}

@@ -6,6 +6,7 @@ mod decode;
 mod encode;
 mod error;
 mod patterns;
+pub(crate) mod scanner;
 #[cfg(test)]
 mod tests;
 mod types;

@@ -1,4 +1,3 @@
-use regexr::RegexBuilder;
 use serde_json::Value;
 
 use super::pipeline::PreTokenizer;
@@ -9,12 +8,12 @@ use crate::core::tokenizer::{TokenizerError, GPT2_PATTERN};
 /// here rather than bad caller input. They still surface it as an error instead
 /// of panicking: [`PreTokenizer::new`] already returns a `Result`, so carrying
 /// it costs nothing and keeps library code panic-free.
-pub(super) fn gpt2_regex() -> Result<regexr::Regex, TokenizerError> {
-    Ok(RegexBuilder::new(GPT2_PATTERN).jit(true).build()?)
+pub(super) fn gpt2_regex() -> Result<super::stage::SplitMatcher, TokenizerError> {
+    super::stage::SplitMatcher::compile(GPT2_PATTERN)
 }
 
-pub(super) fn whitespace_regex() -> Result<regexr::Regex, TokenizerError> {
-    Ok(RegexBuilder::new(r"\w+|[^\w\s]+").jit(true).build()?)
+pub(super) fn whitespace_regex() -> Result<super::stage::SplitMatcher, TokenizerError> {
+    super::stage::SplitMatcher::compile(r"\w+|[^\w\s]+")
 }
 
 /// Build a [`PreTokenizer`] from a `pre_tokenizer` JSON value. Returns `None`

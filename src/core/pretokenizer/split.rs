@@ -1,17 +1,18 @@
 use super::spec::Behavior;
 
-/// Split `piece` by `re`. The matched spans are the delimiters and everything
-/// between them is content; with `invert`, the matches are the content and the
-/// spans between them are the delimiters. The delimiters are combined with the
-/// surrounding content according to `behavior`.
+/// Split `piece` by `matcher`. The matched spans are the delimiters and
+/// everything between them is content; with `invert`, the matches are the
+/// content and the spans between them are the delimiters. The delimiters are
+/// combined with the surrounding content according to `behavior`.
 pub(super) fn split_regex<'p>(
     piece: &'p str,
-    re: &regexr::Regex,
+    matcher: &super::stage::SplitMatcher,
     behavior: Behavior,
     invert: bool,
     out: &mut Vec<&'p str>,
 ) {
-    let matches: Vec<(usize, usize)> = re.find_iter(piece).map(|m| (m.start(), m.end())).collect();
+    let mut matches: Vec<(usize, usize)> = Vec::new();
+    matcher.matches(piece, &mut matches);
     // At most one gap segment before each match, plus a trailing one.
     let mut segs: Vec<Segment> = Vec::with_capacity(matches.len() * 2 + 1);
 

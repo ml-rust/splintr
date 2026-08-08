@@ -301,7 +301,10 @@ fn unsplit_input_encodes_sub_quadratically() {
 /// hit path is short enough that the lock is barely held.
 ///
 /// Skipped below four usable cores, where parallel speedup is not a property
-/// the code can have.
+/// the code can have — and compiled out entirely without the `rayon` feature,
+/// which is the same statement about the build rather than the machine:
+/// `encode_batch` is then a sequential loop and cannot outrun one.
+#[cfg(feature = "rayon")]
 #[test]
 fn batch_encoding_scales_with_available_cores() {
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
