@@ -31,6 +31,10 @@
 //! Timing-based assertions here are deliberately coarse: they separate
 //! *complexity classes* and *sign of a difference*, not percentages, so they
 //! carry order-of-magnitude headroom against a loaded or slow machine.
+// Gated on `vocab-llama3` because it names that vocabulary's embedded bytes directly, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-llama3")]
 
 use splintr::core::byte_pair_encode;
 use splintr::pretrained::{llama3_special_tokens, LLAMA3_VOCAB};

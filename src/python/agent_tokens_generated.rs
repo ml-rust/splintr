@@ -781,10 +781,10 @@ impl PyDeepSeekV3AgentTokens {
     /// Native padding token (2)
     #[classattr]
     const PAD_NATIVE: u32 = 2;
-    /// Native <think> token (128798)
+    /// Native `<think>` token (128798)
     #[classattr]
     const THINK_NATIVE: u32 = 128798;
-    /// Native </think> token (128799)
+    /// Native `</think>` token (128799)
     #[classattr]
     const THINK_END_NATIVE: u32 = 128799;
     /// Fill-in-the-Middle hole (128800)
@@ -796,13 +796,13 @@ impl PyDeepSeekV3AgentTokens {
     /// Fill-in-the-Middle end (128802)
     #[classattr]
     const FIM_END: u32 = 128802;
-    /// Native <｜User｜> token (128803)
+    /// Native `<｜User｜>` token (128803)
     #[classattr]
     const USER_NATIVE: u32 = 128803;
-    /// Native <｜Assistant｜> token (128804)
+    /// Native `<｜Assistant｜>` token (128804)
     #[classattr]
     const ASSISTANT_NATIVE: u32 = 128804;
-    /// End of turn <|EOT|> (128805)
+    /// End of turn `<|EOT|>` (128805)
     #[classattr]
     const EOT: u32 = 128805;
     /// Tool calls begin marker (128806)
@@ -1545,25 +1545,25 @@ impl PyMistralV3AgentTokens {
     // Model-Specific Native Tokens
     // =========================================================================
 
-    /// [INST] instruction begin (3)
+    /// `[INST]` instruction begin (3)
     #[classattr]
     const INST: u32 = 3;
-    /// [/INST] instruction end (4)
+    /// `[/INST]` instruction end (4)
     #[classattr]
     const INST_END: u32 = 4;
-    /// [AVAILABLE_TOOLS] tool list begin (5)
+    /// `[AVAILABLE_TOOLS]` tool list begin (5)
     #[classattr]
     const AVAILABLE_TOOLS: u32 = 5;
-    /// [/AVAILABLE_TOOLS] tool list end (6)
+    /// `[/AVAILABLE_TOOLS]` tool list end (6)
     #[classattr]
     const AVAILABLE_TOOLS_END: u32 = 6;
-    /// [TOOL_RESULTS] tool results begin (7)
+    /// `[TOOL_RESULTS]` tool results begin (7)
     #[classattr]
     const TOOL_RESULTS: u32 = 7;
-    /// [/TOOL_RESULTS] tool results end (8)
+    /// `[/TOOL_RESULTS]` tool results end (8)
     #[classattr]
     const TOOL_RESULTS_END: u32 = 8;
-    /// [TOOL_CALLS] tool calls marker (9)
+    /// `[TOOL_CALLS]` tool calls marker (9)
     #[classattr]
     const TOOL_CALLS: u32 = 9;
 
@@ -1810,10 +1810,10 @@ impl PyQwen3AgentTokens {
     /// End of text marker (151643)
     #[classattr]
     const ENDOFTEXT: u32 = 151643;
-    /// Native <|im_start|> - ChatML message start (151644)
+    /// Native `<|im_start|>` - ChatML message start (151644)
     #[classattr]
     const IM_START: u32 = 151644;
-    /// Native <|im_end|> - ChatML message end (151645)
+    /// Native `<|im_end|>` - ChatML message end (151645)
     #[classattr]
     const IM_END: u32 = 151645;
     /// Object reference begin (151646)
@@ -1849,10 +1849,10 @@ impl PyQwen3AgentTokens {
     /// Video padding (151656)
     #[classattr]
     const VIDEO_PAD: u32 = 151656;
-    /// Native <tool_call> (151657)
+    /// Native `<tool_call>` (151657)
     #[classattr]
     const TOOL_CALL: u32 = 151657;
-    /// Native </tool_call> (151658)
+    /// Native `</tool_call>` (151658)
     #[classattr]
     const TOOL_CALL_END: u32 = 151658;
     /// Fill-in-the-Middle prefix (151659)
@@ -1873,16 +1873,16 @@ impl PyQwen3AgentTokens {
     /// File separator (151664)
     #[classattr]
     const FILE_SEP: u32 = 151664;
-    /// Native <tool_response> (151665)
+    /// Native `<tool_response>` (151665)
     #[classattr]
     const TOOL_RESPONSE: u32 = 151665;
-    /// Native </tool_response> (151666)
+    /// Native `</tool_response>` (151666)
     #[classattr]
     const TOOL_RESPONSE_END: u32 = 151666;
-    /// Native <think> token (151667)
+    /// Native `<think>` token (151667)
     #[classattr]
     const THINK_NATIVE: u32 = 151667;
-    /// Native </think> token (151668)
+    /// Native `</think>` token (151668)
     #[classattr]
     const THINK_END_NATIVE: u32 = 151668;
 
@@ -2123,28 +2123,28 @@ impl PyGlm4AgentTokens {
     /// End of text marker (151329)
     #[classattr]
     const ENDOFTEXT: u32 = 151329;
-    /// [MASK] (151330)
+    /// `[MASK]` (151330)
     #[classattr]
     const MASK: u32 = 151330;
-    /// [gMASK] (151331)
+    /// `[gMASK]` (151331)
     #[classattr]
     const GMASK: u32 = 151331;
-    /// [sMASK] (151332)
+    /// `[sMASK]` (151332)
     #[classattr]
     const SMASK: u32 = 151332;
-    /// Start of prefix <sop> (151333)
+    /// Start of prefix `<sop>` (151333)
     #[classattr]
     const SOP: u32 = 151333;
-    /// End of prefix <eop> (151334)
+    /// End of prefix `<eop>` (151334)
     #[classattr]
     const EOP: u32 = 151334;
-    /// Native <|system|> role marker (151335)
+    /// Native `<|system|>` role marker (151335)
     #[classattr]
     const SYSTEM: u32 = 151335;
-    /// Native <|user|> role marker (151336)
+    /// Native `<|user|>` role marker (151336)
     #[classattr]
     const USER: u32 = 151336;
-    /// Native <|assistant|> role marker (151337)
+    /// Native `<|assistant|>` role marker (151337)
     #[classattr]
     const ASSISTANT: u32 = 151337;
     /// Observation role marker (151338)
@@ -2183,22 +2183,22 @@ impl PyGlm4AgentTokens {
     /// Code Fill-in-the-Middle suffix (151349)
     #[classattr]
     const CODE_SUFFIX: u32 = 151349;
-    /// Native <think> token (151350)
+    /// Native `<think>` token (151350)
     #[classattr]
     const THINK_NATIVE: u32 = 151350;
-    /// Native </think> token (151351)
+    /// Native `</think>` token (151351)
     #[classattr]
     const THINK_END_NATIVE: u32 = 151351;
-    /// Native <tool_call> (151352)
+    /// Native `<tool_call>` (151352)
     #[classattr]
     const TOOL_CALL: u32 = 151352;
-    /// Native </tool_call> (151353)
+    /// Native `</tool_call>` (151353)
     #[classattr]
     const TOOL_CALL_END: u32 = 151353;
-    /// Native <tool_response> (151354)
+    /// Native `<tool_response>` (151354)
     #[classattr]
     const TOOL_RESPONSE: u32 = 151354;
-    /// Native </tool_response> (151355)
+    /// Native `</tool_response>` (151355)
     #[classattr]
     const TOOL_RESPONSE_END: u32 = 151355;
     /// Tool argument key begin (151356)
@@ -2222,10 +2222,10 @@ impl PyGlm4AgentTokens {
     /// Box end (151362)
     #[classattr]
     const END_OF_BOX: u32 = 151362;
-    /// Native <|image|> placeholder (151363)
+    /// Native `<|image|>` placeholder (151363)
     #[classattr]
     const IMAGE: u32 = 151363;
-    /// Native <|video|> placeholder (151364)
+    /// Native `<|video|>` placeholder (151364)
     #[classattr]
     const VIDEO: u32 = 151364;
 

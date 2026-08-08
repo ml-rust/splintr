@@ -15,6 +15,10 @@
 //! approximation of SentencePiece's order — it inverts it for the 15 whitespace
 //! runs (`▁`, `▁▁`, …), which sit at low ids precisely *because* SentencePiece
 //! refuses to merge them. `" Hello world"` is the visible symptom.
+// Gated on `vocab-mistral` because every test here loads that vocabulary, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-mistral")]
 
 use splintr::{from_pretrained, AnyTokenizer, Tokenize};
 use std::sync::LazyLock;

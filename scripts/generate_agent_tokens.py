@@ -332,7 +332,7 @@ def generate_class(model_name: str, class_name: str, py_name: str, base_id: int,
         lines.append("")
 
         for const_name, token_id, desc in extra_tokens:
-            lines.append(f"    /// {desc} ({token_id})")
+            lines.append(f"    /// {_rustdoc_escape(desc)} ({token_id})")
             lines.append("    #[classattr]")
             lines.append(f"    const {const_name}: u32 = {token_id};")
         lines.append("")
@@ -346,7 +346,7 @@ def generate_class(model_name: str, class_name: str, py_name: str, base_id: int,
         for const_name, token_str, offset, desc in AGENT_TOKENS:
             if start <= offset < end and const_name not in skip_tokens:
                 token_id = base_id + offset
-                lines.append(f"    /// {desc} ({token_id})")
+                lines.append(f"    /// {_rustdoc_escape(desc)} ({token_id})")
                 lines.append("    #[classattr]")
                 lines.append(f"    const {const_name}: u32 = {token_id};")
         lines.append("")
@@ -436,7 +436,7 @@ def generate_rust_module(
     if extra_tokens:
         lines.append("    // Vocabulary-native tokens")
         for const_name, token_id, desc in extra_tokens:
-            lines.append(f"    /// {desc}")
+            lines.append(f"    /// {_rustdoc_escape(desc)}")
             lines.append(f"    pub const {const_name}: u32 = {token_id};")
         lines.append("")
 
@@ -450,7 +450,7 @@ def generate_rust_module(
             continue
         lines.append(f"    // {cat_name}")
         for const_name, desc, token_id in emitted:
-            lines.append(f"    /// {desc}")
+            lines.append(f"    /// {_rustdoc_escape(desc)}")
             lines.append(f"    pub const {const_name}: u32 = {token_id};")
         lines.append("")
 
@@ -482,6 +482,8 @@ def generate_all_rust() -> str:
     return "\n".join(output)
 
 
+import re
+
 # ---------------------------------------------------------------------------
 # Documentation tables
 # ---------------------------------------------------------------------------
@@ -497,6 +499,18 @@ def generate_all_rust() -> str:
 DOC_PATH = "docs/special_tokens.md"
 BEGIN = "<!-- BEGIN GENERATED: {} -->"
 END = "<!-- END GENERATED: {} -->"
+
+
+def _rustdoc_escape(text: str) -> str:
+    """Make a description safe inside a Rust `///` comment.
+
+    Token names are full of `<think>`, `[gMASK]` and `<sop>`, which rustdoc reads
+    as HTML tags and intra-doc links — under `-D warnings` (what CI builds docs
+    with) each is a hard error, so the crate simply fails to document. Wrapping
+    each such span in backticks makes it a code span, which rustdoc leaves alone
+    and which is how it should render anyway.
+    """
+    return re.sub(r"(<[^<>\s]+>|\[[^\[\]\s]+\])", r"`\1`", text)
 
 
 def _md_escape(token: str) -> str:

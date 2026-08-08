@@ -461,9 +461,9 @@ pub mod deepseek_v3_agent_tokens {
     pub const END_OF_SENTENCE: u32 = 1;
     /// Native padding token
     pub const PAD_NATIVE: u32 = 2;
-    /// Native <think> token
+    /// Native `<think>` token
     pub const THINK_NATIVE: u32 = 128798;
-    /// Native </think> token
+    /// Native `</think>` token
     pub const THINK_END_NATIVE: u32 = 128799;
     /// Fill-in-the-Middle hole
     pub const FIM_HOLE: u32 = 128800;
@@ -471,11 +471,11 @@ pub mod deepseek_v3_agent_tokens {
     pub const FIM_BEGIN: u32 = 128801;
     /// Fill-in-the-Middle end
     pub const FIM_END: u32 = 128802;
-    /// Native <｜User｜> token
+    /// Native `<｜User｜>` token
     pub const USER_NATIVE: u32 = 128803;
-    /// Native <｜Assistant｜> token
+    /// Native `<｜Assistant｜>` token
     pub const ASSISTANT_NATIVE: u32 = 128804;
-    /// End of turn <|EOT|>
+    /// End of turn `<|EOT|>`
     pub const EOT: u32 = 128805;
     /// Tool calls begin marker
     pub const TOOL_CALLS_BEGIN: u32 = 128806;
@@ -909,19 +909,19 @@ pub mod mistral_v2_agent_tokens {
 /// an agent token of the same meaning takes a `_NATIVE` suffix.
 pub mod mistral_v3_agent_tokens {
     // Vocabulary-native tokens
-    /// [INST] instruction begin
+    /// `[INST]` instruction begin
     pub const INST: u32 = 3;
-    /// [/INST] instruction end
+    /// `[/INST]` instruction end
     pub const INST_END: u32 = 4;
-    /// [AVAILABLE_TOOLS] tool list begin
+    /// `[AVAILABLE_TOOLS]` tool list begin
     pub const AVAILABLE_TOOLS: u32 = 5;
-    /// [/AVAILABLE_TOOLS] tool list end
+    /// `[/AVAILABLE_TOOLS]` tool list end
     pub const AVAILABLE_TOOLS_END: u32 = 6;
-    /// [TOOL_RESULTS] tool results begin
+    /// `[TOOL_RESULTS]` tool results begin
     pub const TOOL_RESULTS: u32 = 7;
-    /// [/TOOL_RESULTS] tool results end
+    /// `[/TOOL_RESULTS]` tool results end
     pub const TOOL_RESULTS_END: u32 = 8;
-    /// [TOOL_CALLS] tool calls marker
+    /// `[TOOL_CALLS]` tool calls marker
     pub const TOOL_CALLS: u32 = 9;
 
     // Conversation & Roles
@@ -1071,9 +1071,9 @@ pub mod qwen3_agent_tokens {
     // Vocabulary-native tokens
     /// End of text marker
     pub const ENDOFTEXT: u32 = 151643;
-    /// Native <|im_start|> - ChatML message start
+    /// Native `<|im_start|>` - ChatML message start
     pub const IM_START: u32 = 151644;
-    /// Native <|im_end|> - ChatML message end
+    /// Native `<|im_end|>` - ChatML message end
     pub const IM_END: u32 = 151645;
     /// Object reference begin
     pub const OBJECT_REF_START: u32 = 151646;
@@ -1097,9 +1097,9 @@ pub mod qwen3_agent_tokens {
     pub const IMAGE_PAD: u32 = 151655;
     /// Video padding
     pub const VIDEO_PAD: u32 = 151656;
-    /// Native <tool_call>
+    /// Native `<tool_call>`
     pub const TOOL_CALL: u32 = 151657;
-    /// Native </tool_call>
+    /// Native `</tool_call>`
     pub const TOOL_CALL_END: u32 = 151658;
     /// Fill-in-the-Middle prefix
     pub const FIM_PREFIX: u32 = 151659;
@@ -1113,13 +1113,13 @@ pub mod qwen3_agent_tokens {
     pub const REPO_NAME: u32 = 151663;
     /// File separator
     pub const FILE_SEP: u32 = 151664;
-    /// Native <tool_response>
+    /// Native `<tool_response>`
     pub const TOOL_RESPONSE: u32 = 151665;
-    /// Native </tool_response>
+    /// Native `</tool_response>`
     pub const TOOL_RESPONSE_END: u32 = 151666;
-    /// Native <think> token
+    /// Native `<think>` token
     pub const THINK_NATIVE: u32 = 151667;
-    /// Native </think> token
+    /// Native `</think>` token
     pub const THINK_END_NATIVE: u32 = 151668;
 
     // Conversation & Roles
@@ -1265,21 +1265,21 @@ pub mod glm4_agent_tokens {
     // Vocabulary-native tokens
     /// End of text marker
     pub const ENDOFTEXT: u32 = 151329;
-    /// [MASK]
+    /// `[MASK]`
     pub const MASK: u32 = 151330;
-    /// [gMASK]
+    /// `[gMASK]`
     pub const GMASK: u32 = 151331;
-    /// [sMASK]
+    /// `[sMASK]`
     pub const SMASK: u32 = 151332;
-    /// Start of prefix <sop>
+    /// Start of prefix `<sop>`
     pub const SOP: u32 = 151333;
-    /// End of prefix <eop>
+    /// End of prefix `<eop>`
     pub const EOP: u32 = 151334;
-    /// Native <|system|> role marker
+    /// Native `<|system|>` role marker
     pub const SYSTEM: u32 = 151335;
-    /// Native <|user|> role marker
+    /// Native `<|user|>` role marker
     pub const USER: u32 = 151336;
-    /// Native <|assistant|> role marker
+    /// Native `<|assistant|>` role marker
     pub const ASSISTANT: u32 = 151337;
     /// Observation role marker
     pub const OBSERVATION: u32 = 151338;
@@ -1305,17 +1305,17 @@ pub mod glm4_agent_tokens {
     pub const CODE_MIDDLE: u32 = 151348;
     /// Code Fill-in-the-Middle suffix
     pub const CODE_SUFFIX: u32 = 151349;
-    /// Native <think> token
+    /// Native `<think>` token
     pub const THINK_NATIVE: u32 = 151350;
-    /// Native </think> token
+    /// Native `</think>` token
     pub const THINK_END_NATIVE: u32 = 151351;
-    /// Native <tool_call>
+    /// Native `<tool_call>`
     pub const TOOL_CALL: u32 = 151352;
-    /// Native </tool_call>
+    /// Native `</tool_call>`
     pub const TOOL_CALL_END: u32 = 151353;
-    /// Native <tool_response>
+    /// Native `<tool_response>`
     pub const TOOL_RESPONSE: u32 = 151354;
-    /// Native </tool_response>
+    /// Native `</tool_response>`
     pub const TOOL_RESPONSE_END: u32 = 151355;
     /// Tool argument key begin
     pub const ARG_KEY: u32 = 151356;
@@ -1331,9 +1331,9 @@ pub mod glm4_agent_tokens {
     pub const BEGIN_OF_BOX: u32 = 151361;
     /// Box end
     pub const END_OF_BOX: u32 = 151362;
-    /// Native <|image|> placeholder
+    /// Native `<|image|>` placeholder
     pub const IMAGE: u32 = 151363;
-    /// Native <|video|> placeholder
+    /// Native `<|video|>` placeholder
     pub const VIDEO: u32 = 151364;
 
     // Conversation & Roles

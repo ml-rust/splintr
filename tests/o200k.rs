@@ -2,6 +2,10 @@
 //!
 //! These tests verify that the o200k_base tokenizer correctly encodes and decodes text,
 //! handles special tokens, and produces consistent results.
+// Gated on `vocab-o200k` because it names that vocabulary's embedded bytes directly, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-o200k")]
 
 use splintr::pretrained::{o200k_base_special_tokens, O200K_BASE_VOCAB};
 use splintr::{Tokenizer, O200K_BASE_PATTERN};

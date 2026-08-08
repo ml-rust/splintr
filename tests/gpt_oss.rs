@@ -6,6 +6,10 @@
 //! range with the harmony response format's markers. These tests pin both
 //! halves of that claim, because it is the claim that justifies shipping
 //! gpt-oss without a second 3.4 MB file.
+// Gated on `vocab-gpt-oss` because every test here loads that vocabulary, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-gpt-oss")]
 
 use splintr::pretrained::{from_pretrained, gpt_oss_special_tokens};
 use splintr::AnyTokenizer;

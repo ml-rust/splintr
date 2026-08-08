@@ -1259,6 +1259,7 @@ mod tests {
     /// vocabulary *file* rather than from tokenizer output — so these tests
     /// assert against the vocabulary, not against whatever the tokenizer
     /// currently happens to produce.
+    #[cfg(feature = "vocab-mistral")]
     fn spm_piece_id(vocab_data: &[u8], piece: &str) -> u32 {
         let (pieces, _) = load_spm_vocab(vocab_data).expect("vocabulary loads");
         let id = pieces
@@ -1625,6 +1626,7 @@ mod tests {
     /// the ids stay in range and decode back to the original text — so it is
     /// pinned here directly.
     #[test]
+    #[cfg(feature = "vocab-mistral")]
     fn test_mistral_never_shatters_the_word_boundary_marker() {
         for (name, data) in [
             ("mistral", MISTRAL_SPM_VOCAB),
@@ -1648,6 +1650,7 @@ mod tests {
     /// both present in the Mistral V1 file, so encoding text that starts those
     /// words must produce them — a byte-level merger reaches neither.
     #[test]
+    #[cfg(feature = "vocab-mistral")]
     fn test_mistral_reaches_whole_word_pieces() {
         let the = spm_piece_id(MISTRAL_SPM_VOCAB, "▁the");
         let sour = spm_piece_id(MISTRAL_SPM_VOCAB, "▁sour");

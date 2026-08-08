@@ -7,6 +7,10 @@
 //!   but with no contraction branches and single-digit `\p{N}`)
 //! - Much larger vocabulary than V1/V2 (4x larger)
 //! - Used by: Mistral NeMo, Mistral Large 2, Pixtral
+// Gated on `vocab-mistral` because every test here loads that vocabulary, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-mistral")]
 
 use splintr::{from_pretrained, SpecialDecode, Tokenize};
 

@@ -5,6 +5,10 @@
 //! `tests/fixtures/pretrained/glm4.json`; this file pins what the fixture
 //! cannot — the pre-tokenizer GLM gets, and how its native role markers
 //! interact with splintr's agent tokens of the same name.
+// Gated on `vocab-glm` because every test here loads that vocabulary, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-glm")]
 
 use splintr::pretrained::{from_pretrained, glm4_special_tokens};
 use splintr::{AnyTokenizer, Tokenize};

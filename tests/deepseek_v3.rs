@@ -2,6 +2,10 @@
 //!
 //! These tests verify that the DeepSeek V3 tokenizer correctly encodes and decodes text,
 //! handles ByteLevel BPE encoding, special tokens, and produces consistent results.
+// Gated on `vocab-deepseek` because it names that vocabulary's embedded bytes directly, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-deepseek")]
 
 use splintr::pretrained::{deepseek_v3_special_tokens, DEEPSEEK_V3_VOCAB};
 use splintr::{Tokenizer, DEEPSEEK_V3_PATTERNS};

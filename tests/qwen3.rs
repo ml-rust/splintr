@@ -6,6 +6,10 @@
 //! `reference_parity`; what this file pins is the handful of facts that fixture
 //! cannot state — which pre-tokenizer Qwen gets, and what happens where its own
 //! special tokens collide with splintr's agent tokens.
+// Gated on `vocab-qwen` because every test here loads that vocabulary, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-qwen")]
 
 use splintr::pretrained::{from_pretrained, qwen3_special_tokens};
 use splintr::{AnyTokenizer, Tokenize};

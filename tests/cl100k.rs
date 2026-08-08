@@ -2,6 +2,10 @@
 //!
 //! These tests verify that the cl100k_base tokenizer correctly encodes and decodes text,
 //! handles special tokens, and produces consistent results.
+// Gated on `vocab-cl100k` because it names that vocabulary's embedded bytes directly, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-cl100k")]
 
 use splintr::pretrained::{cl100k_base_special_tokens, CL100K_BASE_VOCAB};
 use splintr::{Tokenizer, CL100K_BASE_PATTERN};

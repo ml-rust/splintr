@@ -2,6 +2,10 @@
 //!
 //! These tests verify that the Llama 3 tokenizer correctly encodes and decodes text,
 //! handles special tokens, and produces consistent results.
+// Gated on `vocab-llama3` because it names that vocabulary's embedded bytes directly, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-llama3")]
 
 use splintr::pretrained::{llama3_special_tokens, LLAMA3_VOCAB};
 use splintr::{Tokenizer, LLAMA3_PATTERN};

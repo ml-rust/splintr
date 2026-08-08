@@ -1,3 +1,8 @@
+// Gated on `vocab-mistral` because every test here loads that vocabulary, and the feature is what
+// compiles those bytes in. Without it this crate is empty rather than
+// a compile error.
+#![cfg(feature = "vocab-mistral")]
+
 use splintr::{from_pretrained, SpecialDecode, Tokenize};
 
 // =============================================================================
