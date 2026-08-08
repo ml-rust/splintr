@@ -69,12 +69,24 @@ const HIGH: u64 = 0x8080_8080_8080_8080;
 
 /// High bit set in each byte lane whose value is `< n`.
 ///
-/// The classic borrow trick: subtracting `n` from a byte below `n` borrows into
-/// the high bit, and `& !x` discards lanes whose high bit was already set. Only
-/// valid for `n <= 128` and lanes `< 128`.
+/// Each lane's high bit is set first, as a guard, so the subtraction borrows
+/// into that bit and stops there instead of propagating into the next lane. A
+/// lane that ends with its guard cleared is one that borrowed, i.e. one below
+/// `n`.
+///
+/// The guard is what makes this per-lane. The bare
+/// `(x - n) & !x & HIGH` form — Bit Twiddling Hacks' `hasless` — answers only
+/// "is *any* lane below n", because a borrow out of a low lane corrupts the
+/// lanes above it. Using it to find *which* lane made `scan_letters` run past
+/// the end of a letter run and take the following character with it, splitting
+/// `hello[]!?` as `hello[` + `]!?`.
+///
+/// Valid for `n <= 128` and lanes `< 128`: the guarded lane is then at least
+/// `0x80` and `n` at most `0x80`, so a lane can never underflow.
 #[inline(always)]
 fn lanes_below(x: u64, n: u8) -> u64 {
-    x.wrapping_sub(ONES.wrapping_mul(n as u64)) & !x & HIGH
+    let guarded = x | HIGH;
+    !guarded.wrapping_sub(ONES.wrapping_mul(n as u64)) & HIGH
 }
 
 /// High bit set in each byte lane holding an ASCII letter.
@@ -976,6 +988,13 @@ mod tests {
         " \n ",
         "\t\n\t",
         "hello world",
+        "hello[]!?",
+        "[]!?",
+        "The[]getUserName",
+        "[]get",
+        "hello[]",
+        "a{}b",
+        "Zürich{}",
         " hello",
         "!hello",
         "hello!",
@@ -1105,6 +1124,47 @@ mod tests {
         for (name, pattern, scan) in all_scanners() {
             for input in &cases {
                 assert_agrees(name, pattern, scan, input);
+            }
+        }
+    }
+
+    /// A letter run ending on every possible byte, at every offset in a SWAR word.
+    ///
+    /// The bug this exists for: `lanes_below` used the bare `hasless` form,
+    /// whose borrow escapes a lane and corrupts the ones above it, so the letter
+    /// scan reported the wrong stopping lane and swallowed the character after
+    /// the run — `hello[]!?` split as `hello[` + `]!?`. It needed a run ending
+    /// at a particular offset inside the eight-byte window followed by a
+    /// particular byte, which random sampling had not happened to produce.
+    /// Walking both axes exhaustively is a few thousand cheap cases.
+    #[test]
+    fn scanners_agree_at_every_run_boundary_in_a_swar_word() {
+        let cl100k = regexr::RegexBuilder::new(CL100K_BASE_PATTERN)
+            .jit(true)
+            .build()
+            .expect("cl100k pattern compiles");
+
+        for run in 0..20usize {
+            for byte in 0u8..=127 {
+                let c = byte as char;
+                // Control characters are legal input but make failure messages
+                // unreadable, and they exercise no distinct lane behaviour.
+                if c.is_control() && c != '\n' && c != '\r' && c != '\t' {
+                    continue;
+                }
+                let input = format!("{}{}{}", "a".repeat(run), c, "b".repeat(3));
+                let expected: Vec<(usize, usize)> = cl100k
+                    .find_iter(&input)
+                    .map(|m| (m.start(), m.end()))
+                    .collect();
+                let mut got = Vec::new();
+                cl100k_spans(&input, &mut got);
+                assert_eq!(
+                    got,
+                    expected,
+                    "run={run} byte={byte:#04x} input={input:?}\n  scanner: {:?}",
+                    got.iter().map(|&(s, e)| &input[s..e]).collect::<Vec<_>>()
+                );
             }
         }
     }
