@@ -5,11 +5,7 @@
 <h3>A fast, correct tokenizer for Rust and Python.</h3>
  
 <p>
-  Pure Rust, no C dependencies. Four backends — byte-level BPE, SentencePiece BPE,
-  Unigram and WordPiece — behind one <code>AnyTokenizer</code> handle, loaded from a
-  bundled vocabulary, any HuggingFace <code>tokenizer.json</code>, or a GGUF vocabulary.
-  Roughly 10x faster than <code>tiktoken</code> on batch encoding, and verified
-  id-for-id against it, <code>tokenizers</code> and <code>sentencepiece</code>.
+  Pure Rust, no C dependencies. Four backends — byte-level BPE, SentencePiece BPE, Unigram and WordPiece — behind one <code>AnyTokenizer</code> handle, loaded from a bundled vocabulary, any HuggingFace <code>tokenizer.json</code>, or a GGUF vocabulary. Roughly 10x faster than <code>tiktoken</code> on batch encoding, and verified id-for-id against it, <code>tokenizers</code> and <code>sentencepiece</code>.
 </p>
 
 <p>
@@ -24,6 +20,8 @@
   <a href="docs/benchmarks.md"><strong>Benchmarks</strong></a>
   ·
   <a href="docs/vocabularies.md"><strong>Vocabularies</strong></a>
+  ·
+  <a href="docs/best_practices.md"><strong>Best Practices</strong></a>
 </p>
 
 <p>
@@ -58,7 +56,7 @@ Splintr loads a tokenizer from **three sources** and dispatches it to **four bac
 
 | Source                             | Loads                                                        | Backends                                    |
 | ---------------------------------- | ------------------------------------------------------------ | ------------------------------------------- |
-| **Bundled** (`from_pretrained`)    | 8 vocabularies: OpenAI, Llama 3, DeepSeek, Mistral, Whisper  | byte-level BPE, SPM-BPE                     |
+| **Bundled** (`from_pretrained`)    | 11 vocabularies compiled in — load by name, no file needed   | byte-level BPE, SPM-BPE                     |
 | **`tokenizer.json`** (`from_json`) | Any HuggingFace file — normalizers, pre-tokenizers, decoders | byte-level BPE, Unigram, WordPiece          |
 | **GGUF vocab** (`from_gguf_vocab`) | The `tokenizer.ggml.*` keys, parsed by your GGUF loader      | byte-level BPE, SPM-BPE, Unigram, WordPiece |
 
@@ -105,6 +103,9 @@ from splintr import Tokenizer
 tokenizer = Tokenizer.from_pretrained("cl100k_base")  # OpenAI GPT-4/3.5
 # tokenizer = Tokenizer.from_pretrained("llama3")      # Meta Llama 3 family
 # tokenizer = Tokenizer.from_pretrained("deepseek_v3") # DeepSeek V3/R1
+# tokenizer = Tokenizer.from_pretrained("qwen3")       # Qwen 2/3, Baichuan-M2
+# tokenizer = Tokenizer.from_pretrained("glm4")        # GLM-4/4.5
+# tokenizer = Tokenizer.from_pretrained("gpt-oss")     # OpenAI gpt-oss
 
 # Encode and decode
 tokens = tokenizer.encode("Hello, world!")
@@ -138,26 +139,79 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 - **Four backends, one handle** — Byte-level/raw BPE, SentencePiece BPE, Unigram, and WordPiece all load as `AnyTokenizer`, so calling code stays the same whichever vocabulary you use
 - **Parallel batch encoding** — Rayon across texts; sequential for single texts based on empirical benchmarking
-- **Three loading sources** — Bundled vocabularies (8 supported), any HuggingFace `tokenizer.json`, or a GGUF vocabulary
+- **Three loading sources** — 11 bundled vocabularies by name, any HuggingFace `tokenizer.json`, or a GGUF vocabulary
 - **Streaming decoder** — Real-time LLM output with proper UTF-8 boundary handling; one decoder per tokenizer ([guide](docs/api_guide.md#streaming-decoder))
-- **54 agent tokens** — ChatML, thinking, ReAct, tool-calling, RAG citation tokens, built-in across all vocabularies ([docs](docs/special_tokens.md))
+- **54 agent tokens** — ChatML, thinking, ReAct, tool-calling and RAG citation markers, on every bundled vocabulary ([docs](docs/special_tokens.md))
 - **Special-token policy** — `encode_ordinary` / `encode_allowed_special` so untrusted text cannot forge a control token
 - **Cross-platform** — Python bindings via PyO3 (Linux, macOS, Windows), CPython 3.8+; native Rust library
 
-## Supported Vocabularies
+## Vocabularies
 
-| Vocabulary  | Used By                        | base_vocab_size |
-| ----------- | ------------------------------ | --------------- |
-| cl100k_base | GPT-4, GPT-3.5-turbo           | 100,277         |
-| o200k_base  | GPT-4o                         | 200,019         |
-| llama3      | Llama 3, 3.1, 3.2, 3.3         | 128,256         |
-| deepseek_v3 | DeepSeek V3, DeepSeek R1       | 128,815         |
-| mistral_v1  | Mistral 7B v0.1/v0.2           | 32,000          |
-| mistral_v2  | Mistral 7B v0.3, Codestral     | 32,768          |
-| mistral_v3  | Mistral NeMo, Large 2, Pixtral | 131,072         |
-| whisper     | OpenAI Whisper multilingual    | 51,865–51,866   |
+The only question is _where the vocabulary data comes from_: compiled into splintr, or read from a file you supply. Either way you get the same `AnyTokenizer`, at the same speed, checked against the same references.
 
-All bundled vocabularies include 54 agent tokens (except Whisper, which includes 1608 standard Whisper tokens). Load any other model with `from_json("tokenizer.json")` or `from_gguf_vocab()`. See [docs/vocabularies.md](docs/vocabularies.md) for complete details and standard token lists.
+### Bundled — load by name
+
+These ship inside splintr. No file, no download, no network:
+
+```python
+tokenizer = Tokenizer.from_pretrained("qwen3")
+```
+
+| Name          | Used by                        | `base_vocab_size` |
+| ------------- | ------------------------------ | ----------------- |
+| `cl100k_base` | GPT-4, GPT-3.5-turbo           | 100,277           |
+| `o200k_base`  | GPT-4o                         | 200,019           |
+| `gpt-oss`     | OpenAI gpt-oss                 | 200,019           |
+| `llama3`      | Llama 3, 3.1, 3.2, 3.3         | 128,256           |
+| `qwen3`       | Qwen 2, Qwen 3, Baichuan-M2    | 151,669           |
+| `glm4`        | GLM-4, GLM-4.5                 | 151,365           |
+| `deepseek_v3` | DeepSeek V3, DeepSeek R1       | 128,815           |
+| `mistral_v1`  | Mistral 7B v0.1/v0.2           | 32,000            |
+| `mistral_v2`  | Mistral 7B v0.3, Codestral     | 32,768            |
+| `mistral_v3`  | Mistral NeMo, Large 2, Pixtral | 131,072           |
+| `whisper`     | OpenAI Whisper multilingual    | 51,865–51,866     |
+
+Each also answers to the aliases you would expect (`qwen`, `qwen2.5`, `glm-4.5`, `llama3.1`, `deepseek-v3`, …).
+
+This list is a **binary-size** decision, not a capability one: the whole set is ~20 MB of embedded data, so the bar for adding one is that it covers a family people reach for. Each sits behind a `vocab-*` cargo feature (all on by default, all in the Python wheel), so a Rust build can keep only what it needs.
+
+Two extras a bundled vocabulary carries that a loaded file does not: splintr's [54 agent tokens](docs/special_tokens.md) — ChatML, thinking, ReAct, tool-calling, RAG citation markers — appended above every original id, and a `base_vocab_size` telling you exactly where the model's own ids end. Whisper is the exception, carrying its own 1,608 standard tokens instead. Where a vocabulary already ships one of those names — Qwen's `<|im_start|>`, GLM's `<|system|>` — it resolves to the model's own id, so a chat template still encodes to the ids the checkpoint was trained on.
+
+### Everything else — point it at the file
+
+Any model not in the table above loads from its own vocabulary file:
+
+```python
+from splintr import from_json
+
+tok = from_json("tokenizer.json")   # any HuggingFace model
+```
+
+`from_json` reads the file's real configuration — normalizers, the multi-stage pre-tokenizer, BPE merge order, `added_tokens`, the `decoder` chain — and dispatches to byte-level BPE, Unigram or WordPiece as `model.type` says. Verified id-for-id against HuggingFace `tokenizers` across GPT-2, RoBERTa, BART, Qwen, Whisper, T5, Albert, XLNet, BERT, DistilBERT, Falcon, StarCoder2, DeepSeek-Coder and GPT-NeoX. It raises rather than approximating a config it does not fully support, so a wrong-ids-with-no-signal outcome is not possible.
+
+A **GGUF** vocabulary is the third source, and Rust-only: splintr never opens a GGUF container — parsing one is the model runtime's job — so the caller fills a `GgufVocab` from the file's `tokenizer.ggml.*` keys and hands it to `splintr::from_gguf_vocab`, which returns the same `AnyTokenizer`.
+
+### Which one do I use?
+
+It comes down to one question: **does the vocabulary already exist, or are you choosing one?**
+
+**You are matching an existing checkpoint** — inference, serving, token counting, fine-tuning. There is no choice to make: the ids have to be the ones the model was trained on, or every embedding lookup is wrong. Use whatever that model ships. Bundled is a convenience when the model happens to be one of the 11 — same ranks, no file to carry.
+
+One thing to watch: bundled vocabularies append the agent tokens **above** `base_vocab_size`. A published checkpoint has no embedding rows for those, so never feed it an id at or above that number. `base_vocab_size` exists to tell you exactly where the model's own ids stop:
+
+```python
+tok = Tokenizer.from_pretrained("qwen3")
+tok.vocab_size            # 151723 — what splintr knows
+base_vocab_size("qwen3")  # 151669 — what the checkpoint knows
+```
+
+**You are training a new model** — now you are picking a vocabulary, and bundled is the reason this list exists. You get a proven merge table *and* 54 agent tokens already allocated at deterministic ids above the base. Size your embedding to `vocab_size` rather than `base_vocab_size`, and `<|think|>`, `<|plan|>`, `<|function|>` are real trainable tokens from the first step.
+
+The value there is not the vocabulary — you could pull Qwen's from HuggingFace. It is that a new model needs markers no published vocabulary contains, and the usual answer is hand-editing a `tokenizer.json`, choosing ids, and hoping nothing collides. Splintr does that for you at the same offsets across every vocabulary, so a model trained on cl100k and one trained on Qwen agree on what `<|think|>` means.
+
+If you would rather train the vocabulary itself, or want different markers, [Best Practices](docs/best_practices.md#choosing-a-vocabulary-for-a-new-model) lays out all three routes with code — splintr is a tokenizer runtime and does not train vocabularies.
+
+See [docs/vocabularies.md](docs/vocabularies.md) for per-vocabulary special-token lists, pre-tokenizer patterns, the feature flags and the GGUF example.
 
 ## Streaming Decoder
 

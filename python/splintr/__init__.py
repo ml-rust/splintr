@@ -18,6 +18,9 @@ Supported tokenizers:
 - o200k_base: GPT-4o
 - llama3/llama3.1/llama3.2/llama3.3: Meta Llama 3 family
 - deepseek_v3/deepseek-v3: DeepSeek V3
+- qwen3/qwen/qwen2/qwen2.5/baichuan_m2: Qwen 2/3 (Baichuan-M2 ships it unchanged)
+- glm4/glm/glm-4/glm4.5/glm-4.5: GLM-4/4.5
+- gpt-oss/gpt_oss/o200k_harmony: OpenAI gpt-oss (o200k_base ranks + harmony tokens)
 - mistral_v1: Mistral 7B v0.1/v0.2, Mixtral 8x7B
 - mistral_v2: Mistral 7B v0.3, Mixtral 8x22B, Codestral
 - mistral_v3: Mistral NeMo, Large 2, Pixtral (Tekken)
@@ -96,6 +99,7 @@ Agent Tokens:
         Tokenizer,
         CL100K_AGENT_TOKENS, O200K_AGENT_TOKENS,
         LLAMA3_AGENT_TOKENS, DEEPSEEK_V3_AGENT_TOKENS,
+        QWEN3_AGENT_TOKENS, GLM4_AGENT_TOKENS, GPT_OSS_AGENT_TOKENS,
         MISTRAL_V1_AGENT_TOKENS, MISTRAL_V2_AGENT_TOKENS, MISTRAL_V3_AGENT_TOKENS,
     )
 
@@ -111,6 +115,12 @@ Agent Tokens:
     tokenizer = Tokenizer.from_pretrained("deepseek_v3")
     print(DEEPSEEK_V3_AGENT_TOKENS.THINK_NATIVE)  # 128798 (native <think>)
     print(DEEPSEEK_V3_AGENT_TOKENS.USER_NATIVE)   # 128803 (native <｜User｜>)
+
+# Qwen and GLM already name some of the agent tokens; those constants carry the
+# model's own id rather than a splintr-appended one.
+print(QWEN3_AGENT_TOKENS.IM_START)    # 151644 (Qwen's own)
+print(QWEN3_AGENT_TOKENS.THINK)       # 151674 (splintr's <|think|>)
+print(GLM4_AGENT_TOKENS.SYSTEM)       # 151335 (GLM's own)
 
     # For Mistral models (V1/V2/V3 have different base IDs)
     tokenizer = Tokenizer.from_pretrained("mistral_v1")
@@ -154,6 +164,9 @@ from ._core import (
     O200K_AGENT_TOKENS,
     LLAMA3_AGENT_TOKENS,
     DEEPSEEK_V3_AGENT_TOKENS,
+    QWEN3_AGENT_TOKENS,
+    GLM4_AGENT_TOKENS,
+    GPT_OSS_AGENT_TOKENS,
     MISTRAL_V1_AGENT_TOKENS,
     MISTRAL_V2_AGENT_TOKENS,
     MISTRAL_V3_AGENT_TOKENS,
@@ -176,6 +189,9 @@ __all__ = [
     "O200K_AGENT_TOKENS",
     "LLAMA3_AGENT_TOKENS",
     "DEEPSEEK_V3_AGENT_TOKENS",
+    "QWEN3_AGENT_TOKENS",
+    "GLM4_AGENT_TOKENS",
+    "GPT_OSS_AGENT_TOKENS",
     "MISTRAL_V1_AGENT_TOKENS",
     "MISTRAL_V2_AGENT_TOKENS",
     "MISTRAL_V3_AGENT_TOKENS",

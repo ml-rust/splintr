@@ -708,6 +708,15 @@ impl AnyTokenizer {
     pub fn special_token_id(&self, name: &str) -> Option<u32> {
         self.policy.special_token_id(name)
     }
+
+    /// Every named special token this tokenizer knows, content to id.
+    ///
+    /// Works for every loader — a bundled vocabulary, a `tokenizer.json`, a
+    /// GGUF — so "what markers does this thing have?" has one answer that does
+    /// not depend on where the vocabulary came from.
+    pub fn special_tokens(&self) -> &rustc_hash::FxHashMap<String, u32> {
+        self.policy.special_tokens()
+    }
 }
 
 impl Tokenize for AnyTokenizer {

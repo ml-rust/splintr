@@ -12,6 +12,8 @@ This document describes the special tokens available in Splintr's `cl100k_base`,
 - [OpenAI Standard Tokens](#openai-standard-tokens)
 - [Meta Llama 3 Standard Tokens](#meta-llama-3-standard-tokens)
 - [DeepSeek V3 Standard Tokens](#deepseek-v3-standard-tokens)
+- [Qwen Standard Tokens](#qwen-standard-tokens)
+- [GLM Standard Tokens](#glm-standard-tokens)
 - [Mistral Standard Tokens](#mistral-standard-tokens)
 - [Agent Token Categories](#agent-token-categories)
   - [1. Conversation Structure](#1-conversation-structure)
@@ -45,9 +47,7 @@ Splintr extends the standard OpenAI/Llama/DeepSeek/Mistral tokenizer vocabularie
 - Multimodal content placeholders
 - Structured document parsing
 
-The bundled Whisper vocabularies (`whisper_v1`/`whisper_v2`/`whisper_v3`) carry
-**no** agent tokens — Whisper is a speech model, and its special tokens are the
-standard Whisper set. Nothing in this document applies to them.
+The bundled Whisper vocabularies (`whisper_v1`/`whisper_v2`/`whisper_v3`) carry **no** agent tokens — Whisper is a speech model, and its special tokens are the standard Whisper set. Nothing in this document applies to them.
 
 ---
 
@@ -89,20 +89,47 @@ This convention mirrors XML/HTML for familiarity while using `<|...|>` to avoid 
 
 Token IDs are carefully allocated to avoid conflicts with reserved ranges:
 
-| Model         | Regular Tokens | Reserved Range          | Agent Tokens                    | Total   |
-| ------------- | -------------- | ----------------------- | ------------------------------- | ------- |
-| `cl100k_base` | 0-100,255      | 100,257-100,276         | 100,277-100,330                 | 100,331 |
-| `o200k_base`  | 0-199,997      | 199,999-200,018         | 200,019-200,072                 | 200,073 |
-| `llama3`      | 0-127,999      | 128,000-128,255         | 128,256-128,261, 128,300-128,353 | 128,354 |
-| `deepseek_v3` | 0-127,999      | 0-2, 128,798-128,814    | 128,900-128,953                 | 128,954 |
-| `mistral_v1`  | 0-31,999       | 0-2                     | 32,000-32,053                   | 32,054  |
-| `mistral_v2`  | 0-32,767       | 0-9                     | 32,768-32,821                   | 32,822  |
-| `mistral_v3`  | 0-131,071      | 0-9                     | 131,072-131,125                 | 131,126 |
+| Model         | Regular Tokens | Reserved Range        | Agent Tokens                     | Total                       |
+| ------------- | -------------- | --------------------- | -------------------------------- | --------------------------- |
+| `cl100k_base` | 0-100,255      | 100,257-100,276       | 100,277-100,330                  | 100,331                     |
+| `o200k_base`  | 0-199,997      | 199,999-200,018       | 200,019-200,072                  | 200,073                     |
+| `gpt-oss`     | 0-199,997      | 199,998-200,018       | 200,019-200,072                  | 200,073                     |
+| `llama3`      | 0-127,999      | 128,000-128,255       | 128,256-128,261, 128,300-128,353 | 128,354                     |
+| `qwen3`       | 0-151,642      | 151,643-151,668       | 151,669-151,722                  | 151,723                     |
+| `glm4`        | 0-151,328      | 151,329-151,364       | 151,365-151,418                  | 151,419                     |
+| `deepseek_v3` | 0-127,999      | 0-2, 128,798-128,814  | 128,900-128,953                  | 128,954                     |
+| `mistral_v1`  | 0-31,999       | 0-2                   | 32,000-32,053                    | 32,054                      |
+| `mistral_v2`  | 0-32,767       | 0-9                   | 32,768-32,821                    | 32,822                      |
+| `mistral_v3`  | 0-131,071      | 0-9                   | 131,072-131,125                  | 131,126                     |
+| `whisper`     | 0-50,256       | 50,257-51,864 (v1/v2) | none                             | 51,865 (v1/v2), 51,866 (v3) |
 
-Every vocabulary carries exactly 54 agent tokens. Llama 3 is the one whose 54 are
-not contiguous: its six multimodal placeholders are pinned to 128,256-128,261 so
-`<|image|>` lands on the id Meta's own 3.2-Vision checkpoint uses, and the other
-48 sit at 128,300-128,341 and 128,348-128,353.
+Every vocabulary above except Whisper carries exactly 54 agent tokens — all 54 names resolve on all of them. Where they _come from_ is what varies:
+
+- **Most vocabularies get all 54 from splintr**, appended in one block. The offsets within that block are identical everywhere, so `<|pad|>` is always the 40th slot and `<|/summary|>` always the last. Where the block starts is not: usually `base_vocab_size` exactly, but Llama 3's begins at 128,300 and DeepSeek's at 128,900, past a range each vendor had already claimed. Read the start from the table rather than assuming it.
+- **Some vocabularies already ship a few of them.** Qwen defines `<|im_start|>`/`<|im_end|>` itself; GLM defines `<|system|>`, `<|user|>`, `<|assistant|>`, `<|image|>` and `<|video|>`. Those names resolve to the _model's_ ids — below `base_vocab_size`, ids the checkpoint was actually trained on — so a chat template encodes the way the model expects. Splintr appends the remaining 52 and 49; the block is still 54 wide, and the slot a shared name would have taken is left reserved so no other offset shifts.
+- **Llama 3's 54 are not contiguous.** Its six multimodal placeholders are pinned to 128,256-128,261 so `<|image|>` lands on the id Meta's own 3.2-Vision checkpoint uses, and the other 48 sit at 128,300-128,341 and 128,348-128,353.
+
+Where each vocabulary's block begins — the other half of every id above, since an id is simply its block start plus the offset listed in the category tables:
+
+<!-- BEGIN GENERATED: agent-token-block-starts -->
+
+| Vocabulary | Block starts at | Rust module | Python class |
+| --- | --- | --- | --- |
+| `cl100k_base` | 100,277 | `cl100k_agent_tokens` | `CL100K_AGENT_TOKENS` |
+| `o200k_base` | 200,019 | `o200k_agent_tokens` | `O200K_AGENT_TOKENS` |
+| `llama3` | 128,300 | `llama3_agent_tokens` | `LLAMA3_AGENT_TOKENS` |
+| `deepseek_v3` | 128,900 | `deepseek_v3_agent_tokens` | `DEEPSEEK_V3_AGENT_TOKENS` |
+| `mistral_v1` | 32,000 | `mistral_v1_agent_tokens` | `MISTRAL_V1_AGENT_TOKENS` |
+| `mistral_v2` | 32,768 | `mistral_v2_agent_tokens` | `MISTRAL_V2_AGENT_TOKENS` |
+| `mistral_v3` | 131,072 | `mistral_v3_agent_tokens` | `MISTRAL_V3_AGENT_TOKENS` |
+| `qwen3` | 151,669 | `qwen3_agent_tokens` | `QWEN3_AGENT_TOKENS` |
+| `glm4` | 151,365 | `glm4_agent_tokens` | `GLM4_AGENT_TOKENS` |
+| `gpt-oss` | 200,019 | `gpt_oss_agent_tokens` | `GPT_OSS_AGENT_TOKENS` |
+| `whisper` | — | — | — |
+
+<!-- END GENERATED: agent-token-block-starts -->
+
+**Whisper carries no agent tokens at all.** It is a speech model, and its 1,608 reserved ids are the standard Whisper set (`<|startoftranscript|>`, the language table, `<|transcribe|>`/`<|translate|>`, 1,501 timestamp tokens), so its `base_vocab_size` _is_ its full size.
 
 ### Why These Ranges?
 
@@ -113,33 +140,25 @@ not contiguous: its six multimodal placeholders are pinned to 128,256-128,261 so
 
 ### Base Vocabulary Size
 
-Agent tokens are always appended **strictly above every id the reference
-vocabulary uses**. No original id is taken, shifted, or reinterpreted — that is
-the property that makes carrying the agent tokens by default safe, and it means
-`tokenizer.decode(id)` for any id the upstream tokenizer produces gives the
-upstream answer.
+Agent tokens are always appended **strictly above every id the reference vocabulary uses**. No original id is taken, shifted, or reinterpreted — that is the property that makes carrying the agent tokens by default safe, and it means `tokenizer.decode(id)` for any id the upstream tokenizer produces gives the upstream answer.
 
 This id — the first one splintr is free to use — has its own accessor:
 
-| API    | Call                                          |
-| ------ | --------------------------------------------- |
+| API    | Call                                                                               |
+| ------ | ---------------------------------------------------------------------------------- |
 | Rust   | `splintr::pretrained::base_vocab_size(vocab)` (or `base_vocab_size_by_name(name)`) |
-| Python | `splintr.base_vocab_size(name)`                |
+| Python | `splintr.base_vocab_size(name)`                                                    |
 
-This is what you need when sizing a model's embedding or logit layer, or when
-identifying a checkpoint's vocabulary from the shape of its token-embedding
-tensor — those must match the checkpoint, not splintr's extended vocabulary.
-`vocab_size` reports the extended size.
+This is what you need when sizing a model's embedding or logit layer, or when identifying a checkpoint's vocabulary from the shape of its token-embedding tensor — those must match the checkpoint, not splintr's extended vocabulary. `vocab_size` reports the extended size.
 
-**It is not `vocab_size - 54`.** Two vocabularies have gaps, so the arithmetic
-does not hold for them:
+**It is not `vocab_size - 54`.** Some vocabularies have gaps, so the arithmetic does not hold for them:
 
 ```python
 import splintr
 from splintr import Tokenizer
 
-for name in ["cl100k_base", "o200k_base", "llama3", "deepseek_v3",
-             "mistral_v1", "mistral_v2", "mistral_v3"]:
+for name in ["cl100k_base", "o200k_base", "gpt-oss", "llama3", "qwen3", "glm4",
+             "deepseek_v3", "mistral_v1", "mistral_v2", "mistral_v3"]:
     tok = Tokenizer.from_pretrained(name)
     base = splintr.base_vocab_size(name)
     print(f"{name:14s} vocab_size={tok.vocab_size:7d} base_vocab_size={base:7d} diff={tok.vocab_size - base}")
@@ -148,21 +167,19 @@ for name in ["cl100k_base", "o200k_base", "llama3", "deepseek_v3",
 ```
 cl100k_base    vocab_size= 100331 base_vocab_size= 100277 diff=54
 o200k_base     vocab_size= 200073 base_vocab_size= 200019 diff=54
+gpt-oss        vocab_size= 200073 base_vocab_size= 200019 diff=54
 llama3         vocab_size= 128354 base_vocab_size= 128256 diff=98
+qwen3          vocab_size= 151723 base_vocab_size= 151669 diff=54
+glm4           vocab_size= 151419 base_vocab_size= 151365 diff=54
 deepseek_v3    vocab_size= 128954 base_vocab_size= 128815 diff=139
 mistral_v1     vocab_size=  32054 base_vocab_size=  32000 diff=54
 mistral_v2     vocab_size=  32822 base_vocab_size=  32768 diff=54
 mistral_v3     vocab_size= 131126 base_vocab_size= 131072 diff=54
 ```
 
-Llama 3's base is 128,256 (128,000 BPE tokens plus Meta's 256 reserved
-special-token slots, of which splintr names 11); its agent tokens start exactly
-there, but are split across two ranges with unused holes between them, so the
-extended size runs 98 past the base rather than 54.
+Llama 3's base is 128,256 (128,000 BPE tokens plus Meta's 256 reserved special-token slots, of which splintr names 11); its agent tokens start exactly there, but are split across two ranges with unused holes between them, so the extended size runs 98 past the base rather than 54.
 
-DeepSeek V3's base is 128,815 — one past `<｜tool▁sep｜>`, the highest id
-DeepSeek's own tokenizer defines — while its agent tokens start at 128,900,
-leaving 128,815-128,899 unused.
+DeepSeek V3's base is 128,815 — one past `<｜tool▁sep｜>`, the highest id DeepSeek's own tokenizer defines — while its agent tokens start at 128,900, leaving 128,815-128,899 unused.
 
 Both are why you must call the accessor rather than subtract.
 
@@ -170,35 +187,21 @@ Both are why you must call the accessor rather than subtract.
 
 ## Special Tokens in Untrusted Text
 
-Everything else in this document is about tokens the *server* emits. This section
-is about the same tokens appearing in text the server did not write.
+Everything else in this document is about tokens the _server_ emits. This section is about the same tokens appearing in text the server did not write.
 
-Every splintr loader turns added-token matching on, so a special token spelled
-out verbatim in the input is promoted to its real id. `<|im_start|>` typed by a
-user becomes exactly the id the server emits when it opens a turn, and nothing
-downstream can tell the two apart — that is how a user message forges a system
-turn. Denylisting the spelling beforehand does not close it: the spelling is not
-the only thing that maps to the id.
+Every splintr loader turns added-token matching on, so a special token spelled out verbatim in the input is promoted to its real id. `<|im_start|>` typed by a user becomes exactly the id the server emits when it opens a turn, and nothing downstream can tell the two apart — that is how a user message forges a system turn. Denylisting the spelling beforehand does not close it: the spelling is not the only thing that maps to the id.
 
-So encoding takes an explicit mode. In Rust it is `SpecialMode`, passed to
-`Tokenize::encode_with` (also an inherent method on `AnyTokenizer` and on every
-backend); Python exposes the three arms as methods:
+So encoding takes an explicit mode. In Rust it is `SpecialMode`, passed to `Tokenize::encode_with` (also an inherent method on `AnyTokenizer` and on every backend); Python exposes the three arms as methods:
 
-| Rust `SpecialMode`             | Python method                           | Behaviour                                                                     |
-| ------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------- |
-| `All`                          | `encode_with_special(text)`             | Match every configured special token found in the text (the default `encode` uses) |
-| `Ordinary`                     | `encode_ordinary(text)`                 | Match none — a special spelling stays ordinary content                        |
-| `Allow(&FxHashSet<String>)`    | `encode_allowed_special(text, allowed)` | Match only the named tokens; reject any other                                 |
+| Rust `SpecialMode`          | Python method                           | Behaviour                                                                          |
+| --------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------- |
+| `All`                       | `encode_with_special(text)`             | Match every configured special token found in the text (the default `encode` uses) |
+| `Ordinary`                  | `encode_ordinary(text)`                 | Match none — a special spelling stays ordinary content                             |
+| `Allow(&FxHashSet<String>)` | `encode_allowed_special(text, allowed)` | Match only the named tokens; reject any other                                      |
 
-`Allow` reports the refusal as `PolicyError::DisallowedSpecial { token, offset }`
-in Rust and a `ValueError` in Python, naming the token and its byte offset in the
-input, so a server can point back at exactly what in the request was rejected.
+`Allow` reports the refusal as `PolicyError::DisallowedSpecial { token, offset }` in Rust and a `ValueError` in Python, naming the token and its byte offset in the input, so a server can point back at exactly what in the request was rejected.
 
-**The mode never touches boundary tokens.** A model's own BOS/EOS/`[CLS]`/`[SEP]`
-come from the tokenizer's `post_processor` template, not from matching text
-against the vocabulary. Refusing to match a special token inside untrusted
-content says nothing about whether the model wants a BOS, so `Ordinary` does not
-strip it:
+**The mode never touches boundary tokens.** A model's own BOS/EOS/`[CLS]`/`[SEP]` come from the tokenizer's `post_processor` template, not from matching text against the vocabulary. Refusing to match a special token inside untrusted content says nothing about whether the model wants a BOS, so `Ordinary` does not strip it:
 
 ```python
 from splintr import from_json
@@ -225,12 +228,9 @@ ValueError: special token "<|start_header_id|>" at byte offset 16 is not in the 
 allow both      : [128000, 40914, 13, 220, 128009, 128006, 9125, 128007]
 ```
 
-BOS (128000) survives `encode_ordinary`; only `encode_raw` — which declines the
-template itself — drops it. The forged header markers become ordinary text
-instead of ids 128006/128007.
+BOS (128000) survives `encode_ordinary`; only `encode_raw` — which declines the template itself — drops it. The forged header markers become ordinary text instead of ids 128006/128007.
 
-The same applies to the agent tokens this document describes. On a bundled
-vocabulary:
+The same applies to the agent tokens this document describes. On a bundled vocabulary:
 
 ```python
 from splintr import Tokenizer, CL100K_AGENT_TOKENS as A
@@ -252,9 +252,7 @@ True False
 ValueError: special token "<|im_start|>" at byte offset 13 is not in the caller's allow-list
 ```
 
-In Rust, `Allow` borrows its set, so one allow-list per endpoint or chat template
-costs no per-request allocation. `FxHashSet` is re-exported from `splintr` so
-building the set needs no `rustc-hash` dependency of your own:
+In Rust, `Allow` borrows its set, so one allow-list per endpoint or chat template costs no per-request allocation. `FxHashSet` is re-exported from `splintr` so building the set needs no `rustc-hash` dependency of your own:
 
 ```rust
 use splintr::{pretrained::from_pretrained, FxHashSet, SpecialMode};
@@ -266,24 +264,18 @@ let allowed: FxHashSet<String> = ["<|im_end|>".to_string()].into_iter().collect(
 let ids = tokenizer.encode_with(untrusted, &SpecialMode::Allow(&allowed))?;
 ```
 
-Rather than reason about which handle you hold, name the mode explicitly
-whenever the text is untrusted.
+Rather than reason about which handle you hold, name the mode explicitly whenever the text is untrusted.
 
 ---
 
 ## Matching Added Tokens: `lstrip` / `rstrip`
 
-Special tokens are matched verbatim in the input before any BPE/SentencePiece
-merging, using Aho-Corasick over the configured set. For a tokenizer loaded from
-a HuggingFace `tokenizer.json`, that match also honours the per-token `lstrip`
-and `rstrip` flags the file declares:
+Special tokens are matched verbatim in the input before any BPE/SentencePiece merging, using Aho-Corasick over the configured set. For a tokenizer loaded from a HuggingFace `tokenizer.json`, that match also honours the per-token `lstrip` and `rstrip` flags the file declares:
 
 - `lstrip: true` — the whitespace immediately **preceding** the match is absorbed into the token
 - `rstrip: true` — the whitespace immediately **following** it is absorbed
 
-These are per token, not per tokenizer: the XLM-RoBERTa family is the real case,
-where `<mask>` declares `lstrip: true` while the vocabulary's other added tokens
-(`<s>`, `<pad>`, `</s>`, `<unk>`) leave both flags off.
+These are per token, not per tokenizer: the XLM-RoBERTa family is the real case, where `<mask>` declares `lstrip: true` while the vocabulary's other added tokens (`<s>`, `<pad>`, `</s>`, `<unk>`) leave both flags off.
 
 ```python
 from splintr import from_json
@@ -298,12 +290,9 @@ print(tok.encode_raw("end. x"))        # same text without the mask
 [3564, 5, 1022]
 ```
 
-The space before `<mask>` is gone: without the flag it would survive as the lone
-`▁` piece and the sequence would gain a token the model never saw there.
+The space before `<mask>` is gone: without the flag it would survive as the lone `▁` piece and the sequence would gain a token the model never saw there.
 
-Vocabularies with nowhere to declare the flags — GGUF vocabularies, and the
-bundled tiktoken-style vocabularies whose agent tokens this document lists — have
-both flags off on every added token, which is their only correct reading.
+Vocabularies with nowhere to declare the flags — GGUF vocabularies, and the bundled tiktoken-style vocabularies whose agent tokens this document lists — have both flags off on every added token, which is their only correct reading.
 
 ---
 
@@ -328,6 +317,25 @@ These tokens are part of the original OpenAI tokenizer specification:
 | `<\|endoftext\|>`   | 199999 | End of document marker |
 | `<\|endofprompt\|>` | 200018 | End of prompt marker   |
 
+### gpt-oss (gpt-oss-20b, gpt-oss-120b)
+
+Same 199,998 ranks as `o200k_base`; the difference is this block, which OpenAI fills with the **harmony** response format's markers rather than leaving unnamed. The `<\|reserved_*\|>` slots are named as OpenAI names them, so those ids decode rather than being unknown.
+
+| Token               | ID     | Purpose                                    |
+| ------------------- | ------ | ------------------------------------------ |
+| `<\|startoftext\|>` | 199998 | Start of text marker                       |
+| `<\|endoftext\|>`   | 199999 | End of document marker                     |
+| `<\|return\|>`      | 200002 | Ends a final assistant turn (the EOS)      |
+| `<\|constrain\|>`   | 200003 | Constrained-output marker                  |
+| `<\|channel\|>`     | 200005 | Channel: `analysis`, `commentary`, `final` |
+| `<\|start\|>`       | 200006 | Message start                              |
+| `<\|end\|>`         | 200007 | Message end                                |
+| `<\|message\|>`     | 200008 | Message body begin                         |
+| `<\|call\|>`        | 200012 | Tool call marker                           |
+| `<\|endofprompt\|>` | 200018 | End of prompt marker                       |
+
+Ids 200000, 200001, 200004, 200009-200011 and 200013-200017 are OpenAI's `<\|reserved_*\|>` placeholders.
+
 ---
 
 ## Meta Llama 3 Standard Tokens
@@ -348,9 +356,7 @@ Splintr's `llama3` vocabulary includes the base 128,000 BPE tokens plus all spec
 | `<\|end_header_id\|>`   | 128007 | End of role header    |
 | `<\|eot_id\|>`          | 128009 | End of turn           |
 
-Splintr also names Meta's `<|reserved_special_token_0|>` (128002) and
-`<|reserved_special_token_1|>` (128003). The remaining reserved slots up to
-128,255 are left unnamed.
+Splintr also names Meta's `<|reserved_special_token_0|>` (128002) and `<|reserved_special_token_1|>` (128003). The remaining reserved slots up to 128,255 are left unnamed.
 
 #### Added in Llama 3.1
 
@@ -420,13 +426,12 @@ Splintr's `deepseek_v3` vocabulary includes the base 128,000 BPE tokens plus all
 
 #### Reasoning Tokens (Native DeepSeek)
 
-| Token       | ID     | Purpose                 |
-| ----------- | ------ | ----------------------- |
-| `<think>`   | 128798 | Start of thinking block |
-| `</think>`  | 128799 | End of thinking block   |
+| Token      | ID     | Purpose                 |
+| ---------- | ------ | ----------------------- |
+| `<think>`  | 128798 | Start of thinking block |
+| `</think>` | 128799 | End of thinking block   |
 
-These are the R1-style reasoning markers, and they are plain ASCII tags — no
-`｜`, no `▁`.
+These are the R1-style reasoning markers, and they are plain ASCII tags — no `｜`, no `▁`.
 
 #### Fill-in-the-Middle (FIM) Tokens
 
@@ -462,8 +467,7 @@ Note the ordering: `hole` comes first, at 128800.
 | `<｜tool▁output▁end｜>`    | 128813 | End of individual output   |
 | `<｜tool▁sep｜>`           | 128814 | Tool separator             |
 
-`<｜tool▁sep｜>` at 128814 is the highest id DeepSeek's own tokenizer defines,
-which is why `base_vocab_size("deepseek_v3")` is 128815.
+`<｜tool▁sep｜>` at 128814 is the highest id DeepSeek's own tokenizer defines, which is why `base_vocab_size("deepseek_v3")` is 128815.
 
 ### DeepSeek V3 Chat Format
 
@@ -517,8 +521,95 @@ tok.encode_with_special("<think>step by step</think>")
 # [128798, 21192, 513, 3132, 128799]
 ```
 
-Splintr's own `<|think|>` / `<|/think|>` agent tokens (128905/128906) are
-separate from these and coexist with them.
+Splintr's own `<|think|>` / `<|/think|>` agent tokens (128905/128906) are separate from these and coexist with them.
+
+---
+
+## Qwen Standard Tokens
+
+### qwen3 (Qwen 2, Qwen 3; also Baichuan-M2)
+
+Two of these — `<|im_start|>` and `<|im_end|>` — are names splintr also uses for agent tokens. Qwen's ids win, so a ChatML template encodes to what the checkpoint was trained on.
+
+| Token                    | ID     | Purpose                           |
+| ------------------------ | ------ | --------------------------------- |
+| `<\|endoftext\|>`        | 151643 | End of document marker            |
+| `<\|im_start\|>`         | 151644 | ChatML message start (**Qwen's**) |
+| `<\|im_end\|>`           | 151645 | ChatML message end (**Qwen's**)   |
+| `<\|object_ref_start\|>` | 151646 | Object reference begin            |
+| `<\|object_ref_end\|>`   | 151647 | Object reference end              |
+| `<\|box_start\|>`        | 151648 | Bounding box begin                |
+| `<\|box_end\|>`          | 151649 | Bounding box end                  |
+| `<\|quad_start\|>`       | 151650 | Quadrilateral begin               |
+| `<\|quad_end\|>`         | 151651 | Quadrilateral end                 |
+| `<\|vision_start\|>`     | 151652 | Vision block begin                |
+| `<\|vision_end\|>`       | 151653 | Vision block end                  |
+| `<\|vision_pad\|>`       | 151654 | Vision padding                    |
+| `<\|image_pad\|>`        | 151655 | Image padding                     |
+| `<\|video_pad\|>`        | 151656 | Video padding                     |
+| `<tool_call>`            | 151657 | Tool call begin                   |
+| `</tool_call>`           | 151658 | Tool call end                     |
+| `<\|fim_prefix\|>`       | 151659 | Fill-in-the-middle: prefix        |
+| `<\|fim_middle\|>`       | 151660 | Fill-in-the-middle: middle        |
+| `<\|fim_suffix\|>`       | 151661 | Fill-in-the-middle: suffix        |
+| `<\|fim_pad\|>`          | 151662 | Fill-in-the-middle: padding       |
+| `<\|repo_name\|>`        | 151663 | Repository name marker            |
+| `<\|file_sep\|>`         | 151664 | File separator                    |
+| `<tool_response>`        | 151665 | Tool response begin               |
+| `</tool_response>`       | 151666 | Tool response end                 |
+| `<think>`                | 151667 | Reasoning begin (Qwen's own)      |
+| `</think>`               | 151668 | Reasoning end (Qwen's own)        |
+
+The EOS is `<|im_end|>` (151645), not `<|endoftext|>`. 151657-151668 are `special: false` in Qwen's own file, so they **render** on decode rather than being skipped.
+
+---
+
+## GLM Standard Tokens
+
+### glm4 (GLM-4, GLM-4.5, GLM-4.6)
+
+Five of these are names splintr also uses for agent tokens: `<|system|>`, `<|user|>`, `<|assistant|>`, `<|image|>` and `<|video|>`. GLM's ids win.
+
+| Token                          | ID     | Purpose                          |
+| ------------------------------ | ------ | -------------------------------- |
+| `<\|endoftext\|>`              | 151329 | End of document marker (the EOS) |
+| `[MASK]`                       | 151330 | Masked-token placeholder         |
+| `[gMASK]`                      | 151331 | Generative mask                  |
+| `[sMASK]`                      | 151332 | Span mask                        |
+| `<sop>`                        | 151333 | Start of prefix                  |
+| `<eop>`                        | 151334 | End of prefix                    |
+| `<\|system\|>`                 | 151335 | System role (**GLM's**)          |
+| `<\|user\|>`                   | 151336 | User role (**GLM's**)            |
+| `<\|assistant\|>`              | 151337 | Assistant role (**GLM's**)       |
+| `<\|observation\|>`            | 151338 | Observation role                 |
+| `<\|begin_of_image\|>`         | 151339 | Image block begin                |
+| `<\|end_of_image\|>`           | 151340 | Image block end                  |
+| `<\|begin_of_video\|>`         | 151341 | Video block begin                |
+| `<\|end_of_video\|>`           | 151342 | Video block end                  |
+| `<\|begin_of_audio\|>`         | 151343 | Audio block begin                |
+| `<\|end_of_audio\|>`           | 151344 | Audio block end                  |
+| `<\|begin_of_transcription\|>` | 151345 | Transcription begin              |
+| `<\|end_of_transcription\|>`   | 151346 | Transcription end                |
+| `<\|code_prefix\|>`            | 151347 | Code fill-in-the-middle: prefix  |
+| `<\|code_middle\|>`            | 151348 | Code fill-in-the-middle: middle  |
+| `<\|code_suffix\|>`            | 151349 | Code fill-in-the-middle: suffix  |
+| `<think>`                      | 151350 | Reasoning begin (GLM's own)      |
+| `</think>`                     | 151351 | Reasoning end (GLM's own)        |
+| `<tool_call>`                  | 151352 | Tool call begin                  |
+| `</tool_call>`                 | 151353 | Tool call end                    |
+| `<tool_response>`              | 151354 | Tool response begin              |
+| `</tool_response>`             | 151355 | Tool response end                |
+| `<arg_key>`                    | 151356 | Tool argument key begin          |
+| `</arg_key>`                   | 151357 | Tool argument key end            |
+| `<arg_value>`                  | 151358 | Tool argument value begin        |
+| `</arg_value>`                 | 151359 | Tool argument value end          |
+| `/nothink`                     | 151360 | Disable reasoning for a turn     |
+| `<\|begin_of_box\|>`           | 151361 | Box begin                        |
+| `<\|end_of_box\|>`             | 151362 | Box end                          |
+| `<\|image\|>`                  | 151363 | Image placeholder (**GLM's**)    |
+| `<\|video\|>`                  | 151364 | Video placeholder (**GLM's**)    |
+
+151350-151359 and 151361-151364 are `special: false` in GLM's own file, so they **render** on decode rather than being skipped.
 
 ---
 
@@ -582,8 +673,7 @@ V3 uses a completely different tokenizer architecture: **Tekken** (Tiktoken-base
 
 #### V3 Control Tokens
 
-V3 carries the same seven control tokens as V2, but **in a different order** — do
-not reuse V2's ids:
+V3 carries the same seven control tokens as V2, but **in a different order** — do not reuse V2's ids:
 
 | Token                | ID  | Purpose                    |
 | -------------------- | --- | -------------------------- |
@@ -629,53 +719,31 @@ V1 spends four tokens on each `[INST]`/`[/INST]`; V2 and V3 spend one.
 
 ### SentencePiece BPE Encoding (V1 and V2 only)
 
-V1 and V2 run on `SpmTokenizer`, splintr's SentencePiece **BPE** backend. It is
-not a regex pre-tokenizer feeding a byte-level BPE, and there is no whitespace
-split step:
+V1 and V2 run on `SpmTokenizer`, splintr's SentencePiece **BPE** backend. It is not a regex pre-tokenizer feeding a byte-level BPE, and there is no whitespace split step:
 
-1. Normalize the text: replace each space with `▁` (U+2581), and apply the
-   **dummy prefix** (below).
+1. Normalize the text: replace each space with `▁` (U+2581), and apply the **dummy prefix** (below).
 2. Seed a linked list with one symbol per character of the normalized text.
-3. Repeatedly merge the highest-scoring adjacent pair, by piece score (merge
-   rank), until no pair in the vocabulary remains. Merges are O(1) on the linked
-   list, and ties break left-to-right.
-4. Fall back to the `<0xNN>` byte pieces for anything the vocabulary cannot
-   cover.
+3. Repeatedly merge the highest-scoring adjacent pair, by piece score (merge rank), until no pair in the vocabulary remains. Merges are O(1) on the linked list, and ties break left-to-right.
+4. Fall back to the `<0xNN>` byte pieces for anything the vocabulary cannot cover.
 
-Because there is no split regex at all, `pretrained::patterns()` returns `None`
-for `mistral_v1` and `mistral_v2` — that is "this vocabulary does not
-pre-tokenize with a regex", not "unknown".
+Because there is no split regex at all, `pretrained::patterns()` returns `None` for `mistral_v1` and `mistral_v2` — that is "this vocabulary does not pre-tokenize with a regex", not "unknown".
 
 #### The dummy prefix, and where it lands
 
-SentencePiece's `add_dummy_prefix` prepends one word-boundary marker so a
-sentence-initial word tokenizes like a mid-sentence one. It is applied **once to
-the whole text, before the text is split on added tokens** — not per word.
+SentencePiece's `add_dummy_prefix` prepends one word-boundary marker so a sentence-initial word tokenizes like a mid-sentence one. It is applied **once to the whole text, before the text is split on added tokens** — not per word.
 
-*Where* that leaves the marker once added tokens are in play is a per-checkpoint
-property, decided by HuggingFace's `legacy` flag in `tokenizer_config.json`, and
-the two Mistral generations disagree. Splintr models this as
-`SpmPrefixScheme`, chosen per vocabulary by `spm_prefix_scheme` in
-`pretrained.rs`:
+_Where_ that leaves the marker once added tokens are in play is a per-checkpoint property, decided by HuggingFace's `legacy` flag in `tokenizer_config.json`, and the two Mistral generations disagree. Splintr models this as `SpmPrefixScheme`, chosen per vocabulary by `spm_prefix_scheme` in `pretrained.rs`:
 
-| vocabulary   | `legacy` | `tokenize("<s>x")` | `SpmPrefixScheme`                                              |
-| ------------ | -------- | ------------------ | -------------------------------------------------------------- |
-| `mistral_v1` | `true`   | `['<s>', '▁x']`    | `AfterEachSpecial` — prefix the first stretch *and every stretch after an added token*; a leading added token emits no standalone `▁` |
-| `mistral_v2` | `false`  | `['<s>', 'x']`     | `Once` — one prefix for the whole input; a leading added token strands it as a lone `▁`, except BOS/EOS/UNK, which swallow it |
+| vocabulary   | `legacy` | `tokenize("<s>x")` | `SpmPrefixScheme`                                                                                                                     |
+| ------------ | -------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `mistral_v1` | `true`   | `['<s>', '▁x']`    | `AfterEachSpecial` — prefix the first stretch _and every stretch after an added token_; a leading added token emits no standalone `▁` |
+| `mistral_v2` | `false`  | `['<s>', 'x']`     | `Once` — one prefix for the whole input; a leading added token strands it as a lone `▁`, except BOS/EOS/UNK, which swallow it         |
 
-`legacy = true` reproduces the pre-fix `LlamaTokenizer`, which is also the rule
-llama.cpp still implements (`llama-vocab.cpp`'s `is_prev_special`) — so
-`AfterEachSpecial` is the default, and correct for every GGUF-loaded vocabulary.
-`legacy = false` is HuggingFace's corrected behaviour.
+`legacy = true` reproduces the pre-fix `LlamaTokenizer`, which is also the rule llama.cpp still implements (`llama-vocab.cpp`'s `is_prev_special`) — so `AfterEachSpecial` is the default, and correct for every GGUF-loaded vocabulary. `legacy = false` is HuggingFace's corrected behaviour.
 
-This is **not** a property of the `.spm` file format. Both vocabularies were
-extracted from a `tokenizer.model`; they still need different schemes. A new
-bundled SentencePiece vocabulary must have its checkpoint's `legacy` flag read
-off and mapped, never assumed.
+This is **not** a property of the `.spm` file format. Both vocabularies were extracted from a `tokenizer.model`; they still need different schemes. A new bundled SentencePiece vocabulary must have its checkpoint's `legacy` flag read off and mapped, never assumed.
 
-Both arms were measured against
-`AutoTokenizer.from_pretrained(..., use_fast=False)`, and splintr reproduces
-them:
+Both arms were measured against `AutoTokenizer.from_pretrained(..., use_fast=False)`, and splintr reproduces them:
 
 ```python
 from splintr import Tokenizer
@@ -699,39 +767,37 @@ V2 '[INST]Write'  -> [29473, 3, 6006]             ['', '[INST]', 'Write']
 V2 'Hello world'  -> [23325, 2294]                ['Hello', 'world']
 ```
 
-`decode` strips the `▁` markers, so read the ids: V1's `1318` is the piece `▁x`
-while V2's `29512` is the bare piece `x` — exactly the `['<s>', '▁x']` vs
-`['<s>', 'x']` split in the table above. V2's `[INST]Write` opens with `29473`,
-the lone `▁` left stranded by the leading added token; V1 has no such token
-because its prefix went onto the stretch *after* `[INST]`.
+`decode` strips the `▁` markers, so read the ids: V1's `1318` is the piece `▁x` while V2's `29512` is the bare piece `x` — exactly the `['<s>', '▁x']` vs `['<s>', 'x']` split in the table above. V2's `[INST]Write` opens with `29473`, the lone `▁` left stranded by the leading added token; V1 has no such token because its prefix went onto the stretch _after_ `[INST]`.
 
-Decoding, in both schemes, is the reverse: map ids to pieces and replace `▁`
-with a space.
+Decoding, in both schemes, is the reverse: map ids to pieces and replace `▁` with a space.
 
-V3 does NOT use SentencePiece — it is byte-level BPE with its own split pattern,
-so none of this section applies to it.
+V3 does NOT use SentencePiece — it is byte-level BPE with its own split pattern, so none of this section applies to it.
 
 ---
 
 ## Agent Token Categories
 
-> **Mistral Agent Token IDs**: The tables below show `mistral_v1 ID`. For V2 and V3:
->
-> - **V1**: Agent tokens start at 32,000
-> - **V2**: Agent tokens start at 32,768 (add 768 to V1 IDs)
-> - **V3**: Agent tokens start at 131,072
+The tables below list each token's **offset**, not an id per vocabulary. An id is its vocabulary's block start (the table in [Token ID Allocation](#token-id-allocation)) plus the offset here — so `<|pad|>` is offset 39, which is 100,316 on cl100k_base and 151,708 on qwen3.
+
+That is the whole reason the offset is what is listed: it is the same in every vocabulary, where an id column is not, and a column per vocabulary is a copy of this table that goes stale the moment one is added. These tables and the block starts are generated from the same source as the Rust modules and Python classes (`scripts/generate_agent_tokens.py --update-docs`), and CI fails if they drift.
+
+**One exception**: Llama 3's six multimodal placeholders (offsets 42-47) are *not* at its block start plus the offset. They are pinned to 128,256-128,261 so `<|image|>` lands on the id Meta's own 3.2-Vision checkpoint uses. Every other Llama 3 agent token follows the rule.
 
 ### 1. Conversation Structure
 
 **Purpose**: Standard ChatML-style tokens for multi-turn conversations.
 
-| Token             | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description                                     |
-| ----------------- | --------- | -------- | --------- | -------------- | ------------- | ----------------------------------------------- |
-| `<\|system\|>`    | 100277    | 200019   | 128300    | 128900         | 32000         | System instructions defining assistant behavior |
-| `<\|user\|>`      | 100278    | 200020   | 128301    | 128901         | 32001         | User input/queries                              |
-| `<\|assistant\|>` | 100279    | 200021   | 128302    | 128902         | 32002         | Assistant responses                             |
-| `<\|im_start\|>`  | 100280    | 200022   | 128303    | 128903         | 32003         | Generic message start (ChatML)                  |
-| `<\|im_end\|>`    | 100281    | 200023   | 128304    | 128904         | 32004         | Generic message end (ChatML)                    |
+<!-- BEGIN GENERATED: agent-tokens-category-0 -->
+
+| Token             | Offset | Description                       |
+| ----------------- | ------ | --------------------------------- |
+| `<\|system\|>`    |      0 | System role - system instructions |
+| `<\|user\|>`      |      1 | User role - user input            |
+| `<\|assistant\|>` |      2 | Assistant role - model output     |
+| `<\|im_start\|>`  |      3 | Start of message - ChatML wrapper |
+| `<\|im_end\|>`    |      4 | End of message - ChatML wrapper   |
+
+<!-- END GENERATED: agent-tokens-category-0 -->
 
 **Rationale**: These tokens implement the [ChatML format](https://github.com/openai/openai-python/blob/main/chatml.md) used by OpenAI and adopted widely for chat model training. The `im_start`/`im_end` tokens provide a generic wrapper, while role-specific tokens (`system`, `user`, `assistant`) enable direct role marking.
 
@@ -752,10 +818,14 @@ The capital of France is Paris.<|im_end|>
 
 **Purpose**: Enable System 2 (slow, deliberate) reasoning similar to DeepSeek-R1 or OpenAI o1.
 
-| Token          | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description              |
-| -------------- | --------- | -------- | --------- | -------------- | ------------- | ------------------------ |
-| `<\|think\|>`  | 100282    | 200024   | 128305    | 128905         | 32005         | Start of reasoning block |
-| `<\|/think\|>` | 100283    | 200025   | 128306    | 128906         | 32006         | End of reasoning block   |
+<!-- BEGIN GENERATED: agent-tokens-category-1 -->
+
+| Token          | Offset | Description                          |
+| -------------- | ------ | ------------------------------------ |
+| `<\|think\|>`  |      5 | Start of thinking - Chain-of-Thought |
+| `<\|/think\|>` |      6 | End of thinking                      |
+
+<!-- END GENERATED: agent-tokens-category-1 -->
 
 **Rationale**: Chain-of-Thought (CoT) prompting significantly improves model performance on complex tasks. Dedicated thinking tokens allow:
 
@@ -780,16 +850,20 @@ The capital of France is Paris.
 
 **Purpose**: Implement the ReAct (Reason + Act) paradigm for autonomous agents.
 
-| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description                     |
-| ---------------- | --------- | -------- | --------- | -------------- | ------------- | ------------------------------- |
-| `<\|plan\|>`     | 100284    | 200026   | 128307    | 128907         | 32007         | High-level strategy formulation |
-| `<\|/plan\|>`    | 100285    | 200027   | 128308    | 128908         | 32008         | End of plan                     |
-| `<\|step\|>`     | 100286    | 200028   | 128309    | 128909         | 32009         | Individual step within plan     |
-| `<\|/step\|>`    | 100287    | 200029   | 128310    | 128910         | 32010         | End of step                     |
-| `<\|act\|>`      | 100288    | 200030   | 128311    | 128911         | 32011         | Action intent declaration       |
-| `<\|/act\|>`     | 100289    | 200031   | 128312    | 128912         | 32012         | End of action                   |
-| `<\|observe\|>`  | 100290    | 200032   | 128313    | 128913         | 32013         | Environment feedback            |
-| `<\|/observe\|>` | 100291    | 200033   | 128314    | 128914         | 32014         | End of observation              |
+<!-- BEGIN GENERATED: agent-tokens-category-2 -->
+
+| Token            | Offset | Description                                 |
+| ---------------- | ------ | ------------------------------------------- |
+| `<\|plan\|>`     |      7 | Start of plan - action planning             |
+| `<\|/plan\|>`    |      8 | End of plan                                 |
+| `<\|step\|>`     |      9 | Start of step - individual action step      |
+| `<\|/step\|>`    |     10 | End of step                                 |
+| `<\|act\|>`      |     11 | Start of action - agent action              |
+| `<\|/act\|>`     |     12 | End of action                               |
+| `<\|observe\|>`  |     13 | Start of observation - environment feedback |
+| `<\|/observe\|>` |     14 | End of observation                          |
+
+<!-- END GENERATED: agent-tokens-category-2 -->
 
 **Rationale**: The [ReAct paper](https://arxiv.org/abs/2210.03629) demonstrated that interleaving reasoning and acting improves agent performance. These tokens create a structured loop:
 
@@ -821,14 +895,18 @@ The current temperature in London is 18°C with partly cloudy skies.
 
 **Purpose**: Structured tool use with explicit success/error handling.
 
-| Token             | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description                 |
-| ----------------- | --------- | -------- | --------- | -------------- | ------------- | --------------------------- |
-| `<\|function\|>`  | 100292    | 200034   | 128315    | 128915         | 32015         | Function call specification |
-| `<\|/function\|>` | 100293    | 200035   | 128316    | 128916         | 32016         | End of function call        |
-| `<\|result\|>`    | 100294    | 200036   | 128317    | 128917         | 32017         | Successful return value     |
-| `<\|/result\|>`   | 100295    | 200037   | 128318    | 128918         | 32018         | End of result               |
-| `<\|error\|>`     | 100296    | 200038   | 128319    | 128919         | 32019         | Execution error             |
-| `<\|/error\|>`    | 100297    | 200039   | 128320    | 128920         | 32020         | End of error                |
+<!-- BEGIN GENERATED: agent-tokens-category-3 -->
+
+| Token             | Offset | Description                                  |
+| ----------------- | ------ | -------------------------------------------- |
+| `<\|function\|>`  |     15 | Start of function call - function invocation |
+| `<\|/function\|>` |     16 | End of function call                         |
+| `<\|result\|>`    |     17 | Start of function result - return value      |
+| `<\|/result\|>`   |     18 | End of function result                       |
+| `<\|error\|>`     |     19 | Start of error - error message               |
+| `<\|/error\|>`    |     20 | End of error                                 |
+
+<!-- END GENERATED: agent-tokens-category-3 -->
 
 **Rationale**: Function calling is fundamental to agent capabilities. Separating `<|act|>` (intent) from `<|function|>` (technical payload) allows:
 
@@ -857,14 +935,18 @@ The `<|error|>` token is critical for robust agents—it signals that the previo
 
 **Purpose**: Jupyter notebook-style code interpreter flow.
 
-| Token           | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description           |
-| --------------- | --------- | -------- | --------- | -------------- | ------------- | --------------------- |
-| `<\|code\|>`    | 100298    | 200040   | 128321    | 128921         | 32021         | Code block to execute |
-| `<\|/code\|>`   | 100299    | 200041   | 128322    | 128922         | 32022         | End of code block     |
-| `<\|output\|>`  | 100300    | 200042   | 128323    | 128923         | 32023         | Execution output      |
-| `<\|/output\|>` | 100301    | 200043   | 128324    | 128924         | 32024         | End of output         |
-| `<\|lang\|>`    | 100302    | 200044   | 128325    | 128925         | 32025         | Language identifier   |
-| `<\|/lang\|>`   | 100303    | 200045   | 128326    | 128926         | 32026         | End of language tag   |
+<!-- BEGIN GENERATED: agent-tokens-category-4 -->
+
+| Token           | Offset | Description                           |
+| --------------- | ------ | ------------------------------------- |
+| `<\|code\|>`    |     21 | Start of code - inline code execution |
+| `<\|/code\|>`   |     22 | End of code                           |
+| `<\|output\|>`  |     23 | Start of output - execution output    |
+| `<\|/output\|>` |     24 | End of output                         |
+| `<\|lang\|>`    |     25 | Start of language tag - code language |
+| `<\|/lang\|>`   |     26 | End of language tag                   |
+
+<!-- END GENERATED: agent-tokens-category-4 -->
 
 **Rationale**: Code execution is a powerful agent capability. These tokens model the notebook paradigm:
 
@@ -893,16 +975,20 @@ print(f"Area: {area:.2f}")
 
 **Purpose**: Retrieval-Augmented Generation with source attribution.
 
-| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description             |
-| ---------------- | --------- | -------- | --------- | -------------- | ------------- | ----------------------- |
-| `<\|context\|>`  | 100304    | 200046   | 128327    | 128927         | 32027         | Retrieved context block |
-| `<\|/context\|>` | 100305    | 200047   | 128328    | 128928         | 32028         | End of context          |
-| `<\|quote\|>`    | 100306    | 200048   | 128329    | 128929         | 32029         | Direct quotation        |
-| `<\|/quote\|>`   | 100307    | 200049   | 128330    | 128930         | 32030         | End of quote            |
-| `<\|cite\|>`     | 100308    | 200050   | 128331    | 128931         | 32031         | Citation reference      |
-| `<\|/cite\|>`    | 100309    | 200051   | 128332    | 128932         | 32032         | End of citation         |
-| `<\|source\|>`   | 100310    | 200052   | 128333    | 128933         | 32033         | Source metadata         |
-| `<\|/source\|>`  | 100311    | 200053   | 128334    | 128934         | 32034         | End of source           |
+<!-- BEGIN GENERATED: agent-tokens-category-5 -->
+
+| Token            | Offset | Description                          |
+| ---------------- | ------ | ------------------------------------ |
+| `<\|context\|>`  |     27 | Start of context - retrieved context |
+| `<\|/context\|>` |     28 | End of context                       |
+| `<\|quote\|>`    |     29 | Start of quote - exact citation      |
+| `<\|/quote\|>`   |     30 | End of quote                         |
+| `<\|cite\|>`     |     31 | Start of cite - citation reference   |
+| `<\|/cite\|>`    |     32 | End of cite                          |
+| `<\|source\|>`   |     33 | Start of source - document source    |
+| `<\|/source\|>`  |     34 | End of source                        |
+
+<!-- END GENERATED: agent-tokens-category-5 -->
 
 **Rationale**: RAG systems retrieve relevant documents to ground model responses. These tokens enable:
 
@@ -932,12 +1018,16 @@ population of approximately <|quote|>2,102,650 residents<|/quote|>
 
 **Purpose**: Long-term memory and state persistence across sessions.
 
-| Token           | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description         |
-| --------------- | --------- | -------- | --------- | -------------- | ------------- | ------------------- |
-| `<\|memory\|>`  | 100312    | 200054   | 128335    | 128935         | 32035         | Store information   |
-| `<\|/memory\|>` | 100313    | 200055   | 128336    | 128936         | 32036         | End of memory block |
-| `<\|recall\|>`  | 100314    | 200056   | 128337    | 128937         | 32037         | Retrieved memory    |
-| `<\|/recall\|>` | 100315    | 200057   | 128338    | 128938         | 32038         | End of recall       |
+<!-- BEGIN GENERATED: agent-tokens-category-6 -->
+
+| Token           | Offset | Description                         |
+| --------------- | ------ | ----------------------------------- |
+| `<\|memory\|>`  |     35 | Start of memory - persistent memory |
+| `<\|/memory\|>` |     36 | End of memory                       |
+| `<\|recall\|>`  |     37 | Start of recall - memory retrieval  |
+| `<\|/recall\|>` |     38 | End of recall                       |
+
+<!-- END GENERATED: agent-tokens-category-6 -->
 
 **Rationale**: Persistent memory enables agents to:
 
@@ -964,11 +1054,15 @@ Hello Alice! Here's a brief answer: The capital of France is Paris.
 
 **Purpose**: Sequence control and formatting.
 
-| Token        | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description                 |
-| ------------ | --------- | -------- | --------- | -------------- | ------------- | --------------------------- |
-| `<\|pad\|>`  | 100316    | 200058   | 128339    | 128939         | 32039         | Padding for batch alignment |
-| `<\|stop\|>` | 100317    | 200059   | 128340    | 128940         | 32040         | Generation stop signal      |
-| `<\|sep\|>`  | 100318    | 200060   | 128341    | 128941         | 32041         | Segment separator           |
+<!-- BEGIN GENERATED: agent-tokens-category-7 -->
+
+| Token        | Offset | Description           |
+| ------------ | ------ | --------------------- |
+| `<\|pad\|>`  |     39 | Padding token         |
+| `<\|stop\|>` |     40 | Stop generation token |
+| `<\|sep\|>`  |     41 | Separator token       |
+
+<!-- END GENERATED: agent-tokens-category-7 -->
 
 **Rationale**: These are utility tokens for training and inference:
 
@@ -982,14 +1076,18 @@ Hello Alice! Here's a brief answer: The capital of France is Paris.
 
 **Purpose**: Placeholders for non-text content.
 
-| Token          | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description   |
-| -------------- | --------- | -------- | --------- | -------------- | ------------- | ------------- |
-| `<\|image\|>`  | 100319    | 200061   | 128256\*  | 128942         | 32042         | Image content |
-| `<\|/image\|>` | 100320    | 200062   | 128257    | 128943         | 32043         | End of image  |
-| `<\|audio\|>`  | 100321    | 200063   | 128258    | 128944         | 32044         | Audio content |
-| `<\|/audio\|>` | 100322    | 200064   | 128259    | 128945         | 32045         | End of audio  |
-| `<\|video\|>`  | 100323    | 200065   | 128260    | 128946         | 32046         | Video content |
-| `<\|/video\|>` | 100324    | 200066   | 128261    | 128947         | 32047         | End of video  |
+<!-- BEGIN GENERATED: agent-tokens-category-8 -->
+
+| Token          | Offset | Description                        |
+| -------------- | ------ | ---------------------------------- |
+| `<\|image\|>`  |     42 | Start of image - image placeholder |
+| `<\|/image\|>` |     43 | End of image                       |
+| `<\|audio\|>`  |     44 | Start of audio - audio placeholder |
+| `<\|/audio\|>` |     45 | End of audio                       |
+| `<\|video\|>`  |     46 | Start of video - video placeholder |
+| `<\|/video\|>` |     47 | End of video                       |
+
+<!-- END GENERATED: agent-tokens-category-8 -->
 
 \*Note: Llama 3's `<|image|>` token (128256) is aligned with the official Meta Llama 3.2-Vision token ID for compatibility.
 
@@ -1014,14 +1112,18 @@ The image shows a sunset over the ocean with vibrant orange and purple colors.
 
 **Purpose**: Semantic layout for parsing structured documents.
 
-| Token            | cl100k ID | o200k ID | llama3 ID | deepseek_v3 ID | mistral_v1 ID | Description            |
-| ---------------- | --------- | -------- | --------- | -------------- | ------------- | ---------------------- |
-| `<\|title\|>`    | 100325    | 200067   | 128348    | 128948         | 32048         | Document/section title |
-| `<\|/title\|>`   | 100326    | 200068   | 128349    | 128949         | 32049         | End of title           |
-| `<\|section\|>`  | 100327    | 200069   | 128350    | 128950         | 32050         | Semantic section       |
-| `<\|/section\|>` | 100328    | 200070   | 128351    | 128951         | 32051         | End of section         |
-| `<\|summary\|>`  | 100329    | 200071   | 128352    | 128952         | 32052         | Content summary        |
-| `<\|/summary\|>` | 100330    | 200072   | 128353    | 128953         | 32053         | End of summary         |
+<!-- BEGIN GENERATED: agent-tokens-category-9 -->
+
+| Token            | Offset | Description                                  |
+| ---------------- | ------ | -------------------------------------------- |
+| `<\|title\|>`    |     48 | Start of title - document/section title      |
+| `<\|/title\|>`   |     49 | End of title                                 |
+| `<\|section\|>`  |     50 | Start of section - semantic document section |
+| `<\|/section\|>` |     51 | End of section                               |
+| `<\|summary\|>`  |     52 | Start of summary - condensed content summary |
+| `<\|/summary\|>` |     53 | End of summary                               |
+
+<!-- END GENERATED: agent-tokens-category-9 -->
 
 **Rationale**: When processing structured documents (papers, reports, documentation), these tokens help:
 
@@ -1054,95 +1156,64 @@ We analyzed data from 50 coastal monitoring stations...
 
 ## Usage Examples
 
-`Tokenizer.from_pretrained(name)` returns a `splintr.AnyTokenizer` for **every**
-bundled vocabulary — the same universal handle `from_json` returns, and the same
-one `splintr::pretrained::from_pretrained` returns in Rust, producing identical
-ids on both sides. `encode` applies the tokenizer's boundary template (the
-bundled vocabularies declare none, so for them it equals `encode_raw`);
-`encode_raw` never does. `encode_with_special` is shown below where the point is
-that a marker in the text becomes its real id.
+`Tokenizer.from_pretrained(name)` returns a `splintr.AnyTokenizer` for **every** bundled vocabulary — the same universal handle `from_json` returns, and the same one `splintr::pretrained::from_pretrained` returns in Rust, producing identical ids on both sides. `encode` applies the tokenizer's boundary template (the bundled vocabularies declare none, so for them it equals `encode_raw`); `encode_raw` never does. `encode_with_special` is shown below where the point is that a marker in the text becomes its real id.
 
-### Python (OpenAI models)
+### Python
+
+The API is the same for every vocabulary, so this is one example rather than ten — what changes between vocabularies is the ids, and those are the tables above.
 
 ```python
 from splintr import Tokenizer, CL100K_AGENT_TOKENS
 
-tokenizer = Tokenizer.from_pretrained("cl100k_base")
+tok = Tokenizer.from_pretrained("cl100k_base")
 
-text = "<|think|>Let me reason about this...<|/think|>The answer is 42."
-tokens = tokenizer.encode_with_special(text)
-print(tokens)
-print(CL100K_AGENT_TOKENS.THINK in tokens)
-print(tokenizer.decode(tokens) == text)
-print(CL100K_AGENT_TOKENS.THINK, CL100K_AGENT_TOKENS.FUNCTION)
+# A marker in the text becomes its real id, not a spelling of one.
+ids = tok.encode_with_special("<|think|>Let me reason.<|/think|>The answer is 42.")
+assert ids[0] == CL100K_AGENT_TOKENS.THINK
+
+# Untrusted text: the same spelling stays ordinary content.
+assert CL100K_AGENT_TOKENS.THINK not in tok.encode_ordinary("<|think|>")
+
+# What `decode` does with a marker is per-vocabulary, and follows that
+# vocabulary's own reference — see "Special Tokens in Untrusted Text".
+# cl100k_base follows tiktoken, which has no skip mode and renders:
+tok.decode(ids)                 # "<|think|>Let me reason.<|/think|>The answer is 42."
+
+# Most others follow `tokenizers`, which drops them:
+qwen = Tokenizer.from_pretrained("qwen3")
+qwen_ids = qwen.encode_with_special("<|think|>hi<|/think|>")
+qwen.decode(qwen_ids)                # "hi"
+qwen.decode_with_special(qwen_ids)   # "<|think|>hi<|/think|>"
 ```
 
-```
-[100282, 10267, 757, 2944, 922, 420, 1131, 100283, 791, 4320, 374, 220, 2983, 13]
-True
-True
-100282 100292
-```
+Swap `"cl100k_base"` for any other bundled name and the encode code is unchanged; only `CL100K_AGENT_TOKENS` becomes that vocabulary's class (see [Python API Reference](#python-api-reference)).
 
-### Python (DeepSeek V3 models)
+### Listing a vocabulary's special tokens
+
+The tables in this document are a reference, not the source of truth — the tokenizer is. `special_tokens()` returns every marker it knows, for any loader, so the question is answerable without trusting a table to be current:
 
 ```python
-from splintr import Tokenizer, DEEPSEEK_V3_AGENT_TOKENS as D
+from splintr import Tokenizer, base_vocab_size
 
-# Load DeepSeek V3 tokenizer (includes ByteLevel BPE encoding)
-tokenizer = Tokenizer.from_pretrained("deepseek_v3")
-
-text = "<|think|>Let me reason about this...<|/think|>The answer is 42."
-tokens = tokenizer.encode_with_special(text)
-print(tokens)
-print(D.THINK in tokens, tokenizer.decode(tokens) == text)
-
-# Native DeepSeek markers — note the fullwidth ｜ and the ASCII <|EOT|>
-chat = "<｜User｜>Hello!<｜Assistant｜>Hi there!<|EOT|>"
-print(tokenizer.encode_with_special(chat))
-
-print(D.USER_NATIVE, D.THINK_NATIVE, D.THINK, D.EOT)
+tok, base = Tokenizer.from_pretrained("qwen3"), base_vocab_size("qwen3")
+for name, tid in sorted(tok.special_tokens().items(), key=lambda kv: kv[1]):
+    print(f"{tid:>7}  {name:24} {'model' if tid < base else 'splintr'}")
 ```
 
 ```
-[128905, 5718, 678, 3986, 943, 566, 1613, 128906, 671, 3287, 344, 223, 3180, 16]
-True True
-[128803, 19923, 3, 128804, 23166, 1031, 3, 128805]
-128803 128798 128905 128805
+ 151643  <|endoftext|>            model
+ 151644  <|im_start|>             model
+ 151645  <|im_end|>               model
+ ...
+ 151669  <|system|>               splintr
+ 151670  <|user|>                 splintr
+ ...
+ 151722  <|/summary|>             splintr
 ```
 
-### Python (Llama 3 models)
+Splitting on `base_vocab_size` is what separates the vocabulary's own markers from splintr's additions — the distinction that matters when the ids have to match a checkpoint. It works on a `from_json` tokenizer too, where there are no agent tokens and everything listed is the file's own.
 
-```python
-from splintr import Tokenizer, LLAMA3_AGENT_TOKENS as L
-
-# Load Llama 3 tokenizer (includes all special tokens up to Llama 3.3)
-tokenizer = Tokenizer.from_pretrained("llama3")
-
-chat = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-
-You are helpful.<|eot_id|><|start_header_id|>user<|end_header_id|>
-
-Hello!<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-
-"""
-tokens = tokenizer.encode_with_special(chat)
-print(tokens)
-print(L.BEGIN_OF_TEXT in tokens, L.EOT_ID in tokens)
-
-text = "<|think|>Let me reason...<|/think|>The answer is 42."
-print(tokenizer.encode_with_special(text))
-print(L.THINK, L.IMAGE)
-```
-
-```
-[128000, 128006, 9125, 128007, 271, 2675, 527, 11190, 13, 128009, 128006, 882, 128007, 271, 9906, 0, 128009, 128006, 78191, 128007, 271]
-True True
-[128305, 10267, 757, 2944, 1131, 128306, 791, 4320, 374, 220, 2983, 13]
-128305 128256
-```
-
-`L.IMAGE` is 128256 — the id Meta's own Llama 3.2-Vision checkpoint uses.
+In Rust the same call is `AnyTokenizer::special_tokens()`, returning `&FxHashMap<String, u32>`; `pretrained::special_tokens(vocab)` answers for a vocabulary without loading one.
 
 ### Rust
 
@@ -1167,6 +1238,27 @@ fn extract_thinking(tokens: &[u32]) -> Option<(usize, usize)> {
 ---
 
 ## Python API Reference
+
+One frozen constants class per bundled vocabulary that carries agent tokens, so an id can be named instead of written out: `CL100K_AGENT_TOKENS.THINK` rather than the literal `100282`, or a `special_token_id("<|think|>")` call that returns `Optional[int]` and has to be checked. They are class attributes, so they cost nothing at runtime and a typo is an `AttributeError` at the call site rather than a wrong id flowing into a prompt.
+
+Ten classes, covering every bundled vocabulary except Whisper (which carries no agent tokens):
+
+| Vocabulary    | Class                      | Agent block starts at |
+| ------------- | -------------------------- | --------------------- |
+| `cl100k_base` | `CL100K_AGENT_TOKENS`      | 100,277               |
+| `o200k_base`  | `O200K_AGENT_TOKENS`       | 200,019               |
+| `gpt-oss`     | `GPT_OSS_AGENT_TOKENS`     | 200,019               |
+| `llama3`      | `LLAMA3_AGENT_TOKENS`      | 128,300               |
+| `qwen3`       | `QWEN3_AGENT_TOKENS`       | 151,669               |
+| `glm4`        | `GLM4_AGENT_TOKENS`        | 151,365               |
+| `deepseek_v3` | `DEEPSEEK_V3_AGENT_TOKENS` | 128,900               |
+| `mistral_v1`  | `MISTRAL_V1_AGENT_TOKENS`  | 32,000                |
+| `mistral_v2`  | `MISTRAL_V2_AGENT_TOKENS`  | 32,768                |
+| `mistral_v3`  | `MISTRAL_V3_AGENT_TOKENS`  | 131,072               |
+
+Each also exposes its vocabulary's **native** markers, so one class is the whole special-token surface for that vocabulary rather than just splintr's half. Where a native name would collide with an agent token of the same meaning it takes a `_NATIVE` suffix — DeepSeek's `<think>` is `THINK_NATIVE` (128798), splintr's `<|think|>` is `THINK` (128905). Where the vocabulary defines the agent token _itself_, there is no suffix and no duplicate: `QWEN3_AGENT_TOKENS.IM_START` is Qwen's own 151644.
+
+These classes are generated by `scripts/generate_agent_tokens.py` into `src/python/agent_tokens_generated.rs`, and pinned against the tokenizers they name by `python/tests/test_agent_token_constants.py` — so a vocabulary added without regenerating fails a test rather than going missing quietly.
 
 ### CL100K_AGENT_TOKENS
 
@@ -1254,9 +1346,7 @@ Same structure as above, with IDs starting at 200019.
 
 ### DEEPSEEK_V3_AGENT_TOKENS
 
-The native markers carry a `_NATIVE` suffix wherever the name would otherwise
-collide with the splintr agent token of the same meaning — `THINK_NATIVE` (128798)
-is DeepSeek's `<think>`, `THINK` (128905) is splintr's `<|think|>`.
+The native markers carry a `_NATIVE` suffix wherever the name would otherwise collide with the splintr agent token of the same meaning — `THINK_NATIVE` (128798) is DeepSeek's `<think>`, `THINK` (128905) is splintr's `<|think|>`.
 
 ```python
 from splintr import DEEPSEEK_V3_AGENT_TOKENS
@@ -1356,6 +1446,56 @@ DEEPSEEK_V3_AGENT_TOKENS.SECTION               # 128950
 DEEPSEEK_V3_AGENT_TOKENS.SECTION_END           # 128951
 DEEPSEEK_V3_AGENT_TOKENS.SUMMARY               # 128952
 DEEPSEEK_V3_AGENT_TOKENS.SUMMARY_END           # 128953
+```
+
+### QWEN3_AGENT_TOKENS
+
+Qwen names `<|im_start|>`/`<|im_end|>` itself, so those two constants are Qwen's ids rather than splintr-appended ones — which is what makes a ChatML template built from these constants encode the way the checkpoint expects.
+
+```python
+from splintr import QWEN3_AGENT_TOKENS
+
+QWEN3_AGENT_TOKENS.IM_START          # 151644 — Qwen's own
+QWEN3_AGENT_TOKENS.IM_END            # 151645 — Qwen's own
+QWEN3_AGENT_TOKENS.SYSTEM            # 151669 — splintr's, first of the block
+QWEN3_AGENT_TOKENS.THINK             # 151674 — splintr's <|think|>
+QWEN3_AGENT_TOKENS.THINK_NATIVE      # 151667 — Qwen's own <think>
+QWEN3_AGENT_TOKENS.TOOL_CALL         # 151657 — Qwen's own <tool_call>
+QWEN3_AGENT_TOKENS.FIM_PREFIX        # 151659
+```
+
+Also serves Baichuan-M2, which ships Qwen's tokenizer unchanged.
+
+### GLM4_AGENT_TOKENS
+
+GLM names five of the agent tokens itself — `<|system|>`, `<|user|>`, `<|assistant|>`, `<|image|>`, `<|video|>` — so those five carry GLM's ids. It names only the _opening_ multimodal markers, so `IMAGE_END` and `VIDEO_END` stay in the appended block.
+
+```python
+from splintr import GLM4_AGENT_TOKENS
+
+GLM4_AGENT_TOKENS.SYSTEM             # 151335 — GLM's own
+GLM4_AGENT_TOKENS.IMAGE              # 151363 — GLM's own
+GLM4_AGENT_TOKENS.IMAGE_END          # 151408 — splintr's <|/image|>
+GLM4_AGENT_TOKENS.THINK              # 151370 — splintr's <|think|>
+GLM4_AGENT_TOKENS.THINK_NATIVE       # 151350 — GLM's own <think>
+GLM4_AGENT_TOKENS.GMASK              # 151331
+GLM4_AGENT_TOKENS.ARG_KEY            # 151356
+```
+
+### GPT_OSS_AGENT_TOKENS
+
+The harmony response format's markers alongside the standard block. No name collides, so every agent token is splintr-appended here.
+
+```python
+from splintr import GPT_OSS_AGENT_TOKENS
+
+GPT_OSS_AGENT_TOKENS.START           # 200006 — <|start|>
+GPT_OSS_AGENT_TOKENS.CHANNEL         # 200005 — <|channel|>
+GPT_OSS_AGENT_TOKENS.MESSAGE         # 200008 — <|message|>
+GPT_OSS_AGENT_TOKENS.END             # 200007 — <|end|>
+GPT_OSS_AGENT_TOKENS.CALL            # 200012 — <|call|>
+GPT_OSS_AGENT_TOKENS.RETURN          # 200002 — <|return|>
+GPT_OSS_AGENT_TOKENS.SYSTEM          # 200019 — splintr's, first of the block
 ```
 
 ### LLAMA3_AGENT_TOKENS
@@ -1526,88 +1666,60 @@ MISTRAL_V3_AGENT_TOKENS.THINK           # 131077
 
 ## Rust API Reference
 
-Rust exposes agent-token **constants** for the two OpenAI vocabularies only.
-There is no `llama3_agent_tokens`, `deepseek_v3_agent_tokens`, or
-`mistral_v*_agent_tokens` module — for those vocabularies, look the id up by
-name on the loaded tokenizer, or read it from `pretrained::special_tokens(vocab)`,
-which returns the full `FxHashMap<String, u32>` of every configured special token
-for any vocabulary:
+The same ten vocabularies as the Python classes, as plain `u32` constants — one `pub mod <vocab>_agent_tokens` per vocabulary, re-exported at the crate root:
 
 ```rust
-use splintr::{pretrained, PretrainedVocab};
+use splintr::{cl100k_agent_tokens, qwen3_agent_tokens, glm4_agent_tokens};
 
-let specials = pretrained::special_tokens(PretrainedVocab::Llama3);
-let think = specials["<|think|>"];          // 128305
+cl100k_agent_tokens::SYSTEM      // 100277
+cl100k_agent_tokens::THINK       // 100282
 
-// Or straight off a loaded tokenizer:
-let tokenizer = pretrained::from_pretrained("deepseek_v3")?;
-let think = tokenizer.special_token_id("<|think|>");   // Option<u32> — Some(128905)
+qwen3_agent_tokens::IM_START     // 151644 — Qwen's own id
+qwen3_agent_tokens::THINK        // 151674 — splintr's <|think|>
+qwen3_agent_tokens::THINK_NATIVE // 151667 — Qwen's own <think>
+
+glm4_agent_tokens::SYSTEM        // 151335 — GLM's own id
+glm4_agent_tokens::IMAGE_END     // 151408 — splintr's <|/image|>
 ```
 
-Related vocabulary accessors in `splintr::pretrained`, all taking a
-`PretrainedVocab` (each also has a `*_by_name` sibling taking `&str` where noted):
+| Vocabulary    | Module                     |
+| ------------- | -------------------------- |
+| `cl100k_base` | `cl100k_agent_tokens`      |
+| `o200k_base`  | `o200k_agent_tokens`       |
+| `gpt-oss`     | `gpt_oss_agent_tokens`     |
+| `llama3`      | `llama3_agent_tokens`      |
+| `qwen3`       | `qwen3_agent_tokens`       |
+| `glm4`        | `glm4_agent_tokens`        |
+| `deepseek_v3` | `deepseek_v3_agent_tokens` |
+| `mistral_v1`  | `mistral_v1_agent_tokens`  |
+| `mistral_v2`  | `mistral_v2_agent_tokens`  |
+| `mistral_v3`  | `mistral_v3_agent_tokens`  |
 
-| Function                     | Returns             | Meaning                                                     |
-| ---------------------------- | ------------------- | ----------------------------------------------------------- |
-| `base_vocab_size`            | `u32`               | Reference vocabulary's size, without the 54 agent tokens (also `base_vocab_size_by_name` → `Result<u32, TokenizerError>`) |
-| `bos_token_id`               | `Option<u32>`       | BOS id, if the vocabulary has one                           |
-| `eos_token_id`               | `u32`               | EOS id                                                      |
-| `pad_token_id`               | `Option<u32>`       | PAD id (the `<\|pad\|>` agent token for most vocabularies)   |
-| `special_tokens`             | `FxHashMap<String, u32>` | Every configured special token                         |
-| `patterns`                   | `Option<&'static [&'static str]>` | Pre-tokenizer regexes; `None` for Mistral V1/V2 |
+Whisper has no module: it carries no agent tokens.
 
-### cl100k_agent_tokens module
+Each module also carries its vocabulary's **native** markers, so it is that vocabulary's whole special-token surface rather than splintr's half — the same contents as the Python class of the same name, from the same generator (`scripts/generate_agent_tokens.py`, `--lang rust` and `--lang python`). Both halves are pinned against the tokenizers they name, by `src/core/tokenizer/agent_tokens.rs`'s own tests and by `python/tests/test_agent_token_constants.py`.
 
-```rust
-use splintr::cl100k_agent_tokens;
+### When a constant is not what you want
 
-// All constants follow the same naming as Python
-cl100k_agent_tokens::SYSTEM          // 100277
-cl100k_agent_tokens::THINK           // 100282
-cl100k_agent_tokens::FUNCTION        // 100292
-// ... etc
-```
-
-### o200k_agent_tokens module
+Constants are compile-time, so they cannot answer a question about a vocabulary chosen at runtime, and they do not exist for a `from_json` tokenizer. Look the id up by name instead — this works for every loader:
 
 ```rust
-use splintr::o200k_agent_tokens;
-
-o200k_agent_tokens::SYSTEM           // 200019
-o200k_agent_tokens::THINK            // 200024
-// ... etc
-```
-
-### Other vocabularies
-
-Llama 3, DeepSeek V3 and the three Mistral vocabularies have **no** constants
-module in Rust. Their ids are exactly the ones listed in the per-category tables
-above; reach them by name:
-
-```rust
-use splintr::pretrained;
-
-let tokenizer = pretrained::from_pretrained("mistral_v2")?;
+let tokenizer = splintr::pretrained::from_pretrained("mistral_v2")?;
 let think = tokenizer.special_token_id("<|think|>");   // Some(32773)
 ```
 
-The Python `*_AGENT_TOKENS` classes cover all seven vocabularies and remain the
-convenient way to reference these ids from Python.
+`pretrained::special_tokens(vocab)` returns the whole `FxHashMap<String, u32>` when you want to enumerate rather than look up one.
 
 ---
 
 ## Reference Parity
 
-The ids in this document are the reference tokenizers' ids, established
-differentially rather than by inspection:
+The ids in this document are the reference tokenizers' ids, established differentially rather than by inspection:
 
 - `cargo run --example verify_gguf` passes all 16 vocabularies it covers — llama.cpp's own 13 at 46/46, plus embeddinggemma, mistral-7b and bge-m3 at 74/74.
 - `scripts/fuzz_reference.py` is clean at bge-m3 25,000/25,000, Mistral V1+V2 8,056/8,056, and deepseek-v3 8,000/8,000.
 
-Those runs are what pin the SentencePiece dummy-prefix behaviour described
-above, the added-token `lstrip`/`rstrip` handling, and the decoder pipeline. See
-[Differential testing against the reference implementations](../README.md#differential-testing-against-the-reference-implementations)
-for how to run them.
+Those runs are what pin the SentencePiece dummy-prefix behaviour described above, the added-token `lstrip`/`rstrip` handling, and the decoder pipeline. See [Correctness against the reference implementations](../CONTRIBUTING.md#correctness-against-the-reference-implementations) for how to run them.
 
 ---
 

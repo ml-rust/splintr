@@ -43,4 +43,22 @@ python-source = "python"
 include = [{ path = "python/splintr/**/*.py", format = "sdist" }]
 module-name = "splintr._core"
 bindings = "pyo3"
-features = ["python"]
+# Every bundled vocabulary is named explicitly rather than inherited from the
+# crate's `default` feature set. A Python user cannot recompile, so the wheel is
+# the only build they get, and `from_pretrained("qwen3")` has to resolve in it
+# together with that vocabulary's special tokens -- without which the ids are
+# useless for training or serving against the checkpoint. Listing them here
+# makes this file, not `default`, the one place that decides what
+# `pip install splintr-rs` contains.
+features = [
+    "python",
+    "vocab-cl100k",
+    "vocab-o200k",
+    "vocab-gpt-oss",
+    "vocab-llama3",
+    "vocab-deepseek",
+    "vocab-qwen",
+    "vocab-glm",
+    "vocab-mistral",
+    "vocab-whisper",
+]

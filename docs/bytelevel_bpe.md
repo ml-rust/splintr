@@ -17,8 +17,7 @@ ByteLevel BPE (Byte-Pair Encoding) differs from standard BPE used by OpenAI and 
 
 ByteLevel encoding uses a GPT-2 style mapping to ensure all bytes can be represented as printable characters:
 
-The "printable" bytes map to themselves; the remaining 68 bytes are reassigned,
-in ascending byte order, to the contiguous block starting at U+0100:
+The "printable" bytes map to themselves; the remaining 68 bytes are reassigned, in ascending byte order, to the contiguous block starting at U+0100:
 
 | Byte Range                                 | Decimal            | Mapping                                         |
 | ------------------------------------------ | ------------------ | ----------------------------------------------- |

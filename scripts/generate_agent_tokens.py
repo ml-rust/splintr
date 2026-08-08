@@ -147,6 +147,106 @@ DEEPSEEK_V3_NATIVE_TOKENS = [
 # Tokens to skip for Llama3 (they use native tokens at different positions)
 LLAMA3_SKIP_TOKENS = {"IMAGE", "IMAGE_END", "AUDIO", "AUDIO_END", "VIDEO", "VIDEO_END"}
 
+# Qwen 2/3 native tokens (from Qwen3's tokenizer.json added_tokens, 151643-151668).
+#
+# IM_START/IM_END carry no `_NATIVE` suffix and are listed here rather than
+# generated from the agent block: Qwen names those two itself, so the agent
+# token of that name *is* the model's id. THINK_NATIVE/THINK_END_NATIVE do carry
+# the suffix, because Qwen's `<think>` is a different string from the agent
+# `<|think|>` and both exist.
+QWEN3_NATIVE_TOKENS = [
+    ("ENDOFTEXT", 151643, "End of text marker"),
+    ("IM_START", 151644, "Native <|im_start|> - ChatML message start"),
+    ("IM_END", 151645, "Native <|im_end|> - ChatML message end"),
+    ("OBJECT_REF_START", 151646, "Object reference begin"),
+    ("OBJECT_REF_END", 151647, "Object reference end"),
+    ("BOX_START", 151648, "Bounding box begin"),
+    ("BOX_END", 151649, "Bounding box end"),
+    ("QUAD_START", 151650, "Quadrilateral begin"),
+    ("QUAD_END", 151651, "Quadrilateral end"),
+    ("VISION_START", 151652, "Vision block begin"),
+    ("VISION_END", 151653, "Vision block end"),
+    ("VISION_PAD", 151654, "Vision padding"),
+    ("IMAGE_PAD", 151655, "Image padding"),
+    ("VIDEO_PAD", 151656, "Video padding"),
+    ("TOOL_CALL", 151657, "Native <tool_call>"),
+    ("TOOL_CALL_END", 151658, "Native </tool_call>"),
+    ("FIM_PREFIX", 151659, "Fill-in-the-Middle prefix"),
+    ("FIM_MIDDLE", 151660, "Fill-in-the-Middle middle"),
+    ("FIM_SUFFIX", 151661, "Fill-in-the-Middle suffix"),
+    ("FIM_PAD", 151662, "Fill-in-the-Middle padding"),
+    ("REPO_NAME", 151663, "Repository name marker"),
+    ("FILE_SEP", 151664, "File separator"),
+    ("TOOL_RESPONSE", 151665, "Native <tool_response>"),
+    ("TOOL_RESPONSE_END", 151666, "Native </tool_response>"),
+    ("THINK_NATIVE", 151667, "Native <think> token"),
+    ("THINK_END_NATIVE", 151668, "Native </think> token"),
+]
+
+# The two agent names Qwen defines itself; taken from QWEN3_NATIVE_TOKENS above
+# instead of the agent block, so they resolve to the ids Qwen trained on.
+QWEN3_SKIP_TOKENS = {"IM_START", "IM_END"}
+
+# GLM-4/4.5 native tokens (from GLM-4.5's tokenizer.json, 151329-151364).
+GLM4_NATIVE_TOKENS = [
+    ("ENDOFTEXT", 151329, "End of text marker"),
+    ("MASK", 151330, "[MASK]"),
+    ("GMASK", 151331, "[gMASK]"),
+    ("SMASK", 151332, "[sMASK]"),
+    ("SOP", 151333, "Start of prefix <sop>"),
+    ("EOP", 151334, "End of prefix <eop>"),
+    ("SYSTEM", 151335, "Native <|system|> role marker"),
+    ("USER", 151336, "Native <|user|> role marker"),
+    ("ASSISTANT", 151337, "Native <|assistant|> role marker"),
+    ("OBSERVATION", 151338, "Observation role marker"),
+    ("BEGIN_OF_IMAGE", 151339, "Image block begin"),
+    ("END_OF_IMAGE", 151340, "Image block end"),
+    ("BEGIN_OF_VIDEO", 151341, "Video block begin"),
+    ("END_OF_VIDEO", 151342, "Video block end"),
+    ("BEGIN_OF_AUDIO", 151343, "Audio block begin"),
+    ("END_OF_AUDIO", 151344, "Audio block end"),
+    ("BEGIN_OF_TRANSCRIPTION", 151345, "Transcription begin"),
+    ("END_OF_TRANSCRIPTION", 151346, "Transcription end"),
+    ("CODE_PREFIX", 151347, "Code Fill-in-the-Middle prefix"),
+    ("CODE_MIDDLE", 151348, "Code Fill-in-the-Middle middle"),
+    ("CODE_SUFFIX", 151349, "Code Fill-in-the-Middle suffix"),
+    ("THINK_NATIVE", 151350, "Native <think> token"),
+    ("THINK_END_NATIVE", 151351, "Native </think> token"),
+    ("TOOL_CALL", 151352, "Native <tool_call>"),
+    ("TOOL_CALL_END", 151353, "Native </tool_call>"),
+    ("TOOL_RESPONSE", 151354, "Native <tool_response>"),
+    ("TOOL_RESPONSE_END", 151355, "Native </tool_response>"),
+    ("ARG_KEY", 151356, "Tool argument key begin"),
+    ("ARG_KEY_END", 151357, "Tool argument key end"),
+    ("ARG_VALUE", 151358, "Tool argument value begin"),
+    ("ARG_VALUE_END", 151359, "Tool argument value end"),
+    ("NOTHINK", 151360, "/nothink directive"),
+    ("BEGIN_OF_BOX", 151361, "Box begin"),
+    ("END_OF_BOX", 151362, "Box end"),
+    ("IMAGE", 151363, "Native <|image|> placeholder"),
+    ("VIDEO", 151364, "Native <|video|> placeholder"),
+]
+
+# The five agent names GLM defines itself. `<|/image|>` and `<|/video|>` are
+# NOT skipped: GLM names only the opening markers, so the closing ones stay in
+# the agent block at their usual offsets.
+GLM4_SKIP_TOKENS = {"SYSTEM", "USER", "ASSISTANT", "IMAGE", "VIDEO"}
+
+# gpt-oss "harmony" native tokens (199998-200018). No name collides with an
+# agent token, so nothing is skipped.
+GPT_OSS_NATIVE_TOKENS = [
+    ("STARTOFTEXT", 199998, "Start of text marker"),
+    ("ENDOFTEXT", 199999, "End of text marker"),
+    ("RETURN", 200002, "End of a final assistant turn"),
+    ("CONSTRAIN", 200003, "Constrained-output marker"),
+    ("CHANNEL", 200005, "Channel marker (analysis/commentary/final)"),
+    ("START", 200006, "Message start"),
+    ("END", 200007, "Message end"),
+    ("MESSAGE", 200008, "Message body begin"),
+    ("CALL", 200012, "Tool call marker"),
+    ("ENDOFPROMPT", 200018, "End of prompt"),
+]
+
 # Mistral V3 control tokens (Tekken tokenizer)
 MISTRAL_V3_CONTROL_TOKENS = [
     ("INST", 3, "[INST] instruction begin"),
@@ -158,14 +258,39 @@ MISTRAL_V3_CONTROL_TOKENS = [
     ("TOOL_CALLS", 9, "[TOOL_CALLS] tool calls marker"),
 ]
 
+# One row per bundled vocabulary that carries agent tokens; Whisper is absent
+# because it carries none. Both the Rust module and the Python class are emitted
+# from this table, so the two languages cannot drift apart the way they did when
+# Rust had constants for the two OpenAI vocabularies and Python had seven.
+#
+# Fields: (name, rust module, PyO3 struct, Python class, base id, description,
+#          native tokens, agent names the vocabulary defines itself)
 MODELS = [
-    ("cl100k_base", "PyCL100KAgentTokens", "CL100K_AGENT_TOKENS", 100277, "cl100k_base (GPT-4, GPT-3.5-turbo)", [], set()),
-    ("o200k_base", "PyO200KAgentTokens", "O200K_AGENT_TOKENS", 200019, "o200k_base (GPT-4o)", [], set()),
-    ("llama3", "PyLlama3AgentTokens", "LLAMA3_AGENT_TOKENS", 128300, "Llama 3 family", LLAMA3_META_TOKENS, LLAMA3_SKIP_TOKENS),
-    ("deepseek_v3", "PyDeepSeekV3AgentTokens", "DEEPSEEK_V3_AGENT_TOKENS", 128900, "DeepSeek V3/R1", DEEPSEEK_V3_NATIVE_TOKENS, set()),
-    ("mistral_v1", "PyMistralV1AgentTokens", "MISTRAL_V1_AGENT_TOKENS", 32000, "Mistral V1 (7B v0.1/v0.2, Mixtral 8x7B)", [], set()),
-    ("mistral_v2", "PyMistralV2AgentTokens", "MISTRAL_V2_AGENT_TOKENS", 32768, "Mistral V2 (7B v0.3, Mixtral 8x22B, Codestral)", [], set()),
-    ("mistral_v3", "PyMistralV3AgentTokens", "MISTRAL_V3_AGENT_TOKENS", 131072, "Mistral V3/Tekken (NeMo, Large 2, Pixtral)", MISTRAL_V3_CONTROL_TOKENS, set()),
+    ("cl100k_base", "cl100k_agent_tokens", "PyCL100KAgentTokens", "CL100K_AGENT_TOKENS", 100277, "cl100k_base (GPT-4, GPT-3.5-turbo)", [], set()),
+    ("o200k_base", "o200k_agent_tokens", "PyO200KAgentTokens", "O200K_AGENT_TOKENS", 200019, "o200k_base (GPT-4o)", [], set()),
+    ("llama3", "llama3_agent_tokens", "PyLlama3AgentTokens", "LLAMA3_AGENT_TOKENS", 128300, "Llama 3 family", LLAMA3_META_TOKENS, LLAMA3_SKIP_TOKENS),
+    ("deepseek_v3", "deepseek_v3_agent_tokens", "PyDeepSeekV3AgentTokens", "DEEPSEEK_V3_AGENT_TOKENS", 128900, "DeepSeek V3/R1", DEEPSEEK_V3_NATIVE_TOKENS, set()),
+    ("mistral_v1", "mistral_v1_agent_tokens", "PyMistralV1AgentTokens", "MISTRAL_V1_AGENT_TOKENS", 32000, "Mistral V1 (7B v0.1/v0.2, Mixtral 8x7B)", [], set()),
+    ("mistral_v2", "mistral_v2_agent_tokens", "PyMistralV2AgentTokens", "MISTRAL_V2_AGENT_TOKENS", 32768, "Mistral V2 (7B v0.3, Mixtral 8x22B, Codestral)", [], set()),
+    ("mistral_v3", "mistral_v3_agent_tokens", "PyMistralV3AgentTokens", "MISTRAL_V3_AGENT_TOKENS", 131072, "Mistral V3/Tekken (NeMo, Large 2, Pixtral)", MISTRAL_V3_CONTROL_TOKENS, set()),
+    ("qwen3", "qwen3_agent_tokens", "PyQwen3AgentTokens", "QWEN3_AGENT_TOKENS", 151669, "Qwen 2/3 (also Baichuan-M2)", QWEN3_NATIVE_TOKENS, QWEN3_SKIP_TOKENS),
+    ("glm4", "glm4_agent_tokens", "PyGlm4AgentTokens", "GLM4_AGENT_TOKENS", 151365, "GLM-4/4.5", GLM4_NATIVE_TOKENS, GLM4_SKIP_TOKENS),
+    ("gpt-oss", "gpt_oss_agent_tokens", "PyGptOssAgentTokens", "GPT_OSS_AGENT_TOKENS", 200019, "OpenAI gpt-oss", GPT_OSS_NATIVE_TOKENS, set()),
+]
+
+# The ten categories the 54 agent tokens fall into, as (name, first offset,
+# one-past-last offset). Shared by both emitters so the grouping is identical.
+CATEGORIES = [
+    ("Conversation & Roles", 0, 5),
+    ("Reasoning/Thinking", 5, 7),
+    ("ReAct Agent Loop", 7, 15),
+    ("Tool/Function Calling", 15, 21),
+    ("Code Execution", 21, 27),
+    ("RAG & Citations", 27, 35),
+    ("Memory/State Management", 35, 39),
+    ("Control Tokens", 39, 42),
+    ("Multimodal Placeholders", 42, 48),
+    ("Document Structure", 48, 54),
 ]
 
 
@@ -212,21 +337,7 @@ def generate_class(model_name: str, class_name: str, py_name: str, base_id: int,
             lines.append(f"    const {const_name}: u32 = {token_id};")
         lines.append("")
 
-    # Group standard agent tokens by category
-    categories = [
-        ("Conversation & Roles", 0, 5),
-        ("Reasoning/Thinking", 5, 7),
-        ("ReAct Agent Loop", 7, 15),
-        ("Tool/Function Calling", 15, 21),
-        ("Code Execution", 21, 27),
-        ("RAG & Citations", 27, 35),
-        ("Memory/State Management", 35, 39),
-        ("Control Tokens", 39, 42),
-        ("Multimodal Placeholders", 42, 48),
-        ("Document Structure", 48, 54),
-    ]
-
-    for cat_name, start, end in categories:
+    for cat_name, start, end in CATEGORIES:
         lines.append(f"    // {'=' * 73}")
         lines.append(f"    // {cat_name} ({base_id + start}-{base_id + end - 1})")
         lines.append(f"    // {'=' * 73}")
@@ -259,13 +370,13 @@ def generate_all() -> str:
     output.append("// Note: pyo3::prelude::* is already imported in bindings.rs")
     output.append("")
 
-    for model_name, class_name, py_name, base_id, description, extra_tokens, skip_tokens in MODELS:
-        output.append(generate_class(model_name, class_name, py_name, base_id, description, extra_tokens, skip_tokens))
+    for _, _, class_name, py_name, base_id, description, extra_tokens, skip_tokens in MODELS:
+        output.append(generate_class(_model_name_of(py_name), class_name, py_name, base_id, description, extra_tokens, skip_tokens))
 
     # Generate module registration helper
     output.append("/// Register all agent token classes with the Python module.")
     output.append("pub fn register_agent_tokens(m: &Bound<'_, PyModule>) -> PyResult<()> {")
-    for _, class_name, _, _, _, _, _ in MODELS:
+    for _, _, class_name, _, _, _, _, _ in MODELS:
         output.append(f'    m.add_class::<{class_name}>()?;')
     output.append("    Ok(())")
     output.append("}")
@@ -274,5 +385,207 @@ def generate_all() -> str:
     return "\n".join(output)
 
 
+def _model_name_of(py_name: str) -> str:
+    """The `from_pretrained` name for a Python class name."""
+    for model_name, _, _, name, _, _, _, _ in MODELS:
+        if name == py_name:
+            return model_name
+    raise KeyError(py_name)
+
+
+def generate_rust_module(
+    model_name: str,
+    mod_name: str,
+    base_id: int,
+    description: str,
+    extra_tokens: list,
+    skip_tokens: set,
+) -> str:
+    """Generate one `pub mod <vocab>_agent_tokens` of plain `u32` constants."""
+    lines = []
+
+    lines.append(f"/// Agent tokens for {description}.")
+    lines.append("///")
+    lines.append(
+        f"/// The 54-token block starts at {base_id}. Every id here is also reachable"
+    )
+    lines.append(
+        f'/// at runtime as `from_pretrained("{model_name}")?.special_token_id(name)`;'
+    )
+    lines.append("/// these constants are the compile-time form, so a typo is a compile")
+    lines.append("/// error rather than a `None` to unwrap.")
+    if skip_tokens:
+        shared = ", ".join(sorted(skip_tokens))
+        lines.append("///")
+        lines.append(
+            f"/// {description} defines {shared} itself, so those constants carry the"
+        )
+        lines.append(
+            "/// vocabulary's own id — below `base_vocab_size`, the id the checkpoint"
+        )
+        lines.append("/// was trained on — rather than a splintr-appended one.")
+    if extra_tokens:
+        lines.append("///")
+        lines.append(
+            "/// The vocabulary's own markers are included too, so this module is its"
+        )
+        lines.append("/// whole special-token surface. A native name that would collide with")
+        lines.append("/// an agent token of the same meaning takes a `_NATIVE` suffix.")
+    lines.append(f"pub mod {mod_name} {{")
+
+    if extra_tokens:
+        lines.append("    // Vocabulary-native tokens")
+        for const_name, token_id, desc in extra_tokens:
+            lines.append(f"    /// {desc}")
+            lines.append(f"    pub const {const_name}: u32 = {token_id};")
+        lines.append("")
+
+    for cat_name, start, end in CATEGORIES:
+        emitted = [
+            (c, d, base_id + o)
+            for c, _, o, d in AGENT_TOKENS
+            if start <= o < end and c not in skip_tokens
+        ]
+        if not emitted:
+            continue
+        lines.append(f"    // {cat_name}")
+        for const_name, desc, token_id in emitted:
+            lines.append(f"    /// {desc}")
+            lines.append(f"    pub const {const_name}: u32 = {token_id};")
+        lines.append("")
+
+    if lines[-1] == "":
+        lines.pop()
+    lines.append("}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def generate_all_rust() -> str:
+    """Generate the Rust constants module for every vocabulary."""
+    output = []
+    output.append("// =============================================================================")
+    output.append("// AUTO-GENERATED FILE - DO NOT EDIT MANUALLY")
+    output.append("// Generated by: scripts/generate_agent_tokens.py --lang rust")
+    output.append("// Source of truth: AGENT_TOKENS and MODELS in that script")
+    output.append("// =============================================================================")
+    output.append("//")
+    output.append("// Compile-time agent-token ids, one module per bundled vocabulary.")
+    output.append("// Whisper has no module: it carries no agent tokens.")
+    output.append("//")
+    output.append("// Included by agent_tokens.rs, which holds the tests for these ids.")
+    output.append("")
+    for model_name, mod_name, _, _, base_id, description, extra_tokens, skip_tokens in MODELS:
+        output.append(
+            generate_rust_module(model_name, mod_name, base_id, description, extra_tokens, skip_tokens)
+        )
+    return "\n".join(output)
+
+
+# ---------------------------------------------------------------------------
+# Documentation tables
+# ---------------------------------------------------------------------------
+#
+# The per-category tables in docs/special_tokens.md list the same 54 tokens this
+# file already defines, so they were a fourth hand-maintained copy of one table
+# — and behaved like one: they carried an id column per vocabulary, went stale
+# the moment a vocabulary was added, and grew unreadable as the list grew. They
+# are emitted from `AGENT_TOKENS` instead, keyed on the **offset**, which is the
+# invariant: an id is its vocabulary's block start plus this offset, and the
+# block starts are one small table rather than a column in ten.
+
+DOC_PATH = "docs/special_tokens.md"
+BEGIN = "<!-- BEGIN GENERATED: {} -->"
+END = "<!-- END GENERATED: {} -->"
+
+
+def _md_escape(token: str) -> str:
+    """A pipe inside a markdown table cell has to be escaped."""
+    return token.replace("|", "\\|")
+
+
+def category_table(start: int, end: int) -> str:
+    """The `Token | Offset | Description` table for one category."""
+    rows = [(t, o, d) for _, t, o, d in AGENT_TOKENS if start <= o < end]
+    width = max(len(_md_escape(t)) + 2 for t, _, _ in rows)
+    desc_width = max(len(d) for _, _, d in rows)
+    lines = [
+        f"| {'Token'.ljust(width)} | Offset | {'Description'.ljust(desc_width)} |",
+        f"| {'-' * width} | ------ | {'-' * desc_width} |",
+    ]
+    for token, offset, desc in rows:
+        cell = f"`{_md_escape(token)}`".ljust(width)
+        lines.append(f"| {cell} | {offset:>6} | {desc.ljust(desc_width)} |")
+    return "\n".join(lines)
+
+
+def block_start_table() -> str:
+    """Where each vocabulary's 54-id block begins — the other half of an id."""
+    lines = [
+        "| Vocabulary | Block starts at | Rust module | Python class |",
+        "| --- | --- | --- | --- |",
+    ]
+    for model_name, mod_name, _, py_name, base_id, _, _, _ in MODELS:
+        lines.append(
+            f"| `{model_name}` | {base_id:,} | `{mod_name}` | `{py_name}` |"
+        )
+    lines.append("| `whisper` | — | — | — |")
+    return "\n".join(lines)
+
+
+def doc_regions() -> dict:
+    """Region name -> generated markdown, for every sentinel-marked block."""
+    regions = {"agent-token-block-starts": block_start_table()}
+    for index, (_, start, end) in enumerate(CATEGORIES):
+        regions[f"agent-tokens-category-{index}"] = category_table(start, end)
+    return regions
+
+
+def rewrite_docs(check_only: bool = False) -> int:
+    """Replace every sentinel-marked region in the doc. Returns an exit code."""
+    import sys
+
+    with open(DOC_PATH, encoding="utf-8") as handle:
+        original = handle.read()
+
+    updated = original
+    for name, body in doc_regions().items():
+        begin, end = BEGIN.format(name), END.format(name)
+        if begin not in updated or end not in updated:
+            print(f"error: {DOC_PATH} has no region {name!r}", file=sys.stderr)
+            return 1
+        head, _, rest = updated.partition(begin)
+        _, _, tail = rest.partition(end)
+        updated = f"{head}{begin}\n\n{body}\n\n{end}{tail}"
+
+    if updated == original:
+        print(f"ok    {DOC_PATH} is up to date")
+        return 0
+    if check_only:
+        print(
+            f"error: {DOC_PATH} is stale — run "
+            f"`python scripts/generate_agent_tokens.py --update-docs`",
+            file=sys.stderr,
+        )
+        return 1
+    with open(DOC_PATH, "w", encoding="utf-8") as handle:
+        handle.write(updated)
+    print(f"ok    rewrote {len(doc_regions())} regions in {DOC_PATH}")
+    return 0
+
+
 if __name__ == "__main__":
-    print(generate_all())
+    import sys
+
+    if "--update-docs" in sys.argv:
+        raise SystemExit(rewrite_docs(check_only="--check" in sys.argv))
+
+    lang = "python"
+    if "--lang" in sys.argv:
+        lang = sys.argv[sys.argv.index("--lang") + 1]
+    if lang == "rust":
+        print(generate_all_rust())
+    elif lang == "python":
+        print(generate_all())
+    else:
+        sys.exit(f"unknown --lang {lang!r}; expected 'rust' or 'python'")

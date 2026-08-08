@@ -23,6 +23,15 @@ pub enum TokenizerError {
     Pcre2NotEnabled,
     #[error("Unknown pretrained model: {0}")]
     UnknownPretrained(String),
+    /// The vocabulary name is known, but its data was not compiled in.
+    ///
+    /// Distinct from [`UnknownPretrained`](Self::UnknownPretrained) so a
+    /// stripped build is diagnosable: the name is not a typo and the fix is a
+    /// cargo feature, not a different name.
+    #[error(
+        "Pretrained vocabulary {0} was not bundled in this build. Compile with --features {1}"
+    )]
+    VocabNotBundled(&'static str, &'static str),
     #[error("Pre-tokenizer pattern list is empty")]
     EmptyPatternList,
     #[error(

@@ -956,6 +956,36 @@ mod tests {
         ]
     }
 
+    /// The scanners exist to make the bundled vocabularies fast, so a new one
+    /// arriving with a pattern nothing here recognises should be visible
+    /// immediately rather than as an unexplained encode-speed cliff.
+    ///
+    /// Mistral V3 and Whisper are the stated exceptions: Tekken's pattern and
+    /// GPT-2's are shapes no scanner covers yet, and they fall back to the
+    /// regex engine. Mistral V1/V2 report no pattern at all.
+    #[test]
+    fn every_bundled_vocabulary_that_should_have_a_scanner_has_one() {
+        use crate::core::pretrained::{patterns, PretrainedVocab::*};
+
+        let no_scanner = [MistralV3, WhisperV1, WhisperV2, WhisperV3];
+        for vocab in [
+            Cl100kBase, O200kBase, GptOss, Llama3, DeepseekV3, Qwen3, Glm4, MistralV1, MistralV2,
+            MistralV3, WhisperV1, WhisperV2, WhisperV3,
+        ] {
+            let Some(pats) = patterns(vocab) else {
+                continue;
+            };
+            let expected = !no_scanner.contains(&vocab);
+            for pattern in pats {
+                assert_eq!(
+                    for_pattern(pattern).is_some(),
+                    expected,
+                    "{vocab:?} scanner coverage changed for {pattern}"
+                );
+            }
+        }
+    }
+
     fn assert_agrees(name: &str, pattern: &str, scan: Scanner, input: &str) {
         let re = regexr::RegexBuilder::new(pattern)
             .jit(true)

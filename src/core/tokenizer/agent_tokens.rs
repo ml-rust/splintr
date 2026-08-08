@@ -1,165 +1,116 @@
-// =============================================================================
-// Agent Token Constants (cl100k_base: 100277+, o200k_base: 200019+)
-// =============================================================================
-// These tokens extend the vocabulary for agent/chat applications without
-// conflicting with OpenAI's reserved special token ranges.
+//! Compile-time agent-token ids, one module per bundled vocabulary.
+//!
+//! The constants themselves are generated — `include!`d from
+//! `agent_tokens_generated.rs`, which
+//! `scripts/generate_agent_tokens.py --lang rust` writes from the same table
+//! that produces the Python `*_AGENT_TOKENS` classes. That shared table is the
+//! point: the two languages drifted for a whole release cycle when Rust's
+//! constants were hand-written and Python's were generated, leaving Rust with
+//! two vocabularies and Python with seven.
+//!
+//! This file is the hand-written half, and holds only the tests that pin the
+//! generated ids against the tokenizers they name — so regenerating never
+//! clobbers them.
 
-/// Agent tokens for cl100k_base (GPT-4, GPT-3.5-turbo).
-///
-/// These special tokens extend the cl100k_base vocabulary for building chat models,
-/// reasoning systems, and autonomous agents. Token IDs start at 100277 to avoid
-/// conflicts with OpenAI's reserved range (100257-100276).
-///
-/// # Token Categories
-///
-/// ## Conversation Structure (100277-100281)
-/// Standard ChatML-style tokens for multi-turn conversations:
-/// - `<|system|>`: Marks system instructions that define assistant behavior
-/// - `<|user|>`: Marks user input/queries
-/// - `<|assistant|>`: Marks assistant responses
-/// - `<|im_start|>`: Generic message start delimiter (ChatML format)
-/// - `<|im_end|>`: Generic message end delimiter (ChatML format)
-///
-/// ## Reasoning/Thinking (100282-100283)
-/// Chain-of-Thought (CoT) tokens for System 2 reasoning
-///
-/// ## ReAct Agent Loop (100284-100291)
-/// Tokens for ReAct (Reason + Act) agent architectures
-///
-/// ## Tool/Function Calling (100292-100297)
-/// Structured tool use with explicit success/error handling
-///
-/// ## Code Execution (100298-100303)
-/// Jupyter notebook-style code interpreter flow
-///
-/// ## RAG/Citations (100304-100311)
-/// Retrieval-Augmented Generation with source attribution
-///
-/// ## Memory/State (100312-100315)
-/// Long-term memory and state persistence
-///
-/// ## Control Tokens (100316-100318)
-/// Sequence control and formatting
-///
-/// ## Multimodal (100319-100324)
-/// Placeholders for non-text content
-///
-/// ## Document Structure (100325-100330)
-/// Semantic layout tokens for parsing structured documents
-pub mod cl100k_agent_tokens {
-    pub const SYSTEM: u32 = 100277;
-    pub const USER: u32 = 100278;
-    pub const ASSISTANT: u32 = 100279;
-    pub const IM_START: u32 = 100280;
-    pub const IM_END: u32 = 100281;
-    pub const THINK: u32 = 100282;
-    pub const THINK_END: u32 = 100283;
-    pub const PLAN: u32 = 100284;
-    pub const PLAN_END: u32 = 100285;
-    pub const STEP: u32 = 100286;
-    pub const STEP_END: u32 = 100287;
-    pub const ACT: u32 = 100288;
-    pub const ACT_END: u32 = 100289;
-    pub const OBSERVE: u32 = 100290;
-    pub const OBSERVE_END: u32 = 100291;
-    pub const FUNCTION: u32 = 100292;
-    pub const FUNCTION_END: u32 = 100293;
-    pub const RESULT: u32 = 100294;
-    pub const RESULT_END: u32 = 100295;
-    pub const ERROR: u32 = 100296;
-    pub const ERROR_END: u32 = 100297;
-    pub const CODE: u32 = 100298;
-    pub const CODE_END: u32 = 100299;
-    pub const OUTPUT: u32 = 100300;
-    pub const OUTPUT_END: u32 = 100301;
-    pub const LANG: u32 = 100302;
-    pub const LANG_END: u32 = 100303;
-    pub const CONTEXT: u32 = 100304;
-    pub const CONTEXT_END: u32 = 100305;
-    pub const QUOTE: u32 = 100306;
-    pub const QUOTE_END: u32 = 100307;
-    pub const CITE: u32 = 100308;
-    pub const CITE_END: u32 = 100309;
-    pub const SOURCE: u32 = 100310;
-    pub const SOURCE_END: u32 = 100311;
-    pub const MEMORY: u32 = 100312;
-    pub const MEMORY_END: u32 = 100313;
-    pub const RECALL: u32 = 100314;
-    pub const RECALL_END: u32 = 100315;
-    pub const PAD: u32 = 100316;
-    pub const STOP: u32 = 100317;
-    pub const SEP: u32 = 100318;
-    pub const IMAGE: u32 = 100319;
-    pub const IMAGE_END: u32 = 100320;
-    pub const AUDIO: u32 = 100321;
-    pub const AUDIO_END: u32 = 100322;
-    pub const VIDEO: u32 = 100323;
-    pub const VIDEO_END: u32 = 100324;
-    pub const TITLE: u32 = 100325;
-    pub const TITLE_END: u32 = 100326;
-    pub const SECTION: u32 = 100327;
-    pub const SECTION_END: u32 = 100328;
-    pub const SUMMARY: u32 = 100329;
-    pub const SUMMARY_END: u32 = 100330;
-}
+include!("agent_tokens_generated.rs");
 
-/// Agent tokens for o200k_base (GPT-4o).
-///
-/// See [`cl100k_agent_tokens`] for detailed documentation on each token category.
-/// The token semantics are identical; only the IDs differ.
-pub mod o200k_agent_tokens {
-    pub const SYSTEM: u32 = 200019;
-    pub const USER: u32 = 200020;
-    pub const ASSISTANT: u32 = 200021;
-    pub const IM_START: u32 = 200022;
-    pub const IM_END: u32 = 200023;
-    pub const THINK: u32 = 200024;
-    pub const THINK_END: u32 = 200025;
-    pub const PLAN: u32 = 200026;
-    pub const PLAN_END: u32 = 200027;
-    pub const STEP: u32 = 200028;
-    pub const STEP_END: u32 = 200029;
-    pub const ACT: u32 = 200030;
-    pub const ACT_END: u32 = 200031;
-    pub const OBSERVE: u32 = 200032;
-    pub const OBSERVE_END: u32 = 200033;
-    pub const FUNCTION: u32 = 200034;
-    pub const FUNCTION_END: u32 = 200035;
-    pub const RESULT: u32 = 200036;
-    pub const RESULT_END: u32 = 200037;
-    pub const ERROR: u32 = 200038;
-    pub const ERROR_END: u32 = 200039;
-    pub const CODE: u32 = 200040;
-    pub const CODE_END: u32 = 200041;
-    pub const OUTPUT: u32 = 200042;
-    pub const OUTPUT_END: u32 = 200043;
-    pub const LANG: u32 = 200044;
-    pub const LANG_END: u32 = 200045;
-    pub const CONTEXT: u32 = 200046;
-    pub const CONTEXT_END: u32 = 200047;
-    pub const QUOTE: u32 = 200048;
-    pub const QUOTE_END: u32 = 200049;
-    pub const CITE: u32 = 200050;
-    pub const CITE_END: u32 = 200051;
-    pub const SOURCE: u32 = 200052;
-    pub const SOURCE_END: u32 = 200053;
-    pub const MEMORY: u32 = 200054;
-    pub const MEMORY_END: u32 = 200055;
-    pub const RECALL: u32 = 200056;
-    pub const RECALL_END: u32 = 200057;
-    pub const PAD: u32 = 200058;
-    pub const STOP: u32 = 200059;
-    pub const SEP: u32 = 200060;
-    pub const IMAGE: u32 = 200061;
-    pub const IMAGE_END: u32 = 200062;
-    pub const AUDIO: u32 = 200063;
-    pub const AUDIO_END: u32 = 200064;
-    pub const VIDEO: u32 = 200065;
-    pub const VIDEO_END: u32 = 200066;
-    pub const TITLE: u32 = 200067;
-    pub const TITLE_END: u32 = 200068;
-    pub const SECTION: u32 = 200069;
-    pub const SECTION_END: u32 = 200070;
-    pub const SUMMARY: u32 = 200071;
-    pub const SUMMARY_END: u32 = 200072;
+#[cfg(test)]
+mod tests {
+    use crate::core::pretrained::{base_vocab_size, from_pretrained, PretrainedVocab};
+    use crate::core::Tokenize;
+
+    /// One row per module: the vocabulary it names, and a sample of its
+    /// constants spanning the block — the first slot, a middle one, the two
+    /// vocabularies most often claim for themselves, and the last.
+    #[allow(clippy::type_complexity)]
+    fn samples() -> Vec<(&'static str, [(&'static str, u32); 6])> {
+        macro_rules! row {
+            ($vocab:literal, $m:ident) => {
+                (
+                    $vocab,
+                    [
+                        ("<|system|>", super::$m::SYSTEM),
+                        ("<|im_start|>", super::$m::IM_START),
+                        ("<|im_end|>", super::$m::IM_END),
+                        ("<|think|>", super::$m::THINK),
+                        ("<|pad|>", super::$m::PAD),
+                        ("<|/summary|>", super::$m::SUMMARY_END),
+                    ],
+                )
+            };
+        }
+        vec![
+            row!("cl100k_base", cl100k_agent_tokens),
+            row!("o200k_base", o200k_agent_tokens),
+            row!("gpt-oss", gpt_oss_agent_tokens),
+            row!("llama3", llama3_agent_tokens),
+            row!("qwen3", qwen3_agent_tokens),
+            row!("glm4", glm4_agent_tokens),
+            row!("deepseek_v3", deepseek_v3_agent_tokens),
+            row!("mistral_v1", mistral_v1_agent_tokens),
+            row!("mistral_v2", mistral_v2_agent_tokens),
+            row!("mistral_v3", mistral_v3_agent_tokens),
+        ]
+    }
+
+    /// Every generated constant must equal the id its tokenizer resolves that
+    /// token to.
+    ///
+    /// This file and `insert_agent_tokens` in `pretrained.rs` are two
+    /// independent statements of the same ids — this one generated by
+    /// `scripts/generate_agent_tokens.py --lang rust`, that one written by
+    /// hand. A constant is what callers reach for precisely so they need not
+    /// think about the id, so a stale one is wrong in the worst way: silently.
+    /// The Python half of the same contract is pinned by
+    /// `python/tests/test_agent_token_constants.py`.
+    #[test]
+    fn generated_constants_match_the_tokenizers_they_name() {
+        for (vocab, sample) in samples() {
+            let tokenizer = from_pretrained(vocab).expect("bundled vocabulary loads");
+            for (token, expected) in sample {
+                assert_eq!(
+                    tokenizer.special_token_id(token),
+                    Some(expected),
+                    "{vocab}: {token} disagrees with the vocabulary — regenerate with \
+                     scripts/generate_agent_tokens.py --lang rust"
+                );
+            }
+        }
+    }
+
+    /// Vocabularies that ship an agent-token name themselves keep their own id,
+    /// below `base_vocab_size` — the id the checkpoint was trained on. A
+    /// constant pointing at a splintr-appended id instead would build chat
+    /// templates the model never saw.
+    #[test]
+    fn constants_defer_to_a_vocabularys_own_ids() {
+        let qwen_base = base_vocab_size(PretrainedVocab::Qwen3);
+        assert_eq!(super::qwen3_agent_tokens::IM_START, 151644);
+        assert_eq!(super::qwen3_agent_tokens::IM_END, 151645);
+        assert!(super::qwen3_agent_tokens::IM_START < qwen_base);
+        // A name Qwen does not define still comes from the appended block.
+        assert_eq!(super::qwen3_agent_tokens::SYSTEM, qwen_base);
+
+        let glm_base = base_vocab_size(PretrainedVocab::Glm4);
+        assert_eq!(super::glm4_agent_tokens::SYSTEM, 151335);
+        assert_eq!(super::glm4_agent_tokens::IMAGE, 151363);
+        assert!(super::glm4_agent_tokens::SYSTEM < glm_base);
+        // GLM names only the opening markers, so the closing ones stay in the block.
+        assert_eq!(super::glm4_agent_tokens::IMAGE_END, glm_base + 43);
+    }
+
+    /// Whisper is the one bundled vocabulary with no module here: it carries no
+    /// agent tokens. Pinned so "no module" stays a stated fact rather than an
+    /// omission someone later fills in by mistake.
+    #[test]
+    fn whisper_carries_no_agent_tokens() {
+        let tokenizer = from_pretrained("whisper").expect("bundled vocabulary loads");
+        assert_eq!(tokenizer.special_token_id("<|think|>"), None);
+        assert_eq!(tokenizer.special_token_id("<|pad|>"), None);
+        assert_eq!(
+            base_vocab_size(PretrainedVocab::WhisperV2),
+            tokenizer.vocab_size() as u32,
+            "with no agent tokens, the base size is the whole vocabulary"
+        );
+    }
 }

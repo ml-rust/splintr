@@ -61,12 +61,7 @@ tokenizer = Tokenizer.from_pretrained("whisper_v3")   # OpenAI Whisper multiling
 
 > Whisper English-only checkpoints (`*.en`) use a different base BPE and are not bundled — load those with [`from_json`](#loading-any-model-from-tokenizerjson).
 
-`from_pretrained` returns an [`AnyTokenizer`](#anytokenizer) for **every**
-bundled vocabulary — the same universal handle `from_json` returns, and the same
-one `splintr::pretrained::from_pretrained` returns in Rust. It delegates to that
-one loader, so a vocabulary name means the same thing, and produces the same ids,
-on both sides of the binding. Query `.family` for the backend it dispatched to
-(`"BPE"` for the byte-level vocabularies, `"Spm"` for Mistral V1/V2).
+`from_pretrained` returns an [`AnyTokenizer`](#anytokenizer) for **every** bundled vocabulary — the same universal handle `from_json` returns, and the same one `splintr::pretrained::from_pretrained` returns in Rust. It delegates to that one loader, so a vocabulary name means the same thing, and produces the same ids, on both sides of the binding. Query `.family` for the backend it dispatched to (`"BPE"` for the byte-level vocabularies, `"Spm"` for Mistral V1/V2).
 
 **Load from custom vocabulary file:**
 
@@ -82,9 +77,7 @@ tokenizer = Tokenizer(
 
 ### Encoding Methods
 
-Every Python tokenizer class — `Tokenizer`, `AnyTokenizer`, `SpmTokenizer`,
-`SentencePieceTokenizer`, `WordPieceTokenizer` — exposes the same six encoding
-methods, and each means the same thing on all of them:
+Every Python tokenizer class — `Tokenizer`, `AnyTokenizer`, `SpmTokenizer`, `SentencePieceTokenizer`, `WordPieceTokenizer` — exposes the same six encoding methods, and each means the same thing on all of them:
 
 | Method                                  | Meaning                                               | HuggingFace / tiktoken equivalent                                |
 | --------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------- |
@@ -95,18 +88,10 @@ methods, and each means the same thing on all of them:
 | `encode_allowed_special(text, allowed)` | Match only the listed ones; `ValueError` on any other | tiktoken `allowed_special={...}`                                 |
 | `encode_batch(texts)`                   | Batch form of `encode`, parallel across texts         | `tokenizer.encode_batch(texts)`                                  |
 
-Two independent questions are at work here, and mixing them up is the one way to
-get this wrong:
+Two independent questions are at work here, and mixing them up is the one way to get this wrong:
 
-1. **Boundary tokens** — the `[CLS]…[SEP]` / `<s>…</s>` wrapper the model was
-   trained to receive. It comes from the tokenizer's `post_processor` template,
-   never from the text. `encode` adds it; `encode_raw` does not. Every _other_
-   method on the list also adds it, because refusing to match a special token
-   inside untrusted content says nothing about whether the model wants a BOS.
-2. **Special tokens spelled out in the input** — a user typing `<|endoftext|>`.
-   `encode_ordinary` / `encode_with_special` / `encode_allowed_special` decide
-   whether those become real control-token ids. `encode` uses the tokenizer's own
-   default (see below).
+1. **Boundary tokens** — the `[CLS]…[SEP]` / `<s>…</s>` wrapper the model was trained to receive. It comes from the tokenizer's `post_processor` template, never from the text. `encode` adds it; `encode_raw` does not. Every _other_ method on the list also adds it, because refusing to match a special token inside untrusted content says nothing about whether the model wants a BOS.
+2. **Special tokens spelled out in the input** — a user typing `<|endoftext|>`. `encode_ordinary` / `encode_with_special` / `encode_allowed_special` decide whether those become real control-token ids. `encode` uses the tokenizer's own default (see below).
 
 #### `encode(text: str) -> list[int]`
 
@@ -117,9 +102,7 @@ tokens = tokenizer.encode("Hello, world!")
 print(tokens)  # [9906, 11, 1917, 0]
 ```
 
-Vocabularies loaded through `Tokenizer.from_pretrained` declare no boundary
-template, so for them `encode` and `encode_raw` return the same ids. A tokenizer
-loaded from a `tokenizer.json` usually does declare one:
+Vocabularies loaded through `Tokenizer.from_pretrained` declare no boundary template, so for them `encode` and `encode_raw` return the same ids. A tokenizer loaded from a `tokenizer.json` usually does declare one:
 
 ```python
 from splintr import from_json
@@ -131,9 +114,7 @@ tok.encode_raw("Hello, world!")  # [9906, 11, 1917, 0]
 
 #### `encode_raw(text: str) -> list[int]`
 
-Encode text to token IDs, content only — no boundary template. Use it when you
-assemble the sequence yourself (a chat template, a reranker pair) and place the
-boundary tokens by hand. Whatever `encode` adds and this does not _is_ the template.
+Encode text to token IDs, content only — no boundary template. Use it when you assemble the sequence yourself (a chat template, a reranker pair) and place the boundary tokens by hand. Whatever `encode` adds and this does not _is_ the template.
 
 ```python
 tok = from_json("/path/to/bge-m3-tokenizer/tokenizer.json")
@@ -143,9 +124,7 @@ tok.encode_raw("Hello, world!")  # [35378, 4, 8999, 38]
 
 #### `encode_with_special(text: str) -> list[int]`
 
-Encode text, matching every configured special token spelled out in it: the
-special token becomes its single control-token id rather than being split into
-ordinary pieces.
+Encode text, matching every configured special token spelled out in it: the special token becomes its single control-token id rather than being split into ordinary pieces.
 
 ```python
 tokenizer = Tokenizer.from_pretrained("cl100k_base")
@@ -156,18 +135,11 @@ tokenizer.encode_with_special(text)  # [3563, 220, 100257, 4060]  — the same
 tokenizer.encode_ordinary(text)      # [3563, 83739, 8862, 728, 428, 91, 29, 4060]
 ```
 
-Every loader — `from_pretrained`, `from_json`, the GGUF loader — turns added-token
-matching **on**, so `encode` and `encode_with_special` agree on everything they
-return; the method exists so the name means the same thing on every tokenizer
-class. `encode_ordinary` is how you decline the match. Name the mode explicitly
-whenever the text is untrusted — see below.
+Every loader — `from_pretrained`, `from_json`, the GGUF loader — turns added-token matching **on**, so `encode` and `encode_with_special` agree on everything they return; the method exists so the name means the same thing on every tokenizer class. `encode_ordinary` is how you decline the match. Name the mode explicitly whenever the text is untrusted — see below.
 
 #### `encode_batch(texts: list[str]) -> list[list[int]]`
 
-Encode multiple texts in parallel using Rayon — the batch form of `encode`, with
-the boundary template applied to each result. This is where Splintr really shines:
-roughly 10-12x tiktoken's throughput on the batch workloads
-`benchmarks/benchmark_batch.py` runs.
+Encode multiple texts in parallel using Rayon — the batch form of `encode`, with the boundary template applied to each result. This is where Splintr really shines: roughly 10-12x tiktoken's throughput on the batch workloads `benchmarks/benchmark_batch.py` runs.
 
 ```python
 texts = ["Hello, world!", "How are you?"]
@@ -177,10 +149,7 @@ batch_tokens = tokenizer.encode_batch(texts)
 
 #### `encode_rayon(text: str) -> list[int]`
 
-Same result as `encode`, but Rayon parallelizes _within_ the single text. This is
-only beneficial for very large texts (>1MB); for typical use cases `encode()` is
-faster. A backend with no intra-text parallel path simply runs `encode`, so the
-ids never depend on which one you hold.
+Same result as `encode`, but Rayon parallelizes _within_ the single text. This is only beneficial for very large texts (>1MB); for typical use cases `encode()` is faster. A backend with no intra-text parallel path simply runs `encode`, so the ids never depend on which one you hold.
 
 ```python
 # Only useful for very large texts
@@ -194,14 +163,9 @@ The batch form of `encode_with_special`, parallel across texts.
 
 ### Special tokens in untrusted text
 
-A tokenizer that matches special tokens will promote text that _spells_ a control
-token to that token's real id. `<|im_start|>` typed by a user becomes the same id
-the server emits when it opens a turn, and downstream nothing can tell the two
-apart — that is how a user message forges a system turn. Denylisting the spelling
-beforehand does not close it: the spelling is not the only thing that maps to the id.
+A tokenizer that matches special tokens will promote text that _spells_ a control token to that token's real id. `<|im_start|>` typed by a user becomes the same id the server emits when it opens a turn, and downstream nothing can tell the two apart — that is how a user message forges a system turn. Denylisting the spelling beforehand does not close it: the spelling is not the only thing that maps to the id.
 
-So the three matching modes are explicit methods. In Rust they are the
-[`SpecialMode`](#specialmode) enum passed to `Tokenize::encode_with`.
+So the three matching modes are explicit methods. In Rust they are the [`SpecialMode`](#specialmode) enum passed to `Tokenize::encode_with`.
 
 ```python
 from splintr import Tokenizer
@@ -223,10 +187,7 @@ tokenizer.encode_allowed_special(untrusted, [])
 #             the caller's allow-list
 ```
 
-The model's own boundary tokens are unaffected by the mode — they come from the
-`post_processor` template, not from matching text against the vocabulary, so
-locking down matching does not silently strip the BOS the model was trained with.
-Use `encode_raw` when you want no boundary tokens at all.
+The model's own boundary tokens are unaffected by the mode — they come from the `post_processor` template, not from matching text against the vocabulary, so locking down matching does not silently strip the BOS the model was trained with. Use `encode_raw` when you want no boundary tokens at all.
 
 ### Decoding Methods
 
@@ -240,10 +201,7 @@ text = tokenizer.decode(tokens)
 print(text)  # "Hello, world!"
 ```
 
-Control tokens render as nothing — HuggingFace's default
-`skip_special_tokens=True`, which every loader implements, so the same
-vocabulary decodes the same way whether it came from `from_pretrained`, from a
-`tokenizer.json` or from a GGUF file:
+Control tokens render as nothing — HuggingFace's default `skip_special_tokens=True`, which every loader implements, so the same vocabulary decodes the same way whether it came from `from_pretrained`, from a `tokenizer.json` or from a GGUF file:
 
 ```python
 tok = Tokenizer.from_pretrained("mistral_v2")
@@ -251,21 +209,11 @@ tok.decode([3])                          # ""  — [INST]
 tok.decode(tok.encode_with_special("[INST]Hi[/INST]"))  # "Hi"
 ```
 
-What counts as a control token is the vocabulary's own declaration, not a guess:
-DeepSeek marks `<｜User｜>` and `<｜Assistant｜>` as ordinary added tokens, so
-those still render, and Whisper's timestamp tokens (`<|0.00|>`…`<|30.00|>`) are
-transcript content and render too. The OpenAI vocabularies (`cl100k_base`,
-`o200k_base`) follow `tiktoken`, which renders `<|endoftext|>` and its siblings.
-Use `special_token_id(name)` when you want a marker's spelling or id rather than
-its decoded text.
+What counts as a control token is the vocabulary's own declaration, not a guess: DeepSeek marks `<｜User｜>` and `<｜Assistant｜>` as ordinary added tokens, so those still render, and Whisper's timestamp tokens (`<|0.00|>`…`<|30.00|>`) are transcript content and render too. The OpenAI vocabularies (`cl100k_base`, `o200k_base`) follow `tiktoken`, which renders `<|endoftext|>` and its siblings. Use `special_token_id(name)` when you want a marker's spelling or id rather than its decoded text.
 
 #### `decode_bytes(tokens: list[int]) -> bytes`
 
-Decode token IDs to raw bytes without UTF-8 validation. Needs the byte-level BPE
-backend (`family == "BPE"`) and a source that declares no `decoder` pipeline —
-reading token bytes directly is exactly what would bypass such a pipeline — and
-raises `ValueError` otherwise. Every bundled byte-level vocabulary qualifies; use
-`decode` for the rest.
+Decode token IDs to raw bytes without UTF-8 validation. Needs the byte-level BPE backend (`family == "BPE"`) and a source that declares no `decoder` pipeline — reading token bytes directly is exactly what would bypass such a pipeline — and raises `ValueError` otherwise. Every bundled byte-level vocabulary qualifies; use `decode` for the rest.
 
 ```python
 tokens = [9906, 11, 1917, 0]
@@ -285,21 +233,11 @@ text = tokenizer.decode_lossy(tokens)
 
 #### `decode_token_bytes(id: int) -> bytes`
 
-A single id's own contribution to the decoded stream — ByteLevel alphabet
-unmapped and `<0xNN>` byte fallback resolved — for callers that need to
-attribute output to one token rather than render a sequence: logprob display,
-token-level highlighting, debugging a vocabulary. Available on every
-tokenizer class (`Tokenizer`, `SentencePieceTokenizer`, `SpmTokenizer`,
-`WordPieceTokenizer`, `AnyTokenizer`).
+A single id's own contribution to the decoded stream — ByteLevel alphabet unmapped and `<0xNN>` byte fallback resolved — for callers that need to attribute output to one token rather than render a sequence: logprob display, token-level highlighting, debugging a vocabulary. Available on every tokenizer class (`Tokenizer`, `SentencePieceTokenizer`, `SpmTokenizer`, `WordPieceTokenizer`, `AnyTokenizer`).
 
-No sequence-level post-processing runs — no leading-space strip, no
-first-token rule, no word separator — so **concatenating this over a sequence
-of ids is not the same as calling `decode` on that sequence**. Use
-[`streaming_decoder()`](#streaming-decoder) to render a whole stream.
+No sequence-level post-processing runs — no leading-space strip, no first-token rule, no word separator — so **concatenating this over a sequence of ids is not the same as calling `decode` on that sequence**. Use [`streaming_decoder()`](#streaming-decoder) to render a whole stream.
 
-An id in the vocabulary that carries no surface (a control token `decode`
-drops, say) returns empty bytes, not an error; `ValueError` is reserved for an
-id outside the vocabulary altogether.
+An id in the vocabulary that carries no surface (a control token `decode` drops, say) returns empty bytes, not an error; `ValueError` is reserved for an id outside the vocabulary altogether.
 
 ```python
 tok = Tokenizer.from_pretrained("cl100k_base")
@@ -313,11 +251,7 @@ b"".join(tok.decode_token_bytes(i) for i in ids) == tok.decode(ids).encode()
 
 #### `decode_token(id: int) -> str`
 
-`decode_token_bytes` as text. Raises far more often than `decode` does: a
-single `<0xNN>` byte-fallback id, or a token holding one byte of a
-multi-byte character, is not valid UTF-8 standing alone — that is the
-expected signal to stop decoding id-at-a-time and use `streaming_decoder()`,
-which buffers exactly those partial sequences across tokens.
+`decode_token_bytes` as text. Raises far more often than `decode` does: a single `<0xNN>` byte-fallback id, or a token holding one byte of a multi-byte character, is not valid UTF-8 standing alone — that is the expected signal to stop decoding id-at-a-time and use `streaming_decoder()`, which buffers exactly those partial sequences across tokens.
 
 ```python
 tok = Tokenizer.from_pretrained("cl100k_base")
@@ -335,14 +269,11 @@ The total vocabulary size including special tokens and splintr's 54 agent tokens
 print(tokenizer.vocab_size)  # 100331 for cl100k_base with agent tokens
 ```
 
-For the size the upstream reference reports — what you need to size an embedding
-or logit layer — use [`base_vocab_size`](#sizing-against-the-reference-vocabulary).
+For the size the upstream reference reports — what you need to size an embedding or logit layer — use [`base_vocab_size`](#sizing-against-the-reference-vocabulary).
 
 #### `cache_len: int`
 
-The number of entries currently in the LRU cache. The byte-level BPE backend is
-the only one that caches encoded chunks; on any other family this raises
-`ValueError`, as does `clear_cache()`.
+The number of entries currently in the LRU cache. The byte-level BPE backend is the only one that caches encoded chunks; on any other family this raises `ValueError`, as does `clear_cache()`.
 
 ```python
 print(tokenizer.cache_len)  # Number of cached text chunks
@@ -360,13 +291,7 @@ tokenizer.clear_cache()
 
 ### Sizing against the reference vocabulary
 
-`base_vocab_size(name)` is a module-level function reporting a vocabulary's size
-_as its upstream reference defines it_ — without splintr's 54 agent tokens. That
-is the number to size a model's embedding or logit layer with, or to identify
-which vocabulary a checkpoint uses from the shape of its token-embedding tensor:
-both must match the checkpoint's vocabulary, not splintr's extended one. Agent
-tokens are appended strictly above every id the reference uses, so this is also
-exactly the id at which splintr's additions begin.
+`base_vocab_size(name)` is a module-level function reporting a vocabulary's size _as its upstream reference defines it_ — without splintr's 54 agent tokens. That is the number to size a model's embedding or logit layer with, or to identify which vocabulary a checkpoint uses from the shape of its token-embedding tensor: both must match the checkpoint's vocabulary, not splintr's extended one. Agent tokens are appended strictly above every id the reference uses, so this is also exactly the id at which splintr's additions begin.
 
 ```python
 from splintr import Tokenizer, base_vocab_size
@@ -378,11 +303,7 @@ print(base_vocab_size("llama3"))        # 128256
 print(base_vocab_size("mistral_v3"))    # 131072
 ```
 
-It accepts the same names as `Tokenizer.from_pretrained` and raises `ValueError`
-for anything else. It is _not_ `vocab_size - 54`: several reference vocabularies
-leave gaps below their nominal size, so the difference varies per vocabulary.
-(Rust: `splintr::pretrained::base_vocab_size(vocab)` taking a `PretrainedVocab`,
-or `base_vocab_size_by_name(name)` returning `Result<u32, TokenizerError>`.)
+It accepts the same names as `Tokenizer.from_pretrained` and raises `ValueError` for anything else. It is _not_ `vocab_size - 54`: several reference vocabularies leave gaps below their nominal size, so the difference varies per vocabulary. (Rust: `splintr::pretrained::base_vocab_size(vocab)` taking a `PretrainedVocab`, or `base_vocab_size_by_name(name)` returning `Result<u32, TokenizerError>`.)
 
 ### SentencePiece Tokenizer Class
 
@@ -411,9 +332,7 @@ ids = tokenizer.encode("Hello world")
 # [1, 3, 4]  (BOS + ▁Hello + ▁world)
 ```
 
-The other five [encoding methods](#encoding-methods) (`encode_raw`,
-`encode_ordinary`, `encode_with_special`, `encode_allowed_special`,
-`encode_batch`) are present here too and mean exactly what they mean elsewhere.
+The other five [encoding methods](#encoding-methods) (`encode_raw`, `encode_ordinary`, `encode_with_special`, `encode_allowed_special`, `encode_batch`) are present here too and mean exactly what they mean elsewhere.
 
 #### `decode(ids: list[int]) -> str`
 
@@ -445,16 +364,9 @@ text = tokenizer.decode_lossy([1, 3, 999, 4])
 
 ### Loading any model from `tokenizer.json`
 
-For models not bundled with `from_pretrained`, load a HuggingFace `tokenizer.json`
-with `from_json`. It reads everything from the file — split regex, byte-level
-flag, BPE **merge order** (independent of token ids, so RoBERTa-style vocabs
-work), the full ordered normalizer (including SentencePiece's `Precompiled`
-charsmap), the `post_processor` template, the declared `decoder` pipeline, and
-special tokens.
+For models not bundled with `from_pretrained`, load a HuggingFace `tokenizer.json` with `from_json`. It reads everything from the file — split regex, byte-level flag, BPE **merge order** (independent of token ids, so RoBERTa-style vocabs work), the full ordered normalizer (including SentencePiece's `Precompiled` charsmap), the `post_processor` template, the declared `decoder` pipeline, and special tokens.
 
-It always returns an `AnyTokenizer` — the universal loaded-tokenizer handle —
-which dispatches internally to the backend matching the file's `model.type`.
-Query `.family` for which one:
+It always returns an `AnyTokenizer` — the universal loaded-tokenizer handle — which dispatches internally to the backend matching the file's `model.type`. Query `.family` for which one:
 
 ```python
 from splintr import from_json, from_json_bytes
@@ -474,29 +386,20 @@ tok.decode(tok.encode("Hello, world!"))   # "Hello, world!"
 | `Unigram`    | `"Unigram"`   | `SentencePieceTokenizer` | T5, Gemma, Albert, XLNet         |
 | `WordPiece`  | `"WordPiece"` | `WordPieceTokenizer`     | BERT, DistilBERT, Electra        |
 
-A fourth backend, `SpmTokenizer` (`family == "Spm"`), is not reachable from
-`tokenizer.json`: it is what the bundled Mistral V1/V2 vocabularies use and what
-the Rust `from_gguf_vocab` loader produces from a GGUF file's embedded vocabulary.
+A fourth backend, `SpmTokenizer` (`family == "Spm"`), is not reachable from `tokenizer.json`: it is what the bundled Mistral V1/V2 vocabularies use and what the Rust `from_gguf_vocab` loader produces from a GGUF file's embedded vocabulary.
 
-**Other members:** the six [encoding methods](#encoding-methods), `decode(ids)`,
-`vocab_size`, `family`, `eos_token_id`, `is_eos(id)`, and
-`special_token_id(name)` (the id of an added token by its content, e.g. `"[CLS]"`,
-or `None`).
+**Other members:** the six [encoding methods](#encoding-methods), `decode(ids)`, `vocab_size`, `family`, `eos_token_id`, `is_eos(id)`, and `special_token_id(name)` (the id of an added token by its content, e.g. `"[CLS]"`, or `None`).
 
-`decode` runs the file's declared `decoder` chain after dropping `special=true`
-ids — HuggingFace's default `skip_special_tokens=True` — so files whose decoding
-_is_ that chain (Mistral, Llama, Gemma) come back as text rather than raw pieces.
+`decode` runs the file's declared `decoder` chain after dropping `special=true` ids — HuggingFace's default `skip_special_tokens=True` — so files whose decoding _is_ that chain (Mistral, Llama, Gemma) come back as text rather than raw pieces.
 
-**Strict by design.** Rather than silently approximate an unsupported config (which
-would produce wrong tokens with no signal), `from_json` raises:
+**Strict by design.** Rather than silently approximate an unsupported config (which would produce wrong tokens with no signal), `from_json` raises:
 
 - `UnsupportedModelType` — `model.type` is not BPE/Unigram/WordPiece
 - `UnsupportedNormalizer` — an unrecognized normalizer step (dropping it would mis-normalize)
 - `InvalidNormalizerRegex` — a `Replace` regex that fails to compile
 - `UnsupportedPreTokenizer` — a declared pre-tokenizer with no recognized split (refusing to guess the pattern)
 
-Output is verified id-for-id against HuggingFace `tokenizers` across all three
-families. (Rust: `splintr::from_json_path` / `from_json_bytes`.)
+Output is verified id-for-id against HuggingFace `tokenizers` across all three families. (Rust: `splintr::from_json_path` / `from_json_bytes`.)
 
 ## Guarantees
 
@@ -506,7 +409,7 @@ What follows is a list of properties splintr's own test suite pins, not an aspir
 - **Streaming decode agrees with whole-sequence decode, for any chunking.** Concatenating every `add_token`/`add_tokens` emission plus the final `flush()` equals `decode`/`decode_lossy` on the same ids, regardless of how the ids are grouped into chunks. Pinned for every bundled vocabulary and backend by `tests/decode_agreement.rs::streaming_decode_agrees_with_whole_sequence_decode`, and as a property test per backend: `src/core/streaming/decoder.rs::prop_chunking_matches_decode_cl100k_base` / `prop_chunking_matches_decode_deepseek_v3` / `prop_arbitrary_ids_match_decode_lossy`, `src/core/spm.rs::prop_chunking_matches_decode_mistral` / `prop_chunking_matches_decode_mistral_v2`, `src/core/sentencepiece.rs::prop_chunking_matches_decode`, and `src/core/wordpiece.rs::prop_chunking_matches_decode` / `prop_chunking_matches_decode_without_prefix`. `reset()` producing a decoder byte-identical to a fresh one is covered by the corresponding `prop_reset_matches_a_fresh_decoder` in each of those modules.
 - **The UTF-8 reassembly buffer matches `String::from_utf8_lossy`.** Byte-at-a-time or arbitrarily chunked, the buffer's lossy output is exactly what `String::from_utf8_lossy` would produce on the same bytes fed whole. Pinned by `src/core/streaming/utf8.rs::prop_byte_at_a_time_matches_lossy` and `prop_arbitrary_chunking_matches_lossy`.
 - **The pre-tokenizer split matches the reference tool's split — for bundled vocabularies that have a pre-tokenizer stage.** `AnyTokenizer::pre_tokenize` is asserted piece-for-piece against each reference's own split by `tests/reference_parity.rs::pretrained_vocabularies_match_reference_tokenizers`. The reference and its authority differ by vocabulary: for `cl100k_base`/`o200k_base` it is `regex.finditer` over the *installed* `tiktoken` encoding's own `_pat_str`, which proves splintr's pattern constant has not drifted from it and that splintr's regex engine executes that pattern identically to Python's `regex` module — it does **not** independently verify OpenAI's intent behind the pattern. For `llama3`/`deepseek_v3`/`whisper` it is HuggingFace `tokenizers`' `pre_tokenizer.pre_tokenize_str` over the normalizer's own output. `mistral` and `mistral_v2` have no split pinned here — SentencePiece has no pre-tokenizer stage, so those fixtures carry no `pieces` field at all.
-- **Ids and decoded text match the reference tokenizers, for the bundled vocabularies, over the fixture corpus.** Also `tests/reference_parity.rs::pretrained_vocabularies_match_reference_tokenizers`, against `tests/fixtures/pretrained/*.json` captured by `scripts/extract_reference_cases.py` from `tiktoken` (OpenAI vocabularies), `tokenizers` (HF-published vocabularies) or `sentencepiece` (Mistral). This is a fixture-corpus guarantee, not a universal one: it holds over the cases committed to that corpus, not over all possible input. A broader, non-CI sweep against real model directories is `scripts/verify_external_models.py`; `scripts/fuzz_reference.py` looks for the corpus's blind spots (see the [README's differential testing section](../README.md#differential-testing-against-the-reference-implementations)).
+- **Ids and decoded text match the reference tokenizers, for the bundled vocabularies, over the fixture corpus.** Also `tests/reference_parity.rs::pretrained_vocabularies_match_reference_tokenizers`, against `tests/fixtures/pretrained/*.json` captured by `scripts/extract_reference_cases.py` from `tiktoken` (OpenAI vocabularies), `tokenizers` (HF-published vocabularies) or `sentencepiece` (Mistral). This is a fixture-corpus guarantee, not a universal one: it holds over the cases committed to that corpus, not over all possible input. A broader, non-CI sweep against real model directories is `scripts/verify_external_models.py`; `scripts/fuzz_reference.py` looks for the corpus's blind spots (see [Correctness against the reference implementations](../CONTRIBUTING.md#correctness-against-the-reference-implementations)).
 - **Concatenating `decode_token`/`decode_token_bytes` over a sequence is *not* `decode` — this is a deliberate non-guarantee, not an oversight.** Per-id decoding never includes the inter-token separator a surface may carry (WordPiece's `##` continuation spacing, a leading-space rule that only fires past the first token), because that separator is a fact about where in the sequence an id sits, not about the id itself. See [Per-Token Decoding](#per-token-decoding) for the exact contract of `decode_token`/`decode_token_bytes`.
 - **`encode_ordinary` never promotes a special token's literal spelling in untrusted text.** Under `SpecialMode::Ordinary`, text that spells out `<|endoftext|>` (or any other configured special token) is tokenized as ordinary content and round-trips through `decode` unchanged — it can never become that token's control id. Pinned by `src/core/tokenizer/tests.rs::encode_with_all_vs_ordinary_diverge_on_a_special_token`. The model's own boundary tokens (BOS/EOS/`[CLS]`/`[SEP]`) are a separate concern: they come from the `post_processor` template under every mode, `Ordinary` included, and are unaffected by this guarantee — see [Special tokens in untrusted text](#special-tokens-in-untrusted-text).
 
@@ -644,9 +547,7 @@ splintr = "*"  # or pin to a specific version
 
 ### Loading a bundled vocabulary
 
-`pretrained::from_pretrained(name)` is the Rust entry point, and it returns an
-`AnyTokenizer` for **every** bundled vocabulary — so the same code works whether
-the vocabulary needs the byte-level BPE backend or the SPM-BPE one (Mistral V1/V2):
+`pretrained::from_pretrained(name)` is the Rust entry point, and it returns an `AnyTokenizer` for **every** bundled vocabulary — so the same code works whether the vocabulary needs the byte-level BPE backend or the SPM-BPE one (Mistral V1/V2):
 
 ```rust
 use splintr::{pretrained::from_pretrained, Tokenize};
@@ -659,9 +560,7 @@ let batch_tokens = tokenizer.encode_batch(&["Hello, world!", "How are you?"]);
 let text = tokenizer.decode(&tokens)?; // `decode` comes from the `Tokenize` trait
 ```
 
-`pretrained::from_vocab(vocab)` takes a `PretrainedVocab` enum instead of a name,
-with the same return type. To build a tokenizer from your own vocabulary rather
-than a bundled one, use `Tokenizer::new` — see [BPE Tokenizer](#bpe-tokenizer).
+`pretrained::from_vocab(vocab)` takes a `PretrainedVocab` enum instead of a name, with the same return type. To build a tokenizer from your own vocabulary rather than a bundled one, use `Tokenizer::new` — see [BPE Tokenizer](#bpe-tokenizer).
 
 ### Tokenize Trait
 
@@ -682,16 +581,11 @@ fn count_tokens(tokenizer: &dyn Tokenize, text: &str) -> usize {
 - `decode(&self, ids: &[u32]) -> Result<String, TokenizeError>`: Decode token IDs to text
 - `vocab_size(&self) -> usize`: Vocabulary size
 
-Implemented by `Tokenizer` (BPE), `SentencePieceTokenizer` (unigram),
-`SpmTokenizer` (SentencePiece BPE), `WordPieceTokenizer` (WordPiece), and by
-`AnyTokenizer` itself.
+Implemented by `Tokenizer` (BPE), `SentencePieceTokenizer` (unigram), `SpmTokenizer` (SentencePiece BPE), `WordPieceTokenizer` (WordPiece), and by `AnyTokenizer` itself.
 
 ### AnyTokenizer
 
-The universal loaded-tokenizer handle: a backend plus the `SpecialPolicy` parsed
-from the same source, plus the declared `decoder` pipeline. It is what
-`from_pretrained`, `from_json_path`/`from_json_bytes` and `from_gguf_vocab` all
-return.
+The universal loaded-tokenizer handle: a backend plus the `SpecialPolicy` parsed from the same source, plus the declared `decoder` pipeline. It is what `from_pretrained`, `from_json_path`/`from_json_bytes` and `from_gguf_vocab` all return.
 
 ```rust
 use splintr::{from_json_path, Tokenize};
@@ -720,15 +614,9 @@ let text = tok.decode(&ids)?;               // via `Tokenize`
 - `backend(&self) -> &Backend` / `into_backend(self) -> Backend`: Reach a backend-specific API
 - `policy(&self) -> &SpecialPolicy`, `eos_token_id(&self) -> Option<u32>`, `is_eos(&self, id: u32) -> bool`, `special_token_id(&self, name: &str) -> Option<u32>`
 
-The boundary template applies under **every** `SpecialMode`, including
-`Ordinary`: boundary tokens come from the template, not from matching text
-against the vocabulary, so the two concerns stay independent.
+The boundary template applies under **every** `SpecialMode`, including `Ordinary`: boundary tokens come from the template, not from matching text against the vocabulary, so the two concerns stay independent.
 
-To fit a sequence into a fixed model length, reserve the template's own slots
-first: `policy().single_overhead()` is how many special tokens `encode` adds
-around the content (2 for `[CLS] A [SEP]`, 1 for a lone BOS, 0 for none), so
-truncate the content to `max_len - single_overhead()` rather than truncating
-the wrapped ids and cutting off the trailing `[SEP]`/EOS.
+To fit a sequence into a fixed model length, reserve the template's own slots first: `policy().single_overhead()` is how many special tokens `encode` adds around the content (2 for `[CLS] A [SEP]`, 1 for a lone BOS, 0 for none), so truncate the content to `max_len - single_overhead()` rather than truncating the wrapped ids and cutting off the trailing `[SEP]`/EOS.
 
 ### Per-Token Decoding
 
@@ -749,9 +637,7 @@ pub enum SpecialMode<'a> {
 }
 ```
 
-`Allow` borrows its set, so one allow-list per endpoint costs no per-request
-allocation. Splintr re-exports `FxHashSet` (and `FxHashMap`), so no
-version-matched `rustc-hash` dependency of your own is needed:
+`Allow` borrows its set, so one allow-list per endpoint costs no per-request allocation. Splintr re-exports `FxHashSet` (and `FxHashMap`), so no version-matched `rustc-hash` dependency of your own is needed:
 
 ```rust
 use splintr::{pretrained::from_pretrained, FxHashSet, SpecialMode, Tokenize};
@@ -765,13 +651,11 @@ let allowed: FxHashSet<String> = ["<|eot_id|>".to_string()].into_iter().collect(
 let ids = tokenizer.encode_with(untrusted, &SpecialMode::Allow(&allowed))?;
 ```
 
-Violating an allow-list yields `PolicyError::DisallowedSpecial { token, offset }`,
-naming the offending token and its byte offset in the input.
+Violating an allow-list yields `PolicyError::DisallowedSpecial { token, offset }`, naming the offending token and its byte offset in the input.
 
 ### BPE Tokenizer
 
-For building a tokenizer from your own vocabulary (bundled vocabularies come from
-[`from_pretrained`](#loading-a-bundled-vocabulary) instead):
+For building a tokenizer from your own vocabulary (bundled vocabularies come from [`from_pretrained`](#loading-a-bundled-vocabulary) instead):
 
 ```rust
 use splintr::{FxHashMap, Tokenizer, CL100K_BASE_PATTERN};
@@ -790,11 +674,7 @@ let texts = vec!["Hello".to_string(), "World".to_string()];
 let batch_tokens = tokenizer.encode_batch(&texts);
 ```
 
-`Tokenizer::from_file(path, pattern, special)` and
-`Tokenizer::from_bytes(data, pattern, special)` load a tiktoken-format vocabulary
-directly. Other exported patterns: `O200K_BASE_PATTERN`, `LLAMA3_PATTERN`,
-`MISTRAL_V3_PATTERN`, `GPT2_PATTERN`, `QWEN2_PATTERN`, `SENTENCEPIECE_PATTERN`,
-`DEEPSEEK_V3_PATTERNS`.
+`Tokenizer::from_file(path, pattern, special)` and `Tokenizer::from_bytes(data, pattern, special)` load a tiktoken-format vocabulary directly. Other exported patterns: `O200K_BASE_PATTERN`, `LLAMA3_PATTERN`, `MISTRAL_V3_PATTERN`, `GPT2_PATTERN`, `QWEN2_PATTERN`, `SENTENCEPIECE_PATTERN`, `DEEPSEEK_V3_PATTERNS`.
 
 #### Encoding Methods
 
@@ -806,9 +686,7 @@ directly. Other exported patterns: `O200K_BASE_PATTERN`, `LLAMA3_PATTERN`,
 - `encode_batch_with_special(&self, texts: &[String]) -> Vec<Vec<u32>>`: Batch form of `encode_with_special`
 - `encode_rayon(&self, text: &str) -> Vec<u32>`: Parallel encoding within text (for texts >1MB)
 
-This backend has no notion of boundary tokens — no `encode_raw`, because there is
-no template to leave off. Those live on [`AnyTokenizer`](#anytokenizer), which
-pairs a backend with the `SpecialPolicy` that owns them.
+This backend has no notion of boundary tokens — no `encode_raw`, because there is no template to leave off. Those live on [`AnyTokenizer`](#anytokenizer), which pairs a backend with the `SpecialPolicy` that owns them.
 
 #### Decoding Methods
 
@@ -1165,23 +1043,11 @@ for chunk in stream_tokens(iter(tokens)):
 print("\nDone!")
 ```
 
-## Performance Tips
-
-1. **Use `encode_batch()` for multiple texts**: This is where Splintr reaches roughly 10-12x tiktoken's throughput. Always prefer batch encoding when you have multiple texts.
-
-2. **Use `encode()` for single texts**: Don't use `encode_rayon()` unless your text is >1MB. The sequential implementation is faster for typical use cases.
-
-3. **Cache frequently encoded text**: Splintr includes an LRU cache. If you're encoding the same text repeatedly, the cache will speed things up automatically.
-
-4. **Clear cache if memory is tight**: Use `clear_cache()` if you're processing millions of unique texts and memory becomes a concern.
-
-5. **Use `streaming_decoder()` to render a sequence**: for real-time output of a token stream, decode through the streaming decoder rather than calling decode on each id and concatenating the results yourself — it buffers incomplete UTF-8 sequences across token boundaries so multi-byte characters split across tokens render correctly. Reach for the Rust-only `decode_token`/`decode_token_bytes` (see [Per-Token Decoding](#per-token-decoding)) instead when you need one id's own contribution — logprob display, token-level highlighting — and keep in mind that concatenating those does not reassemble `decode`'s output, since the inter-token separator is a property of the sequence, not of any one id.
-
-6. **Choose the right special token encoding**: Use `encode_with_special()` only when your text actually contains special tokens. For regular text, `encode()` is faster.
-
 ## Additional Resources
 
 - [Main README](../README.md) - Quick start and overview
+- [Best Practices](best_practices.md) - Which vocabulary, which encode mode, how to size a model
+- [Vocabularies](vocabularies.md) - What is bundled and what each one contains
 - [Special Tokens Documentation](special_tokens.md) - Complete agent tokens reference
 - [ByteLevel BPE Documentation](bytelevel_bpe.md) - ByteLevel encoding details
 - [API Documentation (Rust)](https://docs.rs/splintr) - Complete Rust API reference

@@ -1781,6 +1781,924 @@ impl PyMistralV3AgentTokens {
 
 }
 
+/// Qwen 2/3 (also Baichuan-M2) Agent Token IDs (151669-151722)
+///
+/// Access agent token IDs for Qwen 2/3 (also Baichuan-M2).
+///
+/// # Examples
+///
+/// ```python
+/// from splintr import Tokenizer, QWEN3_AGENT_TOKENS
+///
+/// tokenizer = Tokenizer.from_pretrained("qwen3")
+/// system_id = QWEN3_AGENT_TOKENS.SYSTEM  # 151669
+/// think_id = QWEN3_AGENT_TOKENS.THINK   # 151674
+///
+/// text = "<|system|>You are a helpful assistant"
+/// tokens = tokenizer.encode_with_special(text)
+/// assert QWEN3_AGENT_TOKENS.SYSTEM in tokens
+/// ```
+#[pyclass(name = "QWEN3_AGENT_TOKENS", frozen)]
+pub struct PyQwen3AgentTokens;
+
+#[pymethods]
+impl PyQwen3AgentTokens {
+    // =========================================================================
+    // Model-Specific Native Tokens
+    // =========================================================================
+
+    /// End of text marker (151643)
+    #[classattr]
+    const ENDOFTEXT: u32 = 151643;
+    /// Native <|im_start|> - ChatML message start (151644)
+    #[classattr]
+    const IM_START: u32 = 151644;
+    /// Native <|im_end|> - ChatML message end (151645)
+    #[classattr]
+    const IM_END: u32 = 151645;
+    /// Object reference begin (151646)
+    #[classattr]
+    const OBJECT_REF_START: u32 = 151646;
+    /// Object reference end (151647)
+    #[classattr]
+    const OBJECT_REF_END: u32 = 151647;
+    /// Bounding box begin (151648)
+    #[classattr]
+    const BOX_START: u32 = 151648;
+    /// Bounding box end (151649)
+    #[classattr]
+    const BOX_END: u32 = 151649;
+    /// Quadrilateral begin (151650)
+    #[classattr]
+    const QUAD_START: u32 = 151650;
+    /// Quadrilateral end (151651)
+    #[classattr]
+    const QUAD_END: u32 = 151651;
+    /// Vision block begin (151652)
+    #[classattr]
+    const VISION_START: u32 = 151652;
+    /// Vision block end (151653)
+    #[classattr]
+    const VISION_END: u32 = 151653;
+    /// Vision padding (151654)
+    #[classattr]
+    const VISION_PAD: u32 = 151654;
+    /// Image padding (151655)
+    #[classattr]
+    const IMAGE_PAD: u32 = 151655;
+    /// Video padding (151656)
+    #[classattr]
+    const VIDEO_PAD: u32 = 151656;
+    /// Native <tool_call> (151657)
+    #[classattr]
+    const TOOL_CALL: u32 = 151657;
+    /// Native </tool_call> (151658)
+    #[classattr]
+    const TOOL_CALL_END: u32 = 151658;
+    /// Fill-in-the-Middle prefix (151659)
+    #[classattr]
+    const FIM_PREFIX: u32 = 151659;
+    /// Fill-in-the-Middle middle (151660)
+    #[classattr]
+    const FIM_MIDDLE: u32 = 151660;
+    /// Fill-in-the-Middle suffix (151661)
+    #[classattr]
+    const FIM_SUFFIX: u32 = 151661;
+    /// Fill-in-the-Middle padding (151662)
+    #[classattr]
+    const FIM_PAD: u32 = 151662;
+    /// Repository name marker (151663)
+    #[classattr]
+    const REPO_NAME: u32 = 151663;
+    /// File separator (151664)
+    #[classattr]
+    const FILE_SEP: u32 = 151664;
+    /// Native <tool_response> (151665)
+    #[classattr]
+    const TOOL_RESPONSE: u32 = 151665;
+    /// Native </tool_response> (151666)
+    #[classattr]
+    const TOOL_RESPONSE_END: u32 = 151666;
+    /// Native <think> token (151667)
+    #[classattr]
+    const THINK_NATIVE: u32 = 151667;
+    /// Native </think> token (151668)
+    #[classattr]
+    const THINK_END_NATIVE: u32 = 151668;
+
+    // =========================================================================
+    // Conversation & Roles (151669-151673)
+    // =========================================================================
+
+    /// System role - system instructions (151669)
+    #[classattr]
+    const SYSTEM: u32 = 151669;
+    /// User role - user input (151670)
+    #[classattr]
+    const USER: u32 = 151670;
+    /// Assistant role - model output (151671)
+    #[classattr]
+    const ASSISTANT: u32 = 151671;
+
+    // =========================================================================
+    // Reasoning/Thinking (151674-151675)
+    // =========================================================================
+
+    /// Start of thinking - Chain-of-Thought (151674)
+    #[classattr]
+    const THINK: u32 = 151674;
+    /// End of thinking (151675)
+    #[classattr]
+    const THINK_END: u32 = 151675;
+
+    // =========================================================================
+    // ReAct Agent Loop (151676-151683)
+    // =========================================================================
+
+    /// Start of plan - action planning (151676)
+    #[classattr]
+    const PLAN: u32 = 151676;
+    /// End of plan (151677)
+    #[classattr]
+    const PLAN_END: u32 = 151677;
+    /// Start of step - individual action step (151678)
+    #[classattr]
+    const STEP: u32 = 151678;
+    /// End of step (151679)
+    #[classattr]
+    const STEP_END: u32 = 151679;
+    /// Start of action - agent action (151680)
+    #[classattr]
+    const ACT: u32 = 151680;
+    /// End of action (151681)
+    #[classattr]
+    const ACT_END: u32 = 151681;
+    /// Start of observation - environment feedback (151682)
+    #[classattr]
+    const OBSERVE: u32 = 151682;
+    /// End of observation (151683)
+    #[classattr]
+    const OBSERVE_END: u32 = 151683;
+
+    // =========================================================================
+    // Tool/Function Calling (151684-151689)
+    // =========================================================================
+
+    /// Start of function call - function invocation (151684)
+    #[classattr]
+    const FUNCTION: u32 = 151684;
+    /// End of function call (151685)
+    #[classattr]
+    const FUNCTION_END: u32 = 151685;
+    /// Start of function result - return value (151686)
+    #[classattr]
+    const RESULT: u32 = 151686;
+    /// End of function result (151687)
+    #[classattr]
+    const RESULT_END: u32 = 151687;
+    /// Start of error - error message (151688)
+    #[classattr]
+    const ERROR: u32 = 151688;
+    /// End of error (151689)
+    #[classattr]
+    const ERROR_END: u32 = 151689;
+
+    // =========================================================================
+    // Code Execution (151690-151695)
+    // =========================================================================
+
+    /// Start of code - inline code execution (151690)
+    #[classattr]
+    const CODE: u32 = 151690;
+    /// End of code (151691)
+    #[classattr]
+    const CODE_END: u32 = 151691;
+    /// Start of output - execution output (151692)
+    #[classattr]
+    const OUTPUT: u32 = 151692;
+    /// End of output (151693)
+    #[classattr]
+    const OUTPUT_END: u32 = 151693;
+    /// Start of language tag - code language (151694)
+    #[classattr]
+    const LANG: u32 = 151694;
+    /// End of language tag (151695)
+    #[classattr]
+    const LANG_END: u32 = 151695;
+
+    // =========================================================================
+    // RAG & Citations (151696-151703)
+    // =========================================================================
+
+    /// Start of context - retrieved context (151696)
+    #[classattr]
+    const CONTEXT: u32 = 151696;
+    /// End of context (151697)
+    #[classattr]
+    const CONTEXT_END: u32 = 151697;
+    /// Start of quote - exact citation (151698)
+    #[classattr]
+    const QUOTE: u32 = 151698;
+    /// End of quote (151699)
+    #[classattr]
+    const QUOTE_END: u32 = 151699;
+    /// Start of cite - citation reference (151700)
+    #[classattr]
+    const CITE: u32 = 151700;
+    /// End of cite (151701)
+    #[classattr]
+    const CITE_END: u32 = 151701;
+    /// Start of source - document source (151702)
+    #[classattr]
+    const SOURCE: u32 = 151702;
+    /// End of source (151703)
+    #[classattr]
+    const SOURCE_END: u32 = 151703;
+
+    // =========================================================================
+    // Memory/State Management (151704-151707)
+    // =========================================================================
+
+    /// Start of memory - persistent memory (151704)
+    #[classattr]
+    const MEMORY: u32 = 151704;
+    /// End of memory (151705)
+    #[classattr]
+    const MEMORY_END: u32 = 151705;
+    /// Start of recall - memory retrieval (151706)
+    #[classattr]
+    const RECALL: u32 = 151706;
+    /// End of recall (151707)
+    #[classattr]
+    const RECALL_END: u32 = 151707;
+
+    // =========================================================================
+    // Control Tokens (151708-151710)
+    // =========================================================================
+
+    /// Padding token (151708)
+    #[classattr]
+    const PAD: u32 = 151708;
+    /// Stop generation token (151709)
+    #[classattr]
+    const STOP: u32 = 151709;
+    /// Separator token (151710)
+    #[classattr]
+    const SEP: u32 = 151710;
+
+    // =========================================================================
+    // Multimodal Placeholders (151711-151716)
+    // =========================================================================
+
+    /// Start of image - image placeholder (151711)
+    #[classattr]
+    const IMAGE: u32 = 151711;
+    /// End of image (151712)
+    #[classattr]
+    const IMAGE_END: u32 = 151712;
+    /// Start of audio - audio placeholder (151713)
+    #[classattr]
+    const AUDIO: u32 = 151713;
+    /// End of audio (151714)
+    #[classattr]
+    const AUDIO_END: u32 = 151714;
+    /// Start of video - video placeholder (151715)
+    #[classattr]
+    const VIDEO: u32 = 151715;
+    /// End of video (151716)
+    #[classattr]
+    const VIDEO_END: u32 = 151716;
+
+    // =========================================================================
+    // Document Structure (151717-151722)
+    // =========================================================================
+
+    /// Start of title - document/section title (151717)
+    #[classattr]
+    const TITLE: u32 = 151717;
+    /// End of title (151718)
+    #[classattr]
+    const TITLE_END: u32 = 151718;
+    /// Start of section - semantic document section (151719)
+    #[classattr]
+    const SECTION: u32 = 151719;
+    /// End of section (151720)
+    #[classattr]
+    const SECTION_END: u32 = 151720;
+    /// Start of summary - condensed content summary (151721)
+    #[classattr]
+    const SUMMARY: u32 = 151721;
+    /// End of summary (151722)
+    #[classattr]
+    const SUMMARY_END: u32 = 151722;
+
+}
+
+/// GLM-4/4.5 Agent Token IDs (151365-151418)
+///
+/// Access agent token IDs for GLM-4/4.5.
+///
+/// # Examples
+///
+/// ```python
+/// from splintr import Tokenizer, GLM4_AGENT_TOKENS
+///
+/// tokenizer = Tokenizer.from_pretrained("glm4")
+/// system_id = GLM4_AGENT_TOKENS.SYSTEM  # 151365
+/// think_id = GLM4_AGENT_TOKENS.THINK   # 151370
+///
+/// text = "<|system|>You are a helpful assistant"
+/// tokens = tokenizer.encode_with_special(text)
+/// assert GLM4_AGENT_TOKENS.SYSTEM in tokens
+/// ```
+#[pyclass(name = "GLM4_AGENT_TOKENS", frozen)]
+pub struct PyGlm4AgentTokens;
+
+#[pymethods]
+impl PyGlm4AgentTokens {
+    // =========================================================================
+    // Model-Specific Native Tokens
+    // =========================================================================
+
+    /// End of text marker (151329)
+    #[classattr]
+    const ENDOFTEXT: u32 = 151329;
+    /// [MASK] (151330)
+    #[classattr]
+    const MASK: u32 = 151330;
+    /// [gMASK] (151331)
+    #[classattr]
+    const GMASK: u32 = 151331;
+    /// [sMASK] (151332)
+    #[classattr]
+    const SMASK: u32 = 151332;
+    /// Start of prefix <sop> (151333)
+    #[classattr]
+    const SOP: u32 = 151333;
+    /// End of prefix <eop> (151334)
+    #[classattr]
+    const EOP: u32 = 151334;
+    /// Native <|system|> role marker (151335)
+    #[classattr]
+    const SYSTEM: u32 = 151335;
+    /// Native <|user|> role marker (151336)
+    #[classattr]
+    const USER: u32 = 151336;
+    /// Native <|assistant|> role marker (151337)
+    #[classattr]
+    const ASSISTANT: u32 = 151337;
+    /// Observation role marker (151338)
+    #[classattr]
+    const OBSERVATION: u32 = 151338;
+    /// Image block begin (151339)
+    #[classattr]
+    const BEGIN_OF_IMAGE: u32 = 151339;
+    /// Image block end (151340)
+    #[classattr]
+    const END_OF_IMAGE: u32 = 151340;
+    /// Video block begin (151341)
+    #[classattr]
+    const BEGIN_OF_VIDEO: u32 = 151341;
+    /// Video block end (151342)
+    #[classattr]
+    const END_OF_VIDEO: u32 = 151342;
+    /// Audio block begin (151343)
+    #[classattr]
+    const BEGIN_OF_AUDIO: u32 = 151343;
+    /// Audio block end (151344)
+    #[classattr]
+    const END_OF_AUDIO: u32 = 151344;
+    /// Transcription begin (151345)
+    #[classattr]
+    const BEGIN_OF_TRANSCRIPTION: u32 = 151345;
+    /// Transcription end (151346)
+    #[classattr]
+    const END_OF_TRANSCRIPTION: u32 = 151346;
+    /// Code Fill-in-the-Middle prefix (151347)
+    #[classattr]
+    const CODE_PREFIX: u32 = 151347;
+    /// Code Fill-in-the-Middle middle (151348)
+    #[classattr]
+    const CODE_MIDDLE: u32 = 151348;
+    /// Code Fill-in-the-Middle suffix (151349)
+    #[classattr]
+    const CODE_SUFFIX: u32 = 151349;
+    /// Native <think> token (151350)
+    #[classattr]
+    const THINK_NATIVE: u32 = 151350;
+    /// Native </think> token (151351)
+    #[classattr]
+    const THINK_END_NATIVE: u32 = 151351;
+    /// Native <tool_call> (151352)
+    #[classattr]
+    const TOOL_CALL: u32 = 151352;
+    /// Native </tool_call> (151353)
+    #[classattr]
+    const TOOL_CALL_END: u32 = 151353;
+    /// Native <tool_response> (151354)
+    #[classattr]
+    const TOOL_RESPONSE: u32 = 151354;
+    /// Native </tool_response> (151355)
+    #[classattr]
+    const TOOL_RESPONSE_END: u32 = 151355;
+    /// Tool argument key begin (151356)
+    #[classattr]
+    const ARG_KEY: u32 = 151356;
+    /// Tool argument key end (151357)
+    #[classattr]
+    const ARG_KEY_END: u32 = 151357;
+    /// Tool argument value begin (151358)
+    #[classattr]
+    const ARG_VALUE: u32 = 151358;
+    /// Tool argument value end (151359)
+    #[classattr]
+    const ARG_VALUE_END: u32 = 151359;
+    /// /nothink directive (151360)
+    #[classattr]
+    const NOTHINK: u32 = 151360;
+    /// Box begin (151361)
+    #[classattr]
+    const BEGIN_OF_BOX: u32 = 151361;
+    /// Box end (151362)
+    #[classattr]
+    const END_OF_BOX: u32 = 151362;
+    /// Native <|image|> placeholder (151363)
+    #[classattr]
+    const IMAGE: u32 = 151363;
+    /// Native <|video|> placeholder (151364)
+    #[classattr]
+    const VIDEO: u32 = 151364;
+
+    // =========================================================================
+    // Conversation & Roles (151365-151369)
+    // =========================================================================
+
+    /// Start of message - ChatML wrapper (151368)
+    #[classattr]
+    const IM_START: u32 = 151368;
+    /// End of message - ChatML wrapper (151369)
+    #[classattr]
+    const IM_END: u32 = 151369;
+
+    // =========================================================================
+    // Reasoning/Thinking (151370-151371)
+    // =========================================================================
+
+    /// Start of thinking - Chain-of-Thought (151370)
+    #[classattr]
+    const THINK: u32 = 151370;
+    /// End of thinking (151371)
+    #[classattr]
+    const THINK_END: u32 = 151371;
+
+    // =========================================================================
+    // ReAct Agent Loop (151372-151379)
+    // =========================================================================
+
+    /// Start of plan - action planning (151372)
+    #[classattr]
+    const PLAN: u32 = 151372;
+    /// End of plan (151373)
+    #[classattr]
+    const PLAN_END: u32 = 151373;
+    /// Start of step - individual action step (151374)
+    #[classattr]
+    const STEP: u32 = 151374;
+    /// End of step (151375)
+    #[classattr]
+    const STEP_END: u32 = 151375;
+    /// Start of action - agent action (151376)
+    #[classattr]
+    const ACT: u32 = 151376;
+    /// End of action (151377)
+    #[classattr]
+    const ACT_END: u32 = 151377;
+    /// Start of observation - environment feedback (151378)
+    #[classattr]
+    const OBSERVE: u32 = 151378;
+    /// End of observation (151379)
+    #[classattr]
+    const OBSERVE_END: u32 = 151379;
+
+    // =========================================================================
+    // Tool/Function Calling (151380-151385)
+    // =========================================================================
+
+    /// Start of function call - function invocation (151380)
+    #[classattr]
+    const FUNCTION: u32 = 151380;
+    /// End of function call (151381)
+    #[classattr]
+    const FUNCTION_END: u32 = 151381;
+    /// Start of function result - return value (151382)
+    #[classattr]
+    const RESULT: u32 = 151382;
+    /// End of function result (151383)
+    #[classattr]
+    const RESULT_END: u32 = 151383;
+    /// Start of error - error message (151384)
+    #[classattr]
+    const ERROR: u32 = 151384;
+    /// End of error (151385)
+    #[classattr]
+    const ERROR_END: u32 = 151385;
+
+    // =========================================================================
+    // Code Execution (151386-151391)
+    // =========================================================================
+
+    /// Start of code - inline code execution (151386)
+    #[classattr]
+    const CODE: u32 = 151386;
+    /// End of code (151387)
+    #[classattr]
+    const CODE_END: u32 = 151387;
+    /// Start of output - execution output (151388)
+    #[classattr]
+    const OUTPUT: u32 = 151388;
+    /// End of output (151389)
+    #[classattr]
+    const OUTPUT_END: u32 = 151389;
+    /// Start of language tag - code language (151390)
+    #[classattr]
+    const LANG: u32 = 151390;
+    /// End of language tag (151391)
+    #[classattr]
+    const LANG_END: u32 = 151391;
+
+    // =========================================================================
+    // RAG & Citations (151392-151399)
+    // =========================================================================
+
+    /// Start of context - retrieved context (151392)
+    #[classattr]
+    const CONTEXT: u32 = 151392;
+    /// End of context (151393)
+    #[classattr]
+    const CONTEXT_END: u32 = 151393;
+    /// Start of quote - exact citation (151394)
+    #[classattr]
+    const QUOTE: u32 = 151394;
+    /// End of quote (151395)
+    #[classattr]
+    const QUOTE_END: u32 = 151395;
+    /// Start of cite - citation reference (151396)
+    #[classattr]
+    const CITE: u32 = 151396;
+    /// End of cite (151397)
+    #[classattr]
+    const CITE_END: u32 = 151397;
+    /// Start of source - document source (151398)
+    #[classattr]
+    const SOURCE: u32 = 151398;
+    /// End of source (151399)
+    #[classattr]
+    const SOURCE_END: u32 = 151399;
+
+    // =========================================================================
+    // Memory/State Management (151400-151403)
+    // =========================================================================
+
+    /// Start of memory - persistent memory (151400)
+    #[classattr]
+    const MEMORY: u32 = 151400;
+    /// End of memory (151401)
+    #[classattr]
+    const MEMORY_END: u32 = 151401;
+    /// Start of recall - memory retrieval (151402)
+    #[classattr]
+    const RECALL: u32 = 151402;
+    /// End of recall (151403)
+    #[classattr]
+    const RECALL_END: u32 = 151403;
+
+    // =========================================================================
+    // Control Tokens (151404-151406)
+    // =========================================================================
+
+    /// Padding token (151404)
+    #[classattr]
+    const PAD: u32 = 151404;
+    /// Stop generation token (151405)
+    #[classattr]
+    const STOP: u32 = 151405;
+    /// Separator token (151406)
+    #[classattr]
+    const SEP: u32 = 151406;
+
+    // =========================================================================
+    // Multimodal Placeholders (151407-151412)
+    // =========================================================================
+
+    /// End of image (151408)
+    #[classattr]
+    const IMAGE_END: u32 = 151408;
+    /// Start of audio - audio placeholder (151409)
+    #[classattr]
+    const AUDIO: u32 = 151409;
+    /// End of audio (151410)
+    #[classattr]
+    const AUDIO_END: u32 = 151410;
+    /// End of video (151412)
+    #[classattr]
+    const VIDEO_END: u32 = 151412;
+
+    // =========================================================================
+    // Document Structure (151413-151418)
+    // =========================================================================
+
+    /// Start of title - document/section title (151413)
+    #[classattr]
+    const TITLE: u32 = 151413;
+    /// End of title (151414)
+    #[classattr]
+    const TITLE_END: u32 = 151414;
+    /// Start of section - semantic document section (151415)
+    #[classattr]
+    const SECTION: u32 = 151415;
+    /// End of section (151416)
+    #[classattr]
+    const SECTION_END: u32 = 151416;
+    /// Start of summary - condensed content summary (151417)
+    #[classattr]
+    const SUMMARY: u32 = 151417;
+    /// End of summary (151418)
+    #[classattr]
+    const SUMMARY_END: u32 = 151418;
+
+}
+
+/// OpenAI gpt-oss Agent Token IDs (200019-200072)
+///
+/// Access agent token IDs for OpenAI gpt-oss.
+///
+/// # Examples
+///
+/// ```python
+/// from splintr import Tokenizer, GPT_OSS_AGENT_TOKENS
+///
+/// tokenizer = Tokenizer.from_pretrained("gpt-oss")
+/// system_id = GPT_OSS_AGENT_TOKENS.SYSTEM  # 200019
+/// think_id = GPT_OSS_AGENT_TOKENS.THINK   # 200024
+///
+/// text = "<|system|>You are a helpful assistant"
+/// tokens = tokenizer.encode_with_special(text)
+/// assert GPT_OSS_AGENT_TOKENS.SYSTEM in tokens
+/// ```
+#[pyclass(name = "GPT_OSS_AGENT_TOKENS", frozen)]
+pub struct PyGptOssAgentTokens;
+
+#[pymethods]
+impl PyGptOssAgentTokens {
+    // =========================================================================
+    // Model-Specific Native Tokens
+    // =========================================================================
+
+    /// Start of text marker (199998)
+    #[classattr]
+    const STARTOFTEXT: u32 = 199998;
+    /// End of text marker (199999)
+    #[classattr]
+    const ENDOFTEXT: u32 = 199999;
+    /// End of a final assistant turn (200002)
+    #[classattr]
+    const RETURN: u32 = 200002;
+    /// Constrained-output marker (200003)
+    #[classattr]
+    const CONSTRAIN: u32 = 200003;
+    /// Channel marker (analysis/commentary/final) (200005)
+    #[classattr]
+    const CHANNEL: u32 = 200005;
+    /// Message start (200006)
+    #[classattr]
+    const START: u32 = 200006;
+    /// Message end (200007)
+    #[classattr]
+    const END: u32 = 200007;
+    /// Message body begin (200008)
+    #[classattr]
+    const MESSAGE: u32 = 200008;
+    /// Tool call marker (200012)
+    #[classattr]
+    const CALL: u32 = 200012;
+    /// End of prompt (200018)
+    #[classattr]
+    const ENDOFPROMPT: u32 = 200018;
+
+    // =========================================================================
+    // Conversation & Roles (200019-200023)
+    // =========================================================================
+
+    /// System role - system instructions (200019)
+    #[classattr]
+    const SYSTEM: u32 = 200019;
+    /// User role - user input (200020)
+    #[classattr]
+    const USER: u32 = 200020;
+    /// Assistant role - model output (200021)
+    #[classattr]
+    const ASSISTANT: u32 = 200021;
+    /// Start of message - ChatML wrapper (200022)
+    #[classattr]
+    const IM_START: u32 = 200022;
+    /// End of message - ChatML wrapper (200023)
+    #[classattr]
+    const IM_END: u32 = 200023;
+
+    // =========================================================================
+    // Reasoning/Thinking (200024-200025)
+    // =========================================================================
+
+    /// Start of thinking - Chain-of-Thought (200024)
+    #[classattr]
+    const THINK: u32 = 200024;
+    /// End of thinking (200025)
+    #[classattr]
+    const THINK_END: u32 = 200025;
+
+    // =========================================================================
+    // ReAct Agent Loop (200026-200033)
+    // =========================================================================
+
+    /// Start of plan - action planning (200026)
+    #[classattr]
+    const PLAN: u32 = 200026;
+    /// End of plan (200027)
+    #[classattr]
+    const PLAN_END: u32 = 200027;
+    /// Start of step - individual action step (200028)
+    #[classattr]
+    const STEP: u32 = 200028;
+    /// End of step (200029)
+    #[classattr]
+    const STEP_END: u32 = 200029;
+    /// Start of action - agent action (200030)
+    #[classattr]
+    const ACT: u32 = 200030;
+    /// End of action (200031)
+    #[classattr]
+    const ACT_END: u32 = 200031;
+    /// Start of observation - environment feedback (200032)
+    #[classattr]
+    const OBSERVE: u32 = 200032;
+    /// End of observation (200033)
+    #[classattr]
+    const OBSERVE_END: u32 = 200033;
+
+    // =========================================================================
+    // Tool/Function Calling (200034-200039)
+    // =========================================================================
+
+    /// Start of function call - function invocation (200034)
+    #[classattr]
+    const FUNCTION: u32 = 200034;
+    /// End of function call (200035)
+    #[classattr]
+    const FUNCTION_END: u32 = 200035;
+    /// Start of function result - return value (200036)
+    #[classattr]
+    const RESULT: u32 = 200036;
+    /// End of function result (200037)
+    #[classattr]
+    const RESULT_END: u32 = 200037;
+    /// Start of error - error message (200038)
+    #[classattr]
+    const ERROR: u32 = 200038;
+    /// End of error (200039)
+    #[classattr]
+    const ERROR_END: u32 = 200039;
+
+    // =========================================================================
+    // Code Execution (200040-200045)
+    // =========================================================================
+
+    /// Start of code - inline code execution (200040)
+    #[classattr]
+    const CODE: u32 = 200040;
+    /// End of code (200041)
+    #[classattr]
+    const CODE_END: u32 = 200041;
+    /// Start of output - execution output (200042)
+    #[classattr]
+    const OUTPUT: u32 = 200042;
+    /// End of output (200043)
+    #[classattr]
+    const OUTPUT_END: u32 = 200043;
+    /// Start of language tag - code language (200044)
+    #[classattr]
+    const LANG: u32 = 200044;
+    /// End of language tag (200045)
+    #[classattr]
+    const LANG_END: u32 = 200045;
+
+    // =========================================================================
+    // RAG & Citations (200046-200053)
+    // =========================================================================
+
+    /// Start of context - retrieved context (200046)
+    #[classattr]
+    const CONTEXT: u32 = 200046;
+    /// End of context (200047)
+    #[classattr]
+    const CONTEXT_END: u32 = 200047;
+    /// Start of quote - exact citation (200048)
+    #[classattr]
+    const QUOTE: u32 = 200048;
+    /// End of quote (200049)
+    #[classattr]
+    const QUOTE_END: u32 = 200049;
+    /// Start of cite - citation reference (200050)
+    #[classattr]
+    const CITE: u32 = 200050;
+    /// End of cite (200051)
+    #[classattr]
+    const CITE_END: u32 = 200051;
+    /// Start of source - document source (200052)
+    #[classattr]
+    const SOURCE: u32 = 200052;
+    /// End of source (200053)
+    #[classattr]
+    const SOURCE_END: u32 = 200053;
+
+    // =========================================================================
+    // Memory/State Management (200054-200057)
+    // =========================================================================
+
+    /// Start of memory - persistent memory (200054)
+    #[classattr]
+    const MEMORY: u32 = 200054;
+    /// End of memory (200055)
+    #[classattr]
+    const MEMORY_END: u32 = 200055;
+    /// Start of recall - memory retrieval (200056)
+    #[classattr]
+    const RECALL: u32 = 200056;
+    /// End of recall (200057)
+    #[classattr]
+    const RECALL_END: u32 = 200057;
+
+    // =========================================================================
+    // Control Tokens (200058-200060)
+    // =========================================================================
+
+    /// Padding token (200058)
+    #[classattr]
+    const PAD: u32 = 200058;
+    /// Stop generation token (200059)
+    #[classattr]
+    const STOP: u32 = 200059;
+    /// Separator token (200060)
+    #[classattr]
+    const SEP: u32 = 200060;
+
+    // =========================================================================
+    // Multimodal Placeholders (200061-200066)
+    // =========================================================================
+
+    /// Start of image - image placeholder (200061)
+    #[classattr]
+    const IMAGE: u32 = 200061;
+    /// End of image (200062)
+    #[classattr]
+    const IMAGE_END: u32 = 200062;
+    /// Start of audio - audio placeholder (200063)
+    #[classattr]
+    const AUDIO: u32 = 200063;
+    /// End of audio (200064)
+    #[classattr]
+    const AUDIO_END: u32 = 200064;
+    /// Start of video - video placeholder (200065)
+    #[classattr]
+    const VIDEO: u32 = 200065;
+    /// End of video (200066)
+    #[classattr]
+    const VIDEO_END: u32 = 200066;
+
+    // =========================================================================
+    // Document Structure (200067-200072)
+    // =========================================================================
+
+    /// Start of title - document/section title (200067)
+    #[classattr]
+    const TITLE: u32 = 200067;
+    /// End of title (200068)
+    #[classattr]
+    const TITLE_END: u32 = 200068;
+    /// Start of section - semantic document section (200069)
+    #[classattr]
+    const SECTION: u32 = 200069;
+    /// End of section (200070)
+    #[classattr]
+    const SECTION_END: u32 = 200070;
+    /// Start of summary - condensed content summary (200071)
+    #[classattr]
+    const SUMMARY: u32 = 200071;
+    /// End of summary (200072)
+    #[classattr]
+    const SUMMARY_END: u32 = 200072;
+
+}
+
 /// Register all agent token classes with the Python module.
 pub fn register_agent_tokens(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCL100KAgentTokens>()?;
@@ -1790,6 +2708,9 @@ pub fn register_agent_tokens(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMistralV1AgentTokens>()?;
     m.add_class::<PyMistralV2AgentTokens>()?;
     m.add_class::<PyMistralV3AgentTokens>()?;
+    m.add_class::<PyQwen3AgentTokens>()?;
+    m.add_class::<PyGlm4AgentTokens>()?;
+    m.add_class::<PyGptOssAgentTokens>()?;
     Ok(())
 }
 

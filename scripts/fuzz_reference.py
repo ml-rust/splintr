@@ -487,6 +487,65 @@ def load_transformers_target(name: str, model_dir: Path) -> tuple[list[Mode], li
     return modes, specials
 
 
+def load_bundled_hf_target(name: str, model_dir: Path) -> tuple[list[Mode], list[str]]:
+    """A bundled byte-level vocabulary, diffed against `tokenizers`.
+
+    The counterpart to `load_transformers_target` for the vocabularies that are
+    not SentencePiece. Two things make it a separate pairing rather than an
+    argument to that one:
+
+    * The subject is `from_pretrained(name)` -- the bundled `.tiktoken` and the
+      special tokens `pretrained.rs` states -- not `from_json` on the reference
+      file, so this exercises exactly what a user of the bundled name gets.
+    * Decode is paired at `tokenizers`' default `skip_special_tokens=True`,
+      which is the semantics splintr's `decode` implements. The slow-transformers
+      pairing passes `skip_special_tokens=False` because a SentencePiece
+      reference renders its control pieces; using that here would report every
+      marker id as a divergence when both sides are behaving correctly.
+    """
+    try:
+        from tokenizers import Tokenizer as HfTokenizer
+    except ImportError as exc:
+        raise SkipTarget(f"`tokenizers` not installed ({exc})") from exc
+    import splintr
+
+    json_path = model_dir / "tokenizer.json" if model_dir.is_dir() else model_dir
+    if not json_path.is_file():
+        raise SkipTarget(f"no tokenizer.json at {json_path}")
+
+    reference = HfTokenizer.from_file(str(json_path))
+    subject = splintr.Tokenizer.from_pretrained(name)
+    if not hasattr(subject, "encode_raw"):
+        raise SkipTarget(
+            f"bundled vocabulary {name!r} loads as {type(subject).__name__}, "
+            "which has no `encode_raw`"
+        )
+
+    # Only added tokens both sides know: splintr appends agent tokens the
+    # reference cannot produce, and feeding those in manufactures a divergence.
+    with json_path.open("r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+    specials = [
+        entry["content"]
+        for entry in raw.get("added_tokens", [])
+        if isinstance(entry, dict)
+        and isinstance(entry.get("content"), str)
+        and subject.special_token_id(entry["content"]) is not None
+    ]
+
+    def ref_raw(text: str) -> list[int]:
+        return reference.encode(text, add_special_tokens=False).ids
+
+    modes = [
+        Mode("encode_raw", lambda t: (ref_raw(t), guarded(subject.encode_raw)(t))),
+        Mode(
+            "decode",
+            lambda t: _decode_pair(reference.decode, subject.decode, ref_raw(t)),
+        ),
+    ]
+    return modes, specials
+
+
 def load_tiktoken_target(name: str) -> tuple[list[Mode], list[str]]:
     """A bundled OpenAI vocabulary, diffed against `tiktoken`."""
     try:
@@ -530,6 +589,35 @@ def load_tiktoken_target(name: str) -> tuple[list[Mode], list[str]]:
 
 TIKTOKEN_VOCABS = frozenset({"cl100k_base", "o200k_base"})
 
+# Bundled vocabularies whose reference is `tokenizers` on a `tokenizer.json`,
+# not the slow SentencePiece `transformers` tokenizer -- they are byte-level
+# BPE, so `load_bundled_hf_target` is the correct pairing for them. Anything
+# named `<vocab>=<model dir>` that is NOT listed here falls through to the
+# SentencePiece pairing, which is where the Mistral vocabularies live.
+BUNDLED_HF_VOCABS = frozenset(
+    {
+        "llama3",
+        "llama3.1",
+        "llama3.2",
+        "llama3.3",
+        "deepseek_v3",
+        "deepseek-v3",
+        "qwen",
+        "qwen2",
+        "qwen2.5",
+        "qwen3",
+        "baichuan_m2",
+        "glm",
+        "glm4",
+        "glm-4",
+        "glm4.5",
+        "glm-4.5",
+        "gpt-oss",
+        "gpt_oss",
+        "o200k_harmony",
+    }
+)
+
 
 def resolve_target(spec: str, reference: str) -> tuple[str, list[Mode], list[str]]:
     """Turn one CLI target into `(label, modes, special fragments)`.
@@ -542,7 +630,7 @@ def resolve_target(spec: str, reference: str) -> tuple[str, list[Mode], list[str
 
     if reference == "auto":
         if ref_path:
-            reference = "transformers"
+            reference = "bundled-hf" if label in BUNDLED_HF_VOCABS else "transformers"
         elif path.exists():
             reference = "tokenizers"
         elif label in TIKTOKEN_VOCABS:
@@ -572,6 +660,15 @@ def resolve_target(spec: str, reference: str) -> tuple[str, list[Mode], list[str
         modes, specials = load_transformers_target(
             label, Path(ref_path).expanduser()
         )
+        return label, modes, specials
+
+    if reference == "bundled-hf":
+        if not ref_path:
+            raise SkipTarget(
+                f"target {spec!r} with --reference bundled-hf needs a reference "
+                "model directory, written `<vocab>=<path>`"
+            )
+        modes, specials = load_bundled_hf_target(label, Path(ref_path).expanduser())
         return label, modes, specials
 
     if reference == "tiktoken":
@@ -649,7 +746,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("targets", nargs="+", help="vocabularies to fuzz")
     parser.add_argument(
         "--reference",
-        choices=("auto", "tokenizers", "transformers", "tiktoken"),
+        choices=("auto", "tokenizers", "transformers", "bundled-hf", "tiktoken"),
         default="auto",
         help="reference implementation (default: auto-detect per target)",
     )

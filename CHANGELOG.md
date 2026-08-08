@@ -6,6 +6,23 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [Unreleased]
+
+### Added
+
+- `qwen3` (also `qwen`, `qwen2`, `qwen2.5`, `baichuan_m2`) — Qwen 2/3's 151,643-token vocabulary. Baichuan-M2 ships it unchanged, so the alias costs nothing.
+- `glm4` (also `glm`, `glm-4`, `glm4.5`, `glm-4.5`) — GLM-4/4.5's 151,329-token vocabulary.
+- `gpt-oss` (also `gpt_oss`, `o200k_harmony`) — OpenAI gpt-oss, o200k_base's ranks with the harmony special tokens and no vocabulary data of its own.
+- A `vocab-*` cargo feature per bundled vocabulary family, all on by default and all enabled in the Python wheel. Turning one off drops its embedded data, and `from_pretrained` names the missing feature.
+- `special_tokens()` on `AnyTokenizer` (Rust and Python) lists every special token a tokenizer knows, for any loader.
+- Agent-token constants for the three new vocabularies: `QWEN3_AGENT_TOKENS`, `GLM4_AGENT_TOKENS`, `GPT_OSS_AGENT_TOKENS`.
+- Rust agent-token constant modules for all ten agent-carrying vocabularies, not just the two OpenAI ones, generated from the same table as the Python classes.
+- The agent-token tables in `docs/special_tokens.md` are generated from that same table and gated in CI, listing each token's offset rather than an id column per vocabulary.
+
+### Changed
+
+- An agent token whose name a vocabulary already defines keeps the vocabulary's id — Qwen's `<|im_start|>` stays 151644 — instead of being overwritten.
+
 ## [0.14.4] - 2026-08-08
 
 ### Changed

@@ -2039,6 +2039,27 @@ impl PyAnyTokenizer {
         self.inner.special_token_id(name)
     }
 
+    /// Every named special token this tokenizer knows, as `{content: id}`.
+    ///
+    /// The enumerating counterpart to `special_token_id`, which can only answer
+    /// about a name you already have. Works for every loader, so listing a
+    /// vocabulary's markers never means looking them up in a table that may
+    /// have drifted:
+    ///
+    /// ```python
+    /// tok = Tokenizer.from_pretrained("qwen3")
+    /// base = base_vocab_size("qwen3")
+    /// for name, tid in sorted(tok.special_tokens().items(), key=lambda kv: kv[1]):
+    ///     print(f"{tid:>7}  {name}  {'(model)' if tid < base else '(splintr)'}")
+    /// ```
+    fn special_tokens(&self) -> std::collections::HashMap<String, u32> {
+        self.inner
+            .special_tokens()
+            .iter()
+            .map(|(name, id)| (name.clone(), *id))
+            .collect()
+    }
+
     /// The backend family this handle holds ("BPE", "Unigram", "WordPiece", "Spm").
     #[getter]
     fn family(&self) -> &'static str {

@@ -5,8 +5,15 @@
 //! - `o200k_base` - OpenAI GPT-4o (~200k tokens)
 //! - `llama3` - Meta Llama 3 family (~128k tokens)
 //! - `deepseek_v3` - DeepSeek V3/R1 (~128k tokens)
+//! - `qwen3` - Qwen 2/3 and Baichuan-M2 (~152k tokens)
+//! - `glm4` - GLM-4/4.5 (~151k tokens)
+//! - `gpt-oss` - OpenAI gpt-oss (o200k_base ranks + harmony special tokens)
 //! - `mistral` - Mistral 7B family (~32k tokens)
 //! - `whisper` - OpenAI Whisper multilingual v1/v2/v3 (~51k tokens)
+//!
+//! Each family is behind a `vocab-*` cargo feature, all on by default; see
+//! `Cargo.toml`. Turning one off drops its embedded data from the binary, and
+//! [`from_pretrained`] then names the missing feature rather than the name.
 //!
 //! Every loader here returns an [`AnyTokenizer`], the same universal handle the
 //! HuggingFace-json and GGUF loaders return, so a consumer never has to branch
@@ -29,16 +36,37 @@ use super::policy::SpecialPolicy;
 use super::spm::{SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
 use super::tokenizer::{
     Tokenizer, TokenizerError, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN,
-    LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN,
+    LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
 };
 use super::vocab::{load_spm_vocab, place_special_pieces};
 use super::whisper::{whisper_special_tokens, WhisperVariant};
 
-// Embed vocabulary files at compile time
+// Embed vocabulary files at compile time.
+//
+// Each is behind its family's `vocab-*` feature, all of which are on by
+// default. The feature gates the *payload* only — `PretrainedVocab` and every
+// metadata accessor below stay present either way, so a build without a family
+// still answers what its EOS id or base vocabulary size is, and `from_vocab`
+// reports the missing feature by name instead of failing as "unknown".
+#[cfg(feature = "vocab-cl100k")]
 pub const CL100K_BASE_VOCAB: &[u8] = include_bytes!("../../vocabs/cl100k_base.tiktoken");
+#[cfg(feature = "vocab-o200k")]
 pub const O200K_BASE_VOCAB: &[u8] = include_bytes!("../../vocabs/o200k_base.tiktoken");
+#[cfg(feature = "vocab-llama3")]
 pub const LLAMA3_VOCAB: &[u8] = include_bytes!("../../vocabs/llama3.tiktoken");
+#[cfg(feature = "vocab-deepseek")]
 pub const DEEPSEEK_V3_VOCAB: &[u8] = include_bytes!("../../vocabs/deepseek_v3.tiktoken");
+
+/// Qwen 2/3 vocabulary (151,643 tokens, byte-level BPE stored as raw bytes).
+///
+/// Also Baichuan-M2's: that checkpoint ships Qwen's tokenizer verbatim, all
+/// 151,643 ids identical, so it is served by this file rather than a copy.
+#[cfg(feature = "vocab-qwen")]
+pub const QWEN3_VOCAB: &[u8] = include_bytes!("../../vocabs/qwen3.tiktoken");
+
+/// GLM-4/4.5 vocabulary (151,329 tokens, byte-level BPE stored as raw bytes).
+#[cfg(feature = "vocab-glm")]
+pub const GLM4_VOCAB: &[u8] = include_bytes!("../../vocabs/glm4.tiktoken");
 
 /// Mistral V1 SentencePiece vocabulary (32,000 pieces with their scores).
 ///
@@ -47,12 +75,15 @@ pub const DEEPSEEK_V3_VOCAB: &[u8] = include_bytes!("../../vocabs/deepseek_v3.ti
 /// survives — including the `-1e9` "never merge" sentinel on the 15 whitespace
 /// runs, which the `.tiktoken` form of this vocabulary silently inverted into a
 /// *preferred* merge.
+#[cfg(feature = "vocab-mistral")]
 pub const MISTRAL_SPM_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral.spm");
 
 /// Mistral V2 SentencePiece vocabulary (32,768 pieces with their scores).
+#[cfg(feature = "vocab-mistral")]
 pub const MISTRAL_V2_SPM_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral_v2.spm");
 
 /// Mistral V3/Tekken vocabulary file (Tiktoken-based, ~131k tokens).
+#[cfg(feature = "vocab-mistral")]
 pub const MISTRAL_V3_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral_v3_tekken.tiktoken");
 
 /// Whisper base BPE vocabulary (GPT-2 byte-level, 50,257 tokens).
@@ -61,6 +92,7 @@ pub const MISTRAL_V3_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral_v3_tekk
 /// programmatically-generated special tokens. The English-only checkpoints use
 /// a different base BPE and are not bundled; load those via
 /// [`crate::from_json_path`].
+#[cfg(feature = "vocab-whisper")]
 pub const WHISPER_VOCAB: &[u8] = include_bytes!("../../vocabs/whisper.tiktoken");
 
 /// Supported pretrained vocabulary types.
@@ -74,6 +106,12 @@ pub enum PretrainedVocab {
     Llama3,
     /// DeepSeek V3/R1
     DeepseekV3,
+    /// Qwen 2/3 family (also Baichuan-M2, which ships the same vocabulary)
+    Qwen3,
+    /// GLM-4/4.5 family
+    Glm4,
+    /// OpenAI gpt-oss — o200k_base's ranks with the harmony special tokens
+    GptOss,
     /// Mistral V1 (7B v0.1/v0.2, Mixtral 8x7B) - 32k SentencePiece
     MistralV1,
     /// Mistral V2 (7B v0.3, Mixtral 8x22B, Codestral) - 32k + 768 control tokens
@@ -96,6 +134,16 @@ impl PretrainedVocab {
             "o200k_base" => Some(Self::O200kBase),
             "llama3" | "llama3.1" | "llama3.2" | "llama3.3" => Some(Self::Llama3),
             "deepseek_v3" | "deepseek-v3" => Some(Self::DeepseekV3),
+
+            // Qwen 2/3. Baichuan-M2 ships this vocabulary unchanged.
+            "qwen" | "qwen2" | "qwen3" | "qwen2.5" | "baichuan_m2" => Some(Self::Qwen3),
+
+            // GLM 4 / 4.5 / 4.6.
+            "glm" | "glm4" | "glm-4" | "glm4.5" | "glm-4.5" => Some(Self::Glm4),
+
+            // OpenAI's open-weight models. Same ranks as o200k_base, different
+            // special tokens, so it is its own name rather than an o200k alias.
+            "gpt-oss" | "gpt_oss" | "o200k_harmony" => Some(Self::GptOss),
 
             // Mistral V1: Default mistral → V1
             "mistral" | "mistral_v1" => Some(Self::MistralV1),
@@ -128,6 +176,22 @@ impl PretrainedVocab {
             "llama3.3",
             "deepseek_v3",
             "deepseek-v3",
+            // Qwen (Baichuan-M2 shares this vocabulary)
+            "qwen",
+            "qwen2",
+            "qwen2.5",
+            "qwen3",
+            "baichuan_m2",
+            // GLM
+            "glm",
+            "glm4",
+            "glm-4",
+            "glm4.5",
+            "glm-4.5",
+            // OpenAI open-weight
+            "gpt-oss",
+            "gpt_oss",
+            "o200k_harmony",
             // Mistral
             "mistral",
             "mistral_v1",
@@ -149,6 +213,11 @@ impl PretrainedVocab {
 /// - `o200k_base` - OpenAI GPT-4o
 /// - `llama3`, `llama3.1`, `llama3.2`, `llama3.3` - Meta Llama 3 family
 /// - `deepseek_v3`, `deepseek-v3` - DeepSeek V3/R1
+/// - `qwen`, `qwen2`, `qwen2.5`, `qwen3`, `baichuan_m2` - Qwen 2/3 (Baichuan-M2
+///   ships this vocabulary unchanged)
+/// - `glm`, `glm4`, `glm-4`, `glm4.5`, `glm-4.5` - GLM-4/4.5
+/// - `gpt-oss`, `gpt_oss`, `o200k_harmony` - OpenAI gpt-oss: o200k_base's ranks
+///   with the harmony response format's special tokens
 /// - `mistral`, `mistral-7b` - Mistral 7B family
 /// - `whisper`, `whisper_v1`, `whisper_v2`, `whisper_v3` - OpenAI Whisper multilingual
 ///   (bare `whisper` → v2). English-only checkpoints use a different base BPE and are
@@ -179,6 +248,46 @@ fn resolve_vocab(name: &str) -> Result<PretrainedVocab, TokenizerError> {
     })
 }
 
+/// The embedded vocabulary payload for `vocab`, or the cargo feature that
+/// would have bundled it.
+///
+/// Every `#[cfg]` on vocabulary data lives here. The alternative — one
+/// `cfg`/`cfg(not(...))` pair per match arm across `from_vocab` — puts the same
+/// condition in a dozen places and lets a build configuration exist where a
+/// vocabulary loads but its metadata is gone, or the reverse.
+fn vocab_bytes(vocab: PretrainedVocab) -> Result<&'static [u8], TokenizerError> {
+    macro_rules! bundled {
+        ($feature:literal, $konst:ident, $name:literal) => {{
+            #[cfg(feature = $feature)]
+            {
+                Ok($konst)
+            }
+            #[cfg(not(feature = $feature))]
+            {
+                Err(TokenizerError::VocabNotBundled($name, $feature))
+            }
+        }};
+    }
+    match vocab {
+        PretrainedVocab::Cl100kBase => bundled!("vocab-cl100k", CL100K_BASE_VOCAB, "cl100k_base"),
+        PretrainedVocab::O200kBase => bundled!("vocab-o200k", O200K_BASE_VOCAB, "o200k_base"),
+        // gpt-oss is o200k_base's ranks under a different set of special
+        // tokens, so it reads the same payload — the `vocab-gpt-oss` feature
+        // enables `vocab-o200k`, which is what makes that constant exist here.
+        PretrainedVocab::GptOss => bundled!("vocab-gpt-oss", O200K_BASE_VOCAB, "gpt-oss"),
+        PretrainedVocab::Llama3 => bundled!("vocab-llama3", LLAMA3_VOCAB, "llama3"),
+        PretrainedVocab::DeepseekV3 => bundled!("vocab-deepseek", DEEPSEEK_V3_VOCAB, "deepseek_v3"),
+        PretrainedVocab::Qwen3 => bundled!("vocab-qwen", QWEN3_VOCAB, "qwen3"),
+        PretrainedVocab::Glm4 => bundled!("vocab-glm", GLM4_VOCAB, "glm4"),
+        PretrainedVocab::MistralV1 => bundled!("vocab-mistral", MISTRAL_SPM_VOCAB, "mistral"),
+        PretrainedVocab::MistralV2 => bundled!("vocab-mistral", MISTRAL_V2_SPM_VOCAB, "mistral_v2"),
+        PretrainedVocab::MistralV3 => bundled!("vocab-mistral", MISTRAL_V3_VOCAB, "mistral_v3"),
+        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
+            bundled!("vocab-whisper", WHISPER_VOCAB, "whisper")
+        }
+    }
+}
+
 /// Create a pretrained tokenizer from vocabulary enum.
 ///
 /// The backend is always BPE; it is wrapped in an [`AnyTokenizer`] whose policy
@@ -195,11 +304,8 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
     // Mistral V1/V2 are SentencePiece: they take the SPM-BPE backend, which has
     // no pre-tokenizer regex, and so must return before `patterns` is consulted.
     match vocab {
-        PretrainedVocab::MistralV1 => {
-            return spm_from_vocab(MISTRAL_SPM_VOCAB, vocab, special, named, skipped)
-        }
-        PretrainedVocab::MistralV2 => {
-            return spm_from_vocab(MISTRAL_V2_SPM_VOCAB, vocab, special, named, skipped)
+        PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => {
+            return spm_from_vocab(vocab_bytes(vocab)?, vocab, special, named, skipped)
         }
         _ => {}
     }
@@ -208,29 +314,30 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
     // as `EmptyPatternList` rather than silently encoding without a split.
     let pats = patterns(vocab).unwrap_or(&[]);
 
+    let data = vocab_bytes(vocab)?;
+
     let tokenizer = match vocab {
-        PretrainedVocab::Cl100kBase => {
-            Tokenizer::from_bytes_chain(CL100K_BASE_VOCAB, pats, special)
-        }
-        PretrainedVocab::O200kBase => Tokenizer::from_bytes_chain(O200K_BASE_VOCAB, pats, special),
-        PretrainedVocab::Llama3 => Tokenizer::from_bytes_chain(LLAMA3_VOCAB, pats, special),
-        PretrainedVocab::DeepseekV3 => {
-            // DeepSeek uses ByteLevel BPE encoding
-            Tokenizer::from_bytes_byte_level_chain(DEEPSEEK_V3_VOCAB, pats, special)
-        }
+        // Vocabularies whose `.tiktoken` stores raw semantic bytes: the file
+        // was written with the ByteLevel mapping already undone, so the merge
+        // loop runs on the text's own bytes and no byte-level stage applies.
+        PretrainedVocab::Cl100kBase
+        | PretrainedVocab::O200kBase
+        | PretrainedVocab::GptOss
+        | PretrainedVocab::Llama3
+        | PretrainedVocab::Qwen3
+        | PretrainedVocab::Glm4 => Tokenizer::from_bytes_chain(data, pats, special),
+        // Vocabularies whose `.tiktoken` keeps the ByteLevel spelling (`Ġ` for
+        // a space), so the input has to be mapped into it before merging.
+        PretrainedVocab::DeepseekV3
+        | PretrainedVocab::MistralV3
+        | PretrainedVocab::WhisperV1
+        | PretrainedVocab::WhisperV2
+        | PretrainedVocab::WhisperV3 => Tokenizer::from_bytes_byte_level_chain(data, pats, special),
         // Handled above, before `patterns` is consulted.
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => {
             return Err(TokenizerError::UnknownPretrained(
                 "Mistral V1/V2 take the SPM backend and are routed earlier".to_owned(),
             ))
-        }
-        PretrainedVocab::MistralV3 => {
-            // V3 uses ByteLevel BPE (like DeepSeek/GPT-2) - Ġ represents space
-            Tokenizer::from_bytes_byte_level_chain(MISTRAL_V3_VOCAB, pats, special)
-        }
-        PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
-            // Whisper uses GPT-2 ByteLevel BPE; specials are generated per variant
-            Tokenizer::from_bytes_byte_level_chain(WHISPER_VOCAB, pats, special)
         }
     }?;
 
@@ -367,6 +474,13 @@ pub fn patterns(vocab: PretrainedVocab) -> Option<&'static [&'static str]> {
         PretrainedVocab::Llama3 => Some(&[LLAMA3_PATTERN]),
         // DeepSeek's own three-pass split; see DEEPSEEK_V3_PATTERNS.
         PretrainedVocab::DeepseekV3 => Some(DEEPSEEK_V3_PATTERNS),
+        // Qwen splits digits one at a time; GLM in runs of up to three, which
+        // is Llama 3's split exactly. Both read verbatim off their own
+        // `tokenizer.json`, not inferred from the family.
+        PretrainedVocab::Qwen3 => Some(&[QWEN2_PATTERN]),
+        PretrainedVocab::Glm4 => Some(&[LLAMA3_PATTERN]),
+        // gpt-oss states o200k_base's pattern character for character.
+        PretrainedVocab::GptOss => Some(&[O200K_BASE_PATTERN]),
         // SPM-BPE: merges pieces, no pre-tokenizer regex.
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => None,
         // Tekken has its own pattern (no contractions, single-digit numbers).
@@ -395,6 +509,9 @@ pub fn eos_token_id(vocab: PretrainedVocab) -> u32 {
         PretrainedVocab::O200kBase => 199999,  // <|endoftext|>
         PretrainedVocab::Llama3 => 128001,     // <|end_of_text|>
         PretrainedVocab::DeepseekV3 => 1,      // <｜end▁of▁sentence｜>
+        PretrainedVocab::Qwen3 => 151645,      // <|im_end|>
+        PretrainedVocab::Glm4 => 151329,       // <|endoftext|>
+        PretrainedVocab::GptOss => 200002,     // <|return|>
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 | PretrainedVocab::MistralV3 => 2, // </s>
         // <|endoftext|>, derived per variant. Matched one variant at a time so the
         // compiler forces this to be revisited if a Whisper generation is added,
@@ -419,6 +536,10 @@ pub fn bos_token_id(vocab: PretrainedVocab) -> Option<u32> {
         PretrainedVocab::O200kBase => None,      // No BOS token
         PretrainedVocab::Llama3 => Some(128000), // <|begin_of_text|>
         PretrainedVocab::DeepseekV3 => Some(0),  // <｜begin▁of▁sentence｜>
+        // Qwen and GLM place no BOS; their chat templates open with a role
+        // marker instead. gpt-oss names `<|startoftext|>` but the harmony
+        // format opens with `<|start|>`, so it is not a BOS either.
+        PretrainedVocab::Qwen3 | PretrainedVocab::Glm4 | PretrainedVocab::GptOss => None,
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 | PretrainedVocab::MistralV3 => {
             Some(1)
         } // <s>
@@ -441,6 +562,9 @@ pub fn pad_token_id(vocab: PretrainedVocab) -> Option<u32> {
         PretrainedVocab::O200kBase => Some(200058),  // <|pad|> (agent token)
         PretrainedVocab::Llama3 => Some(128339),     // <|pad|> (agent token)
         PretrainedVocab::DeepseekV3 => Some(2),      // <｜▁pad▁｜>
+        PretrainedVocab::Qwen3 => Some(QWEN3_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
+        PretrainedVocab::Glm4 => Some(GLM4_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
+        PretrainedVocab::GptOss => Some(200058),     // <|pad|> (agent token)
         PretrainedVocab::MistralV1 => Some(32039),   // <|pad|> (agent token)
         PretrainedVocab::MistralV2 => Some(32807),   // <|pad|> (agent token, after control tokens)
         PretrainedVocab::MistralV3 => Some(131111),  // <|pad|> (agent token)
@@ -472,6 +596,11 @@ pub fn base_vocab_size(vocab: PretrainedVocab) -> u32 {
         PretrainedVocab::O200kBase => O200K_BASE_BASE_VOCAB_SIZE,
         PretrainedVocab::Llama3 => LLAMA3_BASE_VOCAB_SIZE,
         PretrainedVocab::DeepseekV3 => DEEPSEEK_V3_BASE_VOCAB_SIZE,
+        PretrainedVocab::Qwen3 => QWEN3_BASE_VOCAB_SIZE,
+        PretrainedVocab::Glm4 => GLM4_BASE_VOCAB_SIZE,
+        // gpt-oss's last special is `<|endofprompt|>` at 200018, the same id
+        // o200k_base ends on, so the two share a base size as well as ranks.
+        PretrainedVocab::GptOss => O200K_BASE_BASE_VOCAB_SIZE,
         PretrainedVocab::MistralV1 => MISTRAL_V1_BASE_VOCAB_SIZE,
         PretrainedVocab::MistralV2 => MISTRAL_V2_BASE_VOCAB_SIZE,
         PretrainedVocab::MistralV3 => MISTRAL_V3_BASE_VOCAB_SIZE,
@@ -566,6 +695,32 @@ fn special_decode_ids(vocab: PretrainedVocab, special: &FxHashMap<String, u32>) 
         // true` and dropped; the 1,501 timestamp tokens `<|0.00|>`…`<|30.00|>`
         // are `special: false` and rendered — they carry the transcript's
         // timings, which is content, so they are left rendered here too.
+        // Reference: `tokenizers` 0.22.1 on Qwen3's `tokenizer.json`. Its
+        // control markers (`<|endoftext|>`, `<|im_start|>`, the vision block)
+        // are `special: true` and dropped — `decode([151644] + ids)` is
+        // `'hello'`. 151657-151668 are `special: false` and rendered: the FIM
+        // and repo markers, `<tool_call>`/`<tool_response>` and
+        // `<think>`/`</think>` are content in Qwen's own templates.
+        PretrainedVocab::Qwen3 => {
+            let rendered: FxHashSet<u32> = (151657..=151668).collect();
+            all().difference(&rendered).copied().collect()
+        }
+
+        // Reference: `tokenizers` 0.22.1 on GLM-4.5's `tokenizer.json`, same
+        // shape: `decode([151335] + ids)` is `'hello'`, while its reasoning,
+        // tool-call, argument and box markers (151350-151359, 151361-151364)
+        // are `special: false` and rendered.
+        PretrainedVocab::Glm4 => {
+            let rendered: FxHashSet<u32> = (151350..=151359).chain(151361..=151364).collect();
+            all().difference(&rendered).copied().collect()
+        }
+
+        // Reference: `tokenizers` 0.22.1 on gpt-oss-20b's `tokenizer.json`,
+        // where all 21 added tokens are `special: true`. Note this is the one
+        // place gpt-oss and o200k_base differ in kind and not just in names:
+        // o200k_base's reference is `tiktoken`, which renders everything.
+        PretrainedVocab::GptOss => all(),
+
         PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
             let variant = match vocab {
                 PretrainedVocab::WhisperV2 => WhisperVariant::V2Multilingual,
@@ -589,6 +744,9 @@ pub fn special_tokens(vocab: PretrainedVocab) -> FxHashMap<String, u32> {
         PretrainedVocab::O200kBase => o200k_base_special_tokens(),
         PretrainedVocab::Llama3 => llama3_special_tokens(),
         PretrainedVocab::DeepseekV3 => deepseek_v3_special_tokens(),
+        PretrainedVocab::Qwen3 => qwen3_special_tokens(),
+        PretrainedVocab::Glm4 => glm4_special_tokens(),
+        PretrainedVocab::GptOss => gpt_oss_special_tokens(),
         PretrainedVocab::MistralV1 => mistral_v1_special_tokens(),
         PretrainedVocab::MistralV2 => mistral_v2_special_tokens(),
         PretrainedVocab::MistralV3 => mistral_v3_special_tokens(),
@@ -736,6 +894,157 @@ pub fn deepseek_v3_special_tokens() -> FxHashMap<String, u32> {
     special
 }
 
+/// Qwen 2/3's reference (`tokenizers`) vocabulary size: 151,643 BPE tokens plus
+/// its 26 added tokens (151643-151668), so splintr's agent tokens start
+/// immediately after at 151,669. Shared with [`base_vocab_size`] so the two
+/// cannot drift apart.
+const QWEN3_BASE_VOCAB_SIZE: u32 = 151669;
+
+/// Get the standard special tokens for Qwen 2/3.
+///
+/// `<|im_start|>` and `<|im_end|>` are Qwen's own ids, not the agent-token
+/// slots of the same name — the agent table defers to a name the vocabulary
+/// already defines, which is what keeps a Qwen chat template encoding to the
+/// ids the checkpoint was trained on.
+pub fn qwen3_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    // Qwen native special tokens (151643-151668)
+    special.insert("<|endoftext|>".to_string(), 151643);
+    special.insert("<|im_start|>".to_string(), 151644);
+    special.insert("<|im_end|>".to_string(), 151645);
+    special.insert("<|object_ref_start|>".to_string(), 151646);
+    special.insert("<|object_ref_end|>".to_string(), 151647);
+    special.insert("<|box_start|>".to_string(), 151648);
+    special.insert("<|box_end|>".to_string(), 151649);
+    special.insert("<|quad_start|>".to_string(), 151650);
+    special.insert("<|quad_end|>".to_string(), 151651);
+    special.insert("<|vision_start|>".to_string(), 151652);
+    special.insert("<|vision_end|>".to_string(), 151653);
+    special.insert("<|vision_pad|>".to_string(), 151654);
+    special.insert("<|image_pad|>".to_string(), 151655);
+    special.insert("<|video_pad|>".to_string(), 151656);
+    special.insert("<tool_call>".to_string(), 151657);
+    special.insert("</tool_call>".to_string(), 151658);
+    special.insert("<|fim_prefix|>".to_string(), 151659);
+    special.insert("<|fim_middle|>".to_string(), 151660);
+    special.insert("<|fim_suffix|>".to_string(), 151661);
+    special.insert("<|fim_pad|>".to_string(), 151662);
+    special.insert("<|repo_name|>".to_string(), 151663);
+    special.insert("<|file_sep|>".to_string(), 151664);
+    special.insert("<tool_response>".to_string(), 151665);
+    special.insert("</tool_response>".to_string(), 151666);
+    special.insert("<think>".to_string(), 151667);
+    special.insert("</think>".to_string(), QWEN3_BASE_VOCAB_SIZE - 1);
+
+    // Agent tokens (151669+)
+    insert_agent_tokens(&mut special, QWEN3_BASE_VOCAB_SIZE);
+
+    special
+}
+
+/// GLM-4/4.5's reference (`tokenizers`) vocabulary size: 151,329 BPE tokens
+/// plus its 36 added tokens (151329-151364), so splintr's agent tokens start
+/// immediately after at 151,365. Shared with [`base_vocab_size`] so the two
+/// cannot drift apart.
+const GLM4_BASE_VOCAB_SIZE: u32 = 151365;
+
+/// Get the standard special tokens for GLM-4/4.5.
+///
+/// GLM names `<|system|>`, `<|user|>`, `<|assistant|>`, `<|image|>` and
+/// `<|video|>` natively; those ids win over the agent slots of the same name,
+/// leaving those slots reserved and unnamed.
+pub fn glm4_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    // GLM native special tokens (151329-151364)
+    special.insert("<|endoftext|>".to_string(), 151329);
+    special.insert("[MASK]".to_string(), 151330);
+    special.insert("[gMASK]".to_string(), 151331);
+    special.insert("[sMASK]".to_string(), 151332);
+    special.insert("<sop>".to_string(), 151333);
+    special.insert("<eop>".to_string(), 151334);
+    special.insert("<|system|>".to_string(), 151335);
+    special.insert("<|user|>".to_string(), 151336);
+    special.insert("<|assistant|>".to_string(), 151337);
+    special.insert("<|observation|>".to_string(), 151338);
+    special.insert("<|begin_of_image|>".to_string(), 151339);
+    special.insert("<|end_of_image|>".to_string(), 151340);
+    special.insert("<|begin_of_video|>".to_string(), 151341);
+    special.insert("<|end_of_video|>".to_string(), 151342);
+    special.insert("<|begin_of_audio|>".to_string(), 151343);
+    special.insert("<|end_of_audio|>".to_string(), 151344);
+    special.insert("<|begin_of_transcription|>".to_string(), 151345);
+    special.insert("<|end_of_transcription|>".to_string(), 151346);
+    special.insert("<|code_prefix|>".to_string(), 151347);
+    special.insert("<|code_middle|>".to_string(), 151348);
+    special.insert("<|code_suffix|>".to_string(), 151349);
+    special.insert("<think>".to_string(), 151350);
+    special.insert("</think>".to_string(), 151351);
+    special.insert("<tool_call>".to_string(), 151352);
+    special.insert("</tool_call>".to_string(), 151353);
+    special.insert("<tool_response>".to_string(), 151354);
+    special.insert("</tool_response>".to_string(), 151355);
+    special.insert("<arg_key>".to_string(), 151356);
+    special.insert("</arg_key>".to_string(), 151357);
+    special.insert("<arg_value>".to_string(), 151358);
+    special.insert("</arg_value>".to_string(), 151359);
+    special.insert("/nothink".to_string(), 151360);
+    special.insert("<|begin_of_box|>".to_string(), 151361);
+    special.insert("<|end_of_box|>".to_string(), 151362);
+    special.insert("<|image|>".to_string(), 151363);
+    special.insert("<|video|>".to_string(), GLM4_BASE_VOCAB_SIZE - 1);
+
+    // Agent tokens (151365+)
+    insert_agent_tokens(&mut special, GLM4_BASE_VOCAB_SIZE);
+
+    special
+}
+
+/// Get the special tokens for OpenAI's gpt-oss models (the "harmony" set).
+///
+/// The ranks are o200k_base's, but the special block is not: where o200k_base
+/// names two tokens in 199999-200018 and leaves the rest unnamed, gpt-oss fills
+/// the same range with the harmony response format's markers. That is the whole
+/// difference between the two vocabularies, and the reason gpt-oss is its own
+/// name rather than an o200k_base alias.
+pub fn gpt_oss_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    // Harmony special tokens (199998-200018). The `<|reserved_*|>` slots are
+    // named as OpenAI names them: they are declared in the vocabulary, so
+    // leaving them out would make those ids undecodable rather than reserved.
+    special.insert("<|startoftext|>".to_string(), 199998);
+    special.insert("<|endoftext|>".to_string(), 199999);
+    special.insert("<|reserved_200000|>".to_string(), 200000);
+    special.insert("<|reserved_200001|>".to_string(), 200001);
+    special.insert("<|return|>".to_string(), 200002);
+    special.insert("<|constrain|>".to_string(), 200003);
+    special.insert("<|reserved_200004|>".to_string(), 200004);
+    special.insert("<|channel|>".to_string(), 200005);
+    special.insert("<|start|>".to_string(), 200006);
+    special.insert("<|end|>".to_string(), 200007);
+    special.insert("<|message|>".to_string(), 200008);
+    special.insert("<|reserved_200009|>".to_string(), 200009);
+    special.insert("<|reserved_200010|>".to_string(), 200010);
+    special.insert("<|reserved_200011|>".to_string(), 200011);
+    special.insert("<|call|>".to_string(), 200012);
+    special.insert("<|reserved_200013|>".to_string(), 200013);
+    special.insert("<|reserved_200014|>".to_string(), 200014);
+    special.insert("<|reserved_200015|>".to_string(), 200015);
+    special.insert("<|reserved_200016|>".to_string(), 200016);
+    special.insert("<|reserved_200017|>".to_string(), 200017);
+    special.insert(
+        "<|endofprompt|>".to_string(),
+        O200K_BASE_BASE_VOCAB_SIZE - 1,
+    );
+
+    // Agent tokens (200019+), the same block o200k_base uses.
+    insert_agent_tokens(&mut special, O200K_BASE_BASE_VOCAB_SIZE);
+
+    special
+}
+
 /// Mistral V1's reference (`sentencepiece`) piece count: the bundled
 /// `.spm` file has exactly 32,000 pieces (ids 0-31999, including the 0-2
 /// native specials below), so splintr's agent tokens start immediately
@@ -828,153 +1137,108 @@ pub fn mistral_v3_special_tokens() -> FxHashMap<String, u32> {
 // Helper functions for agent tokens
 // =============================================================================
 
-/// Insert the standard 54 agent tokens starting at the given base ID.
-/// Used by cl100k_base, o200k_base, and deepseek_v3.
-fn insert_agent_tokens(special: &mut FxHashMap<String, u32>, base: u32) {
+/// The 54 agent tokens splintr appends above every bundled vocabulary, as
+/// `(name, offset from the vocabulary's base size)`.
+///
+/// One table rather than one `insert` per token per vocabulary: the offsets are
+/// part of splintr's public id layout, and the same name has to mean the same
+/// offset everywhere or a checkpoint trained against one vocabulary cannot be
+/// read against another. Offsets 42-47 are the multimodal placeholders, which
+/// Llama 3 states one block lower and so omits here — see
+/// [`insert_agent_tokens_llama3`].
+const AGENT_TOKENS: [(&str, u32); 54] = [
     // Core conversation structure
-    special.insert("<|system|>".to_string(), base);
-    special.insert("<|user|>".to_string(), base + 1);
-    special.insert("<|assistant|>".to_string(), base + 2);
-    special.insert("<|im_start|>".to_string(), base + 3);
-    special.insert("<|im_end|>".to_string(), base + 4);
-
+    ("<|system|>", 0),
+    ("<|user|>", 1),
+    ("<|assistant|>", 2),
+    ("<|im_start|>", 3),
+    ("<|im_end|>", 4),
     // Reasoning/thinking tokens
-    special.insert("<|think|>".to_string(), base + 5);
-    special.insert("<|/think|>".to_string(), base + 6);
-
+    ("<|think|>", 5),
+    ("<|/think|>", 6),
     // ReAct agent loop tokens
-    special.insert("<|plan|>".to_string(), base + 7);
-    special.insert("<|/plan|>".to_string(), base + 8);
-    special.insert("<|step|>".to_string(), base + 9);
-    special.insert("<|/step|>".to_string(), base + 10);
-    special.insert("<|act|>".to_string(), base + 11);
-    special.insert("<|/act|>".to_string(), base + 12);
-    special.insert("<|observe|>".to_string(), base + 13);
-    special.insert("<|/observe|>".to_string(), base + 14);
-
+    ("<|plan|>", 7),
+    ("<|/plan|>", 8),
+    ("<|step|>", 9),
+    ("<|/step|>", 10),
+    ("<|act|>", 11),
+    ("<|/act|>", 12),
+    ("<|observe|>", 13),
+    ("<|/observe|>", 14),
     // Tool/function calling
-    special.insert("<|function|>".to_string(), base + 15);
-    special.insert("<|/function|>".to_string(), base + 16);
-    special.insert("<|result|>".to_string(), base + 17);
-    special.insert("<|/result|>".to_string(), base + 18);
-    special.insert("<|error|>".to_string(), base + 19);
-    special.insert("<|/error|>".to_string(), base + 20);
-
+    ("<|function|>", 15),
+    ("<|/function|>", 16),
+    ("<|result|>", 17),
+    ("<|/result|>", 18),
+    ("<|error|>", 19),
+    ("<|/error|>", 20),
     // Code execution
-    special.insert("<|code|>".to_string(), base + 21);
-    special.insert("<|/code|>".to_string(), base + 22);
-    special.insert("<|output|>".to_string(), base + 23);
-    special.insert("<|/output|>".to_string(), base + 24);
-    special.insert("<|lang|>".to_string(), base + 25);
-    special.insert("<|/lang|>".to_string(), base + 26);
-
+    ("<|code|>", 21),
+    ("<|/code|>", 22),
+    ("<|output|>", 23),
+    ("<|/output|>", 24),
+    ("<|lang|>", 25),
+    ("<|/lang|>", 26),
     // RAG/context injection
-    special.insert("<|context|>".to_string(), base + 27);
-    special.insert("<|/context|>".to_string(), base + 28);
-    special.insert("<|quote|>".to_string(), base + 29);
-    special.insert("<|/quote|>".to_string(), base + 30);
-    special.insert("<|cite|>".to_string(), base + 31);
-    special.insert("<|/cite|>".to_string(), base + 32);
-    special.insert("<|source|>".to_string(), base + 33);
-    special.insert("<|/source|>".to_string(), base + 34);
-
+    ("<|context|>", 27),
+    ("<|/context|>", 28),
+    ("<|quote|>", 29),
+    ("<|/quote|>", 30),
+    ("<|cite|>", 31),
+    ("<|/cite|>", 32),
+    ("<|source|>", 33),
+    ("<|/source|>", 34),
     // Memory/state management
-    special.insert("<|memory|>".to_string(), base + 35);
-    special.insert("<|/memory|>".to_string(), base + 36);
-    special.insert("<|recall|>".to_string(), base + 37);
-    special.insert("<|/recall|>".to_string(), base + 38);
-
+    ("<|memory|>", 35),
+    ("<|/memory|>", 36),
+    ("<|recall|>", 37),
+    ("<|/recall|>", 38),
     // Control tokens
-    special.insert("<|pad|>".to_string(), base + 39);
-    special.insert("<|stop|>".to_string(), base + 40);
-    special.insert("<|sep|>".to_string(), base + 41);
-
+    ("<|pad|>", 39),
+    ("<|stop|>", 40),
+    ("<|sep|>", 41),
     // Multimodal placeholders
-    special.insert("<|image|>".to_string(), base + 42);
-    special.insert("<|/image|>".to_string(), base + 43);
-    special.insert("<|audio|>".to_string(), base + 44);
-    special.insert("<|/audio|>".to_string(), base + 45);
-    special.insert("<|video|>".to_string(), base + 46);
-    special.insert("<|/video|>".to_string(), base + 47);
-
+    ("<|image|>", 42),
+    ("<|/image|>", 43),
+    ("<|audio|>", 44),
+    ("<|/audio|>", 45),
+    ("<|video|>", 46),
+    ("<|/video|>", 47),
     // Document structure
-    special.insert("<|title|>".to_string(), base + 48);
-    special.insert("<|/title|>".to_string(), base + 49);
-    special.insert("<|section|>".to_string(), base + 50);
-    special.insert("<|/section|>".to_string(), base + 51);
-    special.insert("<|summary|>".to_string(), base + 52);
-    special.insert("<|/summary|>".to_string(), base + 53);
+    ("<|title|>", 48),
+    ("<|/title|>", 49),
+    ("<|section|>", 50),
+    ("<|/section|>", 51),
+    ("<|summary|>", 52),
+    ("<|/summary|>", 53),
+];
+
+/// Insert the standard 54 agent tokens starting at the given base ID.
+fn insert_agent_tokens(special: &mut FxHashMap<String, u32>, base: u32) {
+    insert_agent_tokens_except(special, base, &[]);
 }
 
 /// Insert agent tokens for Llama3 (excludes multimodal since they're at 128256+).
 fn insert_agent_tokens_llama3(special: &mut FxHashMap<String, u32>, base: u32) {
-    // Core conversation structure
-    special.insert("<|system|>".to_string(), base);
-    special.insert("<|user|>".to_string(), base + 1);
-    special.insert("<|assistant|>".to_string(), base + 2);
-    special.insert("<|im_start|>".to_string(), base + 3);
-    special.insert("<|im_end|>".to_string(), base + 4);
+    insert_agent_tokens_except(special, base, &[42, 43, 44, 45, 46, 47]);
+}
 
-    // Reasoning/thinking tokens
-    special.insert("<|think|>".to_string(), base + 5);
-    special.insert("<|/think|>".to_string(), base + 6);
-
-    // ReAct agent loop tokens
-    special.insert("<|plan|>".to_string(), base + 7);
-    special.insert("<|/plan|>".to_string(), base + 8);
-    special.insert("<|step|>".to_string(), base + 9);
-    special.insert("<|/step|>".to_string(), base + 10);
-    special.insert("<|act|>".to_string(), base + 11);
-    special.insert("<|/act|>".to_string(), base + 12);
-    special.insert("<|observe|>".to_string(), base + 13);
-    special.insert("<|/observe|>".to_string(), base + 14);
-
-    // Tool/function calling
-    special.insert("<|function|>".to_string(), base + 15);
-    special.insert("<|/function|>".to_string(), base + 16);
-    special.insert("<|result|>".to_string(), base + 17);
-    special.insert("<|/result|>".to_string(), base + 18);
-    special.insert("<|error|>".to_string(), base + 19);
-    special.insert("<|/error|>".to_string(), base + 20);
-
-    // Code execution
-    special.insert("<|code|>".to_string(), base + 21);
-    special.insert("<|/code|>".to_string(), base + 22);
-    special.insert("<|output|>".to_string(), base + 23);
-    special.insert("<|/output|>".to_string(), base + 24);
-    special.insert("<|lang|>".to_string(), base + 25);
-    special.insert("<|/lang|>".to_string(), base + 26);
-
-    // RAG/context injection
-    special.insert("<|context|>".to_string(), base + 27);
-    special.insert("<|/context|>".to_string(), base + 28);
-    special.insert("<|quote|>".to_string(), base + 29);
-    special.insert("<|/quote|>".to_string(), base + 30);
-    special.insert("<|cite|>".to_string(), base + 31);
-    special.insert("<|/cite|>".to_string(), base + 32);
-    special.insert("<|source|>".to_string(), base + 33);
-    special.insert("<|/source|>".to_string(), base + 34);
-
-    // Memory/state management
-    special.insert("<|memory|>".to_string(), base + 35);
-    special.insert("<|/memory|>".to_string(), base + 36);
-    special.insert("<|recall|>".to_string(), base + 37);
-    special.insert("<|/recall|>".to_string(), base + 38);
-
-    // Control tokens
-    special.insert("<|pad|>".to_string(), base + 39);
-    special.insert("<|stop|>".to_string(), base + 40);
-    special.insert("<|sep|>".to_string(), base + 41);
-
-    // Note: Multimodal tokens are at 128256+ for Llama3, already inserted separately
-
-    // Document structure
-    special.insert("<|title|>".to_string(), base + 48);
-    special.insert("<|/title|>".to_string(), base + 49);
-    special.insert("<|section|>".to_string(), base + 50);
-    special.insert("<|/section|>".to_string(), base + 51);
-    special.insert("<|summary|>".to_string(), base + 52);
-    special.insert("<|/summary|>".to_string(), base + 53);
+/// Insert the agent tokens at `base + offset`, skipping the listed offsets.
+///
+/// A name the vocabulary already defines keeps the id it already has: several
+/// vocabularies state agent-token names natively — Qwen's `<|im_start|>` is
+/// 151644, GLM's `<|system|>` is 151335 — and those ids belong to the model, so
+/// overwriting them with a splintr id would produce a tokenizer that encodes a
+/// chat template into ids the checkpoint never saw. The vacated slot is left as
+/// an unnamed reserved id rather than repacked, so `base + offset` means the
+/// same thing for every vocabulary.
+fn insert_agent_tokens_except(special: &mut FxHashMap<String, u32>, base: u32, skip: &[u32]) {
+    for (name, offset) in AGENT_TOKENS {
+        if skip.contains(&offset) {
+            continue;
+        }
+        special.entry(name.to_string()).or_insert(base + offset);
+    }
 }
 
 #[cfg(test)]

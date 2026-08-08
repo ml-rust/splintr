@@ -66,15 +66,18 @@ pub use pretokenizer::{PreTokStage, PreTokenizer, SplitBehavior, SplitPattern};
 pub use pretrained::{
     base_vocab_size, base_vocab_size_by_name, bos_token_id, bos_token_id_by_name,
     cl100k_base_special_tokens, deepseek_v3_special_tokens, eos_token_id, eos_token_id_by_name,
-    from_pretrained, from_vocab, llama3_special_tokens, o200k_base_special_tokens, pad_token_id,
-    patterns, special_tokens, uses_byte_level, PretrainedVocab,
+    from_pretrained, from_vocab, glm4_special_tokens, gpt_oss_special_tokens,
+    llama3_special_tokens, o200k_base_special_tokens, pad_token_id, patterns, qwen3_special_tokens,
+    special_tokens, uses_byte_level, PretrainedVocab,
 };
 pub use sentencepiece::{SentencePieceError, SentencePieceTokenizer};
 pub use spm::{SpmError, SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
 pub use streaming::StreamingDecoder;
 pub use tokenize::{Tokenize, TokenizeError};
 pub use tokenizer::{
-    cl100k_agent_tokens, o200k_agent_tokens, ByteFallback, Tokenizer, TokenizerError,
+    cl100k_agent_tokens, deepseek_v3_agent_tokens, glm4_agent_tokens, gpt_oss_agent_tokens,
+    llama3_agent_tokens, mistral_v1_agent_tokens, mistral_v2_agent_tokens, mistral_v3_agent_tokens,
+    o200k_agent_tokens, qwen3_agent_tokens, ByteFallback, Tokenizer, TokenizerError,
     CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN,
     NO_SPLIT_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN, SENTENCEPIECE_PATTERN,
 };

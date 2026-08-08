@@ -8,12 +8,21 @@
 | `o200k_base`                                           | GPT-4o                                       | 200,019                     | 2 + 54 agent    | `O200K_BASE_PATTERN`                   |
 | `llama3`                                               | Llama 3, 3.1, 3.2, 3.3 (Meta)                | 128,256                     | 11 + 54 agent   | `LLAMA3_PATTERN`                       |
 | `deepseek_v3`                                          | DeepSeek V3, DeepSeek R1                     | 128,815                     | 17 + 54 agent   | `DEEPSEEK_V3_PATTERNS` (three passes)  |
+| `qwen3` / `qwen` / `qwen2` / `qwen2.5` / `baichuan_m2` | Qwen 2, Qwen 3, Baichuan-M2                  | 151,669                     | 26 + 54 agent   | `QWEN2_PATTERN`                        |
+| `glm4` / `glm` / `glm-4` / `glm4.5` / `glm-4.5`        | GLM-4, GLM-4.5, GLM-4.6                      | 151,365                     | 36 + 54 agent   | `LLAMA3_PATTERN`                       |
+| `gpt-oss` / `gpt_oss` / `o200k_harmony`                | OpenAI gpt-oss (20B, 120B)                   | 200,019                     | 21 + 54 agent   | `O200K_BASE_PATTERN`                   |
 | `mistral_v1`                                           | Mistral 7B v0.1/v0.2, Mixtral 8x7B           | 32,000                      | 3 + 54 agent    | none — SPM-BPE, no split regex         |
 | `mistral_v2`                                           | Mistral 7B v0.3, Codestral, 8x22B            | 32,768                      | 10 + 54 agent   | none — SPM-BPE, no split regex         |
 | `mistral_v3`                                           | Mistral NeMo, Large 2, Pixtral               | 131,072                     | 10 + 54 agent   | `MISTRAL_V3_PATTERN`                   |
 | `whisper` / `whisper_v1` / `whisper_v2` / `whisper_v3` | OpenAI Whisper multilingual (tiny..large-v3) | 51,865 (v1/v2), 51,866 (v3) | 1608 (no agent) | `GPT2_PATTERN`                         |
 
 `pretrained::patterns(vocab)` returns `Option<&'static [&'static str]>`. It is `None` for Mistral V1/V2 — not "unknown", but "this vocabulary does not pre-tokenize with a regex": both run on the SPM-BPE backend, which segments by merging pieces and never applies a split pattern.
+
+**Qwen and GLM already ship some of the agent tokens.** Qwen defines `<|im_start|>`/`<|im_end|>` itself; GLM defines `<|system|>`, `<|user|>`, `<|assistant|>`, `<|image|>` and `<|video|>`. All 54 still resolve — those five or two simply resolve to the _model's_ ids rather than to splintr-appended ones, so a chat template encodes to the ids the checkpoint was trained on. Splintr appends the rest, and the slot a shared name would have taken is left reserved rather than repacked, so every other agent token keeps the offset it has in every other vocabulary. **Baichuan-M2** ships Qwen's tokenizer verbatim (151,643 ids, identical), so it is an alias rather than a second copy.
+
+**gpt-oss** is o200k_base's 199,998 ranks, id for id, under a different special-token block: where o200k_base names two of 199999-200018, gpt-oss fills the range with the harmony response format's markers (`<|start|>`, `<|channel|>`, `<|message|>`, `<|end|>`, `<|call|>`, `<|return|>`, `<|constrain|>` and OpenAI's reserved slots). It therefore embeds no vocabulary data of its own. The two also differ on decode: gpt-oss's own `tokenizer.json` declares its added tokens `special: true` so they render as nothing, while o200k_base follows `tiktoken`, which renders `<|endoftext|>`.
+
+**Bundled vocabularies are feature-gated.** Each family has a `vocab-*` cargo feature (`vocab-cl100k`, `vocab-o200k`, `vocab-gpt-oss`, `vocab-llama3`, `vocab-deepseek`, `vocab-qwen`, `vocab-glm`, `vocab-mistral`, `vocab-whisper`), all enabled by default and all enabled in the Python wheel. Turning one off drops its embedded data; `from_pretrained` then reports which feature is missing rather than rejecting the name. The full set is ~20 MB of the Python extension module's 23 MB.
 
 **Whisper** is a speech model, so it carries no agent tokens — its special tokens are the standard Whisper set (`<|startoftranscript|>`, language tokens, `<|transcribe|>`/`<|translate|>`, 1501 timestamp tokens). Bare `whisper` resolves to v2. The **English-only** checkpoints (`*.en`) use a different base BPE and are **not bundled**; load those with `from_json` (below).
 
@@ -128,18 +137,12 @@ print(CL100K_AGENT_TOKENS.FUNCTION)   # 100292
 
 ### Sizing against the reference vocabulary
 
-`base_vocab_size` reports a vocabulary's size _as its upstream reference defines it_ — without splintr's agent tokens. That is the number you need to size a model's embedding or logit layer, or to identify which vocabulary a checkpoint uses from the shape of its token-embedding tensor: both must match the checkpoint's vocabulary, not splintr's extended one. Because agent tokens sit above everything, it is also exactly the id at which splintr's additions begin.
+The `base_vocab_size` column in the table above is the number to size a model's embedding or logit layer with — the checkpoint's own vocabulary, not splintr's extended one — and, because agent tokens sit strictly above everything, it is also the id at which splintr's additions begin. It is _not_ `vocab_size - 54`: several reference vocabularies leave gaps below their nominal size (llama3 is 128,256 against an extended 128,354; deepseek_v3 is 128,815 against 128,954).
 
-```python
-from splintr import Tokenizer, base_vocab_size
+For the accessor and its Rust twin see the API guide's [Sizing against the reference vocabulary](api_guide.md#sizing-against-the-reference-vocabulary); for which of the two numbers to reach for see [Best Practices](best_practices.md#sizing-a-model-against-a-vocabulary). The full agent-token list is in [special_tokens.md](special_tokens.md).
 
-tokenizer = Tokenizer.from_pretrained("cl100k_base")
-print(tokenizer.vocab_size)             # 100331 — extended (base + 54 agent)
-print(base_vocab_size("cl100k_base"))   # 100277 — what tiktoken reports
-print(base_vocab_size("llama3"))        # 128256
-print(base_vocab_size("mistral_v3"))    # 131072
-```
+## Choosing a vocabulary for a new model
 
-It is _not_ `vocab_size - 54`: several reference vocabularies leave gaps below their nominal size (llama3 is 128256 against an extended 128354; deepseek_v3 is 128815 against 128954), so the difference varies per vocabulary. In Rust: `splintr::pretrained::base_vocab_size(vocab)` (or `base_vocab_size_by_name`).
+Training from scratch is the one case where the vocabulary is a decision rather than a given — a bundled vocabulary as-is (which is what the agent tokens are for), your own `tokenizer.json`, or a bundled merge table under your own special tokens. The three routes are laid out with code in [Best Practices](best_practices.md#choosing-a-vocabulary-for-a-new-model).
 
-See [docs/special_tokens.md](special_tokens.md) for the complete list and [API Guide](api_guide.md#agent-tokens-usage) for usage examples.
+Splintr does not _train_ vocabularies: it is a tokenizer runtime, and producing a new merge table is HuggingFace `tokenizers`' job.

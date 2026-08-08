@@ -208,6 +208,16 @@ impl SpecialPolicy {
         self.named.get(name).copied()
     }
 
+    /// Every named special token this policy knows, content to id.
+    ///
+    /// The enumerating counterpart to [`special_token_id`](Self::special_token_id),
+    /// which can only answer about a name the caller already has. Answering
+    /// "what markers does this tokenizer have?" otherwise means consulting a
+    /// table in the docs, which is exactly the kind of thing that goes stale.
+    pub fn special_tokens(&self) -> &FxHashMap<String, u32> {
+        &self.named
+    }
+
     /// Build a policy that only wraps a single sequence in boundary tokens.
     ///
     /// For sources that state their boundaries as flags plus ids rather than as
