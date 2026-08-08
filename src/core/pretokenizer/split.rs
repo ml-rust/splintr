@@ -11,7 +11,9 @@ pub(super) fn split_regex<'p>(
     invert: bool,
     out: &mut Vec<&'p str>,
 ) {
-    let matches = re.find_iter(piece).map(|m| (m.start(), m.end()));
+    let matches: Vec<(usize, usize)> = re.find_iter(piece).map(|m| (m.start(), m.end())).collect();
+    // At most one gap segment before each match, plus a trailing one.
+    let mut segs: Vec<Segment> = Vec::with_capacity(matches.len() * 2 + 1);
 
     // Flatten into an ordered list of (range, is_delimiter) segments.
     //
@@ -23,7 +25,6 @@ pub(super) fn split_regex<'p>(
     // patterns match contiguously across the whole input (` ?\p{L}+|\s+|…`),
     // which is exactly the case with no gaps at all, and merging there means no
     // splitting whatsoever.
-    let mut segs: Vec<Segment> = Vec::new();
     let mut last = 0;
     for (s, e) in matches {
         if s > last {
