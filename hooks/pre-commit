@@ -6,6 +6,13 @@
 #   cp hooks/pre-commit .git/hooks/pre-commit
 #   chmod +x .git/hooks/pre-commit
 #
+# Deliberately fast: formatting, lint and the two checks that are cheap here and
+# awkward anywhere else (a path-resolved Cargo.lock, a stale uv.lock). The test
+# suite is NOT run — it is a ~25s tax on every commit to re-prove what CI proves
+# on every push, and a hook slow enough to be worth bypassing gets bypassed,
+# which costs the cheap checks too. Run `cargo nextest run` yourself before
+# pushing if you want the answer sooner than CI gives it.
+#
 
 set -e
 
@@ -88,29 +95,7 @@ else
     echo -e "${GREEN}OK${NC}"
 fi
 
-# 3. Tests
-#
-# nextest when it is installed, because `.config/nextest.toml` is where the two
-# wall-clock tests are given the machine to themselves and a retry. `cargo test`
-# ignores that file, so under it those two race the rest of the suite for the
-# cores they are measuring and fail on a busy machine with nothing wrong.
-echo -n "Running tests... "
-if command -v cargo-nextest > /dev/null 2>&1; then
-    # nextest has no `--quiet`; its own status line goes to stderr, which is
-    # already discarded below.
-    TEST_CMD="cargo nextest run"
-else
-    TEST_CMD="cargo test --quiet"
-fi
-if ! $TEST_CMD > /dev/null 2>&1; then
-    echo -e "${RED}FAILED${NC}"
-    echo -e "${YELLOW}Run:${NC} $TEST_CMD"
-    FAILED=1
-else
-    echo -e "${GREEN}OK${NC}"
-fi
-
-# 4. Update uv.lock if pyproject.toml changed
+# 3. Update uv.lock if pyproject.toml changed
 if git diff --cached --name-only | grep -q "pyproject.toml"; then
     echo -n "Updating uv.lock... "
     if ! uv lock > /dev/null 2>&1; then
