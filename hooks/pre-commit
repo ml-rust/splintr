@@ -17,7 +17,56 @@ NC='\033[0m'
 echo "Running pre-commit checks..."
 echo ""
 
+# Resolving through a local override rewrites Cargo.lock: `.cargo/config.toml`
+# carries a `[patch.crates-io]` entry pointing regexr at a sibling checkout, and
+# the patched crate then loses its registry `source` and `checksum` and becomes a
+# bare path entry. That form is useless to anyone without the same directory
+# layout, and `--locked` builds and `cargo publish` reject it.
+#
+# Anything that runs cargo does this, including rust-analyzer in the background,
+# so restoring the file after the checks below is not enough — the damage can
+# land before the commit is even staged. What is staged is what gets checked.
+LOCK_BACKUP=""
+restore_lock() {
+    if [ -n "$LOCK_BACKUP" ]; then
+        cp "$LOCK_BACKUP" Cargo.lock
+        rm -f "$LOCK_BACKUP"
+    fi
+}
+if [ -f Cargo.lock ]; then
+    LOCK_BACKUP="$(mktemp)"
+    cp Cargo.lock "$LOCK_BACKUP"
+    trap restore_lock EXIT
+fi
+
 FAILED=0
+
+# 0. Staged Cargo.lock carries no path-resolved dependency
+if git diff --cached --name-only | grep -qx "Cargo.lock"; then
+    echo -n "Checking staged Cargo.lock... "
+    # A package with no `source` is either one of this repo's own crates or a
+    # dependency that resolved through the override. Only the former is legitimate.
+    PATCHED=$(git show :Cargo.lock | awk '
+        /^\[\[package\]\]/ { name=""; has_source=0; next }
+        /^name = / { gsub(/"/, "", $3); name=$3; next }
+        /^source = / { has_source=1; next }
+        /^$/ { if (name != "" && !has_source) print name; name=""; next }
+        END { if (name != "" && !has_source) print name }
+    ' | grep -vx "splintr" || true)
+
+    if [ -n "$PATCHED" ]; then
+        echo -e "${RED}FAILED${NC}"
+        echo -e "${YELLOW}Resolved through the local override:${NC} $(echo "$PATCHED" | tr '\n' ' ')"
+        echo -e "${YELLOW}Re-resolve against the registry with:${NC}"
+        echo "    mv .cargo/config.toml .cargo/config.toml.bak"
+        echo "    cargo fetch"
+        echo "    mv .cargo/config.toml.bak .cargo/config.toml"
+        echo "    git add Cargo.lock"
+        FAILED=1
+    else
+        echo -e "${GREEN}OK${NC}"
+    fi
+fi
 
 # 1. Rust formatting
 echo -n "Checking formatting... "
