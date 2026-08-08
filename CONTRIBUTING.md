@@ -12,10 +12,6 @@ Contributions are welcome.
 git clone https://github.com/ml-rust/splintr.git
 cd splintr
 
-# Pre-commit hook: formatting, clippy and tests before each commit
-cp hooks/pre-commit .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-
 cargo build --release
 cargo build --release --no-default-features   # minimal: no Rayon, no regexr JIT/SIMD
 
@@ -28,16 +24,38 @@ maturin develop --release --features python,pcre2
 
 The same checks CI runs. Everything here must pass before a pull request is ready.
 
+**Run them when a unit of work is finished, not on every commit.** There is deliberately no pre-commit hook: the full suite is ~25 seconds, and a branch that lands as four or five commits would pay it four or five times to re-prove the same thing. CI is the enforcement; these are how you get the answer sooner.
+
+The three that catch nearly everything, cheapest first:
+
 ```bash
-cargo nextest run                          # Rust tests (cargo test also works)
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo nextest run                          # `cargo test` also works, but see below
+```
+
+Run each as its own command rather than chaining them — concurrent `cargo` invocations fight over `target/` and delete each other's binaries mid-run.
+
+The rest, before opening a pull request:
+
+```bash
 cargo nextest run --features pcre2         # the optional PCRE2 backend
 cargo test --doc                           # doctests
-python -m pytest python/tests              # Python bindings
-
-cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
+python -m pytest python/tests              # Python bindings (after `maturin develop`)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 cargo deny --exclude-dev check             # advisories, licenses, sources
+python scripts/generate_agent_tokens.py --update-docs --check   # generated tables are current
+```
+
+`cargo nextest run` rather than `cargo test`: `.config/nextest.toml` is where the two wall-clock tests are given the machine to themselves and a retry. `cargo test` ignores that file, so under it those two race the rest of the suite for the cores they are measuring and fail on a busy machine with nothing wrong.
+
+**One thing CI checks that is easy to break locally.** A gitignored `.cargo/config.toml` with a `[patch.crates-io]` entry pointing `regexr` at a sibling checkout makes cargo rewrite `Cargo.lock`, stripping that crate's registry `source` and `checksum` into a bare path entry — useless to anyone without your directory layout, and rejected by `--locked` builds and `cargo publish`. Anything that runs cargo does it, including rust-analyzer in the background, so it lands without you deciding to commit it. CI fails on it; to fix:
+
+```bash
+mv .cargo/config.toml .cargo/config.toml.bak
+cargo fetch
+mv .cargo/config.toml.bak .cargo/config.toml
+git add Cargo.lock
 ```
 
 CI additionally builds on Linux, macOS and Windows, compile-checks the `wasm32` targets, and covers every feature combination that ships.

@@ -56,12 +56,12 @@
 
 Splintr loads a tokenizer from **four sources** and dispatches it to **four backends**, all behind a single `AnyTokenizer` type — the calling code never changes with the vocabulary:
 
-| Source                             | Loads                                                        | Backends                                    |
-| ---------------------------------- | ------------------------------------------------------------ | ------------------------------------------- |
-| **Bundled** (`from_pretrained`)    | 11 vocabularies compiled in — load by name, no file needed   | byte-level BPE, SPM-BPE                     |
-| **`tokenizer.json`** (`from_json`) | Any HuggingFace file — normalizers, pre-tokenizers, decoders | byte-level BPE, Unigram, WordPiece          |
+| Source                                     | Loads                                                         | Backends                                    |
+| ------------------------------------------ | ------------------------------------------------------------- | ------------------------------------------- |
+| **Bundled** (`from_pretrained`)            | 11 vocabularies compiled in — load by name, no file needed    | byte-level BPE, SPM-BPE                     |
+| **`tokenizer.json`** (`from_json`)         | Any HuggingFace file — normalizers, pre-tokenizers, decoders  | byte-level BPE, Unigram, WordPiece          |
 | **Raw `.tiktoken`** (`Tokenizer(path, …)`) | A bare `base64(bytes) rank` file, with the pattern you supply | byte-level BPE                              |
-| **GGUF vocab** (`from_gguf_vocab`) | The `tokenizer.ggml.*` keys, parsed by your GGUF loader      | byte-level BPE, SPM-BPE, Unigram, WordPiece |
+| **GGUF vocab** (`from_gguf_vocab`)         | The `tokenizer.ggml.*` keys, parsed by your GGUF loader       | byte-level BPE, SPM-BPE, Unigram, WordPiece |
 
 Correctness is differential: every family is fuzzed id-for-id against its reference implementation using strings built from each vocabulary's own added and special tokens. See [CONTRIBUTING.md](CONTRIBUTING.md#correctness-against-the-reference-implementations) for how that is established.
 
@@ -85,27 +85,27 @@ The tables below are a separate, more recent run than the charts — AMD Ryzen 9
 
 Against `tiktoken`, each library loading `cl100k_base` through its own loader:
 
-| Batch         | Splintr        | tiktoken | vs tiktoken |
-| ------------- | -------------- | -------- | ----------- |
-| 1,000 texts   | **104.8 MB/s** | 5.1 MB/s | 20.4x       |
-| 500 texts     | **93.7 MB/s**  | 4.5 MB/s | 21.0x       |
-| 100 texts     | **56.0 MB/s**  | 2.3 MB/s | 24.8x       |
-| Single text   | **1.27 ms**    | 6.36 ms  | 5.0x        |
+| Batch       | Splintr        | tiktoken | vs tiktoken |
+| ----------- | -------------- | -------- | ----------- |
+| 1,000 texts | **104.8 MB/s** | 5.1 MB/s | 20.4x       |
+| 500 texts   | **93.7 MB/s**  | 4.5 MB/s | 21.0x       |
+| 100 texts   | **56.0 MB/s**  | 2.3 MB/s | 24.8x       |
+| Single text | **1.27 ms**    | 6.36 ms  | 5.0x        |
 
 Against the other Rust tokenizers, every engine loading the **same** `tokenizer.json` — the only way to compare with no loader asymmetry to argue about:
 
-| Batch         | Splintr        | HF tokenizers | gigatoken      |
-| ------------- | -------------- | ------------- | -------------- |
-| 1,000 texts   | 89.0 MB/s      | 29.5 MB/s     | **107.9 MB/s** |
-| 500 texts     | 91.4 MB/s      | 29.6 MB/s     | **124.2 MB/s** |
-| 100 texts     | 55.3 MB/s      | 22.4 MB/s     | **124.3 MB/s** |
-| Single text   | **1.55 ms**    | 20.89 ms      | 1.77 ms        |
+| Batch       | Splintr     | HF tokenizers | gigatoken      |
+| ----------- | ----------- | ------------- | -------------- |
+| 1,000 texts | 89.0 MB/s   | 29.5 MB/s     | **107.9 MB/s** |
+| 500 texts   | 91.4 MB/s   | 29.6 MB/s     | **124.2 MB/s** |
+| 100 texts   | 55.3 MB/s   | 22.4 MB/s     | **124.3 MB/s** |
+| Single text | **1.55 ms** | 20.89 ms      | 1.77 ms        |
 
 Read that second table as it stands: `gigatoken` is faster on batch for the OpenAI vocabularies, splintr is faster on single texts and on load, and the two are level on batch for Qwen and GLM. Splintr's case is not that it wins every row — it is one handle over bundled, HuggingFace and GGUF vocabularies, across four backends, verified id-for-id against the reference implementations.
 
 ### Getting current numbers
 
-The tables above are a dated snapshot against the versions named. For where splintr stands against other tokenizers *today*, two ways, both running the same harness:
+The tables above are a dated snapshot against the versions named. For where splintr stands against other tokenizers _today_, two ways, both running the same harness:
 
 - **[View the latest perf run](https://github.com/ml-rust/splintr/actions/workflows/perf.yml)** — every run publishes its full report to the run summary: the hardware and library versions it used, the id-parity check it had to pass before timing anything, and every vocabulary and corpus, including the ones not shown above.
 - **Run it yourself** — `gh workflow run perf.yml` on a fork, or the scripts directly (`.github/scripts/perf_bench.py` and `perf_report.py`) on your own machine. It builds the checkout rather than installing a release, so a branch can be measured before it ships, and it refuses to report timings for engines that disagree on ids.
@@ -173,12 +173,12 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 **Four ways to load one**, differing only in where the vocabulary data comes from. Routes 1, 2 and 4 return the same `AnyTokenizer` handle, so calling code never changes with the vocabulary; route 3 returns the concrete `Tokenizer` (byte-level BPE), since a bare rank file states no backend to dispatch on.
 
-| # | Source | Call | Use it when |
-| --- | --- | --- | --- |
-| 1 | **Bundled** | `Tokenizer.from_pretrained("qwen3")` | The model is one of the 11 below — no file, no download, no network |
-| 2 | **HuggingFace `tokenizer.json`** | `from_json("tokenizer.json")` | Any other model; the file's own normalizer, pre-tokenizer and decoder are honoured |
-| 3 | **Raw `.tiktoken`** | `Tokenizer("vocab.tiktoken", PATTERN)` | You have a bare rank file and will supply the pattern and special tokens yourself |
-| 4 | **GGUF vocabulary** | `splintr::from_gguf_vocab(…)` *(Rust only)* | You already parsed a GGUF and hold its `tokenizer.ggml.*` keys |
+| #   | Source                           | Call                                        | Use it when                                                                        |
+| --- | -------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 1   | **Bundled**                      | `Tokenizer.from_pretrained("qwen3")`        | The model is one of the 11 below — no file, no download, no network                |
+| 2   | **HuggingFace `tokenizer.json`** | `from_json("tokenizer.json")`               | Any other model; the file's own normalizer, pre-tokenizer and decoder are honoured |
+| 3   | **Raw `.tiktoken`**              | `Tokenizer("vocab.tiktoken", PATTERN)`      | You have a bare rank file and will supply the pattern and special tokens yourself  |
+| 4   | **GGUF vocabulary**              | `splintr::from_gguf_vocab(…)` _(Rust only)_ | You already parsed a GGUF and hold its `tokenizer.ggml.*` keys                     |
 
 ### 1. Bundled vocabularies
 
@@ -202,11 +202,11 @@ The list is short for one reason and it is not capability: the whole set is ~20 
 
 What a bundled vocabulary adds over the same vocabulary loaded from a file:
 
-| | |
-| --- | --- |
-| **[54 agent tokens](docs/special_tokens.md)** | ChatML, thinking, ReAct, tool-calling and RAG citation markers, appended above every original id. Whisper is the exception — it carries its own 1,608 standard tokens instead. |
-| **`base_vocab_size`** | Where the model's own ids end and splintr's begin |
-| **Model ids win on collision** | Where a vocabulary already ships one of those names — Qwen's `<\|im_start\|>`, GLM's `<\|system\|>` — it resolves to the model's own id, so a chat template still encodes what the checkpoint was trained on |
+|                                               |                                                                                                                                                                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **[54 agent tokens](docs/special_tokens.md)** | ChatML, thinking, ReAct, tool-calling and RAG citation markers, appended above every original id. Whisper is the exception — it carries its own 1,608 standard tokens instead.                               |
+| **`base_vocab_size`**                         | Where the model's own ids end and splintr's begin                                                                                                                                                            |
+| **Model ids win on collision**                | Where a vocabulary already ships one of those names — Qwen's `<\|im_start\|>`, GLM's `<\|system\|>` — it resolves to the model's own id, so a chat template still encodes what the checkpoint was trained on |
 
 ### 2. Any HuggingFace `tokenizer.json`
 
@@ -237,11 +237,11 @@ Splintr never opens a GGUF container — parsing one is the model runtime's job 
 
 One question decides it: **does the vocabulary already exist, or are you choosing one?**
 
-| Situation | Use | Why |
-| --- | --- | --- |
-| Inference, serving, token counting, fine-tuning | Whatever the model ships — 1 if bundled, else 2 | The ids must be the ones the model was trained on, or every embedding lookup is wrong |
-| Training a new model | 1, a bundled vocabulary | A proven merge table *plus* 54 agent tokens already allocated at deterministic ids |
-| Training a new model, own vocabulary or own markers | 2 or 3 | You own the merge table and the id layout; see [Best Practices](docs/best_practices.md#choosing-a-vocabulary-for-a-new-model) |
+| Situation                                           | Use                                             | Why                                                                                                                           |
+| --------------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Inference, serving, token counting, fine-tuning     | Whatever the model ships — 1 if bundled, else 2 | The ids must be the ones the model was trained on, or every embedding lookup is wrong                                         |
+| Training a new model                                | 1, a bundled vocabulary                         | A proven merge table _plus_ 54 agent tokens already allocated at deterministic ids                                            |
+| Training a new model, own vocabulary or own markers | 2 or 3                                          | You own the merge table and the id layout; see [Best Practices](docs/best_practices.md#choosing-a-vocabulary-for-a-new-model) |
 
 Two things to know before you size a model against a bundled vocabulary:
 
@@ -254,7 +254,7 @@ tok.vocab_size            # 151723 — what splintr knows
 base_vocab_size("qwen3")  # 151669 — what the checkpoint knows
 ```
 
-The value there is not the vocabulary — you could pull Qwen's from HuggingFace. It is that a new model needs markers no published vocabulary contains, and the usual answer is hand-editing a `tokenizer.json`, choosing ids and hoping nothing collides. Splintr allocates them at the same offsets in every vocabulary, so a model trained on cl100k and one trained on Qwen agree on what `<|think|>` means. Splintr is a tokenizer runtime and does not *train* vocabularies.
+The value there is not the vocabulary — you could pull Qwen's from HuggingFace. It is that a new model needs markers no published vocabulary contains, and the usual answer is hand-editing a `tokenizer.json`, choosing ids and hoping nothing collides. Splintr allocates them at the same offsets in every vocabulary, so a model trained on cl100k and one trained on Qwen agree on what `<|think|>` means. Splintr is a tokenizer runtime and does not _train_ vocabularies.
 
 See [docs/vocabularies.md](docs/vocabularies.md) for per-vocabulary special-token lists, pre-tokenizer patterns, the feature flags and the GGUF example.
 

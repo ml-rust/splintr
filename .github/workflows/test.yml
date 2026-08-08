@@ -62,6 +62,33 @@ jobs:
         with:
           prefix-key: lint
 
+      # Resolving through a local override rewrites Cargo.lock: a contributor's
+      # gitignored `.cargo/config.toml` can carry a `[patch.crates-io]` entry
+      # pointing regexr at a sibling checkout, and the patched crate then loses
+      # its registry `source` and `checksum` and becomes a bare path entry. That
+      # form is useless to anyone without the same directory layout, and
+      # `--locked` builds and `cargo publish` reject it. Anything that runs
+      # cargo can do it, including rust-analyzer in the background, so it lands
+      # without anyone deciding to commit it.
+      - name: Check Cargo.lock resolves against the registry
+        run: |
+          patched=$(awk '
+            /^\[\[package\]\]/ { name=""; has_source=0; next }
+            /^name = / { gsub(/"/, "", $3); name=$3; next }
+            /^source = / { has_source=1; next }
+            /^$/ { if (name != "" && !has_source) print name; name=""; next }
+            END { if (name != "" && !has_source) print name }
+          ' Cargo.lock | grep -vx "splintr" || true)
+          if [ -n "$patched" ]; then
+            echo "::error::Cargo.lock resolved through a local override: $patched"
+            echo "Re-resolve against the registry:"
+            echo "    mv .cargo/config.toml .cargo/config.toml.bak"
+            echo "    cargo fetch"
+            echo "    mv .cargo/config.toml.bak .cargo/config.toml"
+            exit 1
+          fi
+          echo "Cargo.lock is clean"
+
       - name: Check formatting
         run: cargo fmt --all --check
 
