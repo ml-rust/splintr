@@ -6,6 +6,12 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [0.14.2] - 2026-08-08
+
+### Changed
+
+- Bumped the regexr dependency to `0.3.1`.
+
 ## [0.14.1] - 2026-08-08
 
 ### Changed
