@@ -33,6 +33,7 @@ DEFAULT_REPOS = [
     "openai/gpt-oss-20b",
     "Xenova/gpt-4",
     "Xenova/gpt-4o",
+    "zai-org/GLM-4.5",
 ]
 
 # Shapes that have historically broken loaders: indentation runs (the `\s+(?!\S)`

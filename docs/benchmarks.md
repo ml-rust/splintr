@@ -4,7 +4,9 @@ All figures on this page were measured by the scripts in `benchmarks/` — `benc
 
 Absolute throughput moves with the hardware, the CPU architecture and the versions being compared against, so every figure here describes one run rather than a constant. Run the scripts to get your own.
 
-These scripts compare each library on the vocabulary it ships with, which is not always the same vocabulary — the HuggingFace figures are `gpt2` while splintr, tiktoken and TokenDagger run `cl100k_base`. For a strict like-for-like measurement, the manually triggered `perf` workflow (`gh workflow run perf.yml`) pins every engine to the same vocabulary and verifies they produce identical ids before it reads any timing.
+The [README](../README.md#performance) carries a more recent run of the same machine against current library versions (tiktoken 0.13.0, tokenizers 0.23.1), so its absolute numbers are higher than this page's; where they disagree, the README's are the newer measurement.
+
+These scripts compare each library on the vocabulary it ships with, which is not always the same vocabulary — the HuggingFace figures are `gpt2` while splintr, tiktoken and TokenDagger run `cl100k_base`. For a strict like-for-like measurement, the manually triggered `perf` workflow (`gh workflow run perf.yml`) pins every engine to the same vocabulary and verifies they produce identical ids before it reads any timing — its [run history](https://github.com/ml-rust/splintr/actions/workflows/perf.yml) carries the most recent report.
 
 Every figure is the **default pure-Rust `regexr` backend** — what `pip install splintr-rs` gives you, since published wheels omit the optional `pcre2` feature. See [Regex Backends](#regex-backends) for what PCRE2 changes.
 

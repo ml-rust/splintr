@@ -75,6 +75,28 @@ The split regex, byte-level flag, merge order, normalizer (including SentencePie
 - **mistral_v2**: Same as V1 + control tokens: `[INST]`, `[/INST]`, `[TOOL_CALLS]`, `[AVAILABLE_TOOLS]`, `[/AVAILABLE_TOOLS]`, `[TOOL_RESULTS]`, `[/TOOL_RESULTS]`
 - **mistral_v3**: `<unk>`, `<s>`, `</s>` + control tokens (Tekken/Tiktoken-based, NOT SentencePiece)
 
+## Loading a raw `.tiktoken` file
+
+A `.tiktoken` file is `base64(token bytes) rank`, one per line — the format OpenAI publishes ranks in, and the format `vocabs/*.tiktoken` uses. It carries the merge ranks and nothing else: no pre-tokenizer pattern, no special tokens, no decoder chain. So those are arguments rather than file contents:
+
+```python
+from splintr import Tokenizer, CL100K_BASE_PATTERN
+
+tok = Tokenizer("vocab.tiktoken", CL100K_BASE_PATTERN)
+tok = Tokenizer("vocab.tiktoken", CL100K_BASE_PATTERN, {"<|endoftext|>": 100257})
+```
+
+```rust
+use splintr::{Tokenizer, CL100K_BASE_PATTERN};
+
+let tokenizer = Tokenizer::from_file("vocab.tiktoken", CL100K_BASE_PATTERN, special)?;
+let tokenizer = Tokenizer::from_bytes(&data, CL100K_BASE_PATTERN, special)?;
+```
+
+This is the one loader that returns the concrete `Tokenizer` rather than an `AnyTokenizer`: with no `model.type` to read there is no backend to dispatch on, and a `.tiktoken` vocabulary is always byte-level BPE. Ids are unaffected by the route — loading `vocabs/cl100k_base.tiktoken` this way encodes exactly as `from_pretrained("cl100k_base")` does.
+
+Use it when you have ranks and no `tokenizer.json`: OpenAI's published rank files, a vocabulary you extracted yourself (`scripts/extract_byte_level_vocab.py` writes this format), or one you are iterating on before it has a HuggingFace config. If you *do* have a `tokenizer.json`, prefer `from_json` — it reads the pattern, special tokens and decoder from the file instead of asking you to restate them correctly.
+
 ## Loading a GGUF vocabulary
 
 Splintr **never opens a GGUF container**. Parsing the header, the metadata key-value block and the tensor table is the model runtime's job, and pulling a GGUF parser into a tokenizer crate would make every consumer pay for it. What splintr owns is the tokenizer half: the caller fills a `GgufVocab` — one field per `tokenizer.ggml.*` key — and hands it to `splintr::from_gguf_vocab`, which returns the same `AnyTokenizer` every other loader does. (Rust-only; there is no Python binding for this loader.)

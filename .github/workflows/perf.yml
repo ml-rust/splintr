@@ -12,7 +12,14 @@ name: perf
 #   cl100k        the same GPT-4 vocabulary, but every engine loading the SAME
 #   o200k         `tokenizer.json` — the only way to put `gigatoken` and
 #   qwen3         HuggingFace `tokenizers` beside splintr with no loader
-#                 asymmetry to argue about
+#   glm4          asymmetry to argue about
+#
+# The four shared-json suites are chosen to cover a different pre-tokenizer
+# each, since that stage is where splintr's scanners do their work: cl100k and
+# o200k are the two OpenAI shapes, qwen3 is the single-digit split, and glm4 is
+# the `\p{N}{1,3}` one on a ~151k vocabulary. Two vocabularies of the same size
+# under different patterns is the pair that catches a scanner regression that a
+# vocabulary-size effect would otherwise mask.
 #
 # Every version input defaults to `latest`, i.e. whatever pip resolves today.
 # Pin one only to answer a specific question — a regression check sets
@@ -86,6 +93,8 @@ jobs:
         run: |
           curl -sSfL -o qwen3.json \
             https://huggingface.co/Qwen/Qwen3-8B/resolve/main/tokenizer.json
+          curl -sSfL -o glm4.json \
+            https://huggingface.co/zai-org/GLM-4.5/resolve/main/tokenizer.json
           # The OpenAI vocabularies as `tokenizer.json`, so every engine can load
           # the same file. `tiktoken` keeps its own loader in its own suites; it
           # has no way to read one of these.
@@ -148,7 +157,7 @@ jobs:
 
           # Shared `tokenizer.json`, so gigatoken and HF sit beside splintr with
           # the same vocabulary bytes behind all three.
-          for f in cl100k o200k qwen3; do
+          for f in cl100k o200k qwen3 glm4; do
             check splintr    "$f" splintr    "$f.json" "s-$f"
             check tokenizers "$f" tokenizers "$f.json" "h-$f"
             if [ -n "$GIGATOKEN" ]; then
@@ -164,7 +173,7 @@ jobs:
               "cl100k_base: splintr == tiktoken": same("ids-s-tt.json", "ids-tt.json"),
               "o200k_base: splintr == tiktoken": same("ids-s-o2.json", "ids-o2.json"),
           }
-          for f in ("cl100k", "o200k", "qwen3"):
+          for f in ("cl100k", "o200k", "qwen3", "glm4"):
               checks[f"{f}: splintr == tokenizers"] = same(f"ids-s-{f}.json", f"ids-h-{f}.json")
               if os.environ.get("GIGATOKEN"):
                   checks[f"{f}: splintr == gigatoken"] = same(f"ids-s-{f}.json", f"ids-g-{f}.json")
@@ -187,7 +196,7 @@ jobs:
             run splintr  o200k_base  splintr  "splintr"  o200k_base
             run tiktoken o200k_base  tiktoken "tiktoken" o200k_base
 
-            for f in cl100k o200k qwen3; do
+            for f in cl100k o200k qwen3 glm4; do
               if [ -n "$SPLINTR_BASELINE" ]; then
                 run baseline "$f" splintr "splintr $SPLINTR_BASELINE" "$f.json"
               fi

@@ -53,6 +53,9 @@ tokenizer = Tokenizer.from_pretrained("cl100k_base")  # OpenAI GPT-4/3.5
 tokenizer = Tokenizer.from_pretrained("o200k_base")   # OpenAI GPT-4o
 tokenizer = Tokenizer.from_pretrained("llama3")       # Meta Llama 3 family
 tokenizer = Tokenizer.from_pretrained("deepseek_v3")  # DeepSeek V3/R1
+tokenizer = Tokenizer.from_pretrained("qwen3")        # Qwen 2/3, Baichuan-M2
+tokenizer = Tokenizer.from_pretrained("glm4")         # GLM-4/4.5
+tokenizer = Tokenizer.from_pretrained("gpt-oss")      # OpenAI gpt-oss
 tokenizer = Tokenizer.from_pretrained("mistral_v1")   # Mistral 7B v0.1/v0.2, Mixtral 8x7B
 tokenizer = Tokenizer.from_pretrained("mistral_v2")   # Mistral 7B v0.3, Codestral, Mixtral 8x22B
 tokenizer = Tokenizer.from_pretrained("mistral_v3")   # Mistral NeMo, Large 2, Pixtral
@@ -63,7 +66,7 @@ tokenizer = Tokenizer.from_pretrained("whisper_v3")   # OpenAI Whisper multiling
 
 `from_pretrained` returns an [`AnyTokenizer`](#anytokenizer) for **every** bundled vocabulary — the same universal handle `from_json` returns, and the same one `splintr::pretrained::from_pretrained` returns in Rust. It delegates to that one loader, so a vocabulary name means the same thing, and produces the same ids, on both sides of the binding. Query `.family` for the backend it dispatched to (`"BPE"` for the byte-level vocabularies, `"Spm"` for Mistral V1/V2).
 
-**Load from custom vocabulary file:**
+**Load a raw `.tiktoken` file:**
 
 ```python
 from splintr import Tokenizer, CL100K_BASE_PATTERN
@@ -71,9 +74,13 @@ from splintr import Tokenizer, CL100K_BASE_PATTERN
 tokenizer = Tokenizer(
     vocab_path="path/to/vocab.tiktoken",
     pattern=CL100K_BASE_PATTERN,
-    special_tokens={"<|endoftext|>": 100257}
+    special_tokens={"<|endoftext|>": 100257}  # optional
 )
 ```
+
+A `.tiktoken` file is `base64(token bytes) rank` per line and states nothing else — no pre-tokenizer pattern, no special tokens, no decoder chain — so `pattern` is required and `special_tokens` is yours to supply. This is the one loader that returns the concrete `Tokenizer` rather than an [`AnyTokenizer`](#anytokenizer): with no `model.type` to read there is no backend to dispatch on, and it is always byte-level BPE.
+
+Ids are the same as any other route to the same vocabulary — loading `vocabs/cl100k_base.tiktoken` this way encodes identically to `from_pretrained("cl100k_base")`. In Rust: `Tokenizer::from_file(vocab_path, pattern, special_tokens)`, or `Tokenizer::from_bytes(&data, pattern, special_tokens)` for a vocabulary already in memory.
 
 ### Encoding Methods
 
