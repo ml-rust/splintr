@@ -98,6 +98,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CL100K_BASE_PATTERN", CL100K_BASE_PATTERN)?;
     m.add("O200K_BASE_PATTERN", O200K_BASE_PATTERN)?;
     m.add("LLAMA3_PATTERN", LLAMA3_PATTERN)?;
+    m.add("QWEN2_PATTERN", QWEN2_PATTERN)?;
+    m.add("KIMI_PATTERN", KIMI_PATTERN)?;
     // Whether the optional `pcre2` regex backend was compiled in. Exposed so a
     // caller (or a test) can query the capability directly instead of inferring
     // it from an error message, which would silently start reporting "absent"

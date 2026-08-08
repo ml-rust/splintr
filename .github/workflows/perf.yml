@@ -4,27 +4,24 @@ name: perf
 # versions. Manual only — it is a decision tool and a regression check, not
 # something to run on every push.
 #
-# Suites fix a vocabulary so each comparison is like for like. Two kinds:
+# Suites are grouped by **how the vocabulary is loaded**, so every row compares
+# the same input through the same kind of entry point — apples to apples:
 #
-#   cl100k_base   OpenAI GPT-4  — splintr vs `tiktoken`, each on its own loader
-#   o200k_base    OpenAI GPT-4o — splintr vs `tiktoken`
-#   kimi          Moonshot Kimi — splintr vs `tiktoken`, the reference built
-#                 from the bundled rank file and Moonshot's own `pat_str`.
-#                 It cannot join the shared-json suites below: Moonshot ships
-#                 no `tokenizer.json`, so neither HuggingFace nor gigatoken has
-#                 anything to load.
+#   *-ranks   every engine reads the SAME `.tiktoken` rank file plus that
+#             vocabulary's pre-tokenizer expression. This is the path
+#             `gigatoken` is fastest on and the only form `tiktoken` reads, so
+#             it is the only way to have all three in one row.
+#             splintr `Tokenizer(path, pattern)` · tiktoken `Encoding(ranks,
+#             pat_str)` · gigatoken `from_tiktoken(path, scheme)`
 #
-#   cl100k        the same GPT-4 vocabulary, but every engine loading the SAME
-#   o200k         `tokenizer.json` — the only way to put `gigatoken` and
-#   qwen3         HuggingFace `tokenizers` beside splintr with no loader
-#   glm4          asymmetry to argue about
+#   *-json    every engine reads the SAME HuggingFace `tokenizer.json`.
+#             `tiktoken` cannot appear here: it has no JSON loader at all.
+#             splintr `from_json` · HuggingFace `tokenizers` · gigatoken
+#             `from_json`
 #
-# The four shared-json suites are chosen to cover a different pre-tokenizer
-# each, since that stage is where splintr's scanners do their work: cl100k and
-# o200k are the two OpenAI shapes, qwen3 is the single-digit split, and glm4 is
-# the `\p{N}{1,3}` one on a ~151k vocabulary. Two vocabularies of the same size
-# under different patterns is the pair that catches a scanner regression that a
-# vocabulary-size effect would otherwise mask.
+# A vocabulary appears in a family only where every engine in it can genuinely
+# load that form. Kimi has no `tokenizer.json` published at all, so it is
+# ranks-only; GLM has no named gigatoken rank scheme, so it is json-only.
 #
 # Every version input defaults to `latest`, i.e. whatever pip resolves today.
 # Pin one only to answer a specific question — a regression check sets
@@ -100,6 +97,11 @@ jobs:
             https://huggingface.co/Qwen/Qwen3-8B/resolve/main/tokenizer.json
           curl -sSfL -o glm4.json \
             https://huggingface.co/zai-org/GLM-4.5/resolve/main/tokenizer.json
+          # The rank-file family reads the vocabularies splintr bundles, so the
+          # bytes under all three engines are provably the ones it ships.
+          for f in cl100k:cl100k_base o200k:o200k_base qwen3:qwen3 kimi:kimi; do
+            cp "vocabs/${f#*:}.tiktoken" "${f%%:*}.tiktoken"
+          done
           # The OpenAI vocabularies as `tokenizer.json`, so every engine can load
           # the same file. `tiktoken` keeps its own loader in its own suites; it
           # has no way to read one of these.
@@ -155,20 +157,27 @@ jobs:
           check() { "./venv-$1/bin/python" .github/scripts/perf_bench.py "$2" "$3" x "$4" --check > "ids-$5.json"; }
 
           # Native loaders, against tiktoken.
-          check splintr  cl100k_base splintr  cl100k_base s-tt
-          check tiktoken cl100k_base tiktoken cl100k_base tt
-          check splintr  o200k_base  splintr  o200k_base  s-o2
-          check tiktoken o200k_base  tiktoken o200k_base  o2
-          check splintr  kimi        splintr  kimi                       s-km
-          check tiktoken kimi        tiktoken "ranks:vocabs/kimi.tiktoken" km
+          # A wrong pattern in perf_bench's table does not fail parity — every
+          # engine is handed the same string, so they agree with each other
+          # while all three tokenize the wrong vocabulary. Check it against
+          # splintr's own constants first.
+          ./venv-splintr/bin/python .github/scripts/perf_bench.py --verify-patterns
 
-          # Shared `tokenizer.json`, so gigatoken and HF sit beside splintr with
-          # the same vocabulary bytes behind all three.
-          for f in cl100k o200k qwen3 glm4; do
-            check splintr    "$f" splintr    "$f.json" "s-$f"
-            check tokenizers "$f" tokenizers "$f.json" "h-$f"
+          # Same rank file, three engines.
+          for f in cl100k o200k qwen3 kimi; do
+            check splintr    "$f-ranks" splintr    "ranks:$f.tiktoken" "s-$f-r"
+            check tiktoken   "$f-ranks" tiktoken   "ranks:$f.tiktoken" "t-$f-r"
             if [ -n "$GIGATOKEN" ]; then
-              check gigatoken "$f" gigatoken "$f.json" "g-$f"
+              check gigatoken "$f-ranks" gigatoken "ranks:$f.tiktoken" "g-$f-r"
+            fi
+          done
+
+          # Same tokenizer.json, three engines.
+          for f in cl100k o200k qwen3 glm4; do
+            check splintr    "$f-json" splintr    "$f.json" "s-$f-j"
+            check tokenizers "$f-json" tokenizers "$f.json" "h-$f-j"
+            if [ -n "$GIGATOKEN" ]; then
+              check gigatoken "$f-json" gigatoken "$f.json" "g-$f-j"
             fi
           done
 
@@ -176,15 +185,16 @@ jobs:
           import json, os, sys
           def same(a, b):
               return json.load(open(a))["ids"] == json.load(open(b))["ids"]
-          checks = {
-              "cl100k_base: splintr == tiktoken": same("ids-s-tt.json", "ids-tt.json"),
-              "o200k_base: splintr == tiktoken": same("ids-s-o2.json", "ids-o2.json"),
-              "kimi: splintr == tiktoken": same("ids-s-km.json", "ids-km.json"),
-          }
+          giga = os.environ.get("GIGATOKEN")
+          checks = {}
+          for f in ("cl100k", "o200k", "qwen3", "kimi"):
+              checks[f"{f}-ranks: splintr == tiktoken"] = same(f"ids-s-{f}-r.json", f"ids-t-{f}-r.json")
+              if giga:
+                  checks[f"{f}-ranks: splintr == gigatoken"] = same(f"ids-s-{f}-r.json", f"ids-g-{f}-r.json")
           for f in ("cl100k", "o200k", "qwen3", "glm4"):
-              checks[f"{f}: splintr == tokenizers"] = same(f"ids-s-{f}.json", f"ids-h-{f}.json")
-              if os.environ.get("GIGATOKEN"):
-                  checks[f"{f}: splintr == gigatoken"] = same(f"ids-s-{f}.json", f"ids-g-{f}.json")
+              checks[f"{f}-json: splintr == tokenizers"] = same(f"ids-s-{f}-j.json", f"ids-h-{f}-j.json")
+              if giga:
+                  checks[f"{f}-json: splintr == gigatoken"] = same(f"ids-s-{f}-j.json", f"ids-g-{f}-j.json")
           print("PARITY<<EOF")
           for name, ok in checks.items():
               print(f"- {name}: {'yes' if ok else 'NO'}")
@@ -199,21 +209,25 @@ jobs:
           # Interleaved rather than engine-by-engine: a runner that slows down
           # partway through then penalises whichever engine happened to be last.
           for r in $(seq 1 "${ROUNDS:-3}"); do
-            run splintr  cl100k_base splintr  "splintr"  cl100k_base
-            run tiktoken cl100k_base tiktoken "tiktoken" cl100k_base
-            run splintr  o200k_base  splintr  "splintr"  o200k_base
-            run tiktoken o200k_base  tiktoken "tiktoken" o200k_base
-            run splintr  kimi        splintr  "splintr"  kimi
-            run tiktoken kimi        tiktoken "tiktoken" "ranks:vocabs/kimi.tiktoken"
+            for f in cl100k o200k qwen3 kimi; do
+              if [ -n "$SPLINTR_BASELINE" ]; then
+                run baseline "$f-ranks" splintr "splintr $SPLINTR_BASELINE" "ranks:$f.tiktoken"
+              fi
+              run splintr  "$f-ranks" splintr  "splintr"  "ranks:$f.tiktoken"
+              run tiktoken "$f-ranks" tiktoken "tiktoken" "ranks:$f.tiktoken"
+              if [ -n "$GIGATOKEN" ]; then
+                run gigatoken "$f-ranks" gigatoken "gigatoken" "ranks:$f.tiktoken"
+              fi
+            done
 
             for f in cl100k o200k qwen3 glm4; do
               if [ -n "$SPLINTR_BASELINE" ]; then
-                run baseline "$f" splintr "splintr $SPLINTR_BASELINE" "$f.json"
+                run baseline "$f-json" splintr "splintr $SPLINTR_BASELINE" "$f.json"
               fi
-              run splintr    "$f" splintr    "splintr"       "$f.json"
-              run tokenizers "$f" tokenizers "HF tokenizers" "$f.json"
+              run splintr    "$f-json" splintr    "splintr"       "$f.json"
+              run tokenizers "$f-json" tokenizers "HF tokenizers" "$f.json"
               if [ -n "$GIGATOKEN" ]; then
-                run gigatoken "$f" gigatoken "gigatoken" "$f.json"
+                run gigatoken "$f-json" gigatoken "gigatoken" "$f.json"
               fi
             done
           done

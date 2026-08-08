@@ -93,21 +93,40 @@ def megabytes(texts):
 # Pre-tokenizer patterns for suites whose vocabulary is published as bare
 # tiktoken ranks, keyed by suite name. Transcribed from the model repo's own
 # tokenizer script, which is what makes the reference a reference.
+def _vocab_of(suite):
+    """The vocabulary a suite name refers to, dropping the `-json`/`-ranks` family."""
+    return (suite or "").rsplit("-", 1)[0] if (suite or "").endswith(("-json", "-ranks")) else suite
+
+
+# The pre-tokenizer expression each rank-file suite is defined by, keyed by
+# vocabulary.
+#
+# These are `splintr`'s own constants, copied out verbatim rather than
+# transcribed — a hand-typed cl100k pattern here silently benchmarked a
+# *different* pre-tokenizer for all three engines at once, which parity could
+# not catch because they all agreed on the wrong answer, and which only showed
+# up as splintr mysteriously losing its scanner. `--verify-patterns` re-checks
+# this table against those constants; the workflow runs it before timing.
+#
+# They cannot simply be imported: the other engines run in their own venvs,
+# which do not have splintr installed.
 RANK_FILE_PATTERNS = {
-    "kimi": "|".join(
-        [
-            r"[\p{Han}]+",
-            r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*"
-            r"[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
-            r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+"
-            r"[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
-            r"\p{N}{1,3}",
-            r" ?[^\s\p{L}\p{N}]+[\r\n]*",
-            r"\s*[\r\n]+",
-            r"\s+(?!\S)",
-            r"\s+",
-        ]
-    ),
+    'cl100k': "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s+$|\\s*[\\r\\n]|\\s+(?!\\S)|\\s",
+    'o200k': "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    'qwen3': "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    'kimi': "[\\p{Han}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+}
+
+
+# gigatoken's own name for each suite's pre-tokenization scheme, for the
+# `ranks:` path. Never inferred from the file name: gigatoken looks the scheme up
+# by name and an unrecognised one mistokenizes rather than failing, so a suite
+# with no entry here is refused instead.
+GIGATOKEN_SCHEMES = {
+    "kimi": "kimi",
+    "cl100k": "cl100k",
+    "o200k": "o200k",
+    "qwen3": "qwen2",
 }
 
 
@@ -115,6 +134,13 @@ def load_engine(engine, spec, suite=None):
     """Returns (encode_one, encode_batch). Loading is timed separately."""
     if engine == "splintr":
         import splintr
+
+        if spec.startswith("ranks:"):
+            pattern = RANK_FILE_PATTERNS.get(_vocab_of(suite))
+            if pattern is None:
+                raise SystemExit(f"no pre-tokenizer pattern recorded for suite {suite!r}")
+            tok = splintr.Tokenizer(spec[len("ranks:") :], pattern)
+            return (lambda t: tok.encode(t)), (lambda ts: tok.encode_batch(ts))
 
         tok = (
             splintr.from_json(spec)
@@ -145,9 +171,24 @@ def load_engine(engine, spec, suite=None):
         # a rank file. Both would compare against a different vocabulary than the
         # one the suite names, so refuse rather than quietly measure the wrong
         # thing — the OpenAI suites run gigatoken through their `.json` form.
+        # A bare rank file, the same `ranks:<path>` form the tiktoken engine
+        # takes. gigatoken carries named pre-tokenizer schemes of its own, so it
+        # can read a vocabulary published without a `tokenizer.json` — which is
+        # what lets the Kimi suite be a three-way comparison instead of leaving
+        # splintr measured against one library.
+        if spec.startswith("ranks:"):
+            scheme = GIGATOKEN_SCHEMES.get(_vocab_of(suite))
+            if scheme is None:
+                raise SystemExit(
+                    f"no gigatoken pre-tokenizer scheme recorded for suite {suite!r}; "
+                    "naming the wrong one mistokenizes silently, so it is never guessed"
+                )
+            tok = gt.Tokenizer.from_tiktoken(spec[len("ranks:") :], pretokenizer=scheme)
+            return (lambda t: tok.encode(t).tolist()), (lambda ts: tok.encode_batch_list(ts))
+
         if not spec.endswith(".json"):
             raise SystemExit(
-                f"gigatoken needs a tokenizer.json, got {spec!r}"
+                f"gigatoken needs a tokenizer.json or a ranks: path, got {spec!r}"
             )
         tok = gt.Tokenizer.from_json(open(spec).read())
         # `encode_batch` hands back an awkward Array, which is cheaper than the
@@ -172,7 +213,7 @@ def load_engine(engine, spec, suite=None):
             from tiktoken.load import load_tiktoken_bpe
 
             path = spec[len("ranks:") :]
-            pattern = RANK_FILE_PATTERNS.get(suite)
+            pattern = RANK_FILE_PATTERNS.get(_vocab_of(suite))
             if pattern is None:
                 raise SystemExit(f"no pre-tokenizer pattern recorded for suite {suite!r}")
             enc = tiktoken.Encoding(
@@ -227,7 +268,40 @@ def time_best(fn):
     return statistics.median(samples)
 
 
+def verify_patterns():
+    """Check `RANK_FILE_PATTERNS` against splintr's own constants.
+
+    Run in the splintr venv only — it is the one that has them. Exits non-zero
+    on any mismatch, because a wrong pattern here does not fail parity: every
+    engine is handed the same string, so they agree with each other while all
+    three tokenize the wrong vocabulary.
+    """
+    import splintr
+
+    expected = {
+        "cl100k": splintr.CL100K_BASE_PATTERN,
+        "o200k": splintr.O200K_BASE_PATTERN,
+        "qwen3": splintr.QWEN2_PATTERN,
+        "kimi": splintr.KIMI_PATTERN,
+    }
+    bad = 0
+    for vocab, want in expected.items():
+        got = RANK_FILE_PATTERNS.get(vocab)
+        if got != want:
+            bad += 1
+            print(f"MISMATCH {vocab}:\n  splintr: {want!r}\n  table:   {got!r}", file=sys.stderr)
+    missing = set(RANK_FILE_PATTERNS) - set(expected)
+    if missing:
+        print(f"note: no splintr constant to check for {sorted(missing)}", file=sys.stderr)
+    if bad:
+        sys.exit(f"{bad} pattern(s) differ from splintr's constants")
+    print(f"ok    {len(expected)} rank-file patterns match splintr's constants")
+
+
 def main():
+    if "--verify-patterns" in sys.argv:
+        verify_patterns()
+        return
     suite, engine, label, spec = sys.argv[1:5]
     encode_one, encode_batch = load_engine(engine, spec, suite)
 
