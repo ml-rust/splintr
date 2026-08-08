@@ -1076,6 +1076,39 @@ mod tests {
         }
     }
 
+    /// Long inputs, where the SWAR run scanners do most of the work.
+    ///
+    /// The cases above are short enough that a run rarely fills a single
+    /// eight-byte word, so they exercise the scalar tails far more than the
+    /// vectorised bodies. These are long enough for the reverse, and they place
+    /// script and digit changes mid-document so a run ends inside a word rather
+    /// than on its edge.
+    #[test]
+    fn scanners_agree_with_their_regex_on_long_inputs() {
+        let filler = "The quick brown fox jumps over the lazy dog. ";
+        let cases: Vec<String> = vec![
+            filler.repeat(400),
+            format!("{}\n{}", filler.repeat(200), filler.repeat(200)),
+            format!("{} \n \n {}", filler.repeat(200), filler.repeat(200)),
+            format!(
+                "{}\n/path/to/file {}",
+                filler.repeat(200),
+                filler.repeat(200)
+            ),
+            format!("{}\n中文测试 {}", filler.repeat(200), filler.repeat(200)),
+            format!("{}\n\n\nx{}", filler.repeat(200), filler.repeat(200)),
+            format!("{}\n漢字ひらがな{}", filler.repeat(200), "漢字".repeat(600)),
+            format!("{}\n1234567890 {}", filler.repeat(200), "42 ".repeat(600)),
+            // Trailing whitespace at the end of a long text, for `\s+$`.
+            format!("{}\nx{}   ", filler.repeat(200), filler.repeat(200)),
+        ];
+        for (name, pattern, scan) in all_scanners() {
+            for input in &cases {
+                assert_agrees(name, pattern, scan, input);
+            }
+        }
+    }
+
     #[test]
     fn scanners_agree_with_their_regex_on_random_inputs() {
         // Assembled from the character kinds the branches turn on, rather than
