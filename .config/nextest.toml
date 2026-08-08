@@ -17,11 +17,21 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [profile.default.junit]
 path = "junit.xml"
 
-# The one test that asserts on wall-clock parallel speedup rather than on output.
-# nextest runs a process per test, so by default this one races every other test
-# in the suite for the very cores whose use it is measuring — on a small runner
-# that alone can push the observed speedup under the threshold. Reserving every
-# runner slot gives it the machine to itself, which is the condition it assumes.
+# The two tests that assert on wall-clock rather than on output: one on parallel
+# speedup, one on the growth curve of encode time against input length.
+#
+# nextest runs a process per test, so by default these race every other test in
+# the suite for the very cores they are measuring — which is enough on its own to
+# push the observed speedup under its threshold, and has already produced three
+# false failures (a release run, a pre-commit hook, a local run). Reserving every
+# runner slot gives each the machine to itself, which is the condition both
+# assume.
+#
+# The retry is for the contention nextest cannot see: anything else on the
+# machine. A timing assertion that holds on a quiet run and fails on a busy one
+# is reporting the load, not the code — and a real regression fails all three
+# attempts, so nothing is hidden.
 [[profile.default.overrides]]
-filter = 'test(=batch_encoding_scales_with_available_cores)'
+filter = 'test(=batch_encoding_scales_with_available_cores) or test(=unsplit_input_encodes_sub_quadratically)'
 threads-required = "num-cpus"
+retries = 2

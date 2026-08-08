@@ -89,10 +89,22 @@ else
 fi
 
 # 3. Tests
+#
+# nextest when it is installed, because `.config/nextest.toml` is where the two
+# wall-clock tests are given the machine to themselves and a retry. `cargo test`
+# ignores that file, so under it those two race the rest of the suite for the
+# cores they are measuring and fail on a busy machine with nothing wrong.
 echo -n "Running tests... "
-if ! cargo test --quiet > /dev/null 2>&1; then
+if command -v cargo-nextest > /dev/null 2>&1; then
+    # nextest has no `--quiet`; its own status line goes to stderr, which is
+    # already discarded below.
+    TEST_CMD="cargo nextest run"
+else
+    TEST_CMD="cargo test --quiet"
+fi
+if ! $TEST_CMD > /dev/null 2>&1; then
     echo -e "${RED}FAILED${NC}"
-    echo -e "${YELLOW}Run:${NC} cargo test"
+    echo -e "${YELLOW}Run:${NC} $TEST_CMD"
     FAILED=1
 else
     echo -e "${GREEN}OK${NC}"
