@@ -90,7 +90,28 @@ def megabytes(texts):
 # --- engines ----------------------------------------------------------------
 
 
-def load_engine(engine, spec):
+# Pre-tokenizer patterns for suites whose vocabulary is published as bare
+# tiktoken ranks, keyed by suite name. Transcribed from the model repo's own
+# tokenizer script, which is what makes the reference a reference.
+RANK_FILE_PATTERNS = {
+    "kimi": "|".join(
+        [
+            r"[\p{Han}]+",
+            r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*"
+            r"[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+            r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+"
+            r"[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+            r"\p{N}{1,3}",
+            r" ?[^\s\p{L}\p{N}]+[\r\n]*",
+            r"\s*[\r\n]+",
+            r"\s+(?!\S)",
+            r"\s+",
+        ]
+    ),
+}
+
+
+def load_engine(engine, spec, suite=None):
     """Returns (encode_one, encode_batch). Loading is timed separately."""
     if engine == "splintr":
         import splintr
@@ -141,6 +162,31 @@ def load_engine(engine, spec):
     if engine == "tiktoken":
         import tiktoken
 
+        # A raw rank file rather than a registered encoding name. Kimi is the
+        # case: Moonshot publishes `tiktoken.model` plus a `tokenization_kimi.py`
+        # and no `tokenizer.json`, so there is no encoding name to look up and no
+        # file HuggingFace or gigatoken can read. Building the reference the way
+        # Moonshot's own tokenizer does — those ranks, that `pat_str` — is the
+        # only way to put tiktoken beside splintr on this vocabulary at all.
+        if spec.startswith("ranks:"):
+            from tiktoken.load import load_tiktoken_bpe
+
+            path = spec[len("ranks:") :]
+            pattern = RANK_FILE_PATTERNS.get(suite)
+            if pattern is None:
+                raise SystemExit(f"no pre-tokenizer pattern recorded for suite {suite!r}")
+            enc = tiktoken.Encoding(
+                name=suite,
+                pat_str=pattern,
+                mergeable_ranks=load_tiktoken_bpe(path),
+                special_tokens={},
+            )
+            threads = os.cpu_count() or 8
+            return (
+                lambda t: enc.encode_ordinary(t),
+                lambda ts: enc.encode_ordinary_batch(ts, num_threads=threads),
+            )
+
         # `get_encoding` memoises process-wide, so a second load would be a dict
         # lookup while the other engines do real work. Drop the cache so load
         # time means the same thing for everyone. Private API, hence the guard.
@@ -183,7 +229,7 @@ def time_best(fn):
 
 def main():
     suite, engine, label, spec = sys.argv[1:5]
-    encode_one, encode_batch = load_engine(engine, spec)
+    encode_one, encode_batch = load_engine(engine, spec, suite)
 
     if "--check" in sys.argv:
         sample = CORPORA["multilingual"]()[:3] + CORPORA["code"]()[:2] + CORPORA["json"]()[:2]
@@ -209,7 +255,7 @@ def main():
     load_samples = []
     for _ in range(LOAD_ITERS):
         start = time.perf_counter()
-        load_engine(engine, spec)
+        load_engine(engine, spec, suite)
         load_samples.append((time.perf_counter() - start) * 1e3)
 
     print(

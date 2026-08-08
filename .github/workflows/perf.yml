@@ -8,6 +8,11 @@ name: perf
 #
 #   cl100k_base   OpenAI GPT-4  — splintr vs `tiktoken`, each on its own loader
 #   o200k_base    OpenAI GPT-4o — splintr vs `tiktoken`
+#   kimi          Moonshot Kimi — splintr vs `tiktoken`, the reference built
+#                 from the bundled rank file and Moonshot's own `pat_str`.
+#                 It cannot join the shared-json suites below: Moonshot ships
+#                 no `tokenizer.json`, so neither HuggingFace nor gigatoken has
+#                 anything to load.
 #
 #   cl100k        the same GPT-4 vocabulary, but every engine loading the SAME
 #   o200k         `tokenizer.json` — the only way to put `gigatoken` and
@@ -154,6 +159,8 @@ jobs:
           check tiktoken cl100k_base tiktoken cl100k_base tt
           check splintr  o200k_base  splintr  o200k_base  s-o2
           check tiktoken o200k_base  tiktoken o200k_base  o2
+          check splintr  kimi        splintr  kimi                       s-km
+          check tiktoken kimi        tiktoken "ranks:vocabs/kimi.tiktoken" km
 
           # Shared `tokenizer.json`, so gigatoken and HF sit beside splintr with
           # the same vocabulary bytes behind all three.
@@ -172,6 +179,7 @@ jobs:
           checks = {
               "cl100k_base: splintr == tiktoken": same("ids-s-tt.json", "ids-tt.json"),
               "o200k_base: splintr == tiktoken": same("ids-s-o2.json", "ids-o2.json"),
+              "kimi: splintr == tiktoken": same("ids-s-km.json", "ids-km.json"),
           }
           for f in ("cl100k", "o200k", "qwen3", "glm4"):
               checks[f"{f}: splintr == tokenizers"] = same(f"ids-s-{f}.json", f"ids-h-{f}.json")
@@ -195,6 +203,8 @@ jobs:
             run tiktoken cl100k_base tiktoken "tiktoken" cl100k_base
             run splintr  o200k_base  splintr  "splintr"  o200k_base
             run tiktoken o200k_base  tiktoken "tiktoken" o200k_base
+            run splintr  kimi        splintr  "splintr"  kimi
+            run tiktoken kimi        tiktoken "tiktoken" "ranks:vocabs/kimi.tiktoken"
 
             for f in cl100k o200k qwen3 glm4; do
               if [ -n "$SPLINTR_BASELINE" ]; then
