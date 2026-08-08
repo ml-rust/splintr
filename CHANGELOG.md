@@ -6,6 +6,12 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [0.14.1] - 2026-08-08
+
+### Changed
+
+- Bumped the regexr dependency to `0.3`.
+
 ## [0.14.0] - 2026-08-06
 
 Short-chunk encoding regressed 20–38% in `0.12.0` and is now faster than `0.11.0`; `encode_batch` scales with its cores instead of serializing on one lock.

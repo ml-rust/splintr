@@ -1135,7 +1135,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "regexr"
-version = "0.2.1"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc4c59819443e5e16f14eb4b8b2e5cdcec4d14c5f026fb1e72af27ad320e7252"
 dependencies = [
  "aho-corasick",
  "dynasm",
@@ -1332,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "splintr"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "aho-corasick",
  "base64",
@@ -1391,7 +1393,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys",
