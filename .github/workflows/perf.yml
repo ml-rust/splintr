@@ -1,0 +1,161 @@
+name: perf
+
+# splintr against the libraries it would replace, and against itself across
+# versions. Manual only — it is a decision tool and a regression check, not
+# something to run on every push.
+#
+# Suites fix a vocabulary so each comparison is like for like:
+#   qwen3         Qwen3-8B tokenizer.json — splintr vs HuggingFace `tokenizers`
+#   cl100k_base   OpenAI GPT-4            — splintr vs `tiktoken`
+#   o200k_base    OpenAI GPT-4o           — splintr vs `tiktoken`
+#
+# Every version input defaults to `latest`, i.e. whatever pip resolves today.
+# Pin one only to answer a specific question — a regression check sets
+# `splintr_baseline` to the previous release and leaves the rest alone.
+
+on:
+  workflow_dispatch:
+    inputs:
+      splintr:
+        description: "splintr-rs version, or 'latest'"
+        default: "latest"
+        type: string
+      splintr_baseline:
+        description: "second splintr-rs version to compare against, or empty to skip"
+        default: ""
+        type: string
+      tokenizers:
+        description: "HuggingFace tokenizers version, or 'latest'"
+        default: "latest"
+        type: string
+      tiktoken:
+        description: "tiktoken version, or 'latest'"
+        default: "latest"
+        type: string
+      rounds:
+        description: "interleaved rounds"
+        default: "3"
+        type: string
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      SPLINTR: ${{ inputs.splintr }}
+      SPLINTR_BASELINE: ${{ inputs.splintr_baseline }}
+      TOKENIZERS: ${{ inputs.tokenizers }}
+      TIKTOKEN: ${{ inputs.tiktoken }}
+      ROUNDS: ${{ inputs.rounds }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Describe the machine
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cpu=$(sysctl -n machdep.cpu.brand_string); cores=$(sysctl -n hw.ncpu)
+          else
+            cpu=$(lscpu | sed -n 's/^Model name: *//p' | head -1); cores=$(nproc)
+          fi
+          echo "HW=$cpu, ${cores} cores, $(python -c 'import platform;print(platform.platform())')" \
+            >> "$GITHUB_ENV"
+
+      - name: Fetch vocabularies
+        run: |
+          curl -sSfL -o qwen3.json \
+            https://huggingface.co/Qwen/Qwen3-8B/resolve/main/tokenizer.json
+
+      - name: Install each library in its own venv
+        run: |
+          # `latest` means no pin at all, so pip resolves what is current today.
+          spec() { [ "$2" = "latest" ] && echo "$1" || echo "$1==$2"; }
+
+          python -m venv venv-splintr
+          ./venv-splintr/bin/pip -q install "$(spec splintr-rs "$SPLINTR")"
+          python -m venv venv-tokenizers
+          ./venv-tokenizers/bin/pip -q install "$(spec tokenizers "$TOKENIZERS")"
+          python -m venv venv-tiktoken
+          ./venv-tiktoken/bin/pip -q install "$(spec tiktoken "$TIKTOKEN")"
+          if [ -n "$SPLINTR_BASELINE" ]; then
+            python -m venv venv-baseline
+            ./venv-baseline/bin/pip -q install "splintr-rs==$SPLINTR_BASELINE"
+          fi
+
+          {
+            echo "VERSIONS<<EOF"
+            for v in splintr tokenizers tiktoken; do
+              "./venv-$v/bin/pip" list 2>/dev/null \
+                | grep -Ei "^(splintr-rs|tokenizers|tiktoken) " | sed 's/  */ /g'
+            done
+            if [ -n "$SPLINTR_BASELINE" ]; then echo "splintr-rs $SPLINTR_BASELINE (baseline)"; fi
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Check the engines agree before timing them
+        run: |
+          ./venv-splintr/bin/python .github/scripts/perf_bench.py \
+            qwen3 splintr splintr qwen3.json --check > ids-s-hf.json
+          ./venv-tokenizers/bin/python .github/scripts/perf_bench.py \
+            qwen3 tokenizers tokenizers qwen3.json --check > ids-hf.json
+          ./venv-splintr/bin/python .github/scripts/perf_bench.py \
+            cl100k_base splintr splintr cl100k_base --check > ids-s-tt.json
+          ./venv-tiktoken/bin/python .github/scripts/perf_bench.py \
+            cl100k_base tiktoken tiktoken cl100k_base --check > ids-tt.json
+          ./venv-splintr/bin/python .github/scripts/perf_bench.py \
+            o200k_base splintr splintr o200k_base --check > ids-s-o2.json
+          ./venv-tiktoken/bin/python .github/scripts/perf_bench.py \
+            o200k_base tiktoken tiktoken o200k_base --check > ids-o2.json
+
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json, sys
+          def same(a, b):
+              return json.load(open(a))["ids"] == json.load(open(b))["ids"]
+          checks = {
+              "qwen3: splintr == tokenizers": same("ids-s-hf.json", "ids-hf.json"),
+              "cl100k_base: splintr == tiktoken": same("ids-s-tt.json", "ids-tt.json"),
+              "o200k_base: splintr == tiktoken": same("ids-s-o2.json", "ids-o2.json"),
+          }
+          print("PARITY<<EOF")
+          for name, ok in checks.items():
+              print(f"- {name}: {'yes' if ok else 'NO'}")
+          print("EOF")
+          # Timing engines that disagree is not a comparison.
+          sys.exit(0 if all(checks.values()) else 1)
+          PY
+
+      - name: Benchmark
+        run: |
+          run() { "./venv-$1/bin/python" .github/scripts/perf_bench.py "$2" "$3" "$4" "$5" >> rounds.jsonl; }
+          for r in $(seq 1 "${ROUNDS:-3}"); do
+            if [ -n "$SPLINTR_BASELINE" ]; then
+              run baseline qwen3 splintr "splintr $SPLINTR_BASELINE" qwen3.json
+            fi
+            run splintr    qwen3       splintr    "splintr"       qwen3.json
+            run tokenizers qwen3       tokenizers "HF tokenizers" qwen3.json
+            run splintr    cl100k_base splintr    "splintr"       cl100k_base
+            run tiktoken   cl100k_base tiktoken   "tiktoken"      cl100k_base
+            run splintr    o200k_base  splintr    "splintr"       o200k_base
+            run tiktoken   o200k_base  tiktoken   "tiktoken"      o200k_base
+          done
+
+      - name: Report
+        run: |
+          python .github/scripts/perf_report.py \
+            --title "perf — ${{ matrix.os }}" \
+            --note "$HW" \
+            --note "$(printf '%s' "$VERSIONS" | sed 's/^/    /')" \
+            --note "Output parity:"$'\n'"$PARITY" \
+            --note "Medians of ${ROUNDS:-3} interleaved rounds. Lower is better for latency; the last column is how many times better the first engine is." \
+            < rounds.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ matrix.os }}
+          path: rounds.jsonl
