@@ -50,6 +50,8 @@ mod tests {
             row!("mistral_v1", mistral_v1_agent_tokens),
             row!("mistral_v2", mistral_v2_agent_tokens),
             row!("mistral_v3", mistral_v3_agent_tokens),
+            row!("kimi_k2", kimi_k2_agent_tokens),
+            row!("kimi_k3", kimi_k3_agent_tokens),
         ]
     }
 

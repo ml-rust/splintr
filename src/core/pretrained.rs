@@ -36,7 +36,7 @@ use super::policy::SpecialPolicy;
 use super::spm::{SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
 use super::tokenizer::{
     Tokenizer, TokenizerError, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN,
-    LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
+    KIMI_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
 };
 use super::vocab::{load_spm_vocab, place_special_pieces};
 use super::whisper::{whisper_special_tokens, WhisperVariant};
@@ -67,6 +67,15 @@ pub const QWEN3_VOCAB: &[u8] = include_bytes!("../../vocabs/qwen3.tiktoken");
 /// GLM-4/4.5 vocabulary (151,329 tokens, byte-level BPE stored as raw bytes).
 #[cfg(feature = "vocab-glm")]
 pub const GLM4_VOCAB: &[u8] = include_bytes!("../../vocabs/glm4.tiktoken");
+
+/// Kimi vocabulary (163,584 merge ranks, byte-level BPE stored as raw bytes).
+///
+/// Moonshot's own `tiktoken.model`, unmodified — it is already in this format.
+/// Byte-identical across Kimi K2, K2.5, K2.6, K2.7, K3, Kimi-Linear and Kimi-VL,
+/// so one payload serves the whole family. Only the 256-slot special block above
+/// it differs between K2 and K3, which is why they are separate variants.
+#[cfg(feature = "vocab-kimi")]
+pub const KIMI_VOCAB: &[u8] = include_bytes!("../../vocabs/kimi.tiktoken");
 
 /// Mistral V1 SentencePiece vocabulary (32,000 pieces with their scores).
 ///
@@ -112,6 +121,10 @@ pub enum PretrainedVocab {
     Glm4,
     /// OpenAI gpt-oss — o200k_base's ranks with the harmony special tokens
     GptOss,
+    /// Kimi K2 family (K2, K2.5, K2.6, K2.7, Kimi-Linear) — Moonshot AI
+    KimiK2,
+    /// Kimi K3 — the same ranks as [`KimiK2`](Self::KimiK2), different markers
+    KimiK3,
     /// Mistral V1 (7B v0.1/v0.2, Mixtral 8x7B) - 32k SentencePiece
     MistralV1,
     /// Mistral V2 (7B v0.3, Mixtral 8x22B, Codestral) - 32k + 768 control tokens
@@ -144,6 +157,15 @@ impl PretrainedVocab {
             // OpenAI's open-weight models. Same ranks as o200k_base, different
             // special tokens, so it is its own name rather than an o200k alias.
             "gpt-oss" | "gpt_oss" | "o200k_harmony" => Some(Self::GptOss),
+
+            // Kimi. K2 and K3 share every merge rank and the same pre-tokenizer;
+            // they differ only in what the 256 reserved ids above them are
+            // called, so each generation is its own name. Bare `kimi` resolves
+            // to K2, which covers seven of the published repos to K3's one.
+            "kimi" | "kimi_k2" | "kimi-k2" | "kimi_k2.5" | "kimi-k2.5" | "kimi_linear" => {
+                Some(Self::KimiK2)
+            }
+            "kimi_k3" | "kimi-k3" => Some(Self::KimiK3),
 
             // Mistral V1: Default mistral → V1
             "mistral" | "mistral_v1" => Some(Self::MistralV1),
@@ -192,6 +214,15 @@ impl PretrainedVocab {
             "gpt-oss",
             "gpt_oss",
             "o200k_harmony",
+            // Kimi (Moonshot AI)
+            "kimi",
+            "kimi_k2",
+            "kimi-k2",
+            "kimi_k2.5",
+            "kimi-k2.5",
+            "kimi_linear",
+            "kimi_k3",
+            "kimi-k3",
             // Mistral
             "mistral",
             "mistral_v1",
@@ -279,6 +310,10 @@ fn vocab_bytes(vocab: PretrainedVocab) -> Result<&'static [u8], TokenizerError> 
         PretrainedVocab::DeepseekV3 => bundled!("vocab-deepseek", DEEPSEEK_V3_VOCAB, "deepseek_v3"),
         PretrainedVocab::Qwen3 => bundled!("vocab-qwen", QWEN3_VOCAB, "qwen3"),
         PretrainedVocab::Glm4 => bundled!("vocab-glm", GLM4_VOCAB, "glm4"),
+        // One payload, two special blocks — the same relationship gpt-oss has
+        // with o200k_base.
+        PretrainedVocab::KimiK2 => bundled!("vocab-kimi", KIMI_VOCAB, "kimi_k2"),
+        PretrainedVocab::KimiK3 => bundled!("vocab-kimi", KIMI_VOCAB, "kimi_k3"),
         PretrainedVocab::MistralV1 => bundled!("vocab-mistral", MISTRAL_SPM_VOCAB, "mistral"),
         PretrainedVocab::MistralV2 => bundled!("vocab-mistral", MISTRAL_V2_SPM_VOCAB, "mistral_v2"),
         PretrainedVocab::MistralV3 => bundled!("vocab-mistral", MISTRAL_V3_VOCAB, "mistral_v3"),
@@ -325,7 +360,9 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
         | PretrainedVocab::GptOss
         | PretrainedVocab::Llama3
         | PretrainedVocab::Qwen3
-        | PretrainedVocab::Glm4 => Tokenizer::from_bytes_chain(data, pats, special),
+        | PretrainedVocab::Glm4
+        | PretrainedVocab::KimiK2
+        | PretrainedVocab::KimiK3 => Tokenizer::from_bytes_chain(data, pats, special),
         // Vocabularies whose `.tiktoken` keeps the ByteLevel spelling (`Ġ` for
         // a space), so the input has to be mapped into it before merging.
         PretrainedVocab::DeepseekV3
@@ -481,6 +518,9 @@ pub fn patterns(vocab: PretrainedVocab) -> Option<&'static [&'static str]> {
         PretrainedVocab::Glm4 => Some(&[LLAMA3_PATTERN]),
         // gpt-oss states o200k_base's pattern character for character.
         PretrainedVocab::GptOss => Some(&[O200K_BASE_PATTERN]),
+        // Kimi's own pattern: o200k's shape plus a Han branch, identical across
+        // K2 and K3.
+        PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => Some(&[KIMI_PATTERN]),
         // SPM-BPE: merges pieces, no pre-tokenizer regex.
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => None,
         // Tekken has its own pattern (no contractions, single-digit numbers).
@@ -512,6 +552,11 @@ pub fn eos_token_id(vocab: PretrainedVocab) -> u32 {
         PretrainedVocab::Qwen3 => 151645,      // <|im_end|>
         PretrainedVocab::Glm4 => 151329,       // <|endoftext|>
         PretrainedVocab::GptOss => 200002,     // <|return|>
+        // `[EOS]` for both, per Moonshot's own `tokenizer_config.json`. The chat
+        // templates end a turn on a marker instead — `<|im_end|>` (163586) on
+        // K2, `<|end_of_msg|>` on K3 — but that is a template decision, not the
+        // vocabulary's EOS.
+        PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => 163585,
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 | PretrainedVocab::MistralV3 => 2, // </s>
         // <|endoftext|>, derived per variant. Matched one variant at a time so the
         // compiler forces this to be revisited if a Whisper generation is added,
@@ -540,6 +585,8 @@ pub fn bos_token_id(vocab: PretrainedVocab) -> Option<u32> {
         // marker instead. gpt-oss names `<|startoftext|>` but the harmony
         // format opens with `<|start|>`, so it is not a BOS either.
         PretrainedVocab::Qwen3 | PretrainedVocab::Glm4 | PretrainedVocab::GptOss => None,
+        // `[BOS]`, which Moonshot names and its templates open with.
+        PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => Some(163584),
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 | PretrainedVocab::MistralV3 => {
             Some(1)
         } // <s>
@@ -565,9 +612,11 @@ pub fn pad_token_id(vocab: PretrainedVocab) -> Option<u32> {
         PretrainedVocab::Qwen3 => Some(QWEN3_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
         PretrainedVocab::Glm4 => Some(GLM4_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
         PretrainedVocab::GptOss => Some(200058),     // <|pad|> (agent token)
-        PretrainedVocab::MistralV1 => Some(32039),   // <|pad|> (agent token)
-        PretrainedVocab::MistralV2 => Some(32807),   // <|pad|> (agent token, after control tokens)
-        PretrainedVocab::MistralV3 => Some(131111),  // <|pad|> (agent token)
+        // `[PAD]` is Kimi's own, inside the reserved block — no agent token needed.
+        PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => Some(163839),
+        PretrainedVocab::MistralV1 => Some(32039), // <|pad|> (agent token)
+        PretrainedVocab::MistralV2 => Some(32807), // <|pad|> (agent token, after control tokens)
+        PretrainedVocab::MistralV3 => Some(131111), // <|pad|> (agent token)
         // Whisper carries no agent/pad token.
         PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
             None
@@ -601,6 +650,7 @@ pub fn base_vocab_size(vocab: PretrainedVocab) -> u32 {
         // gpt-oss's last special is `<|endofprompt|>` at 200018, the same id
         // o200k_base ends on, so the two share a base size as well as ranks.
         PretrainedVocab::GptOss => O200K_BASE_BASE_VOCAB_SIZE,
+        PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => KIMI_BASE_VOCAB_SIZE,
         PretrainedVocab::MistralV1 => MISTRAL_V1_BASE_VOCAB_SIZE,
         PretrainedVocab::MistralV2 => MISTRAL_V2_BASE_VOCAB_SIZE,
         PretrainedVocab::MistralV3 => MISTRAL_V3_BASE_VOCAB_SIZE,
@@ -721,6 +771,12 @@ fn special_decode_ids(vocab: PretrainedVocab, special: &FxHashMap<String, u32>) 
         // o200k_base's reference is `tiktoken`, which renders everything.
         PretrainedVocab::GptOss => all(),
 
+        // Reference: Moonshot's `tokenization_kimi.py`, whose `decode` filters
+        // `all_special_ids` out unconditionally — there is no per-token
+        // `special: false` distinction to preserve, so the whole block is
+        // dropped, agent tokens included.
+        PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => all(),
+
         PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
             let variant = match vocab {
                 PretrainedVocab::WhisperV2 => WhisperVariant::V2Multilingual,
@@ -747,6 +803,8 @@ pub fn special_tokens(vocab: PretrainedVocab) -> FxHashMap<String, u32> {
         PretrainedVocab::Qwen3 => qwen3_special_tokens(),
         PretrainedVocab::Glm4 => glm4_special_tokens(),
         PretrainedVocab::GptOss => gpt_oss_special_tokens(),
+        PretrainedVocab::KimiK2 => kimi_k2_special_tokens(),
+        PretrainedVocab::KimiK3 => kimi_k3_special_tokens(),
         PretrainedVocab::MistralV1 => mistral_v1_special_tokens(),
         PretrainedVocab::MistralV2 => mistral_v2_special_tokens(),
         PretrainedVocab::MistralV3 => mistral_v3_special_tokens(),
@@ -1042,6 +1100,115 @@ pub fn gpt_oss_special_tokens() -> FxHashMap<String, u32> {
     // Agent tokens (200019+), the same block o200k_base uses.
     insert_agent_tokens(&mut special, O200K_BASE_BASE_VOCAB_SIZE);
 
+    special
+}
+
+/// Kimi's reference vocabulary size: 163,584 merge ranks plus the 256 reserved
+/// special ids Moonshot's tokenizer generates above them. Shared by K2 and K3 —
+/// they name those 256 differently but reserve exactly the same count — and by
+/// [`base_vocab_size`], so the two cannot drift apart.
+const KIMI_BASE_VOCAB_SIZE: u32 = 163840;
+
+/// The first of Kimi's 256 reserved special ids.
+const KIMI_SPECIAL_BASE: u32 = 163584;
+
+/// Fill Kimi's 256-slot reserved block, naming the slots the model names and
+/// leaving the rest as Moonshot's own `<|reserved_token_N|>` placeholders.
+///
+/// Reproducing the placeholders matters rather than being pedantic: Moonshot's
+/// `tokenization_kimi.py` generates a name for **every** id in the block, so all
+/// 256 are decodable there. Naming only the interesting ones would leave the
+/// other 240 as ids splintr could produce (they are inside the vocabulary) but
+/// not decode.
+fn insert_kimi_specials(special: &mut FxHashMap<String, u32>, named: &[(&str, u32)]) {
+    for (name, id) in named {
+        special.insert((*name).to_string(), *id);
+    }
+    // Skip by *id*, not by name. The map is name -> id, so an `or_insert` keyed
+    // on the placeholder name would happily add a second name for an id that is
+    // already named — and decode, which resolves id -> name, would then be free
+    // to render `<|reserved_token_163586|>` where the model says `<|im_end|>`.
+    let named_ids: FxHashSet<u32> = named.iter().map(|(_, id)| *id).collect();
+    for id in KIMI_SPECIAL_BASE..KIMI_BASE_VOCAB_SIZE {
+        if named_ids.contains(&id) {
+            continue;
+        }
+        special.insert(format!("<|reserved_token_{id}|>"), id);
+    }
+    // Agent tokens sit above the reserved block, as everywhere else.
+    insert_agent_tokens(special, KIMI_BASE_VOCAB_SIZE);
+}
+
+/// Get the special tokens for the Kimi K2 family (K2, K2.5, K2.6, K2.7,
+/// Kimi-Linear).
+///
+/// The names are K2.5's, which is a strict superset of K2's — it adds the media
+/// and reasoning markers at 163602-163607 and renames nothing. So one table
+/// serves every K2-generation checkpoint: a plain K2 model never emits the extra
+/// four, and their ids are inside its reserved block either way.
+pub fn kimi_k2_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+    insert_kimi_specials(
+        &mut special,
+        &[
+            ("[BOS]", 163584),
+            ("[EOS]", 163585),
+            ("<|im_end|>", 163586),
+            ("<|im_user|>", 163587),
+            ("<|im_assistant|>", 163588),
+            ("<|start_header_id|>", 163590),
+            ("<|end_header_id|>", 163591),
+            ("[EOT]", 163593),
+            ("<|im_system|>", 163594),
+            ("<|tool_calls_section_begin|>", 163595),
+            ("<|tool_calls_section_end|>", 163596),
+            ("<|tool_call_begin|>", 163597),
+            ("<|tool_call_argument_begin|>", 163598),
+            ("<|tool_call_end|>", 163599),
+            ("<|im_middle|>", 163601),
+            ("<|media_begin|>", 163602),
+            ("<|media_content|>", 163603),
+            ("<|media_end|>", 163604),
+            ("<|media_pad|>", 163605),
+            ("<think>", 163606),
+            ("</think>", 163607),
+            ("[UNK]", 163838),
+            ("[PAD]", 163839),
+        ],
+    );
+    special
+}
+
+/// Get the special tokens for Kimi K3.
+///
+/// Same merge ranks as K2, same pre-tokenizer, different markers over the same
+/// ids: 163586 is `<|im_end|>` on K2 and `<|end_of_msg|>` here. Encoding a K2
+/// chat template against this table — or the reverse — produces ids the
+/// checkpoint was not trained on, which is why the two are separate names rather
+/// than aliases.
+pub fn kimi_k3_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+    insert_kimi_specials(
+        &mut special,
+        &[
+            ("[BOS]", 163584),
+            ("[EOS]", 163585),
+            ("<|end_of_msg|>", 163586),
+            ("<|open|>", 163587),
+            ("<|close|>", 163588),
+            ("<|sep|>", 163589),
+            ("[start_header_id]", 163590),
+            ("[end_header_id]", 163591),
+            ("[EOT]", 163593),
+            ("<|media_begin|>", 163602),
+            ("<|media_content|>", 163603),
+            ("<|media_end|>", 163604),
+            ("<|media_pad|>", 163605),
+            ("<osagent_mode>", 163649),
+            ("[UNK]", 163838),
+            ("[PAD]", 163839),
+        ],
+    );
     special
 }
 

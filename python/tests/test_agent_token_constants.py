@@ -92,6 +92,8 @@ VOCABULARIES = [
     ("mistral_v1", "MISTRAL_V1_AGENT_TOKENS"),
     ("mistral_v2", "MISTRAL_V2_AGENT_TOKENS"),
     ("mistral_v3", "MISTRAL_V3_AGENT_TOKENS"),
+    ("kimi_k2", "KIMI_K2_AGENT_TOKENS"),
+    ("kimi_k3", "KIMI_K3_AGENT_TOKENS"),
 ]
 
 
@@ -144,6 +146,15 @@ def test_vocabularies_that_ship_their_own_agent_names_keep_the_model_id():
     # GLM names only the opening markers, so the closing ones stay in the block.
     assert splintr.GLM4_AGENT_TOKENS.IMAGE_END == glm_base + 43
     assert splintr.GLM4_AGENT_TOKENS.VIDEO_END == glm_base + 47
+
+    # Kimi: K2 names `<|im_end|>` (163586) and K3 names `<|sep|>` (163589), each
+    # inside its 256-slot reserved block, well below the agent block at 163840.
+    kimi_base = splintr.base_vocab_size("kimi_k2")
+    assert splintr.KIMI_K2_AGENT_TOKENS.IM_END == 163586 < kimi_base
+    assert splintr.KIMI_K3_AGENT_TOKENS.SEP == 163589 < kimi_base
+    # The name each does NOT define still comes from the appended block.
+    assert splintr.KIMI_K3_AGENT_TOKENS.IM_END == kimi_base + 4
+    assert splintr.KIMI_K2_AGENT_TOKENS.SEP == kimi_base + 41
 
 
 def test_constants_are_reachable_in_encoded_output():

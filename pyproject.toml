@@ -59,6 +59,7 @@ features = [
     "vocab-deepseek",
     "vocab-qwen",
     "vocab-glm",
+    "vocab-kimi",
     "vocab-mistral",
     "vocab-whisper",
 ]

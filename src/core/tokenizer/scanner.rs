@@ -361,6 +361,10 @@ fn scan_letters(text: &str, bytes: &[u8], mut pos: usize) -> usize {
     }
 }
 
+/// A character-class predicate: the byte length of the character at `pos` when
+/// it is in the class, `None` otherwise.
+type RunFn = fn(&str, &[u8], usize) -> Option<usize>;
+
 /// End of the maximal run of characters satisfying `at`, starting at `pos`.
 #[inline]
 fn scan_run(
@@ -646,12 +650,27 @@ pub(super) fn o200k_spans(text: &str, out: &mut Vec<(usize, usize)>) {
 /// Each optional prefix is greedy, so a branch is tried with the prefix before
 /// without it.
 fn o200k_letter_branches(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    case_split_branches(text, bytes, pos, upper_run_at, lower_run_at)
+}
+
+/// The case-split branches over caller-supplied class predicates.
+///
+/// o200k and Kimi share this shape and differ only in the two classes: Kimi
+/// subtracts `\p{Han}` from both. Passing them in keeps one implementation of
+/// the backtracking, which is the part that is easy to get subtly wrong.
+fn case_split_branches(
+    text: &str,
+    bytes: &[u8],
+    pos: usize,
+    upper: RunFn,
+    lower: RunFn,
+) -> Option<usize> {
     let with_prefix = prefix_len(text, bytes, pos).map(|p| pos + p);
 
     // Branch A, prefix first then without.
     for &q in [with_prefix, Some(pos)].iter().flatten() {
         if q < bytes.len() {
-            if let Some(end) = o200k_branch_a(text, bytes, q) {
+            if let Some(end) = case_split_branch_a(text, bytes, q, upper, lower) {
                 return Some(end);
             }
         }
@@ -659,7 +678,7 @@ fn o200k_letter_branches(text: &str, bytes: &[u8], pos: usize) -> Option<usize> 
     // Branch B, likewise.
     for &q in [with_prefix, Some(pos)].iter().flatten() {
         if q < bytes.len() {
-            if let Some(end) = o200k_branch_b(text, bytes, q) {
+            if let Some(end) = case_split_branch_b(text, bytes, q, upper, lower) {
                 return Some(end);
             }
         }
@@ -669,15 +688,21 @@ fn o200k_letter_branches(text: &str, bytes: &[u8], pos: usize) -> Option<usize> 
 
 /// `U* L+` — greedy `U*` gives characters back until a lowercase-class run can
 /// start, because the two classes overlap on `\p{Lm}`, `\p{Lo}` and `\p{M}`.
-fn o200k_branch_a(text: &str, bytes: &[u8], start: usize) -> Option<usize> {
-    let upper_end = scan_run(text, bytes, start, upper_run_at);
+fn case_split_branch_a(
+    text: &str,
+    bytes: &[u8],
+    start: usize,
+    upper: RunFn,
+    lower: RunFn,
+) -> Option<usize> {
+    let upper_end = scan_run(text, bytes, start, upper);
 
     // Try the longest `U*` first, then shorter ones, as the engine does.
     let mut boundary = upper_end;
     loop {
         if boundary < bytes.len() {
-            if let Some(n) = lower_run_at(text, bytes, boundary) {
-                let lower_end = scan_run(text, bytes, boundary + n, lower_run_at);
+            if let Some(n) = lower(text, bytes, boundary) {
+                let lower_end = scan_run(text, bytes, boundary + n, lower);
                 return Some(lower_end + trailing_contraction(bytes, lower_end));
             }
         }
@@ -690,12 +715,18 @@ fn o200k_branch_a(text: &str, bytes: &[u8], start: usize) -> Option<usize> {
 
 /// `U+ L*` — no backtracking needed: the greedy `U+` succeeds or the branch
 /// fails, and `L*` may be empty.
-fn o200k_branch_b(text: &str, bytes: &[u8], start: usize) -> Option<usize> {
-    let upper_end = scan_run(text, bytes, start, upper_run_at);
+fn case_split_branch_b(
+    text: &str,
+    bytes: &[u8],
+    start: usize,
+    upper: RunFn,
+    lower: RunFn,
+) -> Option<usize> {
+    let upper_end = scan_run(text, bytes, start, upper);
     if upper_end == start {
         return None;
     }
-    let lower_end = scan_run(text, bytes, upper_end, lower_run_at);
+    let lower_end = scan_run(text, bytes, upper_end, lower);
     Some(lower_end + trailing_contraction(bytes, lower_end))
 }
 
@@ -732,6 +763,155 @@ fn prev_char_boundary(text: &str, floor: usize, pos: usize) -> usize {
         p -= 1;
     }
     p
+}
+
+// --- Kimi -------------------------------------------------------------------
+
+/// `\p{Han}`, as 21 sorted, non-overlapping ranges.
+///
+/// Han is a Unicode *script*, not a general category, so the
+/// `unicode_general_category` table this file uses elsewhere cannot answer it.
+/// Rather than transcribe ranges from a standards document — where a stale or
+/// mistyped bound would show up only on whichever character a test happened to
+/// miss — this table was **derived from regexr itself**, by asking `^\p{Han}$`
+/// about every scalar value. That makes agreement with the expression a
+/// property of how the table was built, and
+/// `han_table_matches_the_regex_over_every_scalar_value` re-derives it on every
+/// test run so a regexr upgrade that moved a boundary fails loudly here instead
+/// of silently changing token ids.
+const HAN_RANGES: [(char, char); 21] = [
+    ('\u{2E80}', '\u{2E99}'),
+    ('\u{2E9B}', '\u{2EF3}'),
+    ('\u{2F00}', '\u{2FD5}'),
+    ('\u{3005}', '\u{3005}'),
+    ('\u{3007}', '\u{3007}'),
+    ('\u{3021}', '\u{3029}'),
+    ('\u{3038}', '\u{303B}'),
+    ('\u{3400}', '\u{4DBF}'),
+    ('\u{4E00}', '\u{9FFF}'),
+    ('\u{F900}', '\u{FA6D}'),
+    ('\u{FA70}', '\u{FAD9}'),
+    ('\u{16FE2}', '\u{16FE3}'),
+    ('\u{16FF0}', '\u{16FF6}'),
+    ('\u{20000}', '\u{2A6DF}'),
+    ('\u{2A700}', '\u{2B81D}'),
+    ('\u{2B820}', '\u{2CEAD}'),
+    ('\u{2CEB0}', '\u{2EBE0}'),
+    ('\u{2EBF0}', '\u{2EE5D}'),
+    ('\u{2F800}', '\u{2FA1D}'),
+    ('\u{30000}', '\u{3134A}'),
+    ('\u{31350}', '\u{33479}'),
+];
+
+/// `\p{Han}` — binary search over [`HAN_RANGES`].
+#[inline]
+fn is_han_char(c: char) -> bool {
+    HAN_RANGES
+        .binary_search_by(|&(lo, hi)| {
+            if c < lo {
+                core::cmp::Ordering::Greater
+            } else if c > hi {
+                core::cmp::Ordering::Less
+            } else {
+                core::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
+/// One `\p{Han}` character at `pos`, or `None`.
+///
+/// No ASCII byte is Han, so the common case costs one comparison.
+#[inline]
+fn han_run_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    if bytes[pos] < 0x80 {
+        return None;
+    }
+    let (c, l) = char_at(text, pos);
+    is_han_char(c).then_some(l)
+}
+
+/// `[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]` — o200k's uppercase half with
+/// Han subtracted.
+#[inline]
+fn kimi_upper_run_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    let n = upper_run_at(text, bytes, pos)?;
+    let (c, _) = char_at(text, pos);
+    (!is_han_char(c)).then_some(n)
+}
+
+/// `[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]` — likewise for the lowercase half.
+#[inline]
+fn kimi_lower_run_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    let n = lower_run_at(text, bytes, pos)?;
+    let (c, _) = char_at(text, pos);
+    (!is_han_char(c)).then_some(n)
+}
+
+/// Splits by the Kimi pattern (Moonshot AI).
+///
+/// o200k's shape with two changes, both about Han: a leading `[\p{Han}]+`
+/// branch, and Han subtracted from the two letter classes so that branch is
+/// reachable — without the subtraction the case-split branches would consume a
+/// Han run first and the leading branch would never fire. The punctuation tail
+/// is `[\r\n]*` here, not o200k's `[\r\n/]*`.
+pub(super) fn kimi_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0usize;
+
+    while pos < len {
+        let start = pos;
+
+        // `[\p{Han}]+`, first in the alternation. It cannot overlap the letter
+        // branches (they exclude Han) so trying it first needs no backtracking.
+        if han_run_at(text, bytes, pos).is_some() {
+            pos = scan_run(text, bytes, pos, han_run_at);
+            out.push((start, pos));
+            continue;
+        }
+
+        if let Some(end) =
+            case_split_branches(text, bytes, pos, kimi_upper_run_at, kimi_lower_run_at)
+        {
+            pos = end;
+            out.push((start, pos));
+            continue;
+        }
+
+        if let Some(n) = number_at(text, bytes, pos) {
+            pos += n;
+            for _ in 1..3 {
+                match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
+                    Some(n) => pos += n,
+                    None => break,
+                }
+            }
+            out.push((start, pos));
+            continue;
+        }
+
+        // ` ?[^\s\p{L}\p{N}]+[\r\n]*` — no `/` in the tail, unlike o200k.
+        let after_space = if bytes[pos] == b' ' { pos + 1 } else { pos };
+        if after_space < len && punct_at(text, bytes, after_space).is_some() {
+            pos = scan_run(text, bytes, after_space, punct_at);
+            while pos < len && matches!(bytes[pos], b'\r' | b'\n') {
+                pos += 1;
+            }
+            out.push((start, pos));
+            continue;
+        }
+
+        if space_at(text, bytes, pos).is_some() {
+            let (s, e) = whitespace_span(text, bytes, pos, WhitespaceOrder::NewlineFirst);
+            pos = e;
+            out.push((s, e));
+            continue;
+        }
+
+        let (_, l) = char_at(text, pos);
+        pos += l;
+    }
 }
 
 // --- DeepSeek V3, third pass ------------------------------------------------
@@ -910,6 +1090,8 @@ pub(crate) fn for_pattern(pattern: &str) -> Option<SpanScanner> {
         Some(qwen2_spans)
     } else if pattern == p::O200K_BASE_PATTERN {
         Some(o200k_spans)
+    } else if pattern == p::KIMI_PATTERN {
+        Some(kimi_spans)
     } else if pattern == p::DEEPSEEK_V3_PATTERNS[0] {
         Some(deepseek_v3_pass1_spans)
     } else if pattern == p::DEEPSEEK_V3_PATTERNS[1] {
@@ -925,8 +1107,8 @@ pub(crate) fn for_pattern(pattern: &str) -> Option<SpanScanner> {
 mod tests {
     use super::*;
     use crate::core::tokenizer::patterns::{
-        CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, LLAMA3_PATTERN, O200K_BASE_PATTERN,
-        QWEN2_PATTERN,
+        CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, KIMI_PATTERN, LLAMA3_PATTERN,
+        O200K_BASE_PATTERN, QWEN2_PATTERN,
     };
 
     type Scanner = fn(&str, &mut Vec<(usize, usize)>);
@@ -938,6 +1120,7 @@ mod tests {
             ("llama3", LLAMA3_PATTERN, llama3_spans as Scanner),
             ("qwen2", QWEN2_PATTERN, qwen2_spans as Scanner),
             ("o200k", O200K_BASE_PATTERN, o200k_spans as Scanner),
+            ("kimi", KIMI_PATTERN, kimi_spans as Scanner),
             (
                 "deepseek-pass1",
                 DEEPSEEK_V3_PATTERNS[0],
@@ -969,8 +1152,8 @@ mod tests {
 
         let no_scanner = [MistralV3, WhisperV1, WhisperV2, WhisperV3];
         for vocab in [
-            Cl100kBase, O200kBase, GptOss, Llama3, DeepseekV3, Qwen3, Glm4, MistralV1, MistralV2,
-            MistralV3, WhisperV1, WhisperV2, WhisperV3,
+            Cl100kBase, O200kBase, GptOss, Llama3, DeepseekV3, Qwen3, Glm4, KimiK2, KimiK3,
+            MistralV1, MistralV2, MistralV3, WhisperV1, WhisperV2, WhisperV3,
         ] {
             let Some(pats) = patterns(vocab) else {
                 continue;
@@ -983,6 +1166,67 @@ mod tests {
                     "{vocab:?} scanner coverage changed for {pattern}"
                 );
             }
+        }
+    }
+
+    /// Re-derive `\p{Han}` from the engine and compare it to the embedded table,
+    /// scalar value by scalar value.
+    ///
+    /// The table exists because `unicode_general_category` cannot answer a
+    /// *script* query, and it was generated by asking regexr this exact
+    /// question. Asking again on every test run is what keeps it honest: a
+    /// regexr upgrade that moves a Han boundary would otherwise change token ids
+    /// for Kimi silently, and only for inputs containing that one character.
+    #[test]
+    fn han_table_matches_the_regex_over_every_scalar_value() {
+        let re = regexr::Regex::new(r"^\p{Han}$").expect("regexr knows \\p{Han}");
+        let mut buf = [0u8; 4];
+        let mut disagreements = 0usize;
+        let mut first: Option<char> = None;
+        for cp in 0u32..=0x10FFFF {
+            let Some(c) = char::from_u32(cp) else {
+                continue;
+            };
+            if re.is_match(c.encode_utf8(&mut buf)) != is_han_char(c) {
+                disagreements += 1;
+                first.get_or_insert(c);
+            }
+        }
+        assert_eq!(
+            disagreements,
+            0,
+            "HAN_RANGES disagrees with the engine on {disagreements} code points, \
+             first U+{:04X} — regenerate the table",
+            first.map(u32::from).unwrap_or(0)
+        );
+    }
+
+    /// Inputs that turn on Kimi's Han branch specifically, diffed against the
+    /// expression like every other scanner case.
+    ///
+    /// The random corpus reaches these shapes eventually; naming them makes a
+    /// regression say which rule broke instead of printing a random string.
+    #[test]
+    fn kimi_scanner_agrees_with_its_regex_on_han_boundaries() {
+        for input in [
+            "中文English混合",
+            "汉字abc",
+            "北京市 Pascal",
+            " 中文",
+            "中文 ",
+            "中文123",
+            "123中文",
+            "中\u{0301}文",
+            "あ中ア文",
+            "\u{3005}\u{3006}\u{3007}",
+            "\u{9FFF}\u{A000}",
+            "\u{20000}\u{20001}x",
+            "XMLHttp中文Request",
+            "中文'sX",
+            "中!文",
+            "中\n文",
+        ] {
+            assert_agrees("kimi", KIMI_PATTERN, kimi_spans as Scanner, input);
         }
     }
 
@@ -1204,9 +1448,56 @@ mod tests {
         // Assembled from the character kinds the branches turn on, rather than
         // from prose: disagreements live at run boundaries.
         const ALPHABET: &[&str] = &[
-            "a", "z", "A", "Z", "1", "9", " ", "  ", "\t", "\n", "\r", "\r\n", "'", "!", ".", ",",
-            "-", "_", "/", "中", "é", "É", "🚀", "\u{00a0}", "\u{3000}", "Ⅷ", "½", "\u{0301}", "«",
-            "€", "\u{05d0}",
+            "a",
+            "z",
+            "A",
+            "Z",
+            "1",
+            "9",
+            " ",
+            "  ",
+            "\t",
+            "\n",
+            "\r",
+            "\r\n",
+            "'",
+            "!",
+            ".",
+            ",",
+            "-",
+            "_",
+            "/",
+            "中",
+            "é",
+            "É",
+            "🚀",
+            "\u{00a0}",
+            "\u{3000}",
+            "Ⅷ",
+            "½",
+            "\u{0301}",
+            "«",
+            "€",
+            "\u{05d0}",
+            // Han boundaries, for Kimi's leading `[\p{Han}]+` branch and the
+            // subtraction that makes it reachable. Each pair straddles an edge
+            // of HAN_RANGES, so a table off by one code point shows up here
+            // rather than on whichever input a user happens to tokenize:
+            // U+2E99/U+2E9A (gap), U+3005-3007 (3006 is not Han), U+9FFF/U+A000
+            // (end of the URO), plus the compat block and a 4-byte extension.
+            "\u{2E99}",
+            "\u{2E9A}",
+            "\u{3005}",
+            "\u{3006}",
+            "\u{3007}",
+            "\u{9FFF}",
+            "\u{A000}",
+            "\u{F900}",
+            "\u{20000}",
+            // Kana: CJK but *not* Han, so Kimi's letter branches must still take
+            // them while DeepSeek's own CJK pass does not distinguish.
+            "\u{3042}",
+            "\u{30A2}",
         ];
 
         // xorshift64*, so a failure is reproducible from the seed alone.

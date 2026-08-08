@@ -255,6 +255,9 @@ TIKTOKEN_VOCABS: dict[str, tuple[str, bool]] = {
     "glm-4.5": ("glm4.tiktoken", False),
     # gpt-oss is o200k_base's ranks under the harmony special tokens, so it is
     # gated against the o200k_base file it shares rather than one of its own.
+    "kimi": ("kimi.tiktoken", False),
+    "kimi_k2": ("kimi.tiktoken", False),
+    "kimi_k3": ("kimi.tiktoken", False),
     "gpt-oss": ("o200k_base.tiktoken", False),
     "gpt_oss": ("o200k_base.tiktoken", False),
     "o200k_harmony": ("o200k_base.tiktoken", False),
@@ -827,6 +830,109 @@ def run_spm(vocab: str, reference_model: Path) -> tuple[dict[str, object], list[
     return block, build_cases(encode, decode, normalize=normalize), f"pieces={len(spm_lines)}"
 
 
+# Kimi's pre-tokenizer, transcribed from the `pat_str` in the
+# `tokenization_kimi.py` Moonshot ships beside the vocabulary. Kept here rather
+# than read from a file because it is the thing under test: the fixture proves
+# splintr's `KIMI_PATTERN` matches what Moonshot states, so a copy that could
+# drift with splintr's would prove nothing.
+KIMI_PAT_STR = "|".join(
+    [
+        r"[\p{Han}]+",
+        r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*"
+        r"[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+        r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+"
+        r"[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+        r"\p{N}{1,3}",
+        r" ?[^\s\p{L}\p{N}]+[\r\n]*",
+        r"\s*[\r\n]+",
+        r"\s+(?!\S)",
+        r"\s+",
+    ]
+)
+
+
+def run_tiktoken_ranks(
+    vocab: str, ranks_path: Path
+) -> tuple[dict[str, object], list[dict[str, object]], str]:
+    """Gate and generate against a raw rank file plus a stated pattern.
+
+    For a vocabulary published as tiktoken ranks with no `tokenizer.json` and no
+    registered `tiktoken` encoding name — Kimi is the case, shipping
+    `tiktoken.model` plus a `tokenization_kimi.py`. The reference is a
+    `tiktoken.Encoding` built from those ranks and that pattern, which is exactly
+    what Moonshot's own tokenizer constructs.
+    """
+    entry = TIKTOKEN_VOCABS.get(vocab)
+    if entry is None:
+        sys.exit(f"error: {vocab!r} is not a bundled .tiktoken vocabulary")
+    bundled_filename, _byte_level = entry
+    bundled_path = VOCABS_DIR / bundled_filename
+    if not bundled_path.exists():
+        sys.exit(f"error: {bundled_path} does not exist -- is the repo layout intact?")
+    if not ranks_path.is_file():
+        sys.exit(f"error: no such rank file: {ranks_path}")
+
+    try:
+        import regex
+        import tiktoken
+        from tiktoken.load import load_tiktoken_bpe
+    except ImportError as exc:
+        sys.exit(f"error: the 'tiktoken' package is required ({exc})")
+
+    # The gate: the bundled file must BE the reference's rank file, line for
+    # line. Without this the fixture would pin splintr against a vocabulary it
+    # does not ship.
+    reference_lines = read_tiktoken_lines(ranks_path)
+    bundled_lines = read_tiktoken_lines(bundled_path)
+    if reference_lines != bundled_lines:
+        first = next(
+            (i for i, (a, b) in enumerate(zip(reference_lines, bundled_lines)) if a != b),
+            min(len(reference_lines), len(bundled_lines)),
+        )
+        sys.exit(
+            f"error: {bundled_path.name} is not {ranks_path.name}: "
+            f"{len(bundled_lines)} vs {len(reference_lines)} lines, first differing rank {first}"
+        )
+
+    encoding = tiktoken.Encoding(
+        name=vocab,
+        pat_str=KIMI_PAT_STR,
+        mergeable_ranks=load_tiktoken_bpe(str(ranks_path)),
+        special_tokens={},
+    )
+    # `regex.V1`, not the default V0: `&&` is only set intersection in V1. Under
+    # V0 the `&&` is read as literal `&` characters inside the class, so the
+    # letter branches match the wrong thing and the split silently drops text —
+    # `" a"` comes back as `[" "]`. The ids are unaffected (tiktoken pre-tokenizes
+    # in Rust, which implements `&&`), so this shows up only in the `pieces`
+    # column, which is exactly the drift that column exists to catch.
+    compiled = regex.compile(KIMI_PAT_STR, regex.V1)
+
+    def encode(text: str) -> list[int]:
+        return encoding.encode_ordinary(text)
+
+    def decode(ids: list[int]) -> str:
+        return encoding.decode(ids)
+
+    def split(text: str) -> tuple[None, list[str]]:
+        return None, [m.group(0) for m in compiled.finditer(text)]
+
+    block: dict[str, object] = {
+        "source": "tiktoken",
+        "encoding": f"{vocab} (ranks + pat_str from the model repo)",
+        "tiktoken_version": tiktoken.__version__,
+        "pieces": (
+            "regex.finditer over the pat_str Moonshot's tokenization_kimi.py states, "
+            "which is what proves splintr's KIMI_PATTERN has not drifted from it"
+        ),
+    }
+    try:
+        cases = build_cases(encode, decode, split)
+    except ValueError as exc:
+        sys.exit(f"error: {exc}")
+    return block, cases, f"ranks={len(reference_lines)}"
+
+
 def run_tiktoken(vocab: str, encoding_name: str) -> tuple[dict[str, object], list[dict[str, object]], str]:
     """Gate and generate for a `tiktoken` reference."""
     entry = TIKTOKEN_VOCABS.get(vocab)
@@ -900,6 +1006,13 @@ def main() -> int:
         "produced this bundled .spm vocabulary",
     )
     reference.add_argument(
+        "--reference-tiktoken-ranks",
+        type=Path,
+        help="path to a raw tiktoken rank file (e.g. Kimi's tiktoken.model) to "
+        "build the reference encoding from, for vocabularies with no "
+        "tokenizer.json and no registered tiktoken encoding name",
+    )
+    reference.add_argument(
         "--reference-tiktoken",
         nargs="?",
         const="",
@@ -909,7 +1022,9 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, required=True, help="where to write the fixture JSON")
     args = parser.parse_args()
 
-    if args.reference_hf is not None:
+    if args.reference_tiktoken_ranks is not None:
+        block, cases, note = run_tiktoken_ranks(args.vocab, args.reference_tiktoken_ranks)
+    elif args.reference_hf is not None:
         block, cases, note = run_hf(args.vocab, args.reference_hf)
     elif args.reference_spm is not None:
         block, cases, note = run_spm(args.vocab, args.reference_spm)

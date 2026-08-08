@@ -232,6 +232,68 @@ GLM4_NATIVE_TOKENS = [
 # the agent block at their usual offsets.
 GLM4_SKIP_TOKENS = {"SYSTEM", "USER", "ASSISTANT", "IMAGE", "VIDEO"}
 
+# Kimi's named reserved tokens. Both generations reserve the whole 256-wide
+# block at 163584-163839; these are the slots the model names, and everything
+# else in it is a `<|reserved_token_N|>` placeholder. K2's table is K2.5's, which
+# is a strict superset of plain K2's.
+#
+# `IM_END` here is Kimi's own 163586, not the agent token of the same name. The
+# native entry is listed explicitly, so the generated constant carries the
+# model's id — which is the same answer `insert_agent_tokens`'s collision rule
+# reaches in `pretrained.rs`, from the other direction.
+KIMI_K2_NATIVE_TOKENS = [
+    ("BOS", 163584, "Beginning of sequence [BOS]"),
+    ("EOS", 163585, "End of sequence [EOS]"),
+    ("IM_END", 163586, "Native <|im_end|> - end of message"),
+    ("IM_USER", 163587, "User turn marker"),
+    ("IM_ASSISTANT", 163588, "Assistant turn marker"),
+    ("START_HEADER_ID", 163590, "Header begin"),
+    ("END_HEADER_ID", 163591, "Header end"),
+    ("EOT", 163593, "End of turn [EOT]"),
+    ("IM_SYSTEM", 163594, "System turn marker"),
+    ("TOOL_CALLS_SECTION_BEGIN", 163595, "Tool calls section begin"),
+    ("TOOL_CALLS_SECTION_END", 163596, "Tool calls section end"),
+    ("TOOL_CALL_BEGIN", 163597, "Single tool call begin"),
+    ("TOOL_CALL_ARGUMENT_BEGIN", 163598, "Tool call argument begin"),
+    ("TOOL_CALL_END", 163599, "Single tool call end"),
+    ("IM_MIDDLE", 163601, "Message middle marker"),
+    ("MEDIA_BEGIN", 163602, "Media block begin"),
+    ("MEDIA_CONTENT", 163603, "Media content"),
+    ("MEDIA_END", 163604, "Media block end"),
+    ("MEDIA_PAD", 163605, "Media padding"),
+    ("THINK_NATIVE", 163606, "Native <think> token"),
+    ("THINK_END_NATIVE", 163607, "Native </think> token"),
+    ("UNK", 163838, "Unknown token [UNK]"),
+    ("PAD_NATIVE", 163839, "Native padding [PAD]"),
+]
+
+# K3 renames the middle of the block and drops the tool-call markers.
+KIMI_K3_NATIVE_TOKENS = [
+    ("BOS", 163584, "Beginning of sequence [BOS]"),
+    ("EOS", 163585, "End of sequence [EOS]"),
+    ("END_OF_MSG", 163586, "End of message"),
+    ("OPEN", 163587, "Open marker"),
+    ("CLOSE", 163588, "Close marker"),
+    ("SEP", 163589, "Separator"),
+    ("START_HEADER_ID", 163590, "Header begin"),
+    ("END_HEADER_ID", 163591, "Header end"),
+    ("EOT", 163593, "End of turn [EOT]"),
+    ("MEDIA_BEGIN", 163602, "Media block begin"),
+    ("MEDIA_CONTENT", 163603, "Media content"),
+    ("MEDIA_END", 163604, "Media block end"),
+    ("MEDIA_PAD", 163605, "Media padding"),
+    ("OSAGENT_MODE", 163649, "OS-agent mode marker"),
+    ("UNK", 163838, "Unknown token [UNK]"),
+    ("PAD_NATIVE", 163839, "Native padding [PAD]"),
+]
+
+# The agent-token names each Kimi generation defines itself, taken from the
+# native tables above rather than the agent block: K2's `<|im_end|>` is 163586
+# and K3's `<|sep|>` is 163589, both ids the checkpoint was trained on. Same rule
+# as Qwen's `<|im_start|>` and GLM's `<|system|>`.
+KIMI_K2_SKIP_TOKENS = {"IM_END"}
+KIMI_K3_SKIP_TOKENS = {"SEP"}
+
 # gpt-oss "harmony" native tokens (199998-200018). No name collides with an
 # agent token, so nothing is skipped.
 GPT_OSS_NATIVE_TOKENS = [
@@ -276,6 +338,8 @@ MODELS = [
     ("qwen3", "qwen3_agent_tokens", "PyQwen3AgentTokens", "QWEN3_AGENT_TOKENS", 151669, "Qwen 2/3 (also Baichuan-M2)", QWEN3_NATIVE_TOKENS, QWEN3_SKIP_TOKENS),
     ("glm4", "glm4_agent_tokens", "PyGlm4AgentTokens", "GLM4_AGENT_TOKENS", 151365, "GLM-4/4.5", GLM4_NATIVE_TOKENS, GLM4_SKIP_TOKENS),
     ("gpt-oss", "gpt_oss_agent_tokens", "PyGptOssAgentTokens", "GPT_OSS_AGENT_TOKENS", 200019, "OpenAI gpt-oss", GPT_OSS_NATIVE_TOKENS, set()),
+    ("kimi_k2", "kimi_k2_agent_tokens", "PyKimiK2AgentTokens", "KIMI_K2_AGENT_TOKENS", 163840, "Kimi K2 (K2, K2.5, K2.6, K2.7, Kimi-Linear)", KIMI_K2_NATIVE_TOKENS, KIMI_K2_SKIP_TOKENS),
+    ("kimi_k3", "kimi_k3_agent_tokens", "PyKimiK3AgentTokens", "KIMI_K3_AGENT_TOKENS", 163840, "Kimi K3", KIMI_K3_NATIVE_TOKENS, KIMI_K3_SKIP_TOKENS),
 ]
 
 # The ten categories the 54 agent tokens fall into, as (name, first offset,

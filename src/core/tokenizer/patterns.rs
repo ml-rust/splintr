@@ -85,6 +85,32 @@ pub const NO_SPLIT_PATTERN: &str = r"[\s\S]+";
 /// and must stay separate constants.
 pub const QWEN2_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+/// Pre-tokenizer pattern for the Kimi family (Moonshot AI).
+///
+/// Transcribed verbatim from `pat_str` in the `tokenization_kimi.py` that
+/// Moonshot ships beside the vocabulary. Byte-identical across Kimi K2, K2.5 and
+/// K3 — the tokenizer did not change with the model.
+///
+/// An [`O200K_BASE_PATTERN`] variant with two additions, both about Han:
+///
+/// * A leading `[\p{Han}]+` branch, so a run of Han characters is its own
+///   pre-token instead of being swept up by the letter branches.
+/// * Han *subtracted* from those letter branches, written with the character
+///   class intersection operator (`[\p{Lu}…&&[^\p{Han}]]`). Without the
+///   subtraction the second branch would match Han first and the leading branch
+///   would never fire.
+///
+/// The `&&` is why this pattern needs a regex engine that implements class
+/// intersection; regexr does.
+pub const KIMI_PATTERN: &str = concat!(
+    r"[\p{Han}]+",
+    r"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*",
+    r"[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+    r"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+",
+    r"[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+    r"|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+",
+);
+
 /// Pre-tokenizer expression list for DeepSeek V3/R1.
 ///
 /// Transcribed verbatim from the three `Split` pre-tokenizers in DeepSeek's own

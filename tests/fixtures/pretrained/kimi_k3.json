@@ -1,0 +1,1338 @@
+{
+ "vocab": "kimi_k3",
+ "reference": {
+  "source": "tiktoken",
+  "encoding": "kimi_k3 (ranks + pat_str from the model repo)",
+  "tiktoken_version": "0.13.0",
+  "pieces": "regex.finditer over the pat_str Moonshot's tokenization_kimi.py states, which is what proves splintr's KIMI_PATTERN has not drifted from it"
+ },
+ "cases": [
+  {
+   "input": "",
+   "expected": [],
+   "decoded": ""
+  },
+  {
+   "input": " ",
+   "expected": [
+    220
+   ],
+   "decoded": " ",
+   "pieces": [
+    " "
+   ]
+  },
+  {
+   "input": "  ",
+   "expected": [
+    256
+   ],
+   "decoded": "  ",
+   "pieces": [
+    "  "
+   ]
+  },
+  {
+   "input": "   ",
+   "expected": [
+    274
+   ],
+   "decoded": "   ",
+   "pieces": [
+    "   "
+   ]
+  },
+  {
+   "input": "a",
+   "expected": [
+    64
+   ],
+   "decoded": "a",
+   "pieces": [
+    "a"
+   ]
+  },
+  {
+   "input": " a",
+   "expected": [
+    261
+   ],
+   "decoded": " a",
+   "pieces": [
+    " a"
+   ]
+  },
+  {
+   "input": "a ",
+   "expected": [
+    64,
+    220
+   ],
+   "decoded": "a ",
+   "pieces": [
+    "a",
+    " "
+   ]
+  },
+  {
+   "input": " a ",
+   "expected": [
+    261,
+    220
+   ],
+   "decoded": " a ",
+   "pieces": [
+    " a",
+    " "
+   ]
+  },
+  {
+   "input": "hello world",
+   "expected": [
+    22931,
+    2695
+   ],
+   "decoded": "hello world",
+   "pieces": [
+    "hello",
+    " world"
+   ]
+  },
+  {
+   "input": "Hello World!",
+   "expected": [
+    19180,
+    6949,
+    0
+   ],
+   "decoded": "Hello World!",
+   "pieces": [
+    "Hello",
+    " World",
+    "!"
+   ]
+  },
+  {
+   "input": "the quick brown fox jumps over the lazy dog",
+   "expected": [
+    2108,
+    5072,
+    16331,
+    69275,
+    60062,
+    1312,
+    276,
+    29292,
+    7751
+   ],
+   "decoded": "the quick brown fox jumps over the lazy dog",
+   "pieces": [
+    "the",
+    " quick",
+    " brown",
+    " fox",
+    " jumps",
+    " over",
+    " the",
+    " lazy",
+    " dog"
+   ]
+  },
+  {
+   "input": "\tindented\twith\ttabs",
+   "expected": [
+    197,
+    652,
+    21376,
+    119005,
+    5604,
+    5609
+   ],
+   "decoded": "\tindented\twith\ttabs",
+   "pieces": [
+    "\tindented",
+    "\twith",
+    "\ttabs"
+   ]
+  },
+  {
+   "input": "line one\nline two\nline three",
+   "expected": [
+    1611,
+    1101,
+    198,
+    1611,
+    2069,
+    198,
+    1611,
+    3499
+   ],
+   "decoded": "line one\nline two\nline three",
+   "pieces": [
+    "line",
+    " one",
+    "\n",
+    "line",
+    " two",
+    "\n",
+    "line",
+    " three"
+   ]
+  },
+  {
+   "input": "\n\n\n",
+   "expected": [
+    3898
+   ],
+   "decoded": "\n\n\n",
+   "pieces": [
+    "\n\n\n"
+   ]
+  },
+  {
+   "input": "trailing whitespace   ",
+   "expected": [
+    523,
+    16627,
+    60368,
+    274
+   ],
+   "decoded": "trailing whitespace   ",
+   "pieces": [
+    "trailing",
+    " whitespace",
+    "   "
+   ]
+  },
+  {
+   "input": "   leading whitespace",
+   "expected": [
+    256,
+    8134,
+    60368
+   ],
+   "decoded": "   leading whitespace",
+   "pieces": [
+    "  ",
+    " leading",
+    " whitespace"
+   ]
+  },
+  {
+   "input": "multiple   internal    spaces",
+   "expected": [
+    59967,
+    256,
+    7715,
+    274,
+    14803
+   ],
+   "decoded": "multiple   internal    spaces",
+   "pieces": [
+    "multiple",
+    "  ",
+    " internal",
+    "   ",
+    " spaces"
+   ]
+  },
+  {
+   "input": "I've got it, don't worry.",
+   "expected": [
+    28906,
+    3632,
+    483,
+    11,
+    4536,
+    13980,
+    13
+   ],
+   "decoded": "I've got it, don't worry.",
+   "pieces": [
+    "I've",
+    " got",
+    " it",
+    ",",
+    " don't",
+    " worry",
+    "."
+   ]
+  },
+  {
+   "input": "it's a test — isn't it?",
+   "expected": [
+    64072,
+    261,
+    1812,
+    4275,
+    12531,
+    483,
+    30
+   ],
+   "decoded": "it's a test — isn't it?",
+   "pieces": [
+    "it's",
+    " a",
+    " test",
+    " —",
+    " isn't",
+    " it",
+    "?"
+   ]
+  },
+  {
+   "input": "punctuation: ,.!?;:'\"()[]{}",
+   "expected": [
+    79,
+    114695,
+    25,
+    145292,
+    130875,
+    26,
+    16229,
+    1,
+    539,
+    2950,
+    13071
+   ],
+   "decoded": "punctuation: ,.!?;:'\"()[]{}",
+   "pieces": [
+    "punctuation",
+    ":",
+    " ,.!?;:'\"()[]{}"
+   ]
+  },
+  {
+   "input": "hyphenated-word and em—dash",
+   "expected": [
+    105969,
+    907,
+    877,
+    53454,
+    316,
+    1516,
+    3442,
+    84085
+   ],
+   "decoded": "hyphenated-word and em—dash",
+   "pieces": [
+    "hyphenated",
+    "-word",
+    " and",
+    " em",
+    "—dash"
+   ]
+  },
+  {
+   "input": "こんにちは世界",
+   "expected": [
+    16444,
+    29194,
+    6880,
+    43566,
+    8831,
+    2243
+   ],
+   "decoded": "こんにちは世界",
+   "pieces": [
+    "こんにちは",
+    "世界"
+   ]
+  },
+  {
+   "input": "日本語のテキストです。",
+   "expected": [
+    4546,
+    63011,
+    4663,
+    25875,
+    32045,
+    33360,
+    54319,
+    292
+   ],
+   "decoded": "日本語のテキストです。",
+   "pieces": [
+    "日本語",
+    "のテキストです",
+    "。"
+   ]
+  },
+  {
+   "input": "你好，世界！",
+   "expected": [
+    33845,
+    378,
+    2243,
+    856
+   ],
+   "decoded": "你好，世界！",
+   "pieces": [
+    "你好",
+    "，",
+    "世界",
+    "！"
+   ]
+  },
+  {
+   "input": "안녕하세요 세계",
+   "expected": [
+    109004,
+    34910,
+    243,
+    13181,
+    102898,
+    110620,
+    73168
+   ],
+   "decoded": "안녕하세요 세계",
+   "pieces": [
+    "안녕하세요",
+    " 세계"
+   ]
+  },
+  {
+   "input": "emoji test 😀🎉🚀",
+   "expected": [
+    33120,
+    1812,
+    70005,
+    222,
+    5885,
+    236,
+    231,
+    5885,
+    40101
+   ],
+   "decoded": "emoji test 😀🎉🚀",
+   "pieces": [
+    "emoji",
+    " test",
+    " 😀🎉🚀"
+   ]
+  },
+  {
+   "input": "family: 👨‍👩‍👧‍👦",
+   "expected": [
+    34637,
+    25,
+    130732,
+    101,
+    67963,
+    64390,
+    102,
+    67963,
+    64390,
+    100,
+    67963,
+    64390,
+    99
+   ],
+   "decoded": "family: 👨‍👩‍👧‍👦",
+   "pieces": [
+    "family",
+    ":",
+    " 👨‍👩‍👧‍👦"
+   ]
+  },
+  {
+   "input": "flag: 🏳️‍🌈",
+   "expected": [
+    16004,
+    25,
+    17137,
+    237,
+    111,
+    31615,
+    67963,
+    5885,
+    234,
+    230
+   ],
+   "decoded": "flag: 🏳️‍🌈",
+   "pieces": [
+    "flag",
+    ":",
+    " 🏳️‍🌈"
+   ]
+  },
+  {
+   "input": "café résumé naïve",
+   "expected": [
+    122583,
+    1941,
+    23606,
+    7671,
+    1941,
+    7915,
+    44187,
+    367
+   ],
+   "decoded": "café résumé naïve",
+   "pieces": [
+    "café",
+    " résumé",
+    " naïve"
+   ]
+  },
+  {
+   "input": "Zürich Ångström Curaçao",
+   "expected": [
+    57,
+    14541,
+    969,
+    133480,
+    1487,
+    731,
+    101664,
+    396,
+    10026,
+    7231,
+    6681
+   ],
+   "decoded": "Zürich Ångström Curaçao",
+   "pieces": [
+    "Zürich",
+    " Ångström",
+    " Curaçao"
+   ]
+  },
+  {
+   "input": "0123456789",
+   "expected": [
+    16349,
+    18439,
+    22523,
+    24
+   ],
+   "decoded": "0123456789",
+   "pieces": [
+    "012",
+    "345",
+    "678",
+    "9"
+   ]
+  },
+  {
+   "input": "the year 2024 had 365 days",
+   "expected": [
+    2108,
+    1389,
+    220,
+    2975,
+    19,
+    1688,
+    220,
+    17541,
+    3997
+   ],
+   "decoded": "the year 2024 had 365 days",
+   "pieces": [
+    "the",
+    " year",
+    " ",
+    "202",
+    "4",
+    " had",
+    " ",
+    "365",
+    " days"
+   ]
+  },
+  {
+   "input": "price: $19.99, quantity: 42",
+   "expected": [
+    18493,
+    25,
+    701,
+    920,
+    13,
+    3004,
+    11,
+    22207,
+    25,
+    220,
+    5512
+   ],
+   "decoded": "price: $19.99, quantity: 42",
+   "pieces": [
+    "price",
+    ":",
+    " $",
+    "19",
+    ".",
+    "99",
+    ",",
+    " quantity",
+    ":",
+    " ",
+    "42"
+   ]
+  },
+  {
+   "input": "def add(a, b):\n    return a + b\n",
+   "expected": [
+    1166,
+    1239,
+    5372,
+    11,
+    291,
+    2360,
+    274,
+    745,
+    261,
+    715,
+    291,
+    198
+   ],
+   "decoded": "def add(a, b):\n    return a + b\n",
+   "pieces": [
+    "def",
+    " add",
+    "(a",
+    ",",
+    " b",
+    "):\n",
+    "   ",
+    " return",
+    " a",
+    " +",
+    " b",
+    "\n"
+   ]
+  },
+  {
+   "input": "if (x == 42) { print(\"hi\"); }",
+   "expected": [
+    361,
+    347,
+    87,
+    1151,
+    220,
+    5512,
+    8,
+    384,
+    3189,
+    758,
+    9663,
+    11896,
+    457
+   ],
+   "decoded": "if (x == 42) { print(\"hi\"); }",
+   "pieces": [
+    "if",
+    " (",
+    "x",
+    " ==",
+    " ",
+    "42",
+    ")",
+    " {",
+    " print",
+    "(\"",
+    "hi",
+    "\");",
+    " }"
+   ]
+  },
+  {
+   "input": "Mixed 混合 текст with 日本語 and English.",
+   "expected": [
+    90190,
+    220,
+    13935,
+    148468,
+    472,
+    220,
+    4546,
+    63011,
+    316,
+    9159,
+    13
+   ],
+   "decoded": "Mixed 混合 текст with 日本語 and English.",
+   "pieces": [
+    "Mixed",
+    " ",
+    "混合",
+    " текст",
+    " with",
+    " ",
+    "日本語",
+    " and",
+    " English",
+    "."
+   ]
+  },
+  {
+   "input": "русский текст с числами 123",
+   "expected": [
+    13983,
+    1296,
+    32890,
+    148468,
+    4242,
+    78827,
+    8911,
+    27175,
+    220,
+    6694
+   ],
+   "decoded": "русский текст с числами 123",
+   "pieces": [
+    "русский",
+    " текст",
+    " с",
+    " числами",
+    " ",
+    "123"
+   ]
+  },
+  {
+   "input": "a\tb\nc d",
+   "expected": [
+    64,
+    3214,
+    198,
+    66,
+    304
+   ],
+   "decoded": "a\tb\nc d",
+   "pieces": [
+    "a",
+    "\tb",
+    "\n",
+    "c",
+    " d"
+   ]
+  },
+  {
+   "input": "   \t\n   ",
+   "expected": [
+    274,
+    5427,
+    274
+   ],
+   "decoded": "   \t\n   ",
+   "pieces": [
+    "   \t\n",
+    "   "
+   ]
+  },
+  {
+   "input": "The quick fox",
+   "expected": [
+    1008,
+    5406,
+    48279,
+    5406,
+    23868
+   ],
+   "decoded": "The quick fox",
+   "pieces": [
+    "The",
+    " quick",
+    " fox"
+   ]
+  },
+  {
+   "input": "getUserName",
+   "expected": [
+    618,
+    3479,
+    1263
+   ],
+   "decoded": "getUserName",
+   "pieces": [
+    "get",
+    "User",
+    "Name"
+   ]
+  },
+  {
+   "input": "myVariableName",
+   "expected": [
+    5636,
+    9994,
+    1263
+   ],
+   "decoded": "myVariableName",
+   "pieces": [
+    "my",
+    "Variable",
+    "Name"
+   ]
+  },
+  {
+   "input": "HTTPRequestHandler",
+   "expected": [
+    17819,
+    3188,
+    5321
+   ],
+   "decoded": "HTTPRequestHandler",
+   "pieces": [
+    "HTTPRequest",
+    "Handler"
+   ]
+  },
+  {
+   "input": "XMLHttpRequest",
+   "expected": [
+    19962,
+    9928,
+    3188
+   ],
+   "decoded": "XMLHttpRequest",
+   "pieces": [
+    "XMLHttp",
+    "Request"
+   ]
+  },
+  {
+   "input": "isFooBarBaz123",
+   "expected": [
+    289,
+    53637,
+    7637,
+    33,
+    1791,
+    6694
+   ],
+   "decoded": "isFooBarBaz123",
+   "pieces": [
+    "is",
+    "Foo",
+    "Bar",
+    "Baz",
+    "123"
+   ]
+  },
+  {
+   "input": "aB1cD2eF3",
+   "expected": [
+    64,
+    33,
+    16,
+    66,
+    35,
+    17,
+    68,
+    37,
+    18
+   ],
+   "decoded": "aB1cD2eF3",
+   "pieces": [
+    "a",
+    "B",
+    "1",
+    "c",
+    "D",
+    "2",
+    "e",
+    "F",
+    "3"
+   ]
+  },
+  {
+   "input": "camelCaseVariable_with_snake",
+   "expected": [
+    156983,
+    8081,
+    9994,
+    10758,
+    46520,
+    898
+   ],
+   "decoded": "camelCaseVariable_with_snake",
+   "pieces": [
+    "camel",
+    "Case",
+    "Variable",
+    "_with",
+    "_snake"
+   ]
+  },
+  {
+   "input": "toString",
+   "expected": [
+    1753,
+    1398
+   ],
+   "decoded": "toString",
+   "pieces": [
+    "to",
+    "String"
+   ]
+  },
+  {
+   "input": ".isValidEmail",
+   "expected": [
+    3558,
+    6724,
+    14425
+   ],
+   "decoded": ".isValidEmail",
+   "pieces": [
+    ".is",
+    "Valid",
+    "Email"
+   ]
+  },
+  {
+   "input": "config.getValue()",
+   "expected": [
+    2861,
+    1150,
+    1988,
+    539
+   ],
+   "decoded": "config.getValue()",
+   "pieces": [
+    "config",
+    ".get",
+    "Value",
+    "()"
+   ]
+  },
+  {
+   "input": "self.assertEqual(x, 42)",
+   "expected": [
+    1412,
+    6372,
+    5674,
+    3940,
+    11,
+    220,
+    5512,
+    8
+   ],
+   "decoded": "self.assertEqual(x, 42)",
+   "pieces": [
+    "self",
+    ".assert",
+    "Equal",
+    "(x",
+    ",",
+    " ",
+    "42",
+    ")"
+   ]
+  },
+  {
+   "input": "user_id.toString()",
+   "expected": [
+    2482,
+    1885,
+    4868,
+    1398,
+    539
+   ],
+   "decoded": "user_id.toString()",
+   "pieces": [
+    "user",
+    "_id",
+    ".to",
+    "String",
+    "()"
+   ]
+  },
+  {
+   "input": "(parenthesizedWord)",
+   "expected": [
+    25761,
+    2336,
+    2361,
+    16390,
+    8
+   ],
+   "decoded": "(parenthesizedWord)",
+   "pieces": [
+    "(parenthesized",
+    "Word",
+    ")"
+   ]
+  },
+  {
+   "input": "#hashtagWord",
+   "expected": [
+    2,
+    8921,
+    154183,
+    16390
+   ],
+   "decoded": "#hashtagWord",
+   "pieces": [
+    "#hashtag",
+    "Word"
+   ]
+  },
+  {
+   "input": "@mentionUser",
+   "expected": [
+    31,
+    106195,
+    3479
+   ],
+   "decoded": "@mentionUser",
+   "pieces": [
+    "@mention",
+    "User"
+   ]
+  },
+  {
+   "input": "12345678901234567890",
+   "expected": [
+    6694,
+    12972,
+    16242,
+    16349,
+    18439,
+    22523,
+    2788
+   ],
+   "decoded": "12345678901234567890",
+   "pieces": [
+    "123",
+    "456",
+    "789",
+    "012",
+    "345",
+    "678",
+    "90"
+   ]
+  },
+  {
+   "input": "9999999999",
+   "expected": [
+    11275,
+    11275,
+    11275,
+    24
+   ],
+   "decoded": "9999999999",
+   "pieces": [
+    "999",
+    "999",
+    "999",
+    "9"
+   ]
+  },
+  {
+   "input": "3.14159265358979",
+   "expected": [
+    18,
+    13,
+    18702,
+    43247,
+    42152,
+    48041,
+    6926
+   ],
+   "decoded": "3.14159265358979",
+   "pieces": [
+    "3",
+    ".",
+    "141",
+    "592",
+    "653",
+    "589",
+    "79"
+   ]
+  },
+  {
+   "input": "phone: 1234567890123",
+   "expected": [
+    9674,
+    25,
+    220,
+    6694,
+    12972,
+    16242,
+    16349,
+    18
+   ],
+   "decoded": "phone: 1234567890123",
+   "pieces": [
+    "phone",
+    ":",
+    " ",
+    "123",
+    "456",
+    "789",
+    "012",
+    "3"
+   ]
+  },
+  {
+   "input": "id_000111222333444",
+   "expected": [
+    338,
+    62,
+    1476,
+    10282,
+    18395,
+    15176,
+    24446
+   ],
+   "decoded": "id_000111222333444",
+   "pieces": [
+    "id",
+    "_",
+    "000",
+    "111",
+    "222",
+    "333",
+    "444"
+   ]
+  },
+  {
+   "input": "binary 1010101010101010",
+   "expected": [
+    36959,
+    220,
+    9033,
+    12479,
+    9033,
+    12479,
+    9033,
+    15
+   ],
+   "decoded": "binary 1010101010101010",
+   "pieces": [
+    "binary",
+    " ",
+    "101",
+    "010",
+    "101",
+    "010",
+    "101",
+    "0"
+   ]
+  },
+  {
+   "input": "北京市海淀区",
+   "expected": [
+    16643,
+    80294
+   ],
+   "decoded": "北京市海淀区",
+   "pieces": [
+    "北京市海淀区"
+   ]
+  },
+  {
+   "input": "こんにちはカタカナ",
+   "expected": [
+    16444,
+    29194,
+    6880,
+    43566,
+    8831,
+    26121,
+    21449,
+    26121,
+    42125
+   ],
+   "decoded": "こんにちはカタカナ",
+   "pieces": [
+    "こんにちはカタカナ"
+   ]
+  },
+  {
+   "input": "東京タワーは高い",
+   "expected": [
+    138442,
+    21449,
+    59168,
+    5678,
+    8831,
+    707,
+    9102
+   ],
+   "decoded": "東京タワーは高い",
+   "pieces": [
+    "東京",
+    "タワーは",
+    "高",
+    "い"
+   ]
+  },
+  {
+   "input": "한국어와中文混合",
+   "expected": [
+    17079,
+    54078,
+    28763,
+    46570,
+    16717,
+    13935
+   ],
+   "decoded": "한국어와中文混合",
+   "pieces": [
+    "한국어와",
+    "中文混合"
+   ]
+  },
+  {
+   "input": "ひらがなカタカナ漢字",
+   "expected": [
+    127935,
+    16800,
+    10389,
+    11839,
+    26121,
+    21449,
+    26121,
+    42125,
+    1435,
+    95,
+    1855
+   ],
+   "decoded": "ひらがなカタカナ漢字",
+   "pieces": [
+    "ひらがなカタカナ",
+    "漢字"
+   ]
+  },
+  {
+   "input": "台北101大樓",
+   "expected": [
+    36968,
+    9033,
+    433,
+    1761,
+    241
+   ],
+   "decoded": "台北101大樓",
+   "pieces": [
+    "台北",
+    "101",
+    "大樓"
+   ]
+  },
+  {
+   "input": "Mixed混合Text文字",
+   "expected": [
+    90190,
+    13935,
+    2520,
+    8662
+   ],
+   "decoded": "Mixed混合Text文字",
+   "pieces": [
+    "Mixed",
+    "混合",
+    "Text",
+    "文字"
+   ]
+  },
+  {
+   "input": "Löwe löwe Léopard 狮子",
+   "expected": [
+    43,
+    5954,
+    1352,
+    156774,
+    1352,
+    137205,
+    51457,
+    220,
+    21424
+   ],
+   "decoded": "Löwe löwe Léopard 狮子",
+   "pieces": [
+    "Löwe",
+    " löwe",
+    " Léopard",
+    " ",
+    "狮子"
+   ]
+  },
+  {
+   "input": "user123名前test",
+   "expected": [
+    2482,
+    6694,
+    147242,
+    3078
+   ],
+   "decoded": "user123名前test",
+   "pieces": [
+    "user",
+    "123",
+    "名前",
+    "test"
+   ]
+  },
+  {
+   "input": "GitHub仓库clone",
+   "expected": [
+    30527,
+    16336,
+    27092,
+    31663
+   ],
+   "decoded": "GitHub仓库clone",
+   "pieces": [
+    "Git",
+    "Hub",
+    "仓库",
+    "clone"
+   ]
+  },
+  {
+   "input": "日本語123English",
+   "expected": [
+    4546,
+    63011,
+    6694,
+    44372
+   ],
+   "decoded": "日本語123English",
+   "pieces": [
+    "日本語",
+    "123",
+    "English"
+   ]
+  },
+  {
+   "input": "emoji😀letterRun日本語",
+   "expected": [
+    33120,
+    134750,
+    222,
+    19525,
+    6237,
+    4546,
+    63011
+   ],
+   "decoded": "emoji😀letterRun日本語",
+   "pieces": [
+    "emoji",
+    "😀letter",
+    "Run",
+    "日本語"
+   ]
+  },
+  {
+   "input": "PascalCase北京市camelCase",
+   "expected": [
+    47,
+    64702,
+    8081,
+    16643,
+    156983,
+    8081
+   ],
+   "decoded": "PascalCase北京市camelCase",
+   "pieces": [
+    "Pascal",
+    "Case",
+    "北京市",
+    "camel",
+    "Case"
+   ]
+  }
+ ]
+}

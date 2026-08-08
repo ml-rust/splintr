@@ -54,6 +54,7 @@ default = [
     "vocab-deepseek",
     "vocab-qwen",
     "vocab-glm",
+    "vocab-kimi",
     "vocab-mistral",
     "vocab-whisper",
 ]
@@ -73,6 +74,7 @@ vocab-llama3 = []
 vocab-deepseek = []
 vocab-qwen = []
 vocab-glm = []
+vocab-kimi = []
 vocab-mistral = []
 vocab-whisper = []
 # gpt-oss is o200k_base's ranks with OpenAI's harmony special tokens — it is an

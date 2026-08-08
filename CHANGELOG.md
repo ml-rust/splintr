@@ -13,6 +13,8 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - `qwen3` (also `qwen`, `qwen2`, `qwen2.5`, `baichuan_m2`) — Qwen 2/3's 151,643-token vocabulary. Baichuan-M2 ships it unchanged, so the alias costs nothing.
 - `glm4` (also `glm`, `glm-4`, `glm4.5`, `glm-4.5`) — GLM-4/4.5's 151,329-token vocabulary.
 - `gpt-oss` (also `gpt_oss`, `o200k_harmony`) — OpenAI gpt-oss, o200k_base's ranks with the harmony special tokens and no vocabulary data of its own.
+- `kimi_k2` (also `kimi`, `kimi_k2.5`, `kimi_linear`) and `kimi_k3` — Moonshot's Kimi. One embedded rank file serves both: K2 and K3 share every merge rank and the pre-tokenizer, and differ only in what the 256 reserved ids above them are called.
+- A direct pre-tokenizer scanner for Kimi, making it 2.1x faster than the regex path.
 - A `vocab-*` cargo feature per bundled vocabulary family, all on by default and all enabled in the Python wheel. Turning one off drops its embedded data, and `from_pretrained` names the missing feature.
 - `special_tokens()` on `AnyTokenizer` (Rust and Python) lists every special token a tokenizer knows, for any loader.
 - Agent-token constants for the three new vocabularies: `QWEN3_AGENT_TOKENS`, `GLM4_AGENT_TOKENS`, `GPT_OSS_AGENT_TOKENS`.

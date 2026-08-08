@@ -58,7 +58,7 @@ Splintr loads a tokenizer from **four sources** and dispatches it to **four back
 
 | Source                                     | Loads                                                         | Backends                                    |
 | ------------------------------------------ | ------------------------------------------------------------- | ------------------------------------------- |
-| **Bundled** (`from_pretrained`)            | 11 vocabularies compiled in — load by name, no file needed    | byte-level BPE, SPM-BPE                     |
+| **Bundled** (`from_pretrained`)            | 13 vocabularies compiled in — load by name, no file needed    | byte-level BPE, SPM-BPE                     |
 | **`tokenizer.json`** (`from_json`)         | Any HuggingFace file — normalizers, pre-tokenizers, decoders  | byte-level BPE, Unigram, WordPiece          |
 | **Raw `.tiktoken`** (`Tokenizer(path, …)`) | A bare `base64(bytes) rank` file, with the pattern you supply | byte-level BPE                              |
 | **GGUF vocab** (`from_gguf_vocab`)         | The `tokenizer.ggml.*` keys, parsed by your GGUF loader       | byte-level BPE, SPM-BPE, Unigram, WordPiece |
@@ -163,7 +163,7 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 - **Four backends, one handle** — Byte-level/raw BPE, SentencePiece BPE, Unigram, and WordPiece all load as `AnyTokenizer`, so calling code stays the same whichever vocabulary you use
 - **Parallel batch encoding** — Rayon across texts; sequential for single texts based on empirical benchmarking
-- **Four loading sources** — 11 bundled vocabularies by name, any HuggingFace `tokenizer.json`, a raw `.tiktoken` file, or a GGUF vocabulary
+- **Four loading sources** — 13 bundled vocabularies by name, any HuggingFace `tokenizer.json`, a raw `.tiktoken` file, or a GGUF vocabulary
 - **Streaming decoder** — Real-time LLM output with proper UTF-8 boundary handling; one decoder per tokenizer ([guide](docs/api_guide.md#streaming-decoder))
 - **54 agent tokens** — ChatML, thinking, ReAct, tool-calling and RAG citation markers, on every bundled vocabulary ([docs](docs/special_tokens.md))
 - **Special-token policy** — `encode_ordinary` / `encode_allowed_special` so untrusted text cannot forge a control token
@@ -175,7 +175,7 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 
 | #   | Source                           | Call                                        | Use it when                                                                        |
 | --- | -------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------- |
-| 1   | **Bundled**                      | `Tokenizer.from_pretrained("qwen3")`        | The model is one of the 11 below — no file, no download, no network                |
+| 1   | **Bundled**                      | `Tokenizer.from_pretrained("qwen3")`        | The model is one of the 13 below — no file, no download, no network                |
 | 2   | **HuggingFace `tokenizer.json`** | `from_json("tokenizer.json")`               | Any other model; the file's own normalizer, pre-tokenizer and decoder are honoured |
 | 3   | **Raw `.tiktoken`**              | `Tokenizer("vocab.tiktoken", PATTERN)`      | You have a bare rank file and will supply the pattern and special tokens yourself  |
 | 4   | **GGUF vocabulary**              | `splintr::from_gguf_vocab(…)` _(Rust only)_ | You already parsed a GGUF and hold its `tokenizer.ggml.*` keys                     |
@@ -190,15 +190,17 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 | `llama3`      | Llama 3, 3.1, 3.2, 3.3         | 128,256           |
 | `qwen3`       | Qwen 2, Qwen 3, Baichuan-M2    | 151,669           |
 | `glm4`        | GLM-4, GLM-4.5                 | 151,365           |
+| `kimi_k2`     | Kimi K2, K2.5, K2.6, K2.7      | 163,840           |
+| `kimi_k3`     | Kimi K3                        | 163,840           |
 | `deepseek_v3` | DeepSeek V3, DeepSeek R1       | 128,815           |
 | `mistral_v1`  | Mistral 7B v0.1/v0.2           | 32,000            |
 | `mistral_v2`  | Mistral 7B v0.3, Codestral     | 32,768            |
 | `mistral_v3`  | Mistral NeMo, Large 2, Pixtral | 131,072           |
 | `whisper`     | OpenAI Whisper multilingual    | 51,865–51,866     |
 
-Each also answers to the aliases you would expect (`qwen`, `qwen2.5`, `glm-4.5`, `llama3.1`, `deepseek-v3`, …).
+Each also answers to the aliases you would expect (`qwen`, `qwen2.5`, `glm-4.5`, `llama3.1`, `deepseek-v3`, …); bare `kimi` resolves to K2, which covers seven published repos to K3's one.
 
-The list is short for one reason and it is not capability: the whole set is ~20 MB of embedded data, so the bar for adding one is that it covers a family people reach for. Each sits behind a `vocab-*` cargo feature (all on by default, all in the Python wheel), so a Rust build can keep only what it needs.
+The list is short for one reason and it is not capability: the whole set is ~23 MB of embedded data, so the bar for adding one is that it covers a family people reach for. Each sits behind a `vocab-*` cargo feature (all on by default, all in the Python wheel), so a Rust build can keep only what it needs.
 
 What a bundled vocabulary adds over the same vocabulary loaded from a file:
 

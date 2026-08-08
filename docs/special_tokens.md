@@ -101,6 +101,8 @@ Token IDs are carefully allocated to avoid conflicts with reserved ranges:
 | `mistral_v1`  | 0-31,999       | 0-2                   | 32,000-32,053                    | 32,054                      |
 | `mistral_v2`  | 0-32,767       | 0-9                   | 32,768-32,821                    | 32,822                      |
 | `mistral_v3`  | 0-131,071      | 0-9                   | 131,072-131,125                  | 131,126                     |
+| `kimi_k2`     | 0-163,583      | 163,584-163,839       | 163,840-163,893                  | 163,894 |
+| `kimi_k3`     | 0-163,583      | 163,584-163,839       | 163,840-163,893                  | 163,894 |
 | `whisper`     | 0-50,256       | 50,257-51,864 (v1/v2) | none                             | 51,865 (v1/v2), 51,866 (v3) |
 
 Every vocabulary above except Whisper carries exactly 54 agent tokens — all 54 names resolve on all of them. Where they _come from_ is what varies:
@@ -125,6 +127,8 @@ Where each vocabulary's block begins — the other half of every id above, since
 | `qwen3` | 151,669 | `qwen3_agent_tokens` | `QWEN3_AGENT_TOKENS` |
 | `glm4` | 151,365 | `glm4_agent_tokens` | `GLM4_AGENT_TOKENS` |
 | `gpt-oss` | 200,019 | `gpt_oss_agent_tokens` | `GPT_OSS_AGENT_TOKENS` |
+| `kimi_k2` | 163,840 | `kimi_k2_agent_tokens` | `KIMI_K2_AGENT_TOKENS` |
+| `kimi_k3` | 163,840 | `kimi_k3_agent_tokens` | `KIMI_K3_AGENT_TOKENS` |
 | `whisper` | — | — | — |
 
 <!-- END GENERATED: agent-token-block-starts -->

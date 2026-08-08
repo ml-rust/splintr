@@ -1617,3 +1617,369 @@ pub mod gpt_oss_agent_tokens {
     pub const SUMMARY_END: u32 = 200072;
 }
 
+/// Agent tokens for Kimi K2 (K2, K2.5, K2.6, K2.7, Kimi-Linear).
+///
+/// The 54-token block starts at 163840. Every id here is also reachable
+/// at runtime as `from_pretrained("kimi_k2")?.special_token_id(name)`;
+/// these constants are the compile-time form, so a typo is a compile
+/// error rather than a `None` to unwrap.
+///
+/// Kimi K2 (K2, K2.5, K2.6, K2.7, Kimi-Linear) defines IM_END itself, so those constants carry the
+/// vocabulary's own id — below `base_vocab_size`, the id the checkpoint
+/// was trained on — rather than a splintr-appended one.
+///
+/// The vocabulary's own markers are included too, so this module is its
+/// whole special-token surface. A native name that would collide with
+/// an agent token of the same meaning takes a `_NATIVE` suffix.
+pub mod kimi_k2_agent_tokens {
+    // Vocabulary-native tokens
+    /// Beginning of sequence `[BOS]`
+    pub const BOS: u32 = 163584;
+    /// End of sequence `[EOS]`
+    pub const EOS: u32 = 163585;
+    /// Native `<|im_end|>` - end of message
+    pub const IM_END: u32 = 163586;
+    /// User turn marker
+    pub const IM_USER: u32 = 163587;
+    /// Assistant turn marker
+    pub const IM_ASSISTANT: u32 = 163588;
+    /// Header begin
+    pub const START_HEADER_ID: u32 = 163590;
+    /// Header end
+    pub const END_HEADER_ID: u32 = 163591;
+    /// End of turn `[EOT]`
+    pub const EOT: u32 = 163593;
+    /// System turn marker
+    pub const IM_SYSTEM: u32 = 163594;
+    /// Tool calls section begin
+    pub const TOOL_CALLS_SECTION_BEGIN: u32 = 163595;
+    /// Tool calls section end
+    pub const TOOL_CALLS_SECTION_END: u32 = 163596;
+    /// Single tool call begin
+    pub const TOOL_CALL_BEGIN: u32 = 163597;
+    /// Tool call argument begin
+    pub const TOOL_CALL_ARGUMENT_BEGIN: u32 = 163598;
+    /// Single tool call end
+    pub const TOOL_CALL_END: u32 = 163599;
+    /// Message middle marker
+    pub const IM_MIDDLE: u32 = 163601;
+    /// Media block begin
+    pub const MEDIA_BEGIN: u32 = 163602;
+    /// Media content
+    pub const MEDIA_CONTENT: u32 = 163603;
+    /// Media block end
+    pub const MEDIA_END: u32 = 163604;
+    /// Media padding
+    pub const MEDIA_PAD: u32 = 163605;
+    /// Native `<think>` token
+    pub const THINK_NATIVE: u32 = 163606;
+    /// Native `</think>` token
+    pub const THINK_END_NATIVE: u32 = 163607;
+    /// Unknown token `[UNK]`
+    pub const UNK: u32 = 163838;
+    /// Native padding `[PAD]`
+    pub const PAD_NATIVE: u32 = 163839;
+
+    // Conversation & Roles
+    /// System role - system instructions
+    pub const SYSTEM: u32 = 163840;
+    /// User role - user input
+    pub const USER: u32 = 163841;
+    /// Assistant role - model output
+    pub const ASSISTANT: u32 = 163842;
+    /// Start of message - ChatML wrapper
+    pub const IM_START: u32 = 163843;
+
+    // Reasoning/Thinking
+    /// Start of thinking - Chain-of-Thought
+    pub const THINK: u32 = 163845;
+    /// End of thinking
+    pub const THINK_END: u32 = 163846;
+
+    // ReAct Agent Loop
+    /// Start of plan - action planning
+    pub const PLAN: u32 = 163847;
+    /// End of plan
+    pub const PLAN_END: u32 = 163848;
+    /// Start of step - individual action step
+    pub const STEP: u32 = 163849;
+    /// End of step
+    pub const STEP_END: u32 = 163850;
+    /// Start of action - agent action
+    pub const ACT: u32 = 163851;
+    /// End of action
+    pub const ACT_END: u32 = 163852;
+    /// Start of observation - environment feedback
+    pub const OBSERVE: u32 = 163853;
+    /// End of observation
+    pub const OBSERVE_END: u32 = 163854;
+
+    // Tool/Function Calling
+    /// Start of function call - function invocation
+    pub const FUNCTION: u32 = 163855;
+    /// End of function call
+    pub const FUNCTION_END: u32 = 163856;
+    /// Start of function result - return value
+    pub const RESULT: u32 = 163857;
+    /// End of function result
+    pub const RESULT_END: u32 = 163858;
+    /// Start of error - error message
+    pub const ERROR: u32 = 163859;
+    /// End of error
+    pub const ERROR_END: u32 = 163860;
+
+    // Code Execution
+    /// Start of code - inline code execution
+    pub const CODE: u32 = 163861;
+    /// End of code
+    pub const CODE_END: u32 = 163862;
+    /// Start of output - execution output
+    pub const OUTPUT: u32 = 163863;
+    /// End of output
+    pub const OUTPUT_END: u32 = 163864;
+    /// Start of language tag - code language
+    pub const LANG: u32 = 163865;
+    /// End of language tag
+    pub const LANG_END: u32 = 163866;
+
+    // RAG & Citations
+    /// Start of context - retrieved context
+    pub const CONTEXT: u32 = 163867;
+    /// End of context
+    pub const CONTEXT_END: u32 = 163868;
+    /// Start of quote - exact citation
+    pub const QUOTE: u32 = 163869;
+    /// End of quote
+    pub const QUOTE_END: u32 = 163870;
+    /// Start of cite - citation reference
+    pub const CITE: u32 = 163871;
+    /// End of cite
+    pub const CITE_END: u32 = 163872;
+    /// Start of source - document source
+    pub const SOURCE: u32 = 163873;
+    /// End of source
+    pub const SOURCE_END: u32 = 163874;
+
+    // Memory/State Management
+    /// Start of memory - persistent memory
+    pub const MEMORY: u32 = 163875;
+    /// End of memory
+    pub const MEMORY_END: u32 = 163876;
+    /// Start of recall - memory retrieval
+    pub const RECALL: u32 = 163877;
+    /// End of recall
+    pub const RECALL_END: u32 = 163878;
+
+    // Control Tokens
+    /// Padding token
+    pub const PAD: u32 = 163879;
+    /// Stop generation token
+    pub const STOP: u32 = 163880;
+    /// Separator token
+    pub const SEP: u32 = 163881;
+
+    // Multimodal Placeholders
+    /// Start of image - image placeholder
+    pub const IMAGE: u32 = 163882;
+    /// End of image
+    pub const IMAGE_END: u32 = 163883;
+    /// Start of audio - audio placeholder
+    pub const AUDIO: u32 = 163884;
+    /// End of audio
+    pub const AUDIO_END: u32 = 163885;
+    /// Start of video - video placeholder
+    pub const VIDEO: u32 = 163886;
+    /// End of video
+    pub const VIDEO_END: u32 = 163887;
+
+    // Document Structure
+    /// Start of title - document/section title
+    pub const TITLE: u32 = 163888;
+    /// End of title
+    pub const TITLE_END: u32 = 163889;
+    /// Start of section - semantic document section
+    pub const SECTION: u32 = 163890;
+    /// End of section
+    pub const SECTION_END: u32 = 163891;
+    /// Start of summary - condensed content summary
+    pub const SUMMARY: u32 = 163892;
+    /// End of summary
+    pub const SUMMARY_END: u32 = 163893;
+}
+
+/// Agent tokens for Kimi K3.
+///
+/// The 54-token block starts at 163840. Every id here is also reachable
+/// at runtime as `from_pretrained("kimi_k3")?.special_token_id(name)`;
+/// these constants are the compile-time form, so a typo is a compile
+/// error rather than a `None` to unwrap.
+///
+/// Kimi K3 defines SEP itself, so those constants carry the
+/// vocabulary's own id — below `base_vocab_size`, the id the checkpoint
+/// was trained on — rather than a splintr-appended one.
+///
+/// The vocabulary's own markers are included too, so this module is its
+/// whole special-token surface. A native name that would collide with
+/// an agent token of the same meaning takes a `_NATIVE` suffix.
+pub mod kimi_k3_agent_tokens {
+    // Vocabulary-native tokens
+    /// Beginning of sequence `[BOS]`
+    pub const BOS: u32 = 163584;
+    /// End of sequence `[EOS]`
+    pub const EOS: u32 = 163585;
+    /// End of message
+    pub const END_OF_MSG: u32 = 163586;
+    /// Open marker
+    pub const OPEN: u32 = 163587;
+    /// Close marker
+    pub const CLOSE: u32 = 163588;
+    /// Separator
+    pub const SEP: u32 = 163589;
+    /// Header begin
+    pub const START_HEADER_ID: u32 = 163590;
+    /// Header end
+    pub const END_HEADER_ID: u32 = 163591;
+    /// End of turn `[EOT]`
+    pub const EOT: u32 = 163593;
+    /// Media block begin
+    pub const MEDIA_BEGIN: u32 = 163602;
+    /// Media content
+    pub const MEDIA_CONTENT: u32 = 163603;
+    /// Media block end
+    pub const MEDIA_END: u32 = 163604;
+    /// Media padding
+    pub const MEDIA_PAD: u32 = 163605;
+    /// OS-agent mode marker
+    pub const OSAGENT_MODE: u32 = 163649;
+    /// Unknown token `[UNK]`
+    pub const UNK: u32 = 163838;
+    /// Native padding `[PAD]`
+    pub const PAD_NATIVE: u32 = 163839;
+
+    // Conversation & Roles
+    /// System role - system instructions
+    pub const SYSTEM: u32 = 163840;
+    /// User role - user input
+    pub const USER: u32 = 163841;
+    /// Assistant role - model output
+    pub const ASSISTANT: u32 = 163842;
+    /// Start of message - ChatML wrapper
+    pub const IM_START: u32 = 163843;
+    /// End of message - ChatML wrapper
+    pub const IM_END: u32 = 163844;
+
+    // Reasoning/Thinking
+    /// Start of thinking - Chain-of-Thought
+    pub const THINK: u32 = 163845;
+    /// End of thinking
+    pub const THINK_END: u32 = 163846;
+
+    // ReAct Agent Loop
+    /// Start of plan - action planning
+    pub const PLAN: u32 = 163847;
+    /// End of plan
+    pub const PLAN_END: u32 = 163848;
+    /// Start of step - individual action step
+    pub const STEP: u32 = 163849;
+    /// End of step
+    pub const STEP_END: u32 = 163850;
+    /// Start of action - agent action
+    pub const ACT: u32 = 163851;
+    /// End of action
+    pub const ACT_END: u32 = 163852;
+    /// Start of observation - environment feedback
+    pub const OBSERVE: u32 = 163853;
+    /// End of observation
+    pub const OBSERVE_END: u32 = 163854;
+
+    // Tool/Function Calling
+    /// Start of function call - function invocation
+    pub const FUNCTION: u32 = 163855;
+    /// End of function call
+    pub const FUNCTION_END: u32 = 163856;
+    /// Start of function result - return value
+    pub const RESULT: u32 = 163857;
+    /// End of function result
+    pub const RESULT_END: u32 = 163858;
+    /// Start of error - error message
+    pub const ERROR: u32 = 163859;
+    /// End of error
+    pub const ERROR_END: u32 = 163860;
+
+    // Code Execution
+    /// Start of code - inline code execution
+    pub const CODE: u32 = 163861;
+    /// End of code
+    pub const CODE_END: u32 = 163862;
+    /// Start of output - execution output
+    pub const OUTPUT: u32 = 163863;
+    /// End of output
+    pub const OUTPUT_END: u32 = 163864;
+    /// Start of language tag - code language
+    pub const LANG: u32 = 163865;
+    /// End of language tag
+    pub const LANG_END: u32 = 163866;
+
+    // RAG & Citations
+    /// Start of context - retrieved context
+    pub const CONTEXT: u32 = 163867;
+    /// End of context
+    pub const CONTEXT_END: u32 = 163868;
+    /// Start of quote - exact citation
+    pub const QUOTE: u32 = 163869;
+    /// End of quote
+    pub const QUOTE_END: u32 = 163870;
+    /// Start of cite - citation reference
+    pub const CITE: u32 = 163871;
+    /// End of cite
+    pub const CITE_END: u32 = 163872;
+    /// Start of source - document source
+    pub const SOURCE: u32 = 163873;
+    /// End of source
+    pub const SOURCE_END: u32 = 163874;
+
+    // Memory/State Management
+    /// Start of memory - persistent memory
+    pub const MEMORY: u32 = 163875;
+    /// End of memory
+    pub const MEMORY_END: u32 = 163876;
+    /// Start of recall - memory retrieval
+    pub const RECALL: u32 = 163877;
+    /// End of recall
+    pub const RECALL_END: u32 = 163878;
+
+    // Control Tokens
+    /// Padding token
+    pub const PAD: u32 = 163879;
+    /// Stop generation token
+    pub const STOP: u32 = 163880;
+
+    // Multimodal Placeholders
+    /// Start of image - image placeholder
+    pub const IMAGE: u32 = 163882;
+    /// End of image
+    pub const IMAGE_END: u32 = 163883;
+    /// Start of audio - audio placeholder
+    pub const AUDIO: u32 = 163884;
+    /// End of audio
+    pub const AUDIO_END: u32 = 163885;
+    /// Start of video - video placeholder
+    pub const VIDEO: u32 = 163886;
+    /// End of video
+    pub const VIDEO_END: u32 = 163887;
+
+    // Document Structure
+    /// Start of title - document/section title
+    pub const TITLE: u32 = 163888;
+    /// End of title
+    pub const TITLE_END: u32 = 163889;
+    /// Start of section - semantic document section
+    pub const SECTION: u32 = 163890;
+    /// End of section
+    pub const SECTION_END: u32 = 163891;
+    /// Start of summary - condensed content summary
+    pub const SUMMARY: u32 = 163892;
+    /// End of summary
+    pub const SUMMARY_END: u32 = 163893;
+}
+
