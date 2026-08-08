@@ -2,23 +2,26 @@
 
 One engine per invocation, emitting a JSON line the report script folds into
 tables. Engines are only ever compared inside a *suite*, which fixes the
-vocabulary — throughput across different vocabularies is not comparable, since
-the token counts differ.
+vocabulary, and the check mode proves they produce identical ids before any
+timing is read.
 
     perf_bench.py <suite> <engine> <label> <spec> [--check]
 
-  suite   name of the vocabulary under test, e.g. qwen3 / cl100k_base
+  suite   name of the vocabulary under test, e.g. cl100k_base
   engine  splintr | tokenizers | tiktoken
   spec    path to a tokenizer.json, or a tiktoken/splintr encoding name
-  --check emit token ids instead of timings, so the caller can prove the
-          engines agree before reading anything into their speed
+  --check emit token ids instead of timings
 
-Workloads are the three that decide a migration: steady-state single-text
-encoding (per-request latency), steady-state batch encoding (bulk throughput),
-and vocabulary load time (process start, serverless cold start).
+Throughput is MB/s over the input bytes rather than tokens/s, matching the
+README: bytes are the one quantity every engine sees identically.
+
+Workloads are the three that decide a migration: single-text latency by corpus
+shape (per-request cost), batch throughput by batch size (bulk ingest), and
+vocabulary load time (process start, serverless cold start).
 """
 
 import json
+import os
 import statistics
 import sys
 import time
@@ -26,18 +29,18 @@ import time
 WARMUP = 2
 ITERS = 10
 LOAD_ITERS = 5
+BATCH_SIZES = (100, 500, 1000)
 
 
 # --- corpora ----------------------------------------------------------------
 # Deterministic and shaped like real traffic rather than one synthetic string:
-# the pre-tokenizer's cost depends heavily on script and punctuation density.
+# pre-tokenizer cost depends heavily on script and punctuation density.
 
-def _texts(seed_list, count=1000, repeat=1):
-    out = []
-    for i in range(count):
-        body = "".join(seed_list[i % len(seed_list)] for _ in range(repeat))
-        out.append(f"{body}\nrecord_id={i:06d}\n")
-    return out
+def _texts(seeds, count=1000, repeat=1):
+    return [
+        "".join(seeds[i % len(seeds)] for _ in range(repeat)) + f"\nrecord_id={i:06d}\n"
+        for i in range(count)
+    ]
 
 
 ENGLISH = [
@@ -75,6 +78,14 @@ CORPORA = {
     "long-docs": lambda: _texts(ENGLISH + CHINESE + CODE, count=50, repeat=40),
 }
 
+# Batches in the wild are heterogeneous, so the batch axis uses one mixed corpus
+# and varies only its size.
+MIXED = _texts(ENGLISH + CHINESE + CODE + JSON_DOCS + MULTILINGUAL)
+
+
+def megabytes(texts):
+    return sum(len(t.encode("utf-8")) for t in texts) / (1024 * 1024)
+
 
 # --- engines ----------------------------------------------------------------
 
@@ -95,10 +106,28 @@ def load_engine(engine, spec):
         from tokenizers import Tokenizer
 
         tok = Tokenizer.from_file(spec)
+        # `encode_batch_fast` skips the offset bookkeeping the plain call does,
+        # which nothing here asks for — the same choice gigatoken's own
+        # comparison script makes. Ids are then materialised as lists, because
+        # that is what every other engine returns.
+        batch = getattr(tok, "encode_batch_fast", tok.encode_batch)
         return (
             lambda t: tok.encode(t, add_special_tokens=False).ids,
-            lambda ts: [e.ids for e in tok.encode_batch(ts, add_special_tokens=False)],
+            lambda ts: [e.ids for e in batch(ts, add_special_tokens=False)],
         )
+
+    if engine == "gigatoken":
+        import gigatoken as gt
+
+        tok = gt.Tokenizer.from_json(open(spec).read()) if spec.endswith(".json") else gt.Tokenizer(spec)
+        # `encode_batch` hands back an awkward Array, which is cheaper than the
+        # Python lists every other engine builds — comparing against it would
+        # charge them for object construction gigatoken skips. `encode_batch_list`
+        # is the same work ending in plain lists, so the outputs match in kind.
+        # `encode` returns a numpy array for the same reason; materialise it.
+        # `.tolist()` rather than `list()`: the latter yields numpy scalars, not
+        # the Python ints every other engine returns.
+        return (lambda t: tok.encode(t).tolist()), (lambda ts: tok.encode_batch_list(ts))
 
     if engine == "tiktoken":
         import tiktoken
@@ -117,7 +146,14 @@ def load_engine(engine, spec):
         enc = tiktoken.get_encoding(spec)
         # `encode_ordinary` on both paths: it matches splintr's `encode_raw` in
         # treating no text as special, and pairs with `encode_ordinary_batch`.
-        return (lambda t: enc.encode_ordinary(t)), (lambda ts: enc.encode_ordinary_batch(ts))
+        # `num_threads` defaults to 8 regardless of the machine, so it is set to
+        # the core count — splintr and gigatoken both use every core, and leaving
+        # tiktoken on 8 would be measuring the default, not the library.
+        threads = os.cpu_count() or 8
+        return (
+            lambda t: enc.encode_ordinary(t),
+            lambda ts: enc.encode_ordinary_batch(ts, num_threads=threads),
+        )
 
     raise SystemExit(f"unknown engine {engine!r}")
 
@@ -125,22 +161,13 @@ def load_engine(engine, spec):
 # --- workloads --------------------------------------------------------------
 
 
-def time_best(fn, iters=ITERS):
+def time_best(fn):
     for _ in range(WARMUP):
         fn()
     samples = []
-    for _ in range(iters):
+    for _ in range(ITERS):
         start = time.perf_counter()
         fn()
-        samples.append((time.perf_counter() - start) * 1e3)
-    return statistics.median(samples)
-
-
-def measure_load(engine, spec):
-    samples = []
-    for _ in range(LOAD_ITERS):
-        start = time.perf_counter()
-        load_engine(engine, spec)
         samples.append((time.perf_counter() - start) * 1e3)
     return statistics.median(samples)
 
@@ -150,23 +177,31 @@ def main():
     encode_one, encode_batch = load_engine(engine, spec)
 
     if "--check" in sys.argv:
-        sample = CORPORA["multilingual"]()[:3] + CORPORA["code"]()[:2]
+        sample = CORPORA["multilingual"]()[:3] + CORPORA["code"]()[:2] + CORPORA["json"]()[:2]
         print(json.dumps({"ids": [encode_one(t) for t in sample]}))
         return
 
-    corpora = {}
+    single = {}
     for name, build in CORPORA.items():
         texts = build()
-        tokens = sum(len(encode_one(t)) for t in texts)
-        single = time_best(lambda: [encode_one(t) for t in texts])
-        batch = time_best(lambda: encode_batch(texts))
-        corpora[name] = {
-            "tokens": tokens,
-            "single_ms": single,
-            "batch_ms": batch,
-            "single_tok_per_s": tokens / (single / 1e3),
-            "batch_tok_per_s": tokens / (batch / 1e3),
+        ms = time_best(lambda: [encode_one(t) for t in texts])
+        single[name] = {
+            "ms": ms,
+            "mb_per_s": megabytes(texts) / (ms / 1e3),
+            "tokens": sum(len(encode_one(t)) for t in texts),
         }
+
+    batch = {}
+    for size in BATCH_SIZES:
+        texts = MIXED[:size]
+        ms = time_best(lambda: encode_batch(texts))
+        batch[str(size)] = {"ms": ms, "mb_per_s": megabytes(texts) / (ms / 1e3)}
+
+    load_samples = []
+    for _ in range(LOAD_ITERS):
+        start = time.perf_counter()
+        load_engine(engine, spec)
+        load_samples.append((time.perf_counter() - start) * 1e3)
 
     print(
         json.dumps(
@@ -174,8 +209,9 @@ def main():
                 "suite": suite,
                 "engine": engine,
                 "label": label,
-                "load_ms": measure_load(engine, spec),
-                "corpora": corpora,
+                "load_ms": statistics.median(load_samples),
+                "single": single,
+                "batch": batch,
             }
         ),
         flush=True,
