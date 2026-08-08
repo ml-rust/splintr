@@ -1,8 +1,9 @@
 use super::spec::Behavior;
 
-/// Split `piece` by `re`. The matched spans are the delimiters (or, with
-/// `invert`, the spans between matches); everything else is content. The matched
-/// delimiters are combined with surrounding content according to `behavior`.
+/// Split `piece` by `re`. The matched spans are the delimiters and everything
+/// between them is content; with `invert`, the matches are the content and the
+/// spans between them are the delimiters. The delimiters are combined with the
+/// surrounding content according to `behavior`.
 pub(super) fn split_regex<'p>(
     piece: &'p str,
     re: &regexr::Regex,
@@ -10,40 +11,33 @@ pub(super) fn split_regex<'p>(
     invert: bool,
     out: &mut Vec<&'p str>,
 ) {
-    let matches: Vec<(usize, usize)> = re.find_iter(piece).map(|m| (m.start(), m.end())).collect();
-    let delims: Vec<(usize, usize)> = if invert {
-        let mut d = Vec::new();
-        let mut last = 0;
-        for &(s, e) in &matches {
-            if s > last {
-                d.push((last, s));
-            }
-            last = e;
-        }
-        if last < piece.len() {
-            d.push((last, piece.len()));
-        }
-        d
-    } else {
-        matches
-    };
+    let matches = re.find_iter(piece).map(|m| (m.start(), m.end()));
 
     // Flatten into an ordered list of (range, is_delimiter) segments.
-    let mut segs: Vec<Segment> = Vec::with_capacity(delims.len() * 2 + 1);
+    //
+    // `invert` only swaps which side is the delimiter: normally the matches are
+    // the delimiters and the gaps between them are content, and inverted it is
+    // the other way round. It must not be implemented by deriving the gaps and
+    // re-complementing them — the boundary between two *adjacent* matches is not
+    // a gap, so complementing merges them into one span. These pre-tokenizer
+    // patterns match contiguously across the whole input (` ?\p{L}+|\s+|…`),
+    // which is exactly the case with no gaps at all, and merging there means no
+    // splitting whatsoever.
+    let mut segs: Vec<Segment> = Vec::new();
     let mut last = 0;
-    for (s, e) in delims {
+    for (s, e) in matches {
         if s > last {
             segs.push(Segment {
                 start: last,
                 end: s,
-                delimiter: false,
+                delimiter: invert,
             });
         }
         if e > s {
             segs.push(Segment {
                 start: s,
                 end: e,
-                delimiter: true,
+                delimiter: !invert,
             });
         }
         last = e;
@@ -52,7 +46,7 @@ pub(super) fn split_regex<'p>(
         segs.push(Segment {
             start: last,
             end: piece.len(),
-            delimiter: false,
+            delimiter: invert,
         });
     }
 

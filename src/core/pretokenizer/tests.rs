@@ -87,15 +87,54 @@ fn pipeline_digits_then_byte_level() {
     assert_eq!(pieces, vec!["a", "1", "2"]);
 }
 
+/// `invert` swaps which side is the delimiter: the matches become the content
+/// and the spans between them the delimiters.
+///
+/// The contiguous case is the one that matters and the one that was wrong:
+/// a pre-tokenizer pattern like `\w+|\s+` covers the whole input, so there are
+/// no gaps between its matches. Deriving the content by complementing the gaps
+/// therefore yields one span covering everything, and the text is never split —
+/// which is what every `tokenizer.json` carrying `"invert": true` used to get,
+/// the Xenova GPT-4 and GPT-4o exports among them.
 #[test]
-fn split_invert_keeps_content_between_matches() {
-    // invert=true: matches are content; gaps (delimiters) handled by `keep`.
+fn split_invert_keeps_each_match_when_matches_are_contiguous() {
+    let split_with = |pattern: &str, behavior, text: &'static str| {
+        let re = Box::new(RegexBuilder::new(pattern).build().expect("compiles"));
+        let mut out = Vec::new();
+        split_regex(text, &re, behavior, true, &mut out);
+        out.into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+
+    // Contiguous matches: every piece survives on its own.
+    assert_eq!(
+        split_with(r"\w+|\s+", Behavior::Removed, "ab cd"),
+        vec!["ab", " ", "cd"]
+    );
+    // Gaps between matches are the delimiters, so `Removed` drops them.
+    assert_eq!(
+        split_with(r"\w+", Behavior::Removed, "ab cd"),
+        vec!["ab", "cd"]
+    );
+    // and `Isolated` keeps them as their own pieces.
+    assert_eq!(
+        split_with(r"\w+", Behavior::Isolated, "ab cd"),
+        vec!["ab", " ", "cd"]
+    );
+}
+
+#[test]
+fn split_invert_partitions_the_whole_piece() {
     let re = Box::new(gpt2_regex().expect("GPT2_PATTERN compiles"));
     let mut out = Vec::new();
-    // Using a simple digit regex via Whitespace isn't ideal; verify invert
-    // path runs without panicking and partitions the string.
-    split_regex("ab", &re, Behavior::Isolated, true, &mut out);
-    assert_eq!(out.concat(), "ab");
+    split_regex(
+        "def f(x):\n    return x",
+        &re,
+        Behavior::Isolated,
+        true,
+        &mut out,
+    );
+    assert_eq!(out.concat(), "def f(x):\n    return x");
+    assert!(out.len() > 1, "a GPT-2 pattern must split this into pieces");
 }
 
 /// HuggingFace's `Split` takes either a literal string or a regex, and they
