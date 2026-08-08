@@ -2,7 +2,7 @@
 #
 # The suite is CPU-bound and hermetic — every test builds its tokenizer from
 # embedded vocabularies or a fixture file, touches no shared state, and needs no
-# network — so everything runs at full parallelism with no serial groups.
+# network — so everything runs at full parallelism, with the one exception below.
 
 [profile.default]
 test-threads = "num-cpus"
@@ -16,3 +16,12 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 # target/nextest/<profile>/junit.xml.
 [profile.default.junit]
 path = "junit.xml"
+
+# The one test that asserts on wall-clock parallel speedup rather than on output.
+# nextest runs a process per test, so by default this one races every other test
+# in the suite for the very cores whose use it is measuring — on a small runner
+# that alone can push the observed speedup under the threshold. Reserving every
+# runner slot gives it the machine to itself, which is the condition it assumes.
+[[profile.default.overrides]]
+filter = 'test(=batch_encoding_scales_with_available_cores)'
+threads-required = "num-cpus"
