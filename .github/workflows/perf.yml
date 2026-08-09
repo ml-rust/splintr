@@ -279,8 +279,11 @@ jobs:
 
           python - <<'PY' >> "$GITHUB_ENV"
           import json, os, sys
+          def load(path):
+              d = json.load(open(path))
+              return d["ids"], d["batch_ids"]
           def same(a, b):
-              return json.load(open(a))["ids"] == json.load(open(b))["ids"]
+              return load(a) == load(b)
           giga = os.environ.get("GIGATOKEN")
           checks = {}
           for f in ("cl100k", "o200k", "qwen3", "kimi"):
@@ -291,6 +294,12 @@ jobs:
               checks[f"{f}-json: splintr == tokenizers"] = same(f"ids-s-{f}-j.json", f"ids-h-{f}-j.json")
               if giga:
                   checks[f"{f}-json: splintr == gigatoken"] = same(f"ids-s-{f}-j.json", f"ids-g-{f}-j.json")
+          # An engine that disagrees with itself invalidates its own row
+          # before any cross-engine comparison is worth reading.
+          import glob
+          for path in sorted(glob.glob("ids-*.json")):
+              ids, batch_ids = load(path)
+              checks[f"{path}: batch == single"] = ids == batch_ids
           print("PARITY<<EOF")
           for name, ok in checks.items():
               print(f"- {name}: {'yes' if ok else 'NO'}")

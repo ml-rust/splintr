@@ -357,7 +357,20 @@ def main():
 
     if "--check" in sys.argv:
         sample = CORPORA["multilingual"]()[:3] + CORPORA["code"]()[:2] + CORPORA["json"]()[:2]
-        print(json.dumps({"ids": [encode_one(t) for t in sample]}))
+        # Both paths. Three of the four tables time the batch call and nothing
+        # checked it, so an engine whose batch disagreed with its own
+        # single-text call — or returned a different kind of object from it —
+        # would have been timed as though it answered the same question as
+        # everyone else. Rows are materialised as lists so an engine handing
+        # back a view or an array is compared by value.
+        print(
+            json.dumps(
+                {
+                    "ids": [encode_one(t) for t in sample],
+                    "batch_ids": [list(row) for row in encode_batch(sample)],
+                }
+            )
+        )
         return
 
     single = {}
