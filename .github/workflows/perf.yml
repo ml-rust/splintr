@@ -296,10 +296,23 @@ jobs:
                   checks[f"{f}-json: splintr == gigatoken"] = same(f"ids-s-{f}-j.json", f"ids-g-{f}-j.json")
           # An engine that disagrees with itself invalidates its own row
           # before any cross-engine comparison is worth reading.
-          import glob
+          #
+          # `check()` wrote these as ids-<engine>-<vocabulary>-<loader>.json.
+          # Spell that back out rather than printing the path: these lines sit
+          # in the public run summary next to the cross-engine ones above, and
+          # "ids-g-cl100k-j.json" names a temp file the reader never saw.
+          import glob, re
+          ENGINES = {"s": "splintr", "t": "tiktoken", "g": "gigatoken", "h": "tokenizers"}
+          LOADERS = {"r": "ranks", "j": "json"}
           for path in sorted(glob.glob("ids-*.json")):
               ids, batch_ids = load(path)
-              checks[f"{path}: batch == single"] = ids == batch_ids
+              m = re.fullmatch(r"ids-(\w)-(.+)-(\w)\.json", path)
+              if m and m[1] in ENGINES and m[3] in LOADERS:
+                  label = f"{m[2]}-{LOADERS[m[3]]}: {ENGINES[m[1]]} batch == single"
+              else:
+                  # An unrecognised name still gets checked, just not renamed.
+                  label = f"{path}: batch == single"
+              checks[label] = ids == batch_ids
           print("PARITY<<EOF")
           for name, ok in checks.items():
               print(f"- {name}: {'yes' if ok else 'NO'}")
