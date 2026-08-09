@@ -11,6 +11,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 ### Changed
 
 - The chunk cache holds more entries by default, retiring 5-9% fewer instructions per encode across the bundled vocabularies. It still caps at a fixed size and fills lazily.
+- The case-split pre-tokenizers take an all-ASCII shortcut through their letter branches, and skip them outright where no letter branch can match: Kimi encodes ~31% and o200k/gpt-oss ~23% fewer instructions. Token ids are unchanged.
 
 ## [0.16.1] - 2026-08-09
 

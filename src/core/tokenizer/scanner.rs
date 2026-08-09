@@ -759,6 +759,12 @@ fn case_split_branches(
     upper: Run,
     lower: Run,
 ) -> Option<usize> {
+    match ascii_case_split(bytes, pos) {
+        AsciiCase::Match(end) => return Some(end),
+        AsciiCase::NoMatch => return None,
+        AsciiCase::Undecided => {}
+    }
+
     let with_prefix = prefix_len(text, bytes, pos).map(|p| pos + p);
 
     // Branch A, prefix first then without.
@@ -778,6 +784,62 @@ fn case_split_branches(
         }
     }
     None
+}
+
+/// Both branches at once, for the all-ASCII word that most prose is made of.
+///
+/// The general form is four attempts — two prefix positions by two branches —
+/// because the uppercase and lowercase classes overlap on `\p{Lm}`, `\p{Lo}`
+/// and `\p{M}`, so a greedy `U*` may have to give characters back. **No ASCII
+/// character is in both classes**, which collapses all of it: `A-Z` then `a-z`
+/// is the longest match either branch can produce, and whichever branch claims
+/// it, the end is the same offset.
+///
+/// [`ascii_case_split`]'s verdict. `NoMatch` and `Undecided` are distinct
+/// because a chunk of punctuation or whitespace is *provably* not a letter
+/// branch, and re-deriving that through the general form is wasted work — it is
+/// the shape a quarter of prose chunks take.
+enum AsciiCase {
+    Match(usize),
+    NoMatch,
+    Undecided,
+}
+
+#[inline]
+fn ascii_case_split(bytes: &[u8], pos: usize) -> AsciiCase {
+    let Some(&first) = bytes.get(pos) else {
+        return AsciiCase::Undecided;
+    };
+    if first >= 0x80 {
+        return AsciiCase::Undecided;
+    }
+
+    // `[^\r\n\p{L}\p{N}]?`, greedy, so it is taken whenever it can be.
+    let start =
+        pos + usize::from(!first.is_ascii_alphanumeric() && first != b'\r' && first != b'\n');
+
+    let mut i = start;
+    while i < bytes.len() && bytes[i].is_ascii_uppercase() {
+        i += 1;
+    }
+    while i < bytes.len() && bytes[i].is_ascii_lowercase() {
+        i += 1;
+    }
+
+    if i == start {
+        // No letters here. Only an ASCII byte proves it: a non-ASCII one could
+        // be a letter of either class and start a run this cannot see.
+        return match bytes.get(start) {
+            Some(&b) if b < 0x80 => AsciiCase::NoMatch,
+            None => AsciiCase::NoMatch,
+            Some(_) => AsciiCase::Undecided,
+        };
+    }
+    // A non-ASCII byte could extend the run under either class.
+    if bytes.get(i).is_some_and(|&b| b >= 0x80) {
+        return AsciiCase::Undecided;
+    }
+    AsciiCase::Match(i + trailing_contraction(bytes, i))
 }
 
 /// `U* L+` — greedy `U*` gives characters back until a lowercase-class run can
@@ -1473,6 +1535,56 @@ mod tests {
     fn scanners_agree_with_their_regex_on_shaped_inputs() {
         for (name, pattern, scan) in all_scanners() {
             for input in SHAPED {
+                assert_agrees(name, pattern, scan, input);
+            }
+        }
+    }
+
+    /// The all-ASCII shortcut in [`ascii_case_split`], at its edges.
+    ///
+    /// It collapses four branch attempts into one scan by relying on no ASCII
+    /// character being in both letter classes. Each case below is a way that
+    /// could be wrong: an uppercase run with no lowercase tail (branch B, not
+    /// A), a run the optional prefix must or must not absorb, a contraction
+    /// after either branch, and a run that a non-ASCII byte extends — which
+    /// must fall back to the general form rather than stopping short.
+    #[test]
+    fn scanners_agree_with_their_regex_on_case_split_shapes() {
+        const CASES: &[&str] = &[
+            "XMLHttpRequest",
+            " XMLHttpRequest",
+            "ABC",
+            " ABC",
+            "ABC def",
+            "aB",
+            "Ab",
+            "A",
+            " A",
+            "(the",
+            "(The",
+            "(ABC",
+            "\r\nthe",
+            "\nThe",
+            "don't",
+            "DON'T",
+            "Don's",
+            "ABC'S",
+            "it's Sam's",
+            // Non-ASCII must extend the run, so the shortcut has to decline.
+            "caFé",
+            "ABCé",
+            "Ünicode",
+            "aÜb",
+            "abcé def",
+            "ABC\u{0301}",
+            "the\u{00a0}end",
+            "A\u{4e2d}B",
+            // Prefix that is itself non-ASCII.
+            "\u{00a0}the",
+            "\u{2028}The",
+        ];
+        for (name, pattern, scan) in all_scanners() {
+            for input in CASES {
                 assert_agrees(name, pattern, scan, input);
             }
         }
