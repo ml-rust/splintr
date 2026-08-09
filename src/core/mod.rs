@@ -49,6 +49,7 @@ pub(crate) mod scratch;
 pub mod sentencepiece;
 pub mod spm;
 pub(crate) mod streaming;
+mod token_bytes;
 pub mod tokenize;
 mod tokenizer;
 mod vocab;
@@ -75,6 +76,7 @@ pub use pretrained::{
 pub use sentencepiece::{SentencePieceError, SentencePieceTokenizer};
 pub use spm::{SpmError, SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
 pub use streaming::StreamingDecoder;
+pub use token_bytes::{encoder_from_owned, Decoder, Encoder, TokenBytes};
 pub use tokenize::{Tokenize, TokenizeError};
 pub use tokenizer::{
     cl100k_agent_tokens, deepseek_v3_agent_tokens, glm4_agent_tokens, gpt_oss_agent_tokens,
@@ -85,8 +87,8 @@ pub use tokenizer::{
     O200K_BASE_PATTERN, QWEN2_PATTERN, SENTENCEPIECE_PATTERN,
 };
 pub use vocab::{
-    build_decoder, load_packed_bpe, load_spm_vocab, load_tiktoken_bpe, load_tiktoken_bpe_file,
-    place_special_pieces, VocabError,
+    build_decoder, load_packed_bpe, load_packed_bpe_borrowed, load_spm_vocab, load_tiktoken_bpe,
+    load_tiktoken_bpe_file, place_special_pieces, VocabError,
 };
 pub use whisper::{
     whisper_special_tokens, WhisperVariant, WHISPER_LANGUAGES_V1V2, WHISPER_LANGUAGES_V3,

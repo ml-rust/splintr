@@ -3,6 +3,7 @@ use crate::core::added::AddedTokens;
 use crate::core::bpe::BytePairRanks;
 use crate::core::policy::{PolicyError, SpecialDecode, SpecialMode};
 use crate::core::streaming::StreamingDecoder;
+use crate::core::token_bytes::{Decoder, Encoder};
 use crate::core::tokenize::{token_bytes_of, token_text_of, Tokenize, TokenizeError};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -153,7 +154,7 @@ impl ByteFallback {
 /// - Optional ByteLevel encoding for GPT-2/Llama/DeepSeek style tokenizers
 /// - Optional metaspace decoder for Mistral/Gemma style tokenizers (▁ → space)
 pub struct Tokenizer {
-    pub(super) encoder: FxHashMap<Vec<u8>, u32>,
+    pub(super) encoder: Encoder,
     /// [`Tokenizer::encoder`] re-keyed by the RAW bytes each token stands for,
     /// for ByteLevel vocabularies only; `None` for every other kind.
     ///
@@ -173,12 +174,12 @@ pub struct Tokenizer {
     /// `None` when any token fails to decode from ByteLevel — the table has to
     /// answer for the whole vocabulary or it would silently disagree with
     /// `encoder` on whatever it omitted.
-    pub(super) raw_encoder: Option<FxHashMap<Vec<u8>, u32>>,
+    pub(super) raw_encoder: Option<Encoder>,
     /// Optional separate merge-priority map (bytes → merge rank). When present,
     /// BPE merges by this rank instead of by token id — required for HuggingFace
     /// BPE models whose ids don't follow merge order (e.g. RoBERTa). `None`
     /// means tiktoken-style (id doubles as merge rank).
-    pub(super) merge_ranks: Option<FxHashMap<Vec<u8>, u32>>,
+    pub(super) merge_ranks: Option<Encoder>,
     /// Two-byte merge ranks of whichever map [`Tokenizer::bpe_into`] reads
     /// ranks from, indexed directly rather than hashed. Shared on clone: it is
     /// derived state, 256 KB of it, and never mutated after construction.
@@ -187,7 +188,7 @@ pub struct Tokenizer {
     /// [`StreamingDecoder`](crate::StreamingDecoder) built from this tokenizer —
     /// shares the id→bytes table instead of copying a vocabulary-sized map.
     /// Immutable once built: no method mutates it after construction.
-    pub(super) decoder: Arc<FxHashMap<u32, Vec<u8>>>,
+    pub(super) decoder: Arc<Decoder>,
     pub(super) special_tokens: FxHashMap<String, u32>,
     /// Behind an `Arc` for the same reason as [`Tokenizer::decoder`]: every
     /// decode — whole-sequence or streaming — captures the decode tables, and
@@ -403,12 +404,12 @@ impl Tokenizer {
     }
 
     /// Get the encoder map (token bytes -> ID).
-    pub fn encoder(&self) -> &FxHashMap<Vec<u8>, u32> {
+    pub fn encoder(&self) -> &Encoder {
         &self.encoder
     }
 
     /// Get the decoder map (token ID -> bytes).
-    pub fn decoder(&self) -> &FxHashMap<u32, Vec<u8>> {
+    pub fn decoder(&self) -> &Decoder {
         // The sharing is an implementation detail: callers still see the map.
         self.decoder.as_ref()
     }

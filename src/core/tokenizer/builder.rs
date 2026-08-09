@@ -4,8 +4,9 @@ use super::error::TokenizerError;
 use super::types::{ByteFallback, Tokenizer};
 use crate::core::added::{AddedTokenSet, AddedTokens};
 use crate::core::bpe::BytePairRanks;
+use crate::core::token_bytes::{encoder_from_owned, Encoder};
 use crate::core::vocab::{
-    build_decoder, load_packed_bpe, load_tiktoken_bpe, load_tiktoken_bpe_file,
+    build_decoder, load_packed_bpe_borrowed, load_tiktoken_bpe, load_tiktoken_bpe_file,
 };
 use regexr::RegexBuilder;
 use rustc_hash::FxHashMap;
@@ -201,6 +202,30 @@ impl Tokenizer {
         use_byte_level: bool,
         use_metaspace_decoder: bool,
     ) -> Result<Self, TokenizerError> {
+        Self::with_encoder(
+            encoder_from_owned(encoder),
+            special_tokens,
+            pattern,
+            cache_size,
+            use_byte_level,
+            use_metaspace_decoder,
+        )
+    }
+
+    /// [`Tokenizer::with_full_options`] over a vocabulary already in the
+    /// internal representation.
+    ///
+    /// The bundled vocabularies come this way: their keys borrow from the
+    /// embedded payload rather than owning copies, and routing them through the
+    /// owned-map form would allocate every token just to hand it back.
+    pub(crate) fn with_encoder(
+        encoder: Encoder,
+        special_tokens: impl Into<AddedTokenSet>,
+        pattern: &str,
+        cache_size: usize,
+        use_byte_level: bool,
+        use_metaspace_decoder: bool,
+    ) -> Result<Self, TokenizerError> {
         // Build decoder maps
         let decoder = build_decoder(&encoder);
 
@@ -269,7 +294,7 @@ impl Tokenizer {
     /// the two spaces differ.
     pub(crate) fn with_raw_encoder(mut self, raw_encoder: FxHashMap<Vec<u8>, u32>) -> Self {
         if self.use_byte_level {
-            self.raw_encoder = Some(raw_encoder);
+            self.raw_encoder = Some(encoder_from_owned(raw_encoder));
         }
         self
     }
@@ -278,6 +303,7 @@ impl Tokenizer {
         // The rank source just changed, so the two-byte index derived from it
         // has to be rebuilt — leaving the encoder-derived one in place would
         // answer with the wrong ranks.
+        let merge_ranks = encoder_from_owned(merge_ranks);
         self.byte_pair_ranks = Arc::new(BytePairRanks::build(&merge_ranks));
         self.merge_ranks = Some(merge_ranks);
         self
@@ -451,27 +477,49 @@ impl Tokenizer {
     /// pre-tokenizer pattern sequence.
     ///
     /// The bundled-vocabulary counterpart to [`Tokenizer::from_bytes_chain`]:
-    /// same result, reading [`load_packed_bpe`]'s binary form instead of
-    /// `.tiktoken` text. See that function for why the crate embeds the packed
+    /// same result, reading the binary form
+    /// [`load_packed_bpe_borrowed`](crate::core::load_packed_bpe_borrowed)
+    /// parses instead of `.tiktoken` text, and borrowing its token bytes rather
+    /// than copying them. See that function for why the crate embeds the packed
     /// form.
     pub fn from_packed_chain(
-        vocab_data: &[u8],
+        vocab_data: &'static [u8],
         patterns: &[&str],
         special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
-        let encoder = load_packed_bpe(vocab_data)?;
-        Self::new_chain(encoder, special_tokens, patterns)
+        let encoder = load_packed_bpe_borrowed(vocab_data)?;
+        let (first, rest) = Self::split_chain_patterns(patterns)?;
+        let mut tokenizer = Self::with_encoder(
+            encoder,
+            special_tokens,
+            first,
+            DEFAULT_CACHE_SIZE,
+            false,
+            false,
+        )?;
+        tokenizer.set_chain(rest)?;
+        Ok(tokenizer)
     }
 
     /// Packed counterpart to [`Tokenizer::from_bytes_byte_level_chain`], for a
     /// vocabulary that keeps the ByteLevel spelling.
     pub fn from_packed_byte_level_chain(
-        vocab_data: &[u8],
+        vocab_data: &'static [u8],
         patterns: &[&str],
         special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
-        let encoder = load_packed_bpe(vocab_data)?;
-        Self::new_byte_level_chain(encoder, special_tokens, patterns)
+        let encoder = load_packed_bpe_borrowed(vocab_data)?;
+        let (first, rest) = Self::split_chain_patterns(patterns)?;
+        let mut tokenizer = Self::with_encoder(
+            encoder,
+            special_tokens,
+            first,
+            DEFAULT_CACHE_SIZE,
+            true,
+            false,
+        )?;
+        tokenizer.set_chain(rest)?;
+        Ok(tokenizer)
     }
 
     /// Create a tokenizer from raw vocabulary bytes with the metaspace decoder.
@@ -501,7 +549,14 @@ impl Tokenizer {
         special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
         use crate::core::vocab::load_tiktoken_bpe_with_decoder;
-        let (encoder, mut decoder) = load_tiktoken_bpe_with_decoder(vocab_data)?;
+        let (encoder, decoder) = load_tiktoken_bpe_with_decoder(vocab_data)?;
+        // This vocabulary was read at runtime, so its tokens are owned; the
+        // borrowed representation is only for the embedded ones.
+        let encoder = encoder_from_owned(encoder);
+        let mut decoder: crate::core::token_bytes::Decoder = decoder
+            .into_iter()
+            .map(|(id, bytes)| (id, crate::core::token_bytes::TokenBytes::from(bytes)))
+            .collect();
 
         // Compile regex
         let regex = RegexBuilder::new(pattern).jit(true).build()?;
@@ -515,7 +570,10 @@ impl Tokenizer {
 
         // Add special tokens to decoder
         for (token_str, id) in &special_tokens {
-            decoder.insert(*id, token_str.as_bytes().to_vec());
+            decoder.insert(
+                *id,
+                crate::core::token_bytes::TokenBytes::from(token_str.as_bytes().to_vec()),
+            );
         }
 
         // Build the tokenizer manually with explicit decoder

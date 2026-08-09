@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use crate::core::token_bytes::Encoder;
 
 use super::merge::{merge_and_collect, merge_and_collect_ids_into, SCAN_SYMBOL_LIMIT};
 use super::nodes::Node;
@@ -17,7 +17,7 @@ use super::ranks::RankLookup;
 /// The linked list makes each splice O(1); how the next merge is *selected*
 /// depends on the piece length — see the module docs for the two strategies and
 /// the measurement behind the threshold between them.
-pub fn byte_pair_encode(piece: &[u8], encoder: &FxHashMap<Vec<u8>, u32>) -> Vec<u32> {
+pub fn byte_pair_encode(piece: &[u8], encoder: &Encoder) -> Vec<u32> {
     // tiktoken-style: the token id doubles as its merge rank.
     byte_pair_encode_with_ranks(piece, encoder, encoder)
 }
@@ -31,8 +31,8 @@ pub fn byte_pair_encode(piece: &[u8], encoder: &FxHashMap<Vec<u8>, u32>) -> Vec<
 /// vocabs the two maps are identical, which is what [`byte_pair_encode`] passes.
 pub fn byte_pair_encode_with_ranks(
     piece: &[u8],
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
-    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    merge_ranks: &Encoder,
+    id_encoder: &Encoder,
 ) -> Vec<u32> {
     // Byte granularity: this entry point is the tiktoken-shaped one, whose
     // merges operate on bytes. Going through `byte_pair_encode_pieces_seeded`
@@ -89,7 +89,7 @@ pub(crate) enum Piece {
 pub(crate) fn byte_pair_encode_pieces_seeded(
     piece: &[u8],
     merge_ranks: RankLookup<'_>,
-    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &Encoder,
     char_granular: bool,
 ) -> Vec<Piece> {
     if piece.is_empty() {
@@ -136,7 +136,7 @@ pub(crate) fn byte_pair_encode_pieces_seeded(
 pub(crate) fn byte_pair_encode_ids_seeded_into(
     piece: &[u8],
     merge_ranks: RankLookup<'_>,
-    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &Encoder,
     char_granular: bool,
     out: &mut Vec<u32>,
 ) {
@@ -257,7 +257,7 @@ pub(crate) fn byte_pair_encode_pieces_presegmented(
     piece: &[u8],
     seeds: &[Seed],
     merge_ranks: RankLookup<'_>,
-    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &Encoder,
 ) -> Vec<Piece> {
     if seeds.is_empty() {
         return vec![];

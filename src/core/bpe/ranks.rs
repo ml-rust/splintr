@@ -1,3 +1,4 @@
+use crate::core::token_bytes::Encoder;
 use rustc_hash::FxHashMap;
 
 /// Build a bytes → merge-rank map (lower rank = merged first) from a model's
@@ -70,7 +71,7 @@ pub(crate) struct BytePairRanks {
 
 impl BytePairRanks {
     /// Index every two-byte entry of `map`.
-    pub(crate) fn build(map: &FxHashMap<Vec<u8>, u32>) -> Self {
+    pub(crate) fn build(map: &Encoder) -> Self {
         let mut ranks = vec![u32::MAX; 256 * 256];
         for (key, &rank) in map {
             if let [hi, lo] = key[..] {
@@ -96,18 +97,18 @@ impl BytePairRanks {
 /// construct it with `pairs: None` and behave exactly as before.
 #[derive(Clone, Copy)]
 pub(crate) struct RankLookup<'a> {
-    map: &'a FxHashMap<Vec<u8>, u32>,
+    map: &'a Encoder,
     pairs: Option<&'a BytePairRanks>,
 }
 
 impl<'a> RankLookup<'a> {
     /// A lookup that only consults the map.
-    pub(crate) fn new(map: &'a FxHashMap<Vec<u8>, u32>) -> Self {
+    pub(crate) fn new(map: &'a Encoder) -> Self {
         Self { map, pairs: None }
     }
 
     /// A lookup fronted by a two-byte table.
-    pub(crate) fn with_pairs(map: &'a FxHashMap<Vec<u8>, u32>, pairs: &'a BytePairRanks) -> Self {
+    pub(crate) fn with_pairs(map: &'a Encoder, pairs: &'a BytePairRanks) -> Self {
         Self {
             map,
             pairs: Some(pairs),

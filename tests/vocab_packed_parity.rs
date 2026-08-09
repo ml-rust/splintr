@@ -64,7 +64,7 @@ fn packed_matches_text_for_every_vocabulary() {
         // mismatch names the token, which is the difference between "these
         // files disagree" and a diagnosis.
         for (token, rank) in &text {
-            match packed.get(token) {
+            match packed.get(token.as_slice()) {
                 Some(packed_rank) => assert_eq!(
                     packed_rank, rank,
                     "{stem}: token {token:?} is rank {rank} in text, {packed_rank} in packed"
@@ -82,7 +82,7 @@ fn packed_matches_text_for_every_vocabulary() {
 fn the_empty_token_survives_packing() {
     let packed = load_packed_bpe(&read("whisper", "splv")).expect("whisper.splv");
     assert_eq!(
-        packed.get(&Vec::<u8>::new()),
+        packed.get(b"".as_slice()),
         Some(&50256),
         "whisper's empty token lost its rank in the packed form"
     );
@@ -109,7 +109,10 @@ fn a_gap_in_the_rank_space_is_preserved() {
     buf.extend_from_slice(&[0xAC, 0x02, 0x01, b'b']);
 
     let packed = load_packed_bpe(&buf).expect("synthetic packed vocabulary");
-    let actual: HashMap<Vec<u8>, u32> = packed.into_iter().collect();
+    let actual: HashMap<Vec<u8>, u32> = packed
+        .into_iter()
+        .map(|(token, rank)| (token.as_slice().to_vec(), rank))
+        .collect();
     let expected: HashMap<Vec<u8>, u32> = [(b"a".to_vec(), 0), (b"b".to_vec(), 300)].into();
     assert_eq!(
         actual, expected,

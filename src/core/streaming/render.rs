@@ -16,6 +16,7 @@
 use crate::core::byte_level::{byte_level_decode, byte_level_decode_bytes};
 use crate::core::decoder::parse_byte_token;
 use crate::core::metaspace::WORD_BOUNDARY;
+use crate::core::token_bytes::Decoder;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use std::sync::Arc;
 pub(crate) enum Surfaces {
     /// A sparse id → bytes table: the BPE vocabulary, shared with the
     /// tokenizer rather than copied.
-    ById(Arc<FxHashMap<u32, Vec<u8>>>),
+    ById(Arc<Decoder>),
     /// A dense id-indexed piece list: the SentencePiece-shaped vocabularies,
     /// whose ids *are* positions in the piece vector. Shared with the tokenizer
     /// rather than copied.
@@ -468,7 +469,7 @@ impl RenderRules {
     /// [`Lead::None`]. Everything the general path re-decides per id is then a
     /// constant, which is what makes the specialized loop a loop-shape
     /// optimization rather than a second set of rules.
-    pub(crate) fn plain_by_id(&self) -> Option<&FxHashMap<u32, Vec<u8>>> {
+    pub(crate) fn plain_by_id(&self) -> Option<&Decoder> {
         let map = match &self.surfaces {
             Surfaces::ById(map) => map,
             Surfaces::ByIndex(_) => return None,
@@ -626,7 +627,10 @@ mod tests {
     /// nothing else declared.
     fn plain(byte_fallback: ByteFallbackRule, use_byte_level: bool) -> RenderRules {
         let mut surfaces = FxHashMap::default();
-        surfaces.insert(1u32, b"Hi".to_vec());
+        surfaces.insert(
+            1u32,
+            crate::core::token_bytes::TokenBytes::from(b"Hi".to_vec()),
+        );
         RenderRules::new(
             Surfaces::ById(Arc::new(surfaces)),
             Arc::new(FxHashMap::default()),
@@ -644,7 +648,11 @@ mod tests {
     fn plain_by_id_accepts_the_plain_bpe_shape() {
         let rules = plain(ByteFallbackRule::None, false);
         let map = rules.plain_by_id().expect("the plain BPE shape qualifies");
-        assert_eq!(map.get(&1).map(Vec::as_slice), Some(b"Hi".as_slice()));
+        assert_eq!(
+            map.get(&1)
+                .map(crate::core::token_bytes::TokenBytes::as_slice),
+            Some(b"Hi".as_slice())
+        );
     }
 
     #[test]

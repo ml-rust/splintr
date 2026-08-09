@@ -160,7 +160,7 @@ fn novel_words(count: usize, len: usize, seed: u64) -> Vec<String> {
 ///
 /// Hand-built rather than taken from a bundled vocabulary so the merge count is
 /// a function of the input length alone.
-fn chaining_encoder() -> FxHashMap<Vec<u8>, u32> {
+fn chaining_encoder() -> splintr::core::Encoder {
     let mut encoder = FxHashMap::default();
     let alphabet = *b"abcd";
     for (i, &b) in alphabet.iter().enumerate() {
@@ -181,7 +181,7 @@ fn chaining_encoder() -> FxHashMap<Vec<u8>, u32> {
             next += 1;
         }
     }
-    encoder
+    splintr::core::encoder_from_owned(encoder)
 }
 
 /// Merging a long piece must not allocate more times than merging a short one.

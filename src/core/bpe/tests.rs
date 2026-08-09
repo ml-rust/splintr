@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::token_bytes::{encoder_from_owned, Encoder, TokenBytes};
 use proptest::prelude::*;
 use rustc_hash::FxHashMap;
 
@@ -8,8 +9,8 @@ use super::ranks::{BytePairRanks, RankLookup};
 /// compare it against the piece-reporting form as a value.
 fn ids_seeded(
     piece: &[u8],
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
-    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    merge_ranks: &Encoder,
+    id_encoder: &Encoder,
     char_granular: bool,
 ) -> Vec<u32> {
     let mut out = Vec::new();
@@ -44,8 +45,8 @@ struct RefNode {
 /// the first strict minimum in list order.
 fn byte_pair_encode_reference(
     piece: &[u8],
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
-    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    merge_ranks: &Encoder,
+    id_encoder: &Encoder,
 ) -> Vec<u32> {
     byte_pair_encode_reference_seeded(piece, merge_ranks, id_encoder, false)
 }
@@ -56,8 +57,8 @@ fn byte_pair_encode_reference(
 /// stays exactly as pinned.
 fn byte_pair_encode_reference_seeded(
     piece: &[u8],
-    merge_ranks: &FxHashMap<Vec<u8>, u32>,
-    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    merge_ranks: &Encoder,
+    id_encoder: &Encoder,
     char_granular: bool,
 ) -> Vec<u32> {
     if piece.is_empty() {
@@ -203,7 +204,7 @@ fn byte_pair_encode_reference_seeded(
     result
 }
 
-fn make_encoder() -> FxHashMap<Vec<u8>, u32> {
+fn make_encoder() -> Encoder {
     let mut encoder = FxHashMap::default();
     // Individual bytes
     encoder.insert(b"a".to_vec(), 0);
@@ -213,7 +214,7 @@ fn make_encoder() -> FxHashMap<Vec<u8>, u32> {
     encoder.insert(b"ab".to_vec(), 3);
     encoder.insert(b"bc".to_vec(), 4);
     encoder.insert(b"abc".to_vec(), 5);
-    encoder
+    encoder_from_owned(encoder)
 }
 
 #[test]
@@ -253,11 +254,11 @@ fn test_no_merge_possible() {
 }
 
 /// A vocabulary in which every pair of a repeated character ties.
-fn tie_encoder() -> FxHashMap<Vec<u8>, u32> {
+fn tie_encoder() -> Encoder {
     let mut encoder = FxHashMap::default();
     encoder.insert(b"a".to_vec(), 0);
     encoder.insert(b"aa".to_vec(), 1);
-    encoder
+    encoder_from_owned(encoder)
 }
 
 /// Equal-rank pairs MUST resolve leftmost.
@@ -312,6 +313,7 @@ fn test_tiebreak_leftmost_wins_multibyte_chars() {
     let mut encoder = FxHashMap::default();
     encoder.insert("▁".as_bytes().to_vec(), 0);
     encoder.insert("▁▁".as_bytes().to_vec(), 1);
+    let encoder = encoder_from_owned(encoder);
 
     let piece = "▁▁▁".as_bytes();
     assert_eq!(
@@ -330,7 +332,7 @@ fn test_tiebreak_leftmost_wins_multibyte_chars() {
 }
 
 /// tiktoken-style vocabulary: the id doubles as the merge rank.
-fn prop_encoder() -> FxHashMap<Vec<u8>, u32> {
+fn prop_encoder() -> Encoder {
     let mut encoder = FxHashMap::default();
     let tokens: [&[u8]; 18] = [
         b"a", b"b", b"c", b"d", b"aa", b"ab", b"ba", b"bb", b"cd", b"dc", b"cc", b"aaa", b"aab",
@@ -339,13 +341,13 @@ fn prop_encoder() -> FxHashMap<Vec<u8>, u32> {
     for (i, token) in tokens.iter().enumerate() {
         encoder.insert(token.to_vec(), i as u32);
     }
-    encoder
+    encoder_from_owned(encoder)
 }
 
 /// HuggingFace-style vocabulary: merge priority is independent of the id,
 /// and several merges deliberately share a rank so the leftmost tiebreak
 /// is exercised rather than accidentally avoided by unique ranks.
-fn prop_two_maps() -> (FxHashMap<Vec<u8>, u32>, FxHashMap<Vec<u8>, u32>) {
+fn prop_two_maps() -> (Encoder, Encoder) {
     let ranked: [(&[u8], u32); 13] = [
         (b"aa", 1),
         (b"ab", 1),
@@ -376,7 +378,10 @@ fn prop_two_maps() -> (FxHashMap<Vec<u8>, u32>, FxHashMap<Vec<u8>, u32>) {
     for (i, token) in ids.iter().enumerate() {
         id_encoder.insert(token.to_vec(), i as u32);
     }
-    (merge_ranks, id_encoder)
+    (
+        encoder_from_owned(merge_ranks),
+        encoder_from_owned(id_encoder),
+    )
 }
 
 /// HuggingFace-style vocabulary over a deliberately mixed-width alphabet:
@@ -384,7 +389,7 @@ fn prop_two_maps() -> (FxHashMap<Vec<u8>, u32>, FxHashMap<Vec<u8>, u32>) {
 /// (4 bytes) — the widths that byte seeding cannot reassemble. Ranks tie so
 /// the leftmost tiebreak is exercised, and `中😀` is deliberately given a
 /// merge rank but NO id so the unresolved fallback path is covered too.
-fn char_prop_maps() -> (FxHashMap<Vec<u8>, u32>, FxHashMap<Vec<u8>, u32>) {
+fn char_prop_maps() -> (Encoder, Encoder) {
     let ranked: [(&str, u32); 10] = [
         ("aa", 1),
         ("ab", 1),
@@ -423,7 +428,10 @@ fn char_prop_maps() -> (FxHashMap<Vec<u8>, u32>, FxHashMap<Vec<u8>, u32>) {
     for (i, token) in ids.iter().enumerate() {
         id_encoder.insert(token.as_bytes().to_vec(), i as u32);
     }
-    (merge_ranks, id_encoder)
+    (
+        encoder_from_owned(merge_ranks),
+        encoder_from_owned(id_encoder),
+    )
 }
 
 #[test]
@@ -485,11 +493,11 @@ fn test_bytes_absent_from_vocab() {
 
 /// A vocabulary covering `a` and `c` (and nothing else, no merges) — used
 /// to exercise `byte_pair_encode_pieces_seeded`'s `Unresolved` reporting.
-fn ac_only_encoder() -> FxHashMap<Vec<u8>, u32> {
+fn ac_only_encoder() -> Encoder {
     let mut encoder = FxHashMap::default();
     encoder.insert(b"a".to_vec(), 0);
     encoder.insert(b"c".to_vec(), 1);
-    encoder
+    encoder_from_owned(encoder)
 }
 
 #[test]
@@ -513,6 +521,7 @@ fn test_pieces_coalesce_consecutive_unresolved() {
     let mut encoder = FxHashMap::default();
     encoder.insert(b"a".to_vec(), 0);
     encoder.insert(b"d".to_vec(), 1);
+    let encoder = encoder_from_owned(encoder);
     assert_eq!(
         byte_pair_encode_pieces_seeded(b"abcd", RankLookup::new(&encoder), &encoder, false),
         vec![
@@ -661,7 +670,10 @@ proptest! {
             (prop::collection::vec(any::<u8>(), 1..5), any::<u32>()), 0..40),
         probes in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..5), 1..40)
     ) {
-        let map: FxHashMap<Vec<u8>, u32> = entries.into_iter().collect();
+        let map: Encoder = entries
+            .into_iter()
+            .map(|(bytes, rank)| (TokenBytes::from(bytes), rank))
+            .collect();
         let pairs = BytePairRanks::build(&map);
         let plain = RankLookup::new(&map);
         let fronted = RankLookup::with_pairs(&map, &pairs);

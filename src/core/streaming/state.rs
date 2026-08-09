@@ -693,9 +693,15 @@ mod tests {
     /// special-token table knows (5), and — by omission — ids in no table at all.
     fn plain_state() -> DecodeState {
         let mut surfaces = FxHashMap::default();
-        surfaces.insert(1u32, b"He".to_vec());
-        surfaces.insert(2u32, b"llo".to_vec());
-        surfaces.insert(3u32, Vec::new());
+        surfaces.insert(
+            1u32,
+            crate::core::token_bytes::TokenBytes::from(b"He".to_vec()),
+        );
+        surfaces.insert(
+            2u32,
+            crate::core::token_bytes::TokenBytes::from(b"llo".to_vec()),
+        );
+        surfaces.insert(3u32, crate::core::token_bytes::TokenBytes::from(Vec::new()));
 
         let mut specials = FxHashMap::default();
         specials.insert(5u32, "<eos>".to_string());

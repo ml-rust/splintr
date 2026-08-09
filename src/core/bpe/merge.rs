@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use crate::core::token_bytes::Encoder;
 use std::collections::BinaryHeap;
 
 use super::encode::{Piece, Seed};
@@ -198,7 +198,7 @@ fn resolve(
     slice: &[u8],
     node: &Node,
     index: usize,
-    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &Encoder,
     seeds: Option<&[Seed]>,
 ) -> Option<u32> {
     seeds
@@ -218,7 +218,7 @@ pub(super) fn merge_and_collect(
     piece: &[u8],
     mut nodes: Vec<Node>,
     merge_ranks: RankLookup<'_>,
-    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &Encoder,
     seeds: Option<&[Seed]>,
 ) -> Vec<Piece> {
     link_and_merge(piece, &mut nodes, merge_ranks);
@@ -310,7 +310,7 @@ pub(super) fn merge_and_collect_ids_into(
     piece: &[u8],
     nodes: &mut [Node],
     merge_ranks: RankLookup<'_>,
-    id_encoder: &FxHashMap<Vec<u8>, u32>,
+    id_encoder: &Encoder,
     out: &mut Vec<u32>,
 ) {
     let live = link_and_merge(piece, nodes, merge_ranks);

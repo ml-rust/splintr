@@ -6,7 +6,7 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
-## [0.16.0] - 2026-08-09
+## [0.16.1] - 2026-08-09
 
 ### Added
 
@@ -20,6 +20,8 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - Kimi encodes ~16% faster: its case-split letter runs skip ASCII eight bytes at a time instead of one character per call.
 - Bundled vocabularies embed a packed binary form instead of base64 text, loading ~2x faster. Encode and decode are unchanged.
 - The bundled vocabulary constants are now `*_VOCAB_PACKED` and take `Tokenizer::from_packed_chain` / `from_packed_byte_level_chain`. `.tiktoken` files and `from_file` are unaffected.
+- Bundled vocabularies borrow their token bytes from the embedded payload instead of copying them, loading up to 3.6x faster. Encode is unchanged.
+- The encoder and decoder maps are keyed by `TokenBytes` rather than `Vec<u8>`; `Tokenizer::encoder()` and `decoder()` return those maps.
 
 ## [0.15.0] - 2026-08-09
 
