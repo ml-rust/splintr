@@ -89,107 +89,132 @@ fn build(
     match tiktoken_rs::CoreBPE::new(tiktoken_ranks(ranks_path), FxHashMap::default(), pattern) {
         Err(e) => skipped.push(("tiktoken-rs", e.to_string())),
         Ok(bpe) => {
-        let bpe = std::sync::Arc::new(bpe);
-        engines.push(Engine {
-            name: "tiktoken-rs",
-            family: "ranks",
-            own_batch: false, // no batch API; rayon below is the idiomatic use
-            encode: {
-                let b = bpe.clone();
-                Box::new(move |s| b.encode_ordinary(s))
-            },
-            encode_all: {
-                let b = bpe.clone();
-                Box::new(move |_, ts| ts.par_iter().map(|t| b.encode_ordinary(t).len()).sum())
-            },
-        });
-    }}
+            let bpe = std::sync::Arc::new(bpe);
+            engines.push(Engine {
+                name: "tiktoken-rs",
+                family: "ranks",
+                own_batch: false, // no batch API; rayon below is the idiomatic use
+                encode: {
+                    let b = bpe.clone();
+                    Box::new(move |s| b.encode_ordinary(s))
+                },
+                encode_all: {
+                    let b = bpe.clone();
+                    Box::new(move |_, ts| ts.par_iter().map(|t| b.encode_ordinary(t).len()).sum())
+                },
+            });
+        }
+    }
     match riptoken::CoreBPE::new(tiktoken_ranks(ranks_path), FxHashMap::default(), pattern) {
         Err(e) => skipped.push(("riptoken", e.to_string())),
         Ok(bpe) => {
-        let bpe = std::sync::Arc::new(bpe);
-        engines.push(Engine {
-            name: "riptoken",
-            family: "ranks",
-            own_batch: true,
-            encode: {
-                let b = bpe.clone();
-                Box::new(move |s| b.encode_ordinary(s))
-            },
-            encode_all: {
-                let b = bpe.clone();
-                Box::new(move |_, ts| b.encode_ordinary_batch(ts).iter().map(Vec::len).sum())
-            },
-        });
-    }}
+            let bpe = std::sync::Arc::new(bpe);
+            engines.push(Engine {
+                name: "riptoken",
+                family: "ranks",
+                own_batch: true,
+                encode: {
+                    let b = bpe.clone();
+                    Box::new(move |s| b.encode_ordinary(s))
+                },
+                encode_all: {
+                    let b = bpe.clone();
+                    Box::new(move |_, ts| b.encode_ordinary_batch(ts).iter().map(Vec::len).sum())
+                },
+            });
+        }
+    }
 
     // --- json family --------------------------------------------------------
-    match splintr::from_json_path(json_path) {
-        Err(e) => skipped.push(("splintr (json)", e.to_string())),
-        Ok(tok) => {
-        let tok = std::sync::Arc::new(tok);
-        engines.push(Engine {
-            name: "splintr",
-            family: "json",
-            own_batch: true,
-            encode: {
-                let t = tok.clone();
-                Box::new(move |s| t.encode_raw(s))
-            },
-            encode_all: {
-                let t = tok.clone();
-                Box::new(move |_, ts| t.encode_batch(ts).iter().map(Vec::len).sum())
-            },
-        });
-    }}
-    match tokenizers::Tokenizer::from_file(json_path) {
-        Err(e) => skipped.push(("HF tokenizers", e.to_string())),
-        Ok(tok) => {
-        let tok = std::sync::Arc::new(tok);
-        engines.push(Engine {
-            name: "HF tokenizers",
-            family: "json",
-            own_batch: true,
-            encode: {
-                let t = tok.clone();
-                Box::new(move |s| t.encode_fast(s, false).expect("hf encode").get_ids().to_vec())
-            },
-            encode_all: {
-                let t = tok.clone();
-                Box::new(move |_, ts| {
-                    t.encode_batch_fast(ts.to_vec(), false)
-                        .expect("hf batch")
-                        .iter()
-                        .map(|e| e.get_ids().len())
-                        .sum()
-                })
-            },
-        });
-    }}
-    match basetenkenizer::Tokenizer::from_file(std::path::Path::new(json_path)) {
-        Err(e) => skipped.push(("basetenkenizer", format!("{e:?}"))),
-        Ok(tok) => {
-        let tok = std::sync::Arc::new(tok);
-        engines.push(Engine {
-            name: "basetenkenizer",
-            family: "json",
-            own_batch: true,
-            encode: {
-                let t = tok.clone();
-                Box::new(move |s| t.encode(s).expect("bt encode"))
-            },
-            encode_all: {
-                let t = tok.clone();
-                Box::new(move |_, ts| {
-                    t.encode_batch(ts, false)
-                        .expect("bt batch")
-                        .iter()
-                        .map(Vec::len)
-                        .sum()
-                })
-            },
-        });
-    }}
+    // `-` means the vocabulary publishes no `tokenizer.json` at all, which is
+    // true of Kimi. Saying so once beats pointing every json engine at a path
+    // that does not exist and letting each report an I/O error — three
+    // identical "No such file or directory" lines read like splintr broke,
+    // when the file was never supposed to be there.
+    let publishes_json = json_path != "-";
+    if !publishes_json {
+        skipped.push((
+            "json family",
+            "no tokenizer.json is published for this vocabulary".to_string(),
+        ));
+    }
+
+    if publishes_json {
+        match splintr::from_json_path(json_path) {
+            Err(e) => skipped.push(("splintr (json)", e.to_string())),
+            Ok(tok) => {
+                let tok = std::sync::Arc::new(tok);
+                engines.push(Engine {
+                    name: "splintr",
+                    family: "json",
+                    own_batch: true,
+                    encode: {
+                        let t = tok.clone();
+                        Box::new(move |s| t.encode_raw(s))
+                    },
+                    encode_all: {
+                        let t = tok.clone();
+                        Box::new(move |_, ts| t.encode_batch(ts).iter().map(Vec::len).sum())
+                    },
+                });
+            }
+        }
+        match tokenizers::Tokenizer::from_file(json_path) {
+            Err(e) => skipped.push(("HF tokenizers", e.to_string())),
+            Ok(tok) => {
+                let tok = std::sync::Arc::new(tok);
+                engines.push(Engine {
+                    name: "HF tokenizers",
+                    family: "json",
+                    own_batch: true,
+                    encode: {
+                        let t = tok.clone();
+                        Box::new(move |s| {
+                            t.encode_fast(s, false)
+                                .expect("hf encode")
+                                .get_ids()
+                                .to_vec()
+                        })
+                    },
+                    encode_all: {
+                        let t = tok.clone();
+                        Box::new(move |_, ts| {
+                            t.encode_batch_fast(ts.to_vec(), false)
+                                .expect("hf batch")
+                                .iter()
+                                .map(|e| e.get_ids().len())
+                                .sum()
+                        })
+                    },
+                });
+            }
+        }
+        match basetenkenizer::Tokenizer::from_file(std::path::Path::new(json_path)) {
+            Err(e) => skipped.push(("basetenkenizer", format!("{e:?}"))),
+            Ok(tok) => {
+                let tok = std::sync::Arc::new(tok);
+                engines.push(Engine {
+                    name: "basetenkenizer",
+                    family: "json",
+                    own_batch: true,
+                    encode: {
+                        let t = tok.clone();
+                        Box::new(move |s| t.encode(s).expect("bt encode"))
+                    },
+                    encode_all: {
+                        let t = tok.clone();
+                        Box::new(move |_, ts| {
+                            t.encode_batch(ts, false)
+                                .expect("bt batch")
+                                .iter()
+                                .map(Vec::len)
+                                .sum()
+                        })
+                    },
+                });
+            }
+        }
+    }
 
     // --- baked family -------------------------------------------------------
     // bpe-openai compiles its vocabularies in and offers no loader, so it can
@@ -354,12 +379,17 @@ fn run() {
 
     let (engines, skipped) = build(&vocab, &ranks_path, &json_path, pattern);
     for (name, why) in &skipped {
-        eprintln!("skip {name}: cannot load this vocabulary — {why}");
+        eprintln!("skip {name} — {why}");
     }
 
     // Parity first: a timing table over engines that disagree is not a
     // comparison. splintr's ranks build is the reference.
-    let sample: Vec<&str> = refs.iter().step_by(refs.len() / 25).take(25).copied().collect();
+    let sample: Vec<&str> = refs
+        .iter()
+        .step_by(refs.len() / 25)
+        .take(25)
+        .copied()
+        .collect();
     let reference: Vec<Vec<u32>> = sample.iter().map(|s| (engines[0].encode)(s)).collect();
     let mut agree: HashMap<&str, bool> = HashMap::new();
     for e in &engines {
@@ -398,32 +428,32 @@ fn run() {
         );
 
         for e in &members {
-        let s = bench(|| {
-            for t in serial_refs {
-                std::hint::black_box((e.encode)(t));
+            let s = bench(|| {
+                for t in serial_refs {
+                    std::hint::black_box((e.encode)(t));
+                }
+            });
+            let p = bench(|| {
+                std::hint::black_box((e.encode_all)(par_docs, par_refs));
+            });
+            if !first {
+                println!(",");
             }
-        });
-        let p = bench(|| {
-            std::hint::black_box((e.encode_all)(par_docs, par_refs));
-        });
-        if !first {
-            println!(",");
-        }
-        first = false;
-        print!(
-            "{{\"engine\":\"{}\",\"family\":\"{}\",\"own_batch\":{},\"agrees\":{},\
+            first = false;
+            print!(
+                "{{\"engine\":\"{}\",\"family\":\"{}\",\"own_batch\":{},\"agrees\":{},\
              \"serial_mb\":{:.1},\"par_mb\":{:.1},\
              \"serial_mbps\":{:.1},\"par_mbps\":{:.1},\"par_gbps\":{:.2}}}",
-            e.name,
-            e.family,
-            e.own_batch,
-            agree[e.name],
-            serial_bytes as f64 / 1e6,
-            par_bytes as f64 / 1e6,
-            serial_bytes as f64 / 1e6 / s,
-            par_bytes as f64 / 1e6 / p,
-            par_bytes as f64 / 1e9 / p,
-        );
+                e.name,
+                e.family,
+                e.own_batch,
+                agree[e.name],
+                serial_bytes as f64 / 1e6,
+                par_bytes as f64 / 1e6,
+                serial_bytes as f64 / 1e6 / s,
+                par_bytes as f64 / 1e6 / p,
+                par_bytes as f64 / 1e9 / p,
+            );
         }
     }
     println!("\n]}}");
