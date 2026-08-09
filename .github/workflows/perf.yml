@@ -9,14 +9,18 @@ name: perf
 # "perf 0.14.4". A baseline is appended, since a two-version run is a
 # comparison and the pair is the point: "perf v0.15.0 vs 0.14.4".
 #
-# The run number disambiguates repeated runs of the same branch. It is there
-# rather than a short commit SHA because workflow expressions have no substring
-# function and `github.sha` is 40 characters; the SHA is recorded in the run
-# summary instead (see the `VERSIONS` block below).
+# A branch name alone does not say which commit was measured, so the SHA is in
+# the name too. It is the full 40 characters because workflow expressions have
+# no substring function — there is no way to shorten it here, and a run you
+# cannot trace to a commit is worth less than an ugly one. `git log --oneline`
+# and the GitHub UI both accept a prefix of it.
+#
+# A tag run reads "perf v0.15.0 <sha>", a branch run "perf main <sha>", and an
+# explicit version names itself: "perf 0.14.4 <sha>".
 run-name: >-
   perf ${{ inputs.splintr == 'local' && github.ref_name || inputs.splintr }}${{
   inputs.splintr_baseline && format(' vs {0}', inputs.splintr_baseline) || '' }}
-  #${{ github.run_number }}
+  ${{ github.sha }}
 
 # splintr against the libraries it would replace, and against itself across
 # versions. Manual only — it is a decision tool and a regression check, not
@@ -85,7 +89,10 @@ on:
         type: string
 
 jobs:
-  bench:
+  # splintr as a *Python* caller sees it. Most of a batch call here is CPython
+  # building lists, which is why the flat axis exists and why the Rust job below
+  # is a separate report rather than more rows in this one.
+  python:
     strategy:
       fail-fast: false
       matrix:
@@ -259,7 +266,7 @@ jobs:
       - name: Report
         run: |
           python .github/scripts/perf_report.py \
-            --title "perf — ${{ matrix.os }}" \
+            --title "splintr through the Python API — ${{ matrix.os }} — ${GITHUB_SHA:0:7}" \
             --note "$HW" \
             --note "$(printf '%s' "$VERSIONS" | sed 's/^/    /')" \
             --note "Output parity:"$'\n'"$PARITY" \
@@ -270,3 +277,74 @@ jobs:
         with:
           name: perf-${{ matrix.os }}
           path: rounds.jsonl
+
+  # splintr as a *Rust* caller sees it: no Python, no FFI, no object
+  # marshalling. Reported separately because it answers a different question —
+  # whether the kernel is fast, rather than what a Python caller gets — and the
+  # two must never be read as one table.
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Describe the machine
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cpu=$(sysctl -n machdep.cpu.brand_string); cores=$(sysctl -n hw.ncpu)
+          else
+            cpu=$(lscpu | sed -n 's/^Model name: *//p' | head -1); cores=$(nproc)
+          fi
+          echo "HW=$cpu, ${cores} cores" >> "$GITHUB_ENV"
+
+      - name: Fetch vocabularies and a prose corpus
+        run: |
+          for f in cl100k:cl100k_base o200k:o200k_base qwen3:qwen3 kimi:kimi; do
+            cp "vocabs/${f#*:}.tiktoken" "${f%%:*}.tiktoken"
+          done
+          curl -sSfL -o qwen3.json \
+            https://huggingface.co/Qwen/Qwen3-8B/resolve/main/tokenizer.json
+          curl -sSfL -o cl100k.json \
+            https://huggingface.co/Xenova/gpt-4/resolve/main/tokenizer.json
+          curl -sSfL -o o200k.json \
+            https://huggingface.co/Xenova/gpt-4o/resolve/main/tokenizer.json
+          # Real prose, not repeated seed sentences: splintr keeps an LRU chunk
+          # cache, and a corpus built by repetition would measure the cache
+          # rather than the tokenizer.
+          pip -q install pyarrow
+          curl -sSfL -o wikitext.parquet \
+            https://huggingface.co/datasets/Salesforce/wikitext/resolve/main/wikitext-103-raw-v1/train-00000-of-00002.parquet
+          python .github/scripts/build_corpus.py wikitext.parquet corpus.txt "${CORPUS_MB:-120}"
+
+      - name: Benchmark
+        run: |
+          cd .github/rust-bench && cargo build --release && cd -
+          BIN=.github/rust-bench/target/release/rust-bench
+          # Kimi publishes no `tokenizer.json`, so its json family is absent by
+          # pointing at a path that does not exist — the harness reports an
+          # engine it cannot load rather than substituting another vocabulary.
+          for v in cl100k o200k qwen3; do
+            "$BIN" "$v" "$v.tiktoken" "$v.json" corpus.txt >> rust.jsonl
+          done
+          "$BIN" kimi kimi.tiktoken /nonexistent/kimi-has-no-tokenizer-json corpus.txt >> rust.jsonl
+
+      - name: Report
+        run: |
+          python .github/scripts/rust_report.py \
+            --title "splintr in Rust — ${{ matrix.os }} — ${GITHUB_SHA:0:7}" \
+            --note "$HW" \
+            --note "$(cd .github/rust-bench && cargo tree --depth 1 2>/dev/null | sed -n 's/^[^ ]* //p' | sed 's/^/    /')" \
+            --note "Each family sizes its corpus from its slowest engine, so every engine in a table sees the same input." \
+            < rust.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-rust-${{ matrix.os }}
+          path: rust.jsonl

@@ -1,0 +1,48 @@
+# splintr against the other Rust tokenizer crates, with no Python in the loop.
+#
+# Deliberately outside the splintr package, exactly as the Python harness in
+# `.github/scripts/` is: it needs five competitor crates as dependencies, and
+# none of them belong in splintr's own dependency graph or lockfile. It is not
+# a workspace member for the same reason.
+#
+# `tokenizers` enables serde_json's `preserve_order`, and cargo features are
+# additive per build — so serde_json's `Map` becomes an `IndexMap` for
+# *everything* compiled here, splintr included. That is fine for comparing
+# engines against each other, but it means this crate must never be used to
+# measure splintr's own load path in absolute terms; it would be measuring a
+# serde_json splintr never ships with.
+[package]
+name = "rust-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+splintr = { path = "../.." }
+# The Rust tokenizer crates, compared against each other rather than each
+# against splintr alone — every engine is a column in every table it can load.
+#
+# `gigatoken` is absent and cannot be added. It publishes no crate, and while
+# its repository does build a `lib` target, its manifest declares the unstable
+# `cargo-features = ["profile-rustflags"]`, which cargo only honours from a
+# workspace root — so it fails to resolve as a dependency on stable *and* on
+# nightly. Building it from git the way this workflow builds splintr was tried
+# and does not work. Stripping the feature out of a vendored copy would silence
+# the error by discarding the build flags they chose, which would measure a
+# gigatoken they do not ship; it stays in the Python suite, where its own wheel
+# is what runs.
+#
+# OpenAI's tiktoken publishes no crate either — `tiktoken-rs` is a community
+# crate vendoring its core BPE code, included on the strength of its usage
+# rather than as an OpenAI distribution.
+tokenizers = "0.23"
+tiktoken-rs = "0.12"
+riptoken = "0.3"
+bpe-openai = "0.3"
+basetenkenizer = "0.2"
+rayon = "1"
+rustc-hash = "2"
+
+[profile.release]
+opt-level = 3
+lto = true

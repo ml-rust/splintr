@@ -68,3 +68,7 @@ coverage.xml
 
 # Claude Code session scratch (prep files)
 .claude/prep/
+
+# The Rust competitor benchmark is its own package outside the workspace.
+/.github/rust-bench/target/
+/.github/rust-bench/Cargo.lock
