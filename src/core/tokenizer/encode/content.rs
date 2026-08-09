@@ -53,7 +53,14 @@ impl Tokenizer {
             // When the pipeline ends in ByteLevel, take the pieces unmapped and
             // let `encode_raw_chunk_into` map only the ones that need it.
             if self.use_byte_level && self.raw_encoder.is_some() && pt.emits_raw() {
-                let mut scratch = String::new();
+                // Sized rather than grown from empty. It is cleared and refilled
+                // per piece, so it settles at the longest pre-token in the text
+                // — but it reaches that by doubling from zero on the first few
+                // pieces, and on macOS each of those regrows is a fresh
+                // allocation plus a copy. 64 bytes covers a pre-token in every
+                // script the bundled vocabularies cover; a longer one still
+                // grows, exactly as before.
+                let mut scratch = String::with_capacity(64);
                 pt.for_each_raw_piece(text, |piece| {
                     self.encode_raw_chunk_into(piece.as_bytes(), &mut out, &mut scratch)
                 });

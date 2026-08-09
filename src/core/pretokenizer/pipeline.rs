@@ -135,6 +135,40 @@ impl PreTokenizer {
         self.run(text)
     }
 
+    /// Run `self.compiled[..upto]` — all cutting stages — over `text`, leaving
+    /// the pieces in `cut`.
+    ///
+    /// Two allocations for a pipeline of any length, where the obvious loop
+    /// costs one per stage. The seed is the first stage cutting `text`
+    /// directly, rather than a one-element vector holding `text` for the loop
+    /// to read back; the remaining stages alternate between `cut` and `next`
+    /// instead of building a fresh output vector and dropping the input.
+    ///
+    /// `next` stays empty and therefore unallocated for the single-stage
+    /// pipeline that every GPT-2-style `tokenizer.json` is, so that shape pays
+    /// one allocation here rather than three.
+    fn cut_stages<'p>(
+        &self,
+        text: &'p str,
+        upto: usize,
+        cut: &mut Vec<&'p str>,
+        next: &mut Vec<&'p str>,
+    ) {
+        cut.clear();
+        let Some((first, rest)) = self.compiled[..upto].split_first() else {
+            cut.push(text);
+            return;
+        };
+        first.cut(text, cut);
+        for stage in rest {
+            next.clear();
+            for piece in cut.iter() {
+                stage.cut(piece, next);
+            }
+            std::mem::swap(cut, next);
+        }
+    }
+
     /// The stage pipeline over `text`, with pieces borrowed from it for as long
     /// as the stages allow.
     fn run<'p>(&self, text: &'p str) -> Vec<Cow<'p, str>> {
@@ -144,17 +178,12 @@ impl PreTokenizer {
             .position(Stage::rewrites_content)
             .unwrap_or(self.compiled.len());
 
-        // Phase 1: cutting stages, entirely in subslices of `text`.
-        let mut cut: Vec<&'p str> = vec![text];
-        for stage in &self.compiled[..rewrite_at] {
-            // Sized from the text rather than from `cut.len()` — see
-            // `for_each_piece_inner` for why one is nowhere near the other.
-            let mut next = Vec::with_capacity(super::split::estimated_pieces(text));
-            for piece in &cut {
-                stage.cut(piece, &mut next);
-            }
-            cut = next;
-        }
+        // Phase 1: cutting stages, entirely in subslices of `text`. Sized from
+        // the text rather than from the piece count — see `cut_stages` for why
+        // one is nowhere near the other.
+        let mut cut: Vec<&'p str> = Vec::with_capacity(super::split::estimated_pieces(text));
+        let mut next: Vec<&'p str> = Vec::new();
+        self.cut_stages(text, rewrite_at, &mut cut, &mut next);
 
         if rewrite_at == self.compiled.len() {
             return cut
@@ -226,18 +255,13 @@ impl PreTokenizer {
             return;
         }
 
-        let mut cut: Vec<&str> = vec![text];
-        for stage in &self.compiled[..rewrite_at] {
-            // Sized from the text, not from `cut.len()`: the first stage is
-            // handed the whole text as one piece and returns a pre-token for
-            // roughly every four bytes of it, so taking the input count as the
-            // estimate meant regrowing from a single element every time.
-            let mut next = Vec::with_capacity(super::split::estimated_pieces(text));
-            for piece in &cut {
-                stage.cut(piece, &mut next);
-            }
-            cut = next;
-        }
+        // Sized from the text, not from the piece count: the first stage is
+        // handed the whole text as one piece and returns a pre-token for
+        // roughly every four bytes of it, so taking the input count as the
+        // estimate meant regrowing from a single element every time.
+        let mut cut: Vec<&str> = Vec::with_capacity(super::split::estimated_pieces(text));
+        let mut next: Vec<&str> = Vec::new();
+        self.cut_stages(text, rewrite_at, &mut cut, &mut next);
 
         if rewrite_at == self.compiled.len() {
             for piece in cut {
@@ -300,14 +324,9 @@ impl PreTokenizer {
         // stage before it is a cutting stage and the walk mirrors
         // `for_each_piece_inner`'s cutting loop exactly.
         let last = self.compiled.len() - 1;
-        let mut cut: Vec<&str> = vec![text];
-        for stage in &self.compiled[..last] {
-            let mut next = Vec::with_capacity(super::split::estimated_pieces(text));
-            for piece in &cut {
-                stage.cut(piece, &mut next);
-            }
-            cut = next;
-        }
+        let mut cut: Vec<&str> = Vec::with_capacity(super::split::estimated_pieces(text));
+        let mut next: Vec<&str> = Vec::new();
+        self.cut_stages(text, last, &mut cut, &mut next);
         for piece in &cut {
             self.compiled[last].split_for_each(piece, f);
         }
