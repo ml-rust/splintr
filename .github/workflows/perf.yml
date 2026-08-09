@@ -5,9 +5,14 @@ name: perf
 #
 # `splintr: local` builds the checkout, and what identifies that build is the
 # ref it was dispatched from — a tag gives "perf v0.15.0", a branch gives
-# "perf main". Any other value is an explicit version, so it names itself:
-# "perf 0.14.4". A baseline is appended, since a two-version run is a
+# "perf main". An explicit version names itself with a matching `v`:
+# "perf v0.14.4". A baseline is appended, since a two-version run is a
 # comparison and the pair is the point: "perf v0.15.0 vs 0.14.4".
+#
+# `latest` stays the literal word. Run names are evaluated when the run is
+# created, before any job exists to ask pip or cargo what `latest` resolves to,
+# so there is nothing to substitute. The resolved version is in the run summary
+# instead, on the splintr line of the versions block.
 #
 # A branch name alone does not say which commit was measured, so the SHA is in
 # the name too. It is the full 40 characters because workflow expressions have
@@ -16,9 +21,10 @@ name: perf
 # and the GitHub UI both accept a prefix of it.
 #
 # A tag run reads "perf v0.15.0 <sha>", a branch run "perf main <sha>", and an
-# explicit version names itself: "perf 0.14.4 <sha>".
+# explicit version "perf v0.14.4 <sha>".
 run-name: >-
-  perf ${{ inputs.splintr == 'local' && github.ref_name || inputs.splintr }}${{
+  perf ${{ inputs.splintr == 'local' && github.ref_name || (inputs.splintr ==
+  'latest' && 'latest' || format('v{0}', inputs.splintr)) }}${{
   inputs.splintr_baseline && format(' vs {0}', inputs.splintr_baseline) || '' }}
   ${{ github.sha }}
 
@@ -160,15 +166,18 @@ jobs:
 
       - name: Benchmark (Rust)
         run: |
-          # This suite always builds the checkout — `.github/rust-bench` depends
-          # on splintr by path — regardless of the `splintr` input, which only
-          # selects what the *Python* suite installs. With anything but `local`
-          # the two suites therefore measure different splintr versions, and a
-          # reader comparing them would otherwise have no way to know.
+          # Both suites measure whatever the `splintr` input names. `local`
+          # keeps `rust-bench`'s path dependency and builds the checkout, which
+          # is what lets a branch be measured before it ships; any other value
+          # is a release, so the path dependency is swapped for that version
+          # from crates.io. Without the swap this suite would build HEAD while
+          # the Python one installed a release, and the summary would present
+          # two different builds as one result.
           if [ "$SPLINTR" = "local" ]; then
-            echo "RUST_PROVENANCE=splintr built from this checkout (${GITHUB_SHA:0:7}), the same build the Python suite measures." >> "$GITHUB_ENV"
+            echo "RUST_PROVENANCE=splintr built from this checkout (${GITHUB_SHA:0:7}), the same source the Python suite builds its wheel from." >> "$GITHUB_ENV"
           else
-            echo "RUST_PROVENANCE=**splintr built from this checkout (${GITHUB_SHA:0:7}). The Python suite measured splintr-rs $SPLINTR from PyPI instead, so the two reports are NOT the same build.**" >> "$GITHUB_ENV"
+            REQ="$(python .github/scripts/pin_rust_bench.py "$SPLINTR")"
+            echo "RUST_PROVENANCE=splintr \`$REQ\` from crates.io, the same release the Python suite installs from PyPI." >> "$GITHUB_ENV"
           fi
           cd .github/rust-bench && cargo build --release && cd -
           BIN=.github/rust-bench/target/release/rust-bench
