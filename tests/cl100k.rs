@@ -7,7 +7,7 @@
 // a compile error.
 #![cfg(feature = "vocab-cl100k")]
 
-use splintr::pretrained::{cl100k_base_special_tokens, CL100K_BASE_VOCAB};
+use splintr::pretrained::{cl100k_base_special_tokens, CL100K_BASE_VOCAB_PACKED};
 use splintr::{Tokenizer, CL100K_BASE_PATTERN};
 use std::sync::LazyLock;
 
@@ -388,10 +388,10 @@ fn create_cl100k_tokenizer() -> &'static Tokenizer {
 
 /// Implementation that actually constructs the tokenizer.
 ///
-/// Built entirely from the production pieces — `CL100K_BASE_VOCAB`,
+/// Built entirely from the production pieces — `CL100K_BASE_VOCAB_PACKED`,
 /// `CL100K_BASE_PATTERN`, `cl100k_base_special_tokens()` — mirroring what
 /// `pretrained::from_vocab(PretrainedVocab::Cl100kBase)` actually builds
-/// (`Tokenizer::from_bytes_chain(CL100K_BASE_VOCAB, &[CL100K_BASE_PATTERN],
+/// (`Tokenizer::from_packed_chain(CL100K_BASE_VOCAB_PACKED, &[CL100K_BASE_PATTERN],
 /// special)`), so this fixture cannot drift from production. It previously
 /// re-declared its own special-token table, which stopped at `<|/output|>`
 /// (100301) and was missing the 29 agent tokens production adds after it:
@@ -403,8 +403,8 @@ fn create_cl100k_tokenizer() -> &'static Tokenizer {
 /// `<|summary|>`..`<|/summary|>`. Every entry the old table did have matched
 /// production's id exactly, so this was purely additive drift, not a conflict.
 fn create_cl100k_tokenizer_impl() -> Tokenizer {
-    Tokenizer::from_bytes_chain(
-        CL100K_BASE_VOCAB,
+    Tokenizer::from_packed_chain(
+        CL100K_BASE_VOCAB_PACKED,
         &[CL100K_BASE_PATTERN],
         cl100k_base_special_tokens(),
     )

@@ -196,6 +196,99 @@ pub fn load_tiktoken_bpe(data: &[u8]) -> Result<FxHashMap<Vec<u8>, u32>, VocabEr
     Ok(encoder)
 }
 
+/// Magic identifying a packed vocabulary. Bumping the trailing digit is how a
+/// format change announces itself, so an old crate refuses a new file instead
+/// of misreading it.
+const PACKED_MAGIC: &[u8; 8] = b"SPLNTRV1";
+
+/// Load a BPE vocabulary from the packed form `scripts/pack_vocabs.py` writes.
+///
+/// # Format
+///
+/// ```text
+/// magic    8 bytes   b"SPLNTRV1"
+/// count    u32 LE    number of entries
+/// entries  count x   varint(rank), varint(len), len raw token bytes
+/// ```
+///
+/// # Why this exists alongside [`load_tiktoken_bpe`]
+///
+/// The text form spends four base64 characters per three token bytes and writes
+/// each rank in decimal, so it is ~47% larger than the ranks it carries. That
+/// pushed the published crate past the 10 MiB crates.io limit. This form is what
+/// the bundled vocabularies embed; `.tiktoken` remains the interchange format
+/// that [`load_tiktoken_bpe`] and `Tokenizer::from_file` read, and
+/// `tests/vocab_packed_parity.rs` fails if the two ever disagree.
+///
+/// Decoding is also strictly less work than the text path — no base64, no
+/// decimal parse — which `from_pretrained` pays on every process start. Nothing
+/// downstream can tell the two apart: both hand `Tokenizer::new_chain` the same
+/// `FxHashMap`, so encode and decode are untouched.
+///
+/// Ranks are absolute rather than implied by position. Every bundled vocabulary
+/// happens to be contiguous, but the tiktoken format guarantees no such thing,
+/// and a positional format would silently renumber a vocabulary with a gap
+/// instead of refusing it.
+pub fn load_packed_bpe(data: &[u8]) -> Result<FxHashMap<Vec<u8>, u32>, VocabError> {
+    if data.len() < 12 || &data[..8] != PACKED_MAGIC {
+        return Err(VocabError::ParseError(
+            "not a packed vocabulary: bad magic".to_string(),
+        ));
+    }
+    let count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+    if count == 0 {
+        return Err(VocabError::EmptyVocab);
+    }
+
+    // Sized up front: this map is 100k-200k entries and growing it by doubling
+    // rehashes the whole table several times on the load path.
+    let mut encoder = FxHashMap::with_capacity_and_hasher(count, rustc_hash::FxBuildHasher);
+
+    let mut pos = 12;
+    for _ in 0..count {
+        let rank = read_varint(data, &mut pos)?;
+        let len = read_varint(data, &mut pos)? as usize;
+        let end = pos.checked_add(len).ok_or_else(|| {
+            VocabError::ParseError("packed vocabulary: token length overflows".to_string())
+        })?;
+        if end > data.len() {
+            return Err(VocabError::ParseError(
+                "packed vocabulary: token runs past end of data".to_string(),
+            ));
+        }
+        encoder.insert(data[pos..end].to_vec(), rank);
+        pos = end;
+    }
+
+    Ok(encoder)
+}
+
+/// Read one unsigned LEB128 varint, advancing `pos`.
+///
+/// Capped at five groups: a `u32` needs at most 32 bits, and without the cap a
+/// corrupt file of continuation bytes would shift past the width and loop to the
+/// end of the buffer rather than failing.
+fn read_varint(data: &[u8], pos: &mut usize) -> Result<u32, VocabError> {
+    let mut value: u32 = 0;
+    for group in 0..5 {
+        let byte = *data.get(*pos).ok_or_else(|| {
+            VocabError::ParseError("packed vocabulary: truncated varint".to_string())
+        })?;
+        *pos += 1;
+        value |= u32::from(byte & 0x7F)
+            .checked_shl(group * 7)
+            .ok_or_else(|| {
+                VocabError::ParseError("packed vocabulary: varint too wide".to_string())
+            })?;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err(VocabError::ParseError(
+        "packed vocabulary: varint too wide".to_string(),
+    ))
+}
+
 /// Load a tiktoken BPE vocabulary from a file path.
 pub fn load_tiktoken_bpe_file(path: &str) -> Result<FxHashMap<Vec<u8>, u32>, VocabError> {
     let data = std::fs::read(path)?;

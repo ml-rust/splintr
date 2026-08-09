@@ -4,7 +4,9 @@ use super::error::TokenizerError;
 use super::types::{ByteFallback, Tokenizer};
 use crate::core::added::{AddedTokenSet, AddedTokens};
 use crate::core::bpe::BytePairRanks;
-use crate::core::vocab::{build_decoder, load_tiktoken_bpe, load_tiktoken_bpe_file};
+use crate::core::vocab::{
+    build_decoder, load_packed_bpe, load_tiktoken_bpe, load_tiktoken_bpe_file,
+};
 use regexr::RegexBuilder;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -442,6 +444,33 @@ impl Tokenizer {
         special_tokens: impl Into<AddedTokenSet>,
     ) -> Result<Self, TokenizerError> {
         let encoder = load_tiktoken_bpe(vocab_data)?;
+        Self::new_byte_level_chain(encoder, special_tokens, patterns)
+    }
+
+    /// Create a tokenizer from a **packed** vocabulary with a chained
+    /// pre-tokenizer pattern sequence.
+    ///
+    /// The bundled-vocabulary counterpart to [`Tokenizer::from_bytes_chain`]:
+    /// same result, reading [`load_packed_bpe`]'s binary form instead of
+    /// `.tiktoken` text. See that function for why the crate embeds the packed
+    /// form.
+    pub fn from_packed_chain(
+        vocab_data: &[u8],
+        patterns: &[&str],
+        special_tokens: impl Into<AddedTokenSet>,
+    ) -> Result<Self, TokenizerError> {
+        let encoder = load_packed_bpe(vocab_data)?;
+        Self::new_chain(encoder, special_tokens, patterns)
+    }
+
+    /// Packed counterpart to [`Tokenizer::from_bytes_byte_level_chain`], for a
+    /// vocabulary that keeps the ByteLevel spelling.
+    pub fn from_packed_byte_level_chain(
+        vocab_data: &[u8],
+        patterns: &[&str],
+        special_tokens: impl Into<AddedTokenSet>,
+    ) -> Result<Self, TokenizerError> {
+        let encoder = load_packed_bpe(vocab_data)?;
         Self::new_byte_level_chain(encoder, special_tokens, patterns)
     }
 

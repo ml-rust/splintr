@@ -37,7 +37,7 @@
 #![cfg(feature = "vocab-llama3")]
 
 use splintr::core::byte_pair_encode;
-use splintr::pretrained::{llama3_special_tokens, LLAMA3_VOCAB};
+use splintr::pretrained::{llama3_special_tokens, LLAMA3_VOCAB_PACKED};
 use splintr::{FxHashMap, Tokenizer, LLAMA3_PATTERN, NO_SPLIT_PATTERN};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -106,8 +106,12 @@ fn allocations_of<T>(f: impl FnOnce() -> T) -> u64 {
 // =============================================================================
 
 static TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
-    Tokenizer::from_bytes_chain(LLAMA3_VOCAB, &[LLAMA3_PATTERN], llama3_special_tokens())
-        .expect("bundled llama3 vocabulary must load")
+    Tokenizer::from_packed_chain(
+        LLAMA3_VOCAB_PACKED,
+        &[LLAMA3_PATTERN],
+        llama3_special_tokens(),
+    )
+    .expect("bundled llama3 vocabulary must load")
 });
 
 /// A tokenizer whose pre-tokenizer never splits, so the merge loop sees the
@@ -119,8 +123,12 @@ static TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
 /// string as one word. Mistral's AWQ and GPTQ `tokenizer.json` files are
 /// exactly that, which is why the crate carries [`NO_SPLIT_PATTERN`] for them.
 static UNSPLIT: LazyLock<Tokenizer> = LazyLock::new(|| {
-    Tokenizer::from_bytes_chain(LLAMA3_VOCAB, &[NO_SPLIT_PATTERN], llama3_special_tokens())
-        .expect("bundled llama3 vocabulary must load under a no-split pattern")
+    Tokenizer::from_packed_chain(
+        LLAMA3_VOCAB_PACKED,
+        &[NO_SPLIT_PATTERN],
+        llama3_special_tokens(),
+    )
+    .expect("bundled llama3 vocabulary must load under a no-split pattern")
 });
 
 /// Deterministic novel lowercase words, so every piece misses both the

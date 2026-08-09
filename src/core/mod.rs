@@ -85,8 +85,8 @@ pub use tokenizer::{
     O200K_BASE_PATTERN, QWEN2_PATTERN, SENTENCEPIECE_PATTERN,
 };
 pub use vocab::{
-    build_decoder, load_spm_vocab, load_tiktoken_bpe, load_tiktoken_bpe_file, place_special_pieces,
-    VocabError,
+    build_decoder, load_packed_bpe, load_spm_vocab, load_tiktoken_bpe, load_tiktoken_bpe_file,
+    place_special_pieces, VocabError,
 };
 pub use whisper::{
     whisper_special_tokens, WhisperVariant, WHISPER_LANGUAGES_V1V2, WHISPER_LANGUAGES_V3,

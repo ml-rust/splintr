@@ -7,7 +7,7 @@
 // a compile error.
 #![cfg(feature = "vocab-deepseek")]
 
-use splintr::pretrained::{deepseek_v3_special_tokens, DEEPSEEK_V3_VOCAB};
+use splintr::pretrained::{deepseek_v3_special_tokens, DEEPSEEK_V3_VOCAB_PACKED};
 use splintr::{Tokenizer, DEEPSEEK_V3_PATTERNS};
 use std::sync::LazyLock;
 
@@ -572,7 +572,7 @@ fn create_deepseek_v3_tokenizer_by_name(_name: &str) -> Tokenizer {
 
 /// Implementation that actually constructs the tokenizer.
 ///
-/// Built entirely from the production pieces — `DEEPSEEK_V3_VOCAB`,
+/// Built entirely from the production pieces — `DEEPSEEK_V3_VOCAB_PACKED`,
 /// `DEEPSEEK_V3_PATTERNS`, `deepseek_v3_special_tokens()` — so this fixture
 /// cannot drift from what `pretrained::from_vocab(PretrainedVocab::DeepseekV3)`
 /// actually builds. It previously re-declared its own special-token table and
@@ -585,8 +585,8 @@ fn create_deepseek_v3_tokenizer_by_name(_name: &str) -> Tokenizer {
 /// re-aliased to `O200K_BASE_PATTERN` again — see
 /// `test_deepseek_v3_letter_runs_not_split_on_case`.
 fn create_deepseek_v3_tokenizer_impl() -> Tokenizer {
-    Tokenizer::from_bytes_byte_level_chain(
-        DEEPSEEK_V3_VOCAB,
+    Tokenizer::from_packed_byte_level_chain(
+        DEEPSEEK_V3_VOCAB_PACKED,
         DEEPSEEK_V3_PATTERNS,
         deepseek_v3_special_tokens(),
     )

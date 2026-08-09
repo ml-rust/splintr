@@ -34,7 +34,7 @@
 use fluxbench::{flux, Bencher};
 use std::hint::black_box;
 
-use splintr::pretrained::{llama3_special_tokens, LLAMA3_VOCAB};
+use splintr::pretrained::{llama3_special_tokens, LLAMA3_VOCAB_PACKED};
 use splintr::{Tokenizer, LLAMA3_PATTERN, NO_SPLIT_PATTERN};
 
 // ---------------------------------------------------------------------------
@@ -55,13 +55,21 @@ impl Rng {
 }
 
 fn tokenizer() -> Tokenizer {
-    Tokenizer::from_bytes_chain(LLAMA3_VOCAB, &[LLAMA3_PATTERN], llama3_special_tokens())
-        .expect("bundled llama3 vocabulary must load")
+    Tokenizer::from_packed_chain(
+        LLAMA3_VOCAB_PACKED,
+        &[LLAMA3_PATTERN],
+        llama3_special_tokens(),
+    )
+    .expect("bundled llama3 vocabulary must load")
 }
 
 fn unsplit_tokenizer() -> Tokenizer {
-    Tokenizer::from_bytes_chain(LLAMA3_VOCAB, &[NO_SPLIT_PATTERN], llama3_special_tokens())
-        .expect("bundled llama3 vocabulary must load under a no-split pattern")
+    Tokenizer::from_packed_chain(
+        LLAMA3_VOCAB_PACKED,
+        &[NO_SPLIT_PATTERN],
+        llama3_special_tokens(),
+    )
+    .expect("bundled llama3 vocabulary must load under a no-split pattern")
 }
 
 /// Novel pseudo-words, so the chunk cache and the whole-chunk vocabulary lookup

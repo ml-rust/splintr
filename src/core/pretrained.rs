@@ -49,24 +49,24 @@ use super::whisper::{whisper_special_tokens, WhisperVariant};
 // still answers what its EOS id or base vocabulary size is, and `from_vocab`
 // reports the missing feature by name instead of failing as "unknown".
 #[cfg(feature = "vocab-cl100k")]
-pub const CL100K_BASE_VOCAB: &[u8] = include_bytes!("../../vocabs/cl100k_base.tiktoken");
+pub const CL100K_BASE_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/cl100k_base.splv");
 #[cfg(feature = "vocab-o200k")]
-pub const O200K_BASE_VOCAB: &[u8] = include_bytes!("../../vocabs/o200k_base.tiktoken");
+pub const O200K_BASE_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/o200k_base.splv");
 #[cfg(feature = "vocab-llama3")]
-pub const LLAMA3_VOCAB: &[u8] = include_bytes!("../../vocabs/llama3.tiktoken");
+pub const LLAMA3_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/llama3.splv");
 #[cfg(feature = "vocab-deepseek")]
-pub const DEEPSEEK_V3_VOCAB: &[u8] = include_bytes!("../../vocabs/deepseek_v3.tiktoken");
+pub const DEEPSEEK_V3_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/deepseek_v3.splv");
 
 /// Qwen 2/3 vocabulary (151,643 tokens, byte-level BPE stored as raw bytes).
 ///
 /// Also Baichuan-M2's: that checkpoint ships Qwen's tokenizer verbatim, all
 /// 151,643 ids identical, so it is served by this file rather than a copy.
 #[cfg(feature = "vocab-qwen")]
-pub const QWEN3_VOCAB: &[u8] = include_bytes!("../../vocabs/qwen3.tiktoken");
+pub const QWEN3_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/qwen3.splv");
 
 /// GLM-4/4.5 vocabulary (151,329 tokens, byte-level BPE stored as raw bytes).
 #[cfg(feature = "vocab-glm")]
-pub const GLM4_VOCAB: &[u8] = include_bytes!("../../vocabs/glm4.tiktoken");
+pub const GLM4_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/glm4.splv");
 
 /// Kimi vocabulary (163,584 merge ranks, byte-level BPE stored as raw bytes).
 ///
@@ -75,7 +75,7 @@ pub const GLM4_VOCAB: &[u8] = include_bytes!("../../vocabs/glm4.tiktoken");
 /// so one payload serves the whole family. Only the 256-slot special block above
 /// it differs between K2 and K3, which is why they are separate variants.
 #[cfg(feature = "vocab-kimi")]
-pub const KIMI_VOCAB: &[u8] = include_bytes!("../../vocabs/kimi.tiktoken");
+pub const KIMI_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/kimi.splv");
 
 /// Mistral V1 SentencePiece vocabulary (32,000 pieces with their scores).
 ///
@@ -93,7 +93,7 @@ pub const MISTRAL_V2_SPM_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral_v2.
 
 /// Mistral V3/Tekken vocabulary file (Tiktoken-based, ~131k tokens).
 #[cfg(feature = "vocab-mistral")]
-pub const MISTRAL_V3_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral_v3_tekken.tiktoken");
+pub const MISTRAL_V3_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/mistral_v3_tekken.splv");
 
 /// Whisper base BPE vocabulary (GPT-2 byte-level, 50,257 tokens).
 ///
@@ -102,7 +102,7 @@ pub const MISTRAL_V3_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral_v3_tekk
 /// a different base BPE and are not bundled; load those via
 /// [`crate::from_json_path`].
 #[cfg(feature = "vocab-whisper")]
-pub const WHISPER_VOCAB: &[u8] = include_bytes!("../../vocabs/whisper.tiktoken");
+pub const WHISPER_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/whisper.splv");
 
 /// Supported pretrained vocabulary types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -300,25 +300,33 @@ fn vocab_bytes(vocab: PretrainedVocab) -> Result<&'static [u8], TokenizerError> 
         }};
     }
     match vocab {
-        PretrainedVocab::Cl100kBase => bundled!("vocab-cl100k", CL100K_BASE_VOCAB, "cl100k_base"),
-        PretrainedVocab::O200kBase => bundled!("vocab-o200k", O200K_BASE_VOCAB, "o200k_base"),
+        PretrainedVocab::Cl100kBase => {
+            bundled!("vocab-cl100k", CL100K_BASE_VOCAB_PACKED, "cl100k_base")
+        }
+        PretrainedVocab::O200kBase => {
+            bundled!("vocab-o200k", O200K_BASE_VOCAB_PACKED, "o200k_base")
+        }
         // gpt-oss is o200k_base's ranks under a different set of special
         // tokens, so it reads the same payload — the `vocab-gpt-oss` feature
         // enables `vocab-o200k`, which is what makes that constant exist here.
-        PretrainedVocab::GptOss => bundled!("vocab-gpt-oss", O200K_BASE_VOCAB, "gpt-oss"),
-        PretrainedVocab::Llama3 => bundled!("vocab-llama3", LLAMA3_VOCAB, "llama3"),
-        PretrainedVocab::DeepseekV3 => bundled!("vocab-deepseek", DEEPSEEK_V3_VOCAB, "deepseek_v3"),
-        PretrainedVocab::Qwen3 => bundled!("vocab-qwen", QWEN3_VOCAB, "qwen3"),
-        PretrainedVocab::Glm4 => bundled!("vocab-glm", GLM4_VOCAB, "glm4"),
+        PretrainedVocab::GptOss => bundled!("vocab-gpt-oss", O200K_BASE_VOCAB_PACKED, "gpt-oss"),
+        PretrainedVocab::Llama3 => bundled!("vocab-llama3", LLAMA3_VOCAB_PACKED, "llama3"),
+        PretrainedVocab::DeepseekV3 => {
+            bundled!("vocab-deepseek", DEEPSEEK_V3_VOCAB_PACKED, "deepseek_v3")
+        }
+        PretrainedVocab::Qwen3 => bundled!("vocab-qwen", QWEN3_VOCAB_PACKED, "qwen3"),
+        PretrainedVocab::Glm4 => bundled!("vocab-glm", GLM4_VOCAB_PACKED, "glm4"),
         // One payload, two special blocks — the same relationship gpt-oss has
         // with o200k_base.
-        PretrainedVocab::KimiK2 => bundled!("vocab-kimi", KIMI_VOCAB, "kimi_k2"),
-        PretrainedVocab::KimiK3 => bundled!("vocab-kimi", KIMI_VOCAB, "kimi_k3"),
+        PretrainedVocab::KimiK2 => bundled!("vocab-kimi", KIMI_VOCAB_PACKED, "kimi_k2"),
+        PretrainedVocab::KimiK3 => bundled!("vocab-kimi", KIMI_VOCAB_PACKED, "kimi_k3"),
         PretrainedVocab::MistralV1 => bundled!("vocab-mistral", MISTRAL_SPM_VOCAB, "mistral"),
         PretrainedVocab::MistralV2 => bundled!("vocab-mistral", MISTRAL_V2_SPM_VOCAB, "mistral_v2"),
-        PretrainedVocab::MistralV3 => bundled!("vocab-mistral", MISTRAL_V3_VOCAB, "mistral_v3"),
+        PretrainedVocab::MistralV3 => {
+            bundled!("vocab-mistral", MISTRAL_V3_VOCAB_PACKED, "mistral_v3")
+        }
         PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
-            bundled!("vocab-whisper", WHISPER_VOCAB, "whisper")
+            bundled!("vocab-whisper", WHISPER_VOCAB_PACKED, "whisper")
         }
     }
 }
@@ -352,9 +360,9 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
     let data = vocab_bytes(vocab)?;
 
     let tokenizer = match vocab {
-        // Vocabularies whose `.tiktoken` stores raw semantic bytes: the file
-        // was written with the ByteLevel mapping already undone, so the merge
-        // loop runs on the text's own bytes and no byte-level stage applies.
+        // Vocabularies whose vocabulary stores raw semantic bytes: the file was
+        // written with the ByteLevel mapping already undone, so the merge loop
+        // runs on the text's own bytes and no byte-level stage applies.
         PretrainedVocab::Cl100kBase
         | PretrainedVocab::O200kBase
         | PretrainedVocab::GptOss
@@ -362,14 +370,16 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
         | PretrainedVocab::Qwen3
         | PretrainedVocab::Glm4
         | PretrainedVocab::KimiK2
-        | PretrainedVocab::KimiK3 => Tokenizer::from_bytes_chain(data, pats, special),
-        // Vocabularies whose `.tiktoken` keeps the ByteLevel spelling (`Ġ` for
+        | PretrainedVocab::KimiK3 => Tokenizer::from_packed_chain(data, pats, special),
+        // Vocabularies whose vocabulary keeps the ByteLevel spelling (`Ġ` for
         // a space), so the input has to be mapped into it before merging.
         PretrainedVocab::DeepseekV3
         | PretrainedVocab::MistralV3
         | PretrainedVocab::WhisperV1
         | PretrainedVocab::WhisperV2
-        | PretrainedVocab::WhisperV3 => Tokenizer::from_bytes_byte_level_chain(data, pats, special),
+        | PretrainedVocab::WhisperV3 => {
+            Tokenizer::from_packed_byte_level_chain(data, pats, special)
+        }
         // Handled above, before `patterns` is consulted.
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => {
             return Err(TokenizerError::UnknownPretrained(

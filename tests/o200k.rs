@@ -7,7 +7,7 @@
 // a compile error.
 #![cfg(feature = "vocab-o200k")]
 
-use splintr::pretrained::{o200k_base_special_tokens, O200K_BASE_VOCAB};
+use splintr::pretrained::{o200k_base_special_tokens, O200K_BASE_VOCAB_PACKED};
 use splintr::{Tokenizer, O200K_BASE_PATTERN};
 use std::sync::LazyLock;
 
@@ -386,7 +386,7 @@ fn create_o200k_tokenizer() -> &'static Tokenizer {
 
 /// Implementation that actually constructs the tokenizer.
 ///
-/// Built entirely from the production pieces — `O200K_BASE_VOCAB`,
+/// Built entirely from the production pieces — `O200K_BASE_VOCAB_PACKED`,
 /// `O200K_BASE_PATTERN`, `o200k_base_special_tokens()` — so this fixture cannot
 /// drift from what `pretrained::from_vocab(PretrainedVocab::O200kBase)` actually
 /// builds. It previously re-declared its own special-token table, and such a
@@ -396,8 +396,8 @@ fn create_o200k_tokenizer() -> &'static Tokenizer {
 /// that no production code emits (the canonical pair is `<|image|>`/`<|/image|>`,
 /// `pretrained.rs:632`).
 fn create_o200k_tokenizer_impl() -> Tokenizer {
-    Tokenizer::from_bytes_chain(
-        O200K_BASE_VOCAB,
+    Tokenizer::from_packed_chain(
+        O200K_BASE_VOCAB_PACKED,
         &[O200K_BASE_PATTERN],
         o200k_base_special_tokens(),
     )

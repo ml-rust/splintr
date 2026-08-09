@@ -26,7 +26,12 @@ include = [
     "/tests/**/*.rs",
     "/examples/**/*.rs",
     "/benches/**/*.rs",
-    "/vocabs/*.tiktoken",
+    # The packed form, not the `.tiktoken` text it is generated from: base64
+    # plus decimal ranks made the crate 10.1 MiB against a 10 MiB crates.io
+    # limit, and 0.16.0 was refused. `scripts/pack_vocabs.py` writes these and
+    # `tests/vocab_packed_parity.rs` gates them against the text files, which
+    # stay in the repo as the interchange format `Tokenizer::from_file` reads.
+    "/vocabs/*.splv",
     "/vocabs/*.spm",
     "/Cargo.toml",
     "/README.md",

@@ -18,6 +18,8 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - Batches too small to pay for a thread pool encode on the calling thread, making them ~1.4x faster.
 - ByteLevel `tokenizer.json` vocabularies resolve most pre-tokens without mapping them into ByteLevel space first, ~17% fewer instructions per encode. Token ids are unchanged.
 - Kimi encodes ~16% faster: its case-split letter runs skip ASCII eight bytes at a time instead of one character per call.
+- Bundled vocabularies embed a packed binary form instead of base64 text, loading ~2x faster. Encode and decode are unchanged.
+- The bundled vocabulary constants are now `*_VOCAB_PACKED` and take `Tokenizer::from_packed_chain` / `from_packed_byte_level_chain`. `.tiktoken` files and `from_file` are unaffected.
 
 ## [0.15.0] - 2026-08-09
 

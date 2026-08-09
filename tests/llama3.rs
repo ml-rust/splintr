@@ -7,7 +7,7 @@
 // a compile error.
 #![cfg(feature = "vocab-llama3")]
 
-use splintr::pretrained::{llama3_special_tokens, LLAMA3_VOCAB};
+use splintr::pretrained::{llama3_special_tokens, LLAMA3_VOCAB_PACKED};
 use splintr::{Tokenizer, LLAMA3_PATTERN};
 use std::sync::LazyLock;
 
@@ -394,10 +394,10 @@ fn create_llama3_tokenizer_by_name(_name: &str) -> Tokenizer {
 
 /// Implementation that actually constructs the tokenizer.
 ///
-/// Built entirely from the production pieces — `LLAMA3_VOCAB`, `LLAMA3_PATTERN`,
+/// Built entirely from the production pieces — `LLAMA3_VOCAB_PACKED`, `LLAMA3_PATTERN`,
 /// `llama3_special_tokens()` — mirroring what
 /// `pretrained::from_vocab(PretrainedVocab::Llama3)` actually builds
-/// (`Tokenizer::from_bytes_chain(LLAMA3_VOCAB, &[LLAMA3_PATTERN], special)`), so
+/// (`Tokenizer::from_packed_chain(LLAMA3_VOCAB_PACKED, &[LLAMA3_PATTERN], special)`), so
 /// this fixture cannot drift from production. It previously re-declared its own
 /// special-token table, which had fallen 27 tokens behind production: missing
 /// the `<|audio|>`/`<|/audio|>` and `<|video|>`/`<|/video|>` multimodal pairs, and
@@ -409,6 +409,10 @@ fn create_llama3_tokenizer_by_name(_name: &str) -> Tokenizer {
 /// matched production's id exactly, so this was purely additive drift, not a
 /// conflict.
 fn create_llama3_tokenizer_impl() -> Tokenizer {
-    Tokenizer::from_bytes_chain(LLAMA3_VOCAB, &[LLAMA3_PATTERN], llama3_special_tokens())
-        .expect("bundled llama3 vocabulary must load")
+    Tokenizer::from_packed_chain(
+        LLAMA3_VOCAB_PACKED,
+        &[LLAMA3_PATTERN],
+        llama3_special_tokens(),
+    )
+    .expect("bundled llama3 vocabulary must load")
 }
