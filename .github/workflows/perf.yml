@@ -112,9 +112,9 @@ jobs:
       GIGATOKEN: ${{ inputs.gigatoken }}
       ROUNDS: ${{ inputs.rounds }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -190,7 +190,7 @@ jobs:
             --note "$RUST_PROVENANCE" \
             < rust.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: perf-rust-${{ matrix.os }}
           path: rust.jsonl
@@ -360,7 +360,7 @@ jobs:
             --note "Medians of ${ROUNDS:-3} interleaved rounds. Lower is better for latency; the last column is how many times better the first engine is." \
             < rounds.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: perf-${{ matrix.os }}
           path: rounds.jsonl
