@@ -527,7 +527,7 @@ fn parse_merge_ranks(merges: Option<&RawValue>, vocab: &[(Cow<'_, str>, u32)]) -
     base.sort_by_key(|&(_, id)| id);
 
     Some(super::super::bpe::merge_ranks(
-        &merged,
+        merged,
         base.iter().map(|(k, _)| *k),
     ))
 }

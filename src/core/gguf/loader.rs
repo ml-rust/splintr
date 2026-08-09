@@ -672,7 +672,7 @@ pub(super) fn build_merge_ranks(
     // Each entry is "a b"; byte-level tokens encode real spaces as `Ġ`, so the
     // first space is always the separator.
     let merged: Vec<String> = merges.iter().map(|s| s.replacen(' ', "", 1)).collect();
-    bpe::merge_ranks(&merged, tokens.iter().map(String::as_str))
+    bpe::merge_ranks(merged, tokens.iter().map(String::as_str))
 }
 
 /// CONTROL in the GGUF `tokenizer.ggml.token_type` enum.

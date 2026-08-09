@@ -12,7 +12,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 - The chunk cache holds more entries by default, retiring 5-9% fewer instructions per encode across the bundled vocabularies. It still caps at a fixed size and fills lazily.
 - The case-split pre-tokenizers take an all-ASCII shortcut through their letter branches, and skip them outright where no letter branch can match: Kimi encodes ~31% and o200k/gpt-oss ~23% fewer instructions. Token ids are unchanged.
-- `from_json` reads `model.merges` without materializing a `serde_json::Value` per entry, sizes its merge-rank tables up front, and builds its vocabulary tables once instead of rebuilding them, retiring 17-31% fewer instructions per load.
+- `from_json` reads `model.merges` without materializing a `serde_json::Value` per entry, sizes its merge-rank tables up front, and builds its vocabulary tables once instead of rebuilding or re-copying them, retiring 20-35% fewer instructions per load.
 - `Tokenizer::with_merge_ranks` takes an `Encoder` rather than a `FxHashMap<Vec<u8>, u32>`, matching what `encoder()` already returns.
 
 ## [0.16.1] - 2026-08-09

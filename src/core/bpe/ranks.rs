@@ -24,7 +24,7 @@ use rustc_hash::FxHashMap;
 /// `vocab_in_id_order` yields every vocabulary token, lowest id first, so the
 /// base ranks are deterministic.
 pub(crate) fn merge_ranks<'a>(
-    merged: &[String],
+    merged: Vec<String>,
     vocab_in_id_order: impl Iterator<Item = &'a str>,
 ) -> Encoder {
     // Both sized up front and both on FxHash: this runs over a whole
@@ -46,11 +46,15 @@ pub(crate) fn merge_ranks<'a>(
             .or_insert(next);
     }
 
-    // Then the merges, preserving list priority.
+    // Then the merges, preserving list priority. The set borrowed from
+    // `merged`; dropping it first lets each token be *moved* into its key
+    // rather than copied, which is one allocation saved per merge over a list
+    // as long as the vocabulary.
+    drop(merge_set);
     let base_count = ranks.len() as u32;
-    for (i, token) in merged.iter().enumerate() {
+    for (i, token) in merged.into_iter().enumerate() {
         ranks
-            .entry(TokenBytes::from(token.as_bytes().to_vec()))
+            .entry(TokenBytes::Owned(token.into_bytes().into_boxed_slice()))
             .or_insert(base_count + i as u32);
     }
     ranks
