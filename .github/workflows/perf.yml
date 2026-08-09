@@ -1,5 +1,23 @@
 name: perf
 
+# What each run is called in the Actions list. Every run was previously just
+# "perf", so a list of them said nothing about what was measured.
+#
+# `splintr: local` builds the checkout, and what identifies that build is the
+# ref it was dispatched from — a tag gives "perf v0.15.0", a branch gives
+# "perf main". Any other value is an explicit version, so it names itself:
+# "perf 0.14.4". A baseline is appended, since a two-version run is a
+# comparison and the pair is the point: "perf v0.15.0 vs 0.14.4".
+#
+# The run number disambiguates repeated runs of the same branch. It is there
+# rather than a short commit SHA because workflow expressions have no substring
+# function and `github.sha` is 40 characters; the SHA is recorded in the run
+# summary instead (see the `VERSIONS` block below).
+run-name: >-
+  perf ${{ inputs.splintr == 'local' && github.ref_name || inputs.splintr }}${{
+  inputs.splintr_baseline && format(' vs {0}', inputs.splintr_baseline) || '' }}
+  #${{ github.run_number }}
+
 # splintr against the libraries it would replace, and against itself across
 # versions. Manual only — it is a decision tool and a regression check, not
 # something to run on every push.
