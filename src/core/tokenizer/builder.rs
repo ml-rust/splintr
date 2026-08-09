@@ -223,6 +223,7 @@ impl Tokenizer {
         let byte_pair_ranks = Arc::new(BytePairRanks::build(&encoder));
 
         Ok(Self {
+            raw_encoder: None,
             encoder,
             merge_ranks: None,
             byte_pair_ranks,
@@ -252,6 +253,25 @@ impl Tokenizer {
     /// Attach a separate merge-priority map (bytes → merge rank) so BPE merges
     /// by this order rather than by token id. Use for HuggingFace BPE models
     /// whose ids don't follow merge order (e.g. RoBERTa).
+    /// Supply the vocabulary re-keyed by the RAW bytes each token stands for,
+    /// so a ByteLevel tokenizer can resolve a pre-token without mapping it into
+    /// ByteLevel space first.
+    ///
+    /// Taken from the caller rather than derived here because the `tokenizer.json`
+    /// loader already decodes every token once, to validate it — deriving it a
+    /// second time measured at 11-14% of load. The map may be partial: a miss
+    /// falls through to the mapped lookup and the same answer, so only a wrong
+    /// entry could change ids.
+    ///
+    /// Ignored unless this tokenizer is ByteLevel, which is the only case where
+    /// the two spaces differ.
+    pub(crate) fn with_raw_encoder(mut self, raw_encoder: FxHashMap<Vec<u8>, u32>) -> Self {
+        if self.use_byte_level {
+            self.raw_encoder = Some(raw_encoder);
+        }
+        self
+    }
+
     pub fn with_merge_ranks(mut self, merge_ranks: FxHashMap<Vec<u8>, u32>) -> Self {
         // The rank source just changed, so the two-byte index derived from it
         // has to be rebuilt — leaving the encoder-derived one in place would
@@ -481,6 +501,8 @@ impl Tokenizer {
 
         Ok(Self {
             encoder,
+            // Metaspace, not ByteLevel — nothing to re-key.
+            raw_encoder: None,
             merge_ranks: None,
             byte_pair_ranks,
             decoder: Arc::new(decoder),

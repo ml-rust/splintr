@@ -1,5 +1,5 @@
 use super::super::types::Tokenizer;
-use crate::core::byte_level::byte_level_encode;
+use crate::core::byte_level::{byte_level_encode, byte_level_encode_into};
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 
@@ -52,6 +52,33 @@ impl Tokenizer {
             return;
         }
         self.encode_bytes_into(slice, out);
+    }
+
+    /// Encode one **raw** (unmapped) pre-token chunk from a ByteLevel
+    /// pipeline, mapping it into ByteLevel space only if it has to.
+    ///
+    /// The whole-piece vocabulary hit resolves 92.5% of pre-tokens on ordinary
+    /// prose, and `raw_encoder` answers it without any mapping at all. Only the
+    /// remaining 7.5% — the ones headed for the chunk cache or the merge loop,
+    /// both of which are keyed in ByteLevel space — pay for `scratch`.
+    ///
+    /// Falls back to mapping everything when `raw_encoder` is absent, which is
+    /// exactly the old behavior.
+    pub(super) fn encode_raw_chunk_into(
+        &self,
+        raw: &[u8],
+        out: &mut Vec<u32>,
+        scratch: &mut String,
+    ) {
+        if let Some(raw_encoder) = &self.raw_encoder {
+            if let Some(&rank) = raw_encoder.get(raw) {
+                out.push(rank);
+                return;
+            }
+        }
+        scratch.clear();
+        byte_level_encode_into(scratch, raw);
+        self.encode_bytes_into(scratch.as_bytes(), out);
     }
 
     /// [`Tokenizer::encode_bytes_into`] as a standalone call, for the few

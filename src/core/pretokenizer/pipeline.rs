@@ -262,6 +262,57 @@ impl PreTokenizer {
         self.byte_level
     }
 
+    /// Whether [`PreTokenizer::for_each_raw_piece`] may be used: the pipeline's
+    /// one content-rewriting stage is ByteLevel *and* is the final stage, so
+    /// nothing downstream of it would be handed a piece in the wrong space.
+    pub(crate) fn emits_raw(&self) -> bool {
+        let rewrite_at = self.compiled.iter().position(Stage::rewrites_content);
+        match rewrite_at {
+            Some(i) if i + 1 == self.compiled.len() => {
+                matches!(self.compiled[i], Stage::ByteLevel { .. })
+            }
+            _ => false,
+        }
+    }
+
+    /// [`PreTokenizer::for_each_piece`] handing back pieces the ByteLevel stage
+    /// has **not** mapped, so the caller can decide whether the mapping is
+    /// needed at all.
+    ///
+    /// Callers must check [`PreTokenizer::emits_raw`] first; this panics in
+    /// debug builds otherwise rather than silently emitting pieces in a space
+    /// the caller does not expect.
+    pub(crate) fn for_each_raw_piece(&self, text: &str, mut f: impl FnMut(&str)) {
+        debug_assert!(
+            self.emits_raw(),
+            "for_each_raw_piece requires a pipeline ending in ByteLevel"
+        );
+        if self.add_prefix_space && !text.starts_with(' ') {
+            let prefixed = format!(" {text}");
+            self.for_each_raw_piece_inner(&prefixed, &mut f);
+        } else {
+            self.for_each_raw_piece_inner(text, &mut f);
+        }
+    }
+
+    fn for_each_raw_piece_inner(&self, text: &str, f: &mut impl FnMut(&str)) {
+        // `emits_raw` guarantees the rewriting stage is the last one, so every
+        // stage before it is a cutting stage and the walk mirrors
+        // `for_each_piece_inner`'s cutting loop exactly.
+        let last = self.compiled.len() - 1;
+        let mut cut: Vec<&str> = vec![text];
+        for stage in &self.compiled[..last] {
+            let mut next = Vec::with_capacity(super::split::estimated_pieces(text));
+            for piece in &cut {
+                stage.cut(piece, &mut next);
+            }
+            cut = next;
+        }
+        for piece in &cut {
+            self.compiled[last].split_for_each(piece, f);
+        }
+    }
+
     /// Whether the pipeline has no stages, in which case it is a no-op.
     pub fn is_empty(&self) -> bool {
         self.spec.is_empty()

@@ -154,6 +154,26 @@ impl ByteFallback {
 /// - Optional metaspace decoder for Mistral/Gemma style tokenizers (▁ → space)
 pub struct Tokenizer {
     pub(super) encoder: FxHashMap<Vec<u8>, u32>,
+    /// [`Tokenizer::encoder`] re-keyed by the RAW bytes each token stands for,
+    /// for ByteLevel vocabularies only; `None` for every other kind.
+    ///
+    /// A ByteLevel vocabulary is keyed in ByteLevel space, so encoding a
+    /// pre-token means mapping it there first — `' '` becomes `'Ġ'`, two UTF-8
+    /// bytes — and 95% of pre-tokens begin with a space. Measured over
+    /// WikiText, that mapping inflates the input 6.94 MB -> 8.31 MB and the
+    /// same vocabulary loaded from a rank file retires 34% fewer instructions
+    /// for byte-identical output.
+    ///
+    /// Most of that is avoidable, because 92.5% of pre-tokens are resolved by a
+    /// single whole-piece vocabulary hit that never reaches the merge loop at
+    /// all. Keyed by raw bytes, that hit needs no mapping: only the 7.5% that
+    /// miss have to be mapped into ByteLevel space for the cache and BPE, which
+    /// still operate there.
+    ///
+    /// `None` when any token fails to decode from ByteLevel — the table has to
+    /// answer for the whole vocabulary or it would silently disagree with
+    /// `encoder` on whatever it omitted.
+    pub(super) raw_encoder: Option<FxHashMap<Vec<u8>, u32>>,
     /// Optional separate merge-priority map (bytes → merge rank). When present,
     /// BPE merges by this rank instead of by token id — required for HuggingFace
     /// BPE models whose ids don't follow merge order (e.g. RoBERTa). `None`
@@ -248,6 +268,7 @@ impl Clone for Tokenizer {
 
         Self {
             encoder: self.encoder.clone(),
+            raw_encoder: self.raw_encoder.clone(),
             merge_ranks: self.merge_ranks.clone(),
             byte_pair_ranks: Arc::clone(&self.byte_pair_ranks),
             // Immutable once built, so the clone shares the table rather than

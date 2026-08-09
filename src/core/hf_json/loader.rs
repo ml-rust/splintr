@@ -91,6 +91,21 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
 
     let mut encoder: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
     encoder.reserve(vocab.len());
+    // `encoder` keyed by the raw bytes each token stands for, filled from the
+    // same decode the byte-level validation below already performs. Building it
+    // in a second pass cost 11-14% of load; here it is the difference between
+    // discarding that decode and keeping it.
+    //
+    // Partial by design. An added token is spelled literally rather than
+    // byte-level-encoded, so it has no raw form to record — and it never
+    // reaches this lookup anyway, being matched ahead of BPE. A missing entry
+    // only costs the fast path a miss, which falls through to the mapped
+    // lookup and the same answer; only a *wrong* entry could change ids, and
+    // the mapping is a bijection, so the entries present cannot collide.
+    let mut raw_encoder: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
+    if pre.byte_level {
+        raw_encoder.reserve(vocab.len());
+    }
     for (token, id) in vocab {
         let id = id
             .as_u64()
@@ -128,8 +143,13 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
             // Agreed added token: literal text, so skip the byte-level check.
             Some(_) => {}
             None => {
-                if pre.byte_level && byte_level_decode(token).is_none() {
-                    return Err(HfJsonError::InvalidByteLevel(token.clone()));
+                if pre.byte_level {
+                    match byte_level_decode(token) {
+                        None => return Err(HfJsonError::InvalidByteLevel(token.clone())),
+                        Some(raw) => {
+                            raw_encoder.insert(raw, id);
+                        }
+                    }
                 }
             }
         }
@@ -238,6 +258,9 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
                 Some(ranks) => t.with_merge_ranks(ranks),
                 None => t,
             };
+            // Only the pipeline path can hand pre-tokens over unmapped, so it is
+            // the only one the raw table can serve.
+            let t = t.with_raw_encoder(raw_encoder);
             t.with_pre_tokenizer(pt)
         }
         None => {

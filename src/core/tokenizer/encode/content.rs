@@ -50,6 +50,15 @@ impl Tokenizer {
             // piece count to size from — that was the point of not building one
             // — so it estimates from the same rule the pipeline uses.
             let mut out = Vec::with_capacity(crate::core::pretokenizer::estimated_pieces(text));
+            // When the pipeline ends in ByteLevel, take the pieces unmapped and
+            // let `encode_raw_chunk_into` map only the ones that need it.
+            if self.use_byte_level && self.raw_encoder.is_some() && pt.emits_raw() {
+                let mut scratch = String::new();
+                pt.for_each_raw_piece(text, |piece| {
+                    self.encode_raw_chunk_into(piece.as_bytes(), &mut out, &mut scratch)
+                });
+                return out;
+            }
             pt.for_each_piece(text, |piece| {
                 self.encode_chunk_into(piece.as_bytes(), &mut out)
             });

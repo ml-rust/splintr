@@ -125,6 +125,36 @@ impl Stage {
         }
     }
 
+    /// [`Stage::byte_level_for_each`] emitting the pieces **unmapped**.
+    ///
+    /// Same splitting, no ByteLevel encoding. The caller takes on the mapping,
+    /// which lets it skip the mapping entirely for a piece whose raw bytes it
+    /// can already resolve — see `Tokenizer::raw_encoder`. Only sound when this
+    /// stage is the last one in the pipeline, since anything after it would
+    /// otherwise be handed a piece in the wrong space; `PreTokenizer::emits_raw`
+    /// is the guard, and the only caller checks it.
+    pub(super) fn split_for_each(&self, piece: &str, f: &mut impl FnMut(&str)) {
+        let Stage::ByteLevel { re } = self else {
+            unreachable!("split_for_each is only called on a ByteLevel stage")
+        };
+        match re {
+            Some(re) => {
+                let mut raw: Vec<&str> = Vec::new();
+                split_regex(piece, re, Behavior::Isolated, false, &mut raw);
+                for r in raw {
+                    if !r.is_empty() {
+                        f(r);
+                    }
+                }
+            }
+            None => {
+                if !piece.is_empty() {
+                    f(piece)
+                }
+            }
+        }
+    }
+
     /// Apply this stage, producing owned pieces.
     ///
     /// Used from the first content-rewriting stage onwards. Cutting stages

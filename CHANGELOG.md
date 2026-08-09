@@ -10,12 +10,13 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Added
 
-- `encode_batch_flat` returns a batch as one flat id buffer plus row offsets instead of `list[list[int]]`, which is 4.7x faster on large batches — building the Python lists was 89% of `encode_batch`'s wall time.
+- `encode_batch_flat` returns a batch as one flat id buffer plus row offsets instead of `list[list[int]]`, 4.7x faster on large batches.
 
 ### Changed
 
-- Batch encoding releases the GIL, so it no longer blocks other Python threads.
-- Small batches encode on the calling thread instead of being handed to rayon, which is ~1.4x faster for them: a batch of 100 short prompts is well under a millisecond of work, and waking a thread pool cost more than the encoding did. Batches above the threshold are unchanged.
+- Batch encoding releases the GIL.
+- Batches too small to pay for a thread pool encode on the calling thread, making them ~1.4x faster.
+- ByteLevel `tokenizer.json` vocabularies resolve most pre-tokens without mapping them into ByteLevel space first, ~17% fewer instructions per encode. Token ids are unchanged.
 
 ## [0.15.0] - 2026-08-09
 

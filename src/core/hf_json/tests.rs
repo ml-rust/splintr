@@ -1394,3 +1394,56 @@ fn a_document_with_no_declared_decoder_delegates_to_the_backend() {
     assert_eq!(streams_like_decode(json, &[3, 4]), "helloworld");
     assert_eq!(streams_like_decode(json, &[1, 3, 5, 6, 2]), "hello, world");
 }
+
+/// The raw-bytes fast path must answer exactly as the ByteLevel-mapped path it
+/// bypasses.
+///
+/// A `Sequence` ending in `ByteLevel` takes pre-tokens unmapped and resolves
+/// them against a vocabulary re-keyed by raw bytes, mapping only on a miss.
+/// The same vocabulary reached through a bare `ByteLevel` pre-tokenizer has no
+/// pipeline to take that path, so it maps every piece the old way. Both split
+/// on whitespace here, so for input without punctuation the two must agree
+/// token for token — and the ids must be the ones the ByteLevel keys imply.
+///
+/// The interesting inputs are the ones where the two spaces differ: a leading
+/// space is `Ġ` (two UTF-8 bytes) in the mapped space and one byte raw, which
+/// is the whole reason the fast path exists.
+#[test]
+fn raw_byte_fast_path_agrees_with_the_mapped_path() {
+    // `Ġ` = U+0120 is the ByteLevel form of a space; `Ċ` = U+010A is newline.
+    const VOCAB: &str = r#"{"a": 0, "Ġa": 1, "b": 2, "Ġb": 3, "Ġ": 4, "Ċ": 5,
+        "Ã©": 6, "ĠÃ©": 7, "ab": 8, "Ġab": 9}"#;
+
+    let piped = format!(
+        r#"{{"added_tokens": [],
+            "pre_tokenizer": {{"type": "Sequence", "pretokenizers": [
+                {{"type": "Split", "pattern": {{"Regex": " ?[^\\s]+|\\s"}}, "behavior": "Isolated"}},
+                {{"type": "ByteLevel", "add_prefix_space": false}}
+            ]}},
+            "model": {{"type": "BPE", "vocab": {VOCAB}, "merges": []}}}}"#
+    );
+    let bare = format!(
+        r#"{{"added_tokens": [],
+            "pre_tokenizer": {{"type": "ByteLevel", "add_prefix_space": false, "use_regex": true}},
+            "model": {{"type": "BPE", "vocab": {VOCAB}, "merges": []}}}}"#
+    );
+
+    let piped = from_json_bytes(piped.as_bytes()).expect("piped loads");
+    let bare = from_json_bytes(bare.as_bytes()).expect("bare loads");
+
+    for text in [
+        "a", " a", "a b", " a b", "ab", " ab", "\u{e9}", " \u{e9}", "a\nb", "  a", "",
+    ] {
+        assert_eq!(
+            piped.encode_raw(text),
+            bare.encode_raw(text),
+            "fast path disagrees with the mapped path for {text:?}"
+        );
+    }
+
+    // Not merely self-consistent: pin the ids the ByteLevel keys imply, so a
+    // change that broke BOTH paths the same way would still fail here.
+    assert_eq!(piped.encode_raw(" a"), vec![1]);
+    assert_eq!(piped.encode_raw("a"), vec![0]);
+    assert_eq!(piped.encode_raw(" \u{e9}"), vec![7]);
+}
