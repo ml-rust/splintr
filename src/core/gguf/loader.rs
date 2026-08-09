@@ -665,7 +665,10 @@ fn remove_extra_whitespaces(vocab: &GgufVocab) -> bool {
 /// order — the shared construction in [`bpe::merge_ranks`], which the
 /// HuggingFace `tokenizer.json` loader also uses, because merge priority is
 /// independent of token id in both formats.
-pub(super) fn build_merge_ranks(merges: &[String], tokens: &[String]) -> FxHashMap<Vec<u8>, u32> {
+pub(super) fn build_merge_ranks(
+    merges: &[String],
+    tokens: &[String],
+) -> crate::core::token_bytes::Encoder {
     // Each entry is "a b"; byte-level tokens encode real spaces as `Ġ`, so the
     // first space is always the separator.
     let merged: Vec<String> = merges.iter().map(|s| s.replacen(' ', "", 1)).collect();

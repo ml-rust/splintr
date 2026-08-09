@@ -17,6 +17,7 @@ use super::super::wordpiece::WordPieceTokenizer;
 
 use super::super::any_tokenizer::{AnyTokenizer, Backend};
 use super::super::policy;
+use super::super::token_bytes::{Encoder, TokenBytes};
 use super::components::{
     find_added_token, parse_bert_norm, parse_norm_ops, parse_pre_tokenizer,
     parse_special_decode_ids, parse_special_tokens, parse_unk_id,
@@ -271,7 +272,7 @@ fn build_bpe(
     let pre = parse_pre_tokenizer(root.get("pre_tokenizer"));
     let specials = parse_special_tokens(root);
 
-    let mut encoder: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
+    let mut encoder: Encoder = Encoder::default();
     encoder.reserve(vocab.len());
     // `encoder` keyed by the raw bytes each token stands for, filled from the
     // same decode the byte-level validation below already performs. Building it
@@ -284,7 +285,7 @@ fn build_bpe(
     // only costs the fast path a miss, which falls through to the mapped
     // lookup and the same answer; only a *wrong* entry could change ids, and
     // the mapping is a bijection, so the entries present cannot collide.
-    let mut raw_encoder: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
+    let mut raw_encoder: Encoder = Encoder::default();
     if pre.byte_level {
         raw_encoder.reserve(vocab.len());
     }
@@ -327,7 +328,7 @@ fn build_bpe(
                     match byte_level_decode(token) {
                         None => return Err(HfJsonError::InvalidByteLevel(token.to_string())),
                         Some(raw) => {
-                            raw_encoder.insert(raw, id);
+                            raw_encoder.insert(TokenBytes::from(raw), id);
                         }
                     }
                 }
@@ -340,7 +341,7 @@ fn build_bpe(
         // the id→bytes table, and both the built-in byte-level decode and the
         // declared `ByteLevel` decoder pass a non-byte-level token through
         // unchanged, so the id renders as the literal string it was declared as.
-        encoder.insert(token.as_bytes().to_vec(), id);
+        encoder.insert(TokenBytes::from(token.as_bytes().to_vec()), id);
     }
 
     // Merge priority comes from the `merges` list, which is independent of token
@@ -439,9 +440,19 @@ fn build_bpe(
             // matching the engine so `decode` reverses the byte-level mapping; the
             // encode side skips re-encoding because a pre_tokenizer is attached.
             let t = if pt.byte_level() {
-                Tokenizer::new_byte_level(encoder, specials, super::super::tokenizer::GPT2_PATTERN)?
+                Tokenizer::from_encoder(
+                    encoder,
+                    specials,
+                    super::super::tokenizer::GPT2_PATTERN,
+                    true,
+                )?
             } else {
-                Tokenizer::new(encoder, specials, super::super::tokenizer::GPT2_PATTERN)?
+                Tokenizer::from_encoder(
+                    encoder,
+                    specials,
+                    super::super::tokenizer::GPT2_PATTERN,
+                    false,
+                )?
             };
             let t = match merge_ranks {
                 Some(ranks) => t.with_merge_ranks(ranks),
@@ -458,11 +469,11 @@ fn build_bpe(
             // `▁`-marked vocab, decoded via `use_metaspace_decoder`, distinct
             // from both plain BPE and ByteLevel.
             let t = if pre.byte_level {
-                Tokenizer::new_byte_level(encoder, specials, &pre.pattern)?
+                Tokenizer::from_encoder(encoder, specials, &pre.pattern, true)?
             } else if pre.metaspace {
-                Tokenizer::new_with_metaspace_decoder(encoder, specials, &pre.pattern)?
+                Tokenizer::from_encoder_with_metaspace_decoder(encoder, specials, &pre.pattern)?
             } else {
-                Tokenizer::new(encoder, specials, &pre.pattern)?
+                Tokenizer::from_encoder(encoder, specials, &pre.pattern, false)?
             };
             let t = match merge_ranks {
                 Some(ranks) => t.with_merge_ranks(ranks),
@@ -504,10 +515,7 @@ fn build_bpe(
 ///
 /// A merge entry is either `[a, b]` or the string `"a b"`. Returns `None` when
 /// there is no usable merges list (then BPE uses tiktoken-style id-as-rank).
-fn parse_merge_ranks(
-    merges: Option<&RawValue>,
-    vocab: &[(Cow<'_, str>, u32)],
-) -> Option<FxHashMap<Vec<u8>, u32>> {
+fn parse_merge_ranks(merges: Option<&RawValue>, vocab: &[(Cow<'_, str>, u32)]) -> Option<Encoder> {
     // Ordered list of merged tokens (and the set, to identify base tokens).
     let MergeList(merged) = serde_json::from_str(merges?.get()).ok()?;
     if merged.is_empty() {

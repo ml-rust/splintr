@@ -1,4 +1,4 @@
-use crate::core::token_bytes::Encoder;
+use crate::core::token_bytes::{Encoder, TokenBytes};
 use rustc_hash::FxHashMap;
 
 /// Build a bytes → merge-rank map (lower rank = merged first) from a model's
@@ -26,7 +26,7 @@ use rustc_hash::FxHashMap;
 pub(crate) fn merge_ranks<'a>(
     merged: &[String],
     vocab_in_id_order: impl Iterator<Item = &'a str>,
-) -> FxHashMap<Vec<u8>, u32> {
+) -> Encoder {
     // Both sized up front and both on FxHash: this runs over a whole
     // vocabulary, where the default hasher and a table that doubles from empty
     // are each worth more than the work they serve.
@@ -35,20 +35,22 @@ pub(crate) fn merge_ranks<'a>(
     merge_set.extend(merged.iter().map(String::as_str));
 
     // The base alphabet adds a few hundred entries on top of the merges.
-    let mut ranks: FxHashMap<Vec<u8>, u32> =
-        FxHashMap::with_capacity_and_hasher(merged.len() + 512, rustc_hash::FxBuildHasher);
+    let mut ranks: Encoder =
+        Encoder::with_capacity_and_hasher(merged.len() + 512, rustc_hash::FxBuildHasher);
 
     // Base alphabet first, in id order for determinism.
     for token in vocab_in_id_order.filter(|t| !merge_set.contains(t)) {
         let next = ranks.len() as u32;
-        ranks.entry(token.as_bytes().to_vec()).or_insert(next);
+        ranks
+            .entry(TokenBytes::from(token.as_bytes().to_vec()))
+            .or_insert(next);
     }
 
     // Then the merges, preserving list priority.
     let base_count = ranks.len() as u32;
     for (i, token) in merged.iter().enumerate() {
         ranks
-            .entry(token.as_bytes().to_vec())
+            .entry(TokenBytes::from(token.as_bytes().to_vec()))
             .or_insert(base_count + i as u32);
     }
     ranks

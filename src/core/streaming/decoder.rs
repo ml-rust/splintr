@@ -243,7 +243,11 @@ mod tests {
             encoder.insert(format!("<0x{b:02X}>").into_bytes(), 10 + i as u32);
         }
 
-        let byte_fallback = Tokenizer::byte_fallback_from_encoder(&encoder, None, true);
+        let byte_fallback = Tokenizer::byte_fallback_from_encoder(
+            &crate::core::token_bytes::encoder_from_owned(encoder.clone()),
+            None,
+            true,
+        );
         Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
             .expect("the test pattern compiles")
             .with_byte_fallback(byte_fallback)

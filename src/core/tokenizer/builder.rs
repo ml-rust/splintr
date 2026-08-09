@@ -297,18 +297,17 @@ impl Tokenizer {
     ///
     /// Ignored unless this tokenizer is ByteLevel, which is the only case where
     /// the two spaces differ.
-    pub(crate) fn with_raw_encoder(mut self, raw_encoder: FxHashMap<Vec<u8>, u32>) -> Self {
+    pub(crate) fn with_raw_encoder(mut self, raw_encoder: Encoder) -> Self {
         if self.use_byte_level {
-            self.raw_encoder = Some(encoder_from_owned(raw_encoder));
+            self.raw_encoder = Some(raw_encoder);
         }
         self
     }
 
-    pub fn with_merge_ranks(mut self, merge_ranks: FxHashMap<Vec<u8>, u32>) -> Self {
+    pub fn with_merge_ranks(mut self, merge_ranks: Encoder) -> Self {
         // The rank source just changed, so the two-byte index derived from it
         // has to be rebuilt — leaving the encoder-derived one in place would
         // answer with the wrong ranks.
-        let merge_ranks = encoder_from_owned(merge_ranks);
         self.byte_pair_ranks = Arc::new(BytePairRanks::build(&merge_ranks));
         self.merge_ranks = Some(merge_ranks);
         self
@@ -476,6 +475,41 @@ impl Tokenizer {
     ) -> Result<Self, TokenizerError> {
         let encoder = load_tiktoken_bpe(vocab_data)?;
         Self::new_byte_level_chain(encoder, special_tokens, patterns)
+    }
+
+    /// [`Tokenizer::new`] over a vocabulary already in the internal
+    /// representation, so a loader that can build it directly does not pay for
+    /// a second 100k-200k entry map.
+    pub(crate) fn from_encoder(
+        encoder: Encoder,
+        special_tokens: impl Into<AddedTokenSet>,
+        pattern: &str,
+        use_byte_level: bool,
+    ) -> Result<Self, TokenizerError> {
+        Self::with_encoder(
+            encoder,
+            special_tokens,
+            pattern,
+            DEFAULT_CACHE_SIZE,
+            use_byte_level,
+            false,
+        )
+    }
+
+    /// [`Tokenizer::new_with_metaspace_decoder`] over an already-built encoder.
+    pub(crate) fn from_encoder_with_metaspace_decoder(
+        encoder: Encoder,
+        special_tokens: impl Into<AddedTokenSet>,
+        pattern: &str,
+    ) -> Result<Self, TokenizerError> {
+        Self::with_encoder(
+            encoder,
+            special_tokens,
+            pattern,
+            DEFAULT_CACHE_SIZE,
+            false,
+            true,
+        )
     }
 
     /// Create a tokenizer from a **packed** vocabulary with a chained
@@ -654,7 +688,7 @@ impl Tokenizer {
     /// the unk branch is not gated on the flag at all (measured against
     /// `tokenizers` 0.22.1; see `build_bpe` in `src/core/hf_json/loader.rs`).
     pub(crate) fn byte_fallback_from_encoder(
-        encoder: &FxHashMap<Vec<u8>, u32>,
+        encoder: &Encoder,
         unk_id: Option<u32>,
         declares_byte_fallback: bool,
     ) -> Option<ByteFallback> {

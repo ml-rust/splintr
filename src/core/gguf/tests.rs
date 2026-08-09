@@ -54,7 +54,7 @@ fn unmarked_vocab_is_left_untouched() {
 
 // ── Byte-level BPE merge ranks ───────────────────────────────────────────────
 
-fn rank(map: &FxHashMap<Vec<u8>, u32>, token: &str) -> u32 {
+fn rank(map: &crate::core::token_bytes::Encoder, token: &str) -> u32 {
     match map.get(token.as_bytes()) {
         Some(rank) => *rank,
         None => panic!("{token:?} has no merge rank"),
