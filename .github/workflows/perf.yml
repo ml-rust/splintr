@@ -160,15 +160,25 @@ jobs:
 
       - name: Benchmark (Rust)
         run: |
+          # This suite always builds the checkout — `.github/rust-bench` depends
+          # on splintr by path — regardless of the `splintr` input, which only
+          # selects what the *Python* suite installs. With anything but `local`
+          # the two suites therefore measure different splintr versions, and a
+          # reader comparing them would otherwise have no way to know.
+          if [ "$SPLINTR" = "local" ]; then
+            echo "RUST_PROVENANCE=splintr built from this checkout (${GITHUB_SHA:0:7}), the same build the Python suite measures." >> "$GITHUB_ENV"
+          else
+            echo "RUST_PROVENANCE=**splintr built from this checkout (${GITHUB_SHA:0:7}). The Python suite measured splintr-rs $SPLINTR from PyPI instead, so the two reports are NOT the same build.**" >> "$GITHUB_ENV"
+          fi
           cd .github/rust-bench && cargo build --release && cd -
           BIN=.github/rust-bench/target/release/rust-bench
-          # Kimi publishes no `tokenizer.json`, so its json family is absent by
-          # pointing at a path that does not exist — the harness reports an
-          # engine it cannot load rather than substituting another vocabulary.
+          # `-` says the vocabulary publishes no `tokenizer.json` — true of
+          # Kimi. The harness then records that once, instead of three json
+          # engines each reporting a fake I/O error, which reads like a failure.
           for v in cl100k o200k qwen3; do
             "$BIN" "$v" "$v.tiktoken" "$v.json" corpus.txt >> rust.jsonl
           done
-          "$BIN" kimi kimi.tiktoken /nonexistent/kimi-has-no-tokenizer-json corpus.txt >> rust.jsonl
+          "$BIN" kimi kimi.tiktoken - corpus.txt >> rust.jsonl
 
       - name: Report (Rust)
         run: |
@@ -177,6 +187,7 @@ jobs:
             --note "$HW" \
             --note "$(cd .github/rust-bench && cargo tree --depth 1 2>/dev/null | sed -n 's/^[^ ]* //p' | sed 's/^/    /')" \
             --note "Each family sizes its corpus from its slowest engine, so every engine in a table sees the same input." \
+            --note "$RUST_PROVENANCE" \
             < rust.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
@@ -216,12 +227,23 @@ jobs:
 
           {
             echo "VERSIONS<<EOF"
+            # The splintr line carries its provenance inline. It used to be two
+            # separate lines — a version, then "built from <sha>" further down —
+            # which read like two different facts, and the version alone looks
+            # exactly like a release even when it is a source build.
             for v in splintr tokenizers tiktoken gigatoken; do
               [ -d "venv-$v" ] || continue
-              "./venv-$v/bin/pip" list 2>/dev/null \
-                | grep -Ei "^(splintr-rs|tokenizers|tiktoken|gigatoken) " | sed 's/  */ /g'
+              line=$("./venv-$v/bin/pip" list 2>/dev/null \
+                | grep -Ei "^(splintr-rs|tokenizers|tiktoken|gigatoken) " | sed 's/  */ /g')
+              if [ "$v" = splintr ]; then
+                if [ "$SPLINTR" = "local" ]; then
+                  line="$line (local build, ${GITHUB_SHA:0:7})"
+                else
+                  line="$line (published wheel from PyPI)"
+                fi
+              fi
+              echo "$line"
             done
-            if [ "$SPLINTR" = "local" ]; then echo "splintr-rs built from ${GITHUB_SHA:0:12}"; fi
             if [ -n "$SPLINTR_BASELINE" ]; then echo "splintr-rs $SPLINTR_BASELINE (baseline)"; fi
             echo "EOF"
           } >> "$GITHUB_ENV"
