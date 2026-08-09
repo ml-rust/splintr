@@ -60,6 +60,18 @@ use crate::core::{StreamingDecoder, Tokenize, Tokenizer};
 /// Both buffers are built once at their final size, so handing them to
 /// `PyBytes` is a single `memcpy` each rather than the per-element object
 /// construction `list[list[int]]` requires.
+/// One row's ids as little-endian `uint32`, the layout `encode_flat` documents
+/// and the same one `flatten_rows` writes.
+///
+/// Built at its final size so handing it to `PyBytes` is a single `memcpy`.
+fn ids_to_le_bytes(ids: &[u32]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(ids.len() * 4);
+    for id in ids {
+        buf.extend_from_slice(&id.to_le_bytes());
+    }
+    buf
+}
+
 fn flatten_rows(rows: &[Vec<u32>]) -> (Vec<u8>, Vec<u8>) {
     let total: usize = rows.iter().map(Vec::len).sum();
     let mut ids = Vec::with_capacity(total * 4);
@@ -521,6 +533,21 @@ impl PyTokenizer {
                 .map(|ids| self.policy.apply_single(ids))
                 .collect()
         })
+    }
+
+    /// Encode one text into a flat buffer of ids instead of a `list[int]`.
+    ///
+    /// See [`AnyTokenizer.encode_flat`]; the same reasoning, the same layout,
+    /// and the same caveat about converting one text at a time.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     Little-endian `uint32` ids as one `bytes` object
+    fn encode_flat<'py>(&self, py: Python<'py>, text: &str) -> Bound<'py, PyBytes> {
+        let ids = self.policy.apply_single(self.inner.encode(text));
+        PyBytes::new(py, &ids_to_le_bytes(&ids))
     }
 
     /// Encode a batch into one flat buffer of ids plus row offsets.
@@ -1744,6 +1771,36 @@ impl PyAnyTokenizer {
         // tokenizer for no reason.
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         py.detach(|| self.inner.encode_batch(&refs))
+    }
+
+    /// Encode one text into a flat buffer of ids instead of a `list[int]`.
+    ///
+    /// The single-text counterpart to `encode_batch_flat`, and the same trade:
+    /// `encode` builds one Python `int` per token, while this is one
+    /// allocation and one `memcpy`. Ids are little-endian `uint32`, so
+    /// `len(buf) // 4` is the token count.
+    ///
+    /// # Convert in bulk, or not at all
+    ///
+    /// Faster only for a caller that reads the bytes as bytes — counting
+    /// tokens, writing ids to a socket or an mmap, filling a buffer across
+    /// many texts. Wrapping one text's ids in an array costs more than the
+    /// list it avoided, because an array's fixed cost outweighs that many
+    /// elements. Where each text needs its own array, `encode` is the faster
+    /// call; where a whole batch does, `encode_batch_flat` amortizes the one
+    /// conversion across all of it.
+    ///
+    /// Args:
+    ///     text: Input text to encode
+    ///
+    /// Returns:
+    ///     Little-endian `uint32` ids as one `bytes` object
+    ///
+    /// Example:
+    ///     >>> buf = tok.encode_flat(text)
+    ///     >>> len(buf) // 4  # token count, nothing converted
+    fn encode_flat<'py>(&self, py: Python<'py>, text: &str) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &ids_to_le_bytes(&self.inner.encode(text)))
     }
 
     /// Encode a batch into one flat buffer of ids plus the offsets that cut it

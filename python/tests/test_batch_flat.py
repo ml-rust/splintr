@@ -119,3 +119,41 @@ def test_batch_releases_the_gil():
     t.join(timeout=1)
 
     assert during > 0, "no other thread ran during encode_batch — the GIL was held"
+
+
+def unflatten_one(ids_bytes):
+    """Rebuild one row from `encode_flat`, using only the documented layout."""
+    return list(struct.unpack(f"<{len(ids_bytes) // 4}I", ids_bytes))
+
+
+def test_encode_flat_matches_encode(tokenizers):
+    """The single-text flat form must say exactly what `encode` says.
+
+    Both classes, because they reach the ids by different routes: `Tokenizer`
+    applies the special policy on top, `AnyTokenizer` does not.
+    """
+    for name, tok in tokenizers.items():
+        for text in CORPUS:
+            assert unflatten_one(tok.encode_flat(text)) == tok.encode(text), (
+                f"{name}: encode_flat disagrees with encode on {text!r}"
+            )
+
+
+def test_encode_flat_handles_empty_text(tokenizers):
+    for name, tok in tokenizers.items():
+        assert unflatten_one(tok.encode_flat("")) == tok.encode(""), name
+
+
+def test_encode_flat_length_is_the_token_count(tokenizers):
+    """`len(buf) // 4` is the documented way to count without converting."""
+    for name, tok in tokenizers.items():
+        for text in CORPUS:
+            assert len(tok.encode_flat(text)) // 4 == len(tok.encode(text)), name
+
+
+def test_encode_flat_agrees_with_the_batch_form(tokenizers):
+    """One text through the flat batch form is the same buffer as `encode_flat`."""
+    for name, tok in tokenizers.items():
+        for text in CORPUS:
+            ids, _ = tok.encode_batch_flat([text])
+            assert ids == tok.encode_flat(text), f"{name}: {text!r}"
