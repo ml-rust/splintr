@@ -1,7 +1,7 @@
 //! Construction: parse a `tokenizer.json` into an [`AnyTokenizer`].
 
 use rustc_hash::FxHashMap;
-use serde::de::{MapAccess, Visitor};
+use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 use serde_json::Value;
@@ -49,6 +49,70 @@ impl<'de: 'a, 'a> Deserialize<'de> for CowStr<'a> {
             }
         }
         de.deserialize_str(V(PhantomData))
+    }
+}
+
+/// `model.merges` as the concatenated token each entry produces.
+///
+/// An entry is `["a", "b"]` or the string `"a b"`, and only `a ++ b` is ever
+/// wanted, so the halves are joined as they are read. Parsing into
+/// `Vec<Value>` first cost an array `Value` and two `String`s per merge —
+/// three allocations each, over as many entries as the vocabulary has tokens.
+struct MergeList(Vec<String>);
+
+impl<'de> Deserialize<'de> for MergeList {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        /// One entry, joined on the spot.
+        struct Merged(Option<String>);
+
+        impl<'de> Deserialize<'de> for Merged {
+            fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+                struct V;
+                impl<'de> Visitor<'de> for V {
+                    type Value = Merged;
+                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        f.write_str("a merge pair or its joined string")
+                    }
+                    /// `["a", "b"]`.
+                    fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Merged, S::Error> {
+                        let (a, b) = (seq.next_element::<CowStr>()?, seq.next_element::<CowStr>()?);
+                        // A third element means this is not a merge pair.
+                        let extra = seq.next_element::<serde::de::IgnoredAny>()?.is_some();
+                        Ok(Merged(match (a, b, extra) {
+                            (Some(a), Some(b), false) => {
+                                let mut s = String::with_capacity(a.0.len() + b.0.len());
+                                s.push_str(&a.0);
+                                s.push_str(&b.0);
+                                Some(s)
+                            }
+                            _ => None,
+                        }))
+                    }
+                    /// `"a b"`: byte-level tokens spell a real space as `Ġ`, so
+                    /// the first literal space is the separator.
+                    fn visit_str<E>(self, v: &str) -> Result<Merged, E> {
+                        Ok(Merged(Some(v.replacen(' ', "", 1))))
+                    }
+                }
+                de.deserialize_any(V)
+            }
+        }
+
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = MergeList;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a merges list")
+            }
+            fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<MergeList, S::Error> {
+                let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(Merged(m)) = seq.next_element::<Merged>()? {
+                    out.extend(m);
+                }
+                Ok(MergeList(out))
+            }
+        }
+        de.deserialize_seq(V)
     }
 }
 
@@ -444,24 +508,8 @@ fn parse_merge_ranks(
     merges: Option<&RawValue>,
     vocab: &[(Cow<'_, str>, u32)],
 ) -> Option<FxHashMap<Vec<u8>, u32>> {
-    let merges: Vec<Value> = serde_json::from_str(merges?.get()).ok()?;
-    let merges = &merges;
-
     // Ordered list of merged tokens (and the set, to identify base tokens).
-    let mut merged: Vec<String> = Vec::with_capacity(merges.len());
-    for m in merges {
-        match m {
-            Value::Array(p) if p.len() == 2 => {
-                if let (Some(a), Some(b)) = (p[0].as_str(), p[1].as_str()) {
-                    merged.push(format!("{a}{b}"));
-                }
-            }
-            // String form "a b": split on the first space (byte-level tokens
-            // encode real spaces as `Ġ`, never a literal space).
-            Value::String(s) => merged.push(s.replacen(' ', "", 1)),
-            _ => {}
-        }
-    }
+    let MergeList(merged) = serde_json::from_str(merges?.get()).ok()?;
     if merged.is_empty() {
         return None;
     }
