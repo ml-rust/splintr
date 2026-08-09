@@ -1,8 +1,7 @@
 use super::super::types::Tokenizer;
 use crate::core::added::AddedTokens;
+use crate::core::batch;
 use crate::core::policy::{PolicyError, SpecialMode};
-#[cfg(feature = "rayon")]
-use rayon::prelude::*;
 
 impl Tokenizer {
     /// Encode text to token IDs.
@@ -84,33 +83,18 @@ impl Tokenizer {
         })
     }
 
-    /// Batch encode multiple texts (parallel when rayon is enabled).
+    /// Batch encode multiple texts.
+    ///
+    /// Runs across rayon's thread pool when the `rayon` feature is on and the
+    /// batch carries enough total input to pay for the hand-off; a small batch
+    /// encodes on the calling thread instead, which is faster than waking a
+    /// pool for it. The ids and their order do not depend on which path runs.
     pub fn encode_batch(&self, texts: &[String]) -> Vec<Vec<u32>> {
-        #[cfg(feature = "rayon")]
-        {
-            texts.par_iter().map(|text| self.encode(text)).collect()
-        }
-        #[cfg(not(feature = "rayon"))]
-        {
-            texts.iter().map(|text| self.encode(text)).collect()
-        }
+        batch::map(texts, String::len, |text| self.encode(text))
     }
 
     /// Batch encode multiple texts with special token handling.
     pub fn encode_batch_with_special(&self, texts: &[String]) -> Vec<Vec<u32>> {
-        #[cfg(feature = "rayon")]
-        {
-            texts
-                .par_iter()
-                .map(|text| self.encode_with_special(text))
-                .collect()
-        }
-        #[cfg(not(feature = "rayon"))]
-        {
-            texts
-                .iter()
-                .map(|text| self.encode_with_special(text))
-                .collect()
-        }
+        batch::map(texts, String::len, |text| self.encode_with_special(text))
     }
 }

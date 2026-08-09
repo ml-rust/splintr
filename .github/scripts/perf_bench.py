@@ -15,9 +15,18 @@ timing is read.
 Throughput is MB/s over the input bytes rather than tokens/s, matching the
 README: bytes are the one quantity every engine sees identically.
 
-Workloads are the three that decide a migration: single-text latency by corpus
+Workloads are the ones that decide a migration: single-text latency by corpus
 shape (per-request cost), batch throughput by batch size (bulk ingest), and
 vocabulary load time (process start, serverless cold start).
+
+Batch is measured on two axes, never mixed. The *list* axis has every engine
+return `list[list[int]]`, which is what most callers use and the only form some
+engines have. The *flat* axis has the engines that can return ids as one
+contiguous buffer do so — splintr's `encode_batch_flat`, gigatoken's
+`encode_batch`. Building Python ints measured at roughly 18 ns per token, which
+is most of a batch call, so putting a buffer form in the same column as a list
+form would report the object construction the other engine skipped as if it
+were tokenizer speed.
 """
 
 import json
@@ -130,8 +139,26 @@ GIGATOKEN_SCHEMES = {
 }
 
 
+def _flat(tok, name):
+    """An engine's buffer-returning batch call, or None if it has none.
+
+    Looked up rather than called directly so a pinned older `splintr_baseline`
+    — which predates `encode_batch_flat` — reports "no flat form" instead of
+    crashing the whole round.
+    """
+    fn = getattr(tok, name, None)
+    return (lambda ts: fn(ts)) if fn is not None else None
+
+
 def load_engine(engine, spec, suite=None):
-    """Returns (encode_one, encode_batch). Loading is timed separately."""
+    """Returns (encode_one, encode_batch, encode_batch_flat|None).
+
+    The third slot is the engine's *buffer* batch form: ids in one contiguous
+    block the caller wraps zero-copy, instead of a `list[list[int]]`. It is a
+    separate axis because only some engines have one, and mixing it into the
+    list column would charge the others for object construction it skips.
+    Loading is timed separately.
+    """
     if engine == "splintr":
         import splintr
 
@@ -140,14 +167,22 @@ def load_engine(engine, spec, suite=None):
             if pattern is None:
                 raise SystemExit(f"no pre-tokenizer pattern recorded for suite {suite!r}")
             tok = splintr.Tokenizer(spec[len("ranks:") :], pattern)
-            return (lambda t: tok.encode(t)), (lambda ts: tok.encode_batch(ts))
+            return (
+                (lambda t: tok.encode(t)),
+                (lambda ts: tok.encode_batch(ts)),
+                _flat(tok, "encode_batch_flat"),
+            )
 
         tok = (
             splintr.from_json(spec)
             if spec.endswith(".json")
             else splintr.Tokenizer.from_pretrained(spec)
         )
-        return (lambda t: tok.encode_raw(t)), (lambda ts: tok.encode_batch(ts))
+        return (
+            (lambda t: tok.encode_raw(t)),
+            (lambda ts: tok.encode_batch(ts)),
+            _flat(tok, "encode_batch_flat"),
+        )
 
     if engine == "tokenizers":
         from tokenizers import Tokenizer
@@ -158,9 +193,12 @@ def load_engine(engine, spec, suite=None):
         # comparison script makes. Ids are then materialised as lists, because
         # that is what every other engine returns.
         batch = getattr(tok, "encode_batch_fast", tok.encode_batch)
+        # No buffer form: `encode_batch_fast` hands back `Encoding` objects, and
+        # reaching `.ids` on each is the list construction, not a way around it.
         return (
             lambda t: tok.encode(t, add_special_tokens=False).ids,
             lambda ts: [e.ids for e in batch(ts, add_special_tokens=False)],
+            None,
         )
 
     if engine == "gigatoken":
@@ -184,7 +222,11 @@ def load_engine(engine, spec, suite=None):
                     "naming the wrong one mistokenizes silently, so it is never guessed"
                 )
             tok = gt.Tokenizer.from_tiktoken(spec[len("ranks:") :], pretokenizer=scheme)
-            return (lambda t: tok.encode(t).tolist()), (lambda ts: tok.encode_batch_list(ts))
+            return (
+                (lambda t: tok.encode(t).tolist()),
+                (lambda ts: tok.encode_batch_list(ts)),
+                _flat(tok, "encode_batch"),
+            )
 
         if not spec.endswith(".json"):
             raise SystemExit(
@@ -197,8 +239,14 @@ def load_engine(engine, spec, suite=None):
         # is the same work ending in plain lists, so the outputs match in kind.
         # `encode` returns a numpy array for the same reason; materialise it.
         # `.tolist()` rather than `list()`: the latter yields numpy scalars, not
-        # the Python ints every other engine returns.
-        return (lambda t: tok.encode(t).tolist()), (lambda ts: tok.encode_batch_list(ts))
+        # the Python ints every other engine returns. That skipped Array *is*
+        # gigatoken's buffer form, so it goes in the third slot, where splintr's
+        # `encode_batch_flat` meets it on equal terms.
+        return (
+            (lambda t: tok.encode(t).tolist()),
+            (lambda ts: tok.encode_batch_list(ts)),
+            _flat(tok, "encode_batch"),
+        )
 
     if engine == "tiktoken":
         import tiktoken
@@ -226,6 +274,7 @@ def load_engine(engine, spec, suite=None):
             return (
                 lambda t: enc.encode_ordinary(t),
                 lambda ts: enc.encode_ordinary_batch(ts, num_threads=threads),
+                None,  # tiktoken returns lists and nothing else
             )
 
         # `get_encoding` memoises process-wide, so a second load would be a dict
@@ -249,6 +298,7 @@ def load_engine(engine, spec, suite=None):
         return (
             lambda t: enc.encode_ordinary(t),
             lambda ts: enc.encode_ordinary_batch(ts, num_threads=threads),
+            None,
         )
 
     raise SystemExit(f"unknown engine {engine!r}")
@@ -303,7 +353,7 @@ def main():
         verify_patterns()
         return
     suite, engine, label, spec = sys.argv[1:5]
-    encode_one, encode_batch = load_engine(engine, spec, suite)
+    encode_one, encode_batch, encode_batch_flat = load_engine(engine, spec, suite)
 
     if "--check" in sys.argv:
         sample = CORPORA["multilingual"]()[:3] + CORPORA["code"]()[:2] + CORPORA["json"]()[:2]
@@ -321,10 +371,14 @@ def main():
         }
 
     batch = {}
+    flat = {}
     for size in BATCH_SIZES:
         texts = MIXED[:size]
         ms = time_best(lambda: encode_batch(texts))
         batch[str(size)] = {"ms": ms, "mb_per_s": megabytes(texts) / (ms / 1e3)}
+        if encode_batch_flat is not None:
+            ms = time_best(lambda: encode_batch_flat(texts))
+            flat[str(size)] = {"ms": ms, "mb_per_s": megabytes(texts) / (ms / 1e3)}
 
     load_samples = []
     for _ in range(LOAD_ITERS):
@@ -341,6 +395,9 @@ def main():
                 "load_ms": statistics.median(load_samples),
                 "single": single,
                 "batch": batch,
+                # Empty for engines with no buffer form, which the report reads
+                # as "cannot appear in that table" rather than "scored zero".
+                "flat": flat,
             }
         ),
         flush=True,

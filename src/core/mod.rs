@@ -33,6 +33,7 @@
 
 mod added;
 mod any_tokenizer;
+pub(crate) mod batch;
 mod bpe;
 pub mod byte_level;
 mod decoder;

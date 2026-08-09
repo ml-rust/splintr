@@ -23,6 +23,12 @@ name: perf
 # load that form. Kimi has no `tokenizer.json` published at all, so it is
 # ranks-only; GLM has no named gigatoken rank scheme, so it is json-only.
 #
+# Batch is reported on two axes for the same reason. The *list* axis has every
+# engine return `list[list[int]]`; the *flat* axis is only for the engines that
+# can return ids as one contiguous buffer (splintr `encode_batch_flat`,
+# gigatoken `encode_batch`), and the others are absent from it rather than
+# charged for object construction their rival skipped.
+#
 # Every version input defaults to `latest`, i.e. whatever pip resolves today.
 # Pin one only to answer a specific question — a regression check sets
 # `splintr_baseline` to the previous release and leaves the rest alone.

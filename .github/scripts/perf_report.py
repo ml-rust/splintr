@@ -12,8 +12,11 @@ import statistics
 import sys
 from collections import OrderedDict
 
+# Every corpus each engine is timed on. Not a table axis — the report is
+# vocabulary x engine throughout — but the token-count agreement check below
+# compares all of them, since a disagreement on any one shape invalidates the
+# vocabulary's whole row.
 CORPUS_ORDER = ["english", "chinese", "code", "json", "multilingual", "long-docs"]
-BATCH_ORDER = ["100", "500", "1000"]
 # Columns in a fixed order so every table reads the same way; anything else
 # (a pinned baseline, say) is appended in the order it first appears.
 PREFERRED = ["splintr", "HF tokenizers", "tiktoken"]
@@ -41,6 +44,24 @@ def med(records, *path):
             node = node[key]
         values.append(node)
     return statistics.median(values)
+
+
+def med_opt(records, *path):
+    """`med`, but None when any record lacks the key.
+
+    The flat-batch axis is absent from engines that have no buffer form, and
+    from splintr releases that predate `encode_batch_flat`, so its table has to
+    tell "not measured" apart from "measured as zero".
+    """
+    values = []
+    for rec in records:
+        node = rec
+        for key in path:
+            if not isinstance(node, dict) or key not in node:
+                return None
+            node = node[key]
+        values.append(node)
+    return statistics.median(values) if values else None
 
 
 def table(title, rows, columns, unit, higher_is_better, fmt, ratio_against):
@@ -126,6 +147,33 @@ def main():
         ratio_against=ratio_against,
     )
 
+    # The same work ending in a buffer instead of a list of lists. Only the
+    # engines that offer one appear; the rest are absent from the table rather
+    # than shown losing a race they were never entered in.
+    flat_rows = OrderedDict()
+    flat_columns = []
+    for suite, engines in suites.items():
+        row = {}
+        for lbl in engines:
+            value = med_opt(engines[lbl], "flat", "1000", "mb_per_s")
+            if value is None:
+                continue
+            row[lbl] = value
+            if lbl not in flat_columns:
+                flat_columns.append(lbl)
+        flat_rows[suite] = row
+    if flat_columns:
+        flat_columns = [c for c in columns if c in flat_columns]
+        table(
+            "Batch throughput, flat output (1,000 texts, mixed corpus)",
+            flat_rows,
+            flat_columns,
+            "MB/s",
+            higher_is_better=True,
+            fmt="{:,.1f}",
+            ratio_against=[c for c in flat_columns[1:]],
+        )
+
     table(
         "Single-text latency (1,000 texts, english corpus)",
         gather(lambda recs: med(recs, "single", "english", "ms")),
@@ -146,37 +194,12 @@ def main():
         ratio_against=ratio_against,
     )
 
-    # Corpus shape moves the single-text number a lot, so break one vocabulary
-    # out rather than implying the headline holds for every kind of text.
-    detail = "cl100k_base" if "cl100k_base" in suites else next(iter(suites))
-    engines = suites[detail]
-    rows = OrderedDict(
-        (corpus, {lbl: med(engines[lbl], "single", corpus, "ms") for lbl in engines})
-        for corpus in CORPUS_ORDER
-    )
-    table(
-        f"Single-text latency by corpus ({detail})",
-        rows,
-        columns,
-        "ms",
-        higher_is_better=False,
-        fmt="{:,.2f}",
-        ratio_against=ratio_against,
-    )
-
-    rows = OrderedDict(
-        (f"{int(size):,} texts", {lbl: med(engines[lbl], "batch", size, "mb_per_s") for lbl in engines})
-        for size in BATCH_ORDER
-    )
-    table(
-        f"Batch throughput by batch size ({detail})",
-        rows,
-        columns,
-        "MB/s",
-        higher_is_better=True,
-        fmt="{:,.1f}",
-        ratio_against=ratio_against,
-    )
+    # Every table above is vocabulary x engine. Per-corpus and per-batch-size
+    # breakdowns used to be printed for one arbitrarily chosen vocabulary, which
+    # made them the only tables in the report that did not answer "how does this
+    # vocabulary compare across engines". The measurements are still recorded in
+    # `rounds.jsonl` under `single.<corpus>` and `batch.<size>` for anyone
+    # chasing a specific shape.
 
 
 main()

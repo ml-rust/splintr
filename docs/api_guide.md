@@ -170,6 +170,25 @@ tokens = tokenizer.encode_rayon(large_text)
 
 The batch form of `encode_with_special`, parallel across texts.
 
+#### `encode_batch_flat(texts)`
+
+The flat counterpart to `encode_batch`: one contiguous buffer of ids plus the offsets that cut it into rows, as two `bytes` objects, rather than `list[list[int]]`.
+
+```python
+import numpy as np
+
+ids, offsets = tok.encode_batch_flat(texts)
+ids = np.frombuffer(ids, dtype=np.uint32)        # every token, concatenated
+offsets = np.frombuffer(offsets, dtype=np.uint64)  # len(texts) + 1 entries
+assert ids[offsets[i]:offsets[i + 1]].tolist() == tok.encode_batch(texts)[i]
+```
+
+`ids` is little-endian `uint32`; `offsets` is little-endian `uint64` and always starts at 0 and ends at the total token count, so `offsets[i]:offsets[i + 1]` is row `i` and an empty text is an empty (not missing) row. Both buffers are one `memcpy` each.
+
+It exists because the object construction dominates: a Python list of ints costs ~18 ns per token, measured at 89% of `encode_batch`'s wall time on a 220k-token batch, which makes the flat form ~4.7x faster end to end. Available on `Tokenizer` and `AnyTokenizer`, so `from_pretrained`, `from_json` and the raw `.tiktoken` loader all have it. See [Best Practices](best_practices.md#getting-the-throughput).
+
+Batch calls also release the GIL for the duration of the encode, so a threaded data loader is no longer serialized against the tokenizer.
+
 ### Special tokens in untrusted text
 
 A tokenizer that matches special tokens will promote text that _spells_ a control token to that token's real id. `<|im_start|>` typed by a user becomes the same id the server emits when it opens a turn, and downstream nothing can tell the two apart — that is how a user message forges a system turn. Denylisting the spelling beforehand does not close it: the spelling is not the only thing that maps to the id.

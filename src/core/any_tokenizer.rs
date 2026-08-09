@@ -7,6 +7,7 @@ use super::streaming::{DecodeState, StreamingDecoder, Surfaces};
 use super::tokenize::{Tokenize, TokenizeError};
 use super::tokenizer::{Tokenizer, TokenizerError};
 use super::wordpiece::WordPieceTokenizer;
+use crate::core::batch;
 use std::sync::Arc;
 
 /// A tokenizer loaded from a `tokenizer.json`, tagged by its backend family.
@@ -309,15 +310,7 @@ impl AnyTokenizer {
     /// the parallelism lives here rather than in one backend so every family
     /// gets it.
     pub fn encode_batch(&self, texts: &[&str]) -> Vec<Vec<u32>> {
-        #[cfg(feature = "rayon")]
-        {
-            use rayon::prelude::*;
-            texts.par_iter().map(|&text| self.encode(text)).collect()
-        }
-        #[cfg(not(feature = "rayon"))]
-        {
-            texts.iter().map(|&text| self.encode(text)).collect()
-        }
+        batch::map(texts, |t| t.len(), |&text| self.encode(text))
     }
 
     /// Encode many sequences under an explicit [`SpecialMode`], applying the
@@ -333,21 +326,7 @@ impl AnyTokenizer {
         texts: &[&str],
         mode: &SpecialMode<'_>,
     ) -> Result<Vec<Vec<u32>>, PolicyError> {
-        #[cfg(feature = "rayon")]
-        {
-            use rayon::prelude::*;
-            texts
-                .par_iter()
-                .map(|&text| self.encode_with(text, mode))
-                .collect()
-        }
-        #[cfg(not(feature = "rayon"))]
-        {
-            texts
-                .iter()
-                .map(|&text| self.encode_with(text, mode))
-                .collect()
-        }
+        batch::try_map(texts, |t| t.len(), |&text| self.encode_with(text, mode))
     }
 
     /// [`encode`](Self::encode) with the work parallelized *within* the single
@@ -575,21 +554,13 @@ impl AnyTokenizer {
     ///
     /// Parallel across lists when the `rayon` feature is on.
     pub fn decode_batch(&self, token_lists: &[Vec<u32>]) -> Result<Vec<String>, TokenizeError> {
-        #[cfg(feature = "rayon")]
-        {
-            use rayon::prelude::*;
-            token_lists
-                .par_iter()
-                .map(|ids| self.decode_inner(ids, SpecialDecode::Skip))
-                .collect()
-        }
-        #[cfg(not(feature = "rayon"))]
-        {
-            token_lists
-                .iter()
-                .map(|ids| self.decode_inner(ids, SpecialDecode::Skip))
-                .collect()
-        }
+        // Sized by ids rather than bytes: four bytes per id is the closest
+        // cheap proxy for how much text a list will produce.
+        batch::try_map(
+            token_lists,
+            |ids| ids.len() * 4,
+            |ids| self.decode_inner(ids, SpecialDecode::Skip),
+        )
     }
 
     /// A [`StreamingDecoder`] that reproduces this handle's

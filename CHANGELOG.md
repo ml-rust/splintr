@@ -6,6 +6,17 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [Unreleased]
+
+### Added
+
+- `encode_batch_flat` returns a batch as one flat id buffer plus row offsets instead of `list[list[int]]`, which is 4.7x faster on large batches — building the Python lists was 89% of `encode_batch`'s wall time.
+
+### Changed
+
+- Batch encoding releases the GIL, so it no longer blocks other Python threads.
+- Small batches encode on the calling thread instead of being handed to rayon, which is ~1.4x faster for them: a batch of 100 short prompts is well under a millisecond of work, and waking a thread pool cost more than the encoding did. Batches above the threshold are unchanged.
+
 ## [0.15.0] - 2026-08-09
 
 ### Added
