@@ -17,6 +17,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - Batch encoding releases the GIL.
 - Batches too small to pay for a thread pool encode on the calling thread, making them ~1.4x faster.
 - ByteLevel `tokenizer.json` vocabularies resolve most pre-tokens without mapping them into ByteLevel space first, ~17% fewer instructions per encode. Token ids are unchanged.
+- Kimi encodes ~16% faster: its case-split letter runs skip ASCII eight bytes at a time instead of one character per call.
 
 ## [0.15.0] - 2026-08-09
 

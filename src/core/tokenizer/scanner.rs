@@ -130,6 +130,53 @@ fn swar_skip_ascii_letters(bytes: &[u8], mut pos: usize) -> usize {
     pos
 }
 
+/// Advances over ASCII uppercase letters eight at a time.
+///
+/// The case-split branches (o200k, gpt-oss, Kimi) scan an uppercase run and
+/// then a lowercase run, and did so one character per indirect call through
+/// [`RunFn`] — a call per byte, where cl100k's single `\p{L}+` run uses
+/// [`swar_skip_ascii_letters`] and covers eight. That per-call overhead, not
+/// the class tests, is why those vocabularies measured ~30% below cl100k.
+#[inline]
+fn swar_skip_ascii_upper(bytes: &[u8], mut pos: usize) -> usize {
+    while let Some(word) = word_at(bytes, pos) {
+        if word & HIGH != 0 {
+            break;
+        }
+        let in_run = lanes_below(word, b'Z' + 1) & !lanes_below(word, b'A') & HIGH;
+        let out = !in_run & HIGH;
+        if out != 0 {
+            return pos + (out.trailing_zeros() / 8) as usize;
+        }
+        pos += 8;
+    }
+    while pos < bytes.len() && bytes[pos].is_ascii_uppercase() {
+        pos += 1;
+    }
+    pos
+}
+
+/// Advances over ASCII lowercase letters eight at a time. The lowercase half of
+/// [`swar_skip_ascii_upper`].
+#[inline]
+fn swar_skip_ascii_lower(bytes: &[u8], mut pos: usize) -> usize {
+    while let Some(word) = word_at(bytes, pos) {
+        if word & HIGH != 0 {
+            break;
+        }
+        let in_run = lanes_below(word, b'z' + 1) & !lanes_below(word, b'a') & HIGH;
+        let out = !in_run & HIGH;
+        if out != 0 {
+            return pos + (out.trailing_zeros() / 8) as usize;
+        }
+        pos += 8;
+    }
+    while pos < bytes.len() && bytes[pos].is_ascii_lowercase() {
+        pos += 1;
+    }
+    pos
+}
+
 /// Advances to the first byte that is not plain ASCII.
 ///
 /// The whole point of DeepSeek's CJK/kana pass: every character it can match
@@ -364,6 +411,41 @@ fn scan_letters(text: &str, bytes: &[u8], mut pos: usize) -> usize {
 /// A character-class predicate: the byte length of the character at `pos` when
 /// it is in the class, `None` otherwise.
 type RunFn = fn(&str, &[u8], usize) -> Option<usize>;
+
+/// One character class the case-split branches scan runs of.
+///
+/// `at` answers for a single character and is the definition; `skip_ascii`
+/// covers the ASCII members of the same class eight bytes at a time. Both are
+/// needed because the classes contain non-ASCII characters that only `at` can
+/// judge, while on Latin prose almost every character is ASCII and `at`'s
+/// per-call cost dominates.
+///
+/// The two must agree on ASCII, or runs would end in different places. The
+/// scanner-vs-regex tests are what enforce that.
+#[derive(Clone, Copy)]
+struct Run {
+    at: RunFn,
+    skip_ascii: fn(&[u8], usize) -> usize,
+}
+
+/// End of the maximal run of `run`'s class, ASCII spans taken eight bytes at a
+/// time and everything else one character at a time.
+#[inline]
+fn scan_run_of(text: &str, bytes: &[u8], mut pos: usize, run: Run) -> usize {
+    loop {
+        // The ASCII members in bulk...
+        pos = (run.skip_ascii)(bytes, pos);
+        if pos >= bytes.len() {
+            return pos;
+        }
+        // ...then one character, which is either a non-ASCII member of the
+        // class or the byte that ends the run.
+        match (run.at)(text, bytes, pos) {
+            Some(n) => pos += n,
+            None => return pos,
+        }
+    }
+}
 
 /// End of the maximal run of characters satisfying `at`, starting at `pos`.
 #[inline]
@@ -650,7 +732,19 @@ pub(super) fn o200k_spans(text: &str, out: &mut Vec<(usize, usize)>) {
 /// Each optional prefix is greedy, so a branch is tried with the prefix before
 /// without it.
 fn o200k_letter_branches(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
-    case_split_branches(text, bytes, pos, upper_run_at, lower_run_at)
+    case_split_branches(
+        text,
+        bytes,
+        pos,
+        Run {
+            at: upper_run_at,
+            skip_ascii: swar_skip_ascii_upper,
+        },
+        Run {
+            at: lower_run_at,
+            skip_ascii: swar_skip_ascii_lower,
+        },
+    )
 }
 
 /// The case-split branches over caller-supplied class predicates.
@@ -662,8 +756,8 @@ fn case_split_branches(
     text: &str,
     bytes: &[u8],
     pos: usize,
-    upper: RunFn,
-    lower: RunFn,
+    upper: Run,
+    lower: Run,
 ) -> Option<usize> {
     let with_prefix = prefix_len(text, bytes, pos).map(|p| pos + p);
 
@@ -692,17 +786,17 @@ fn case_split_branch_a(
     text: &str,
     bytes: &[u8],
     start: usize,
-    upper: RunFn,
-    lower: RunFn,
+    upper: Run,
+    lower: Run,
 ) -> Option<usize> {
-    let upper_end = scan_run(text, bytes, start, upper);
+    let upper_end = scan_run_of(text, bytes, start, upper);
 
     // Try the longest `U*` first, then shorter ones, as the engine does.
     let mut boundary = upper_end;
     loop {
         if boundary < bytes.len() {
-            if let Some(n) = lower(text, bytes, boundary) {
-                let lower_end = scan_run(text, bytes, boundary + n, lower);
+            if let Some(n) = (lower.at)(text, bytes, boundary) {
+                let lower_end = scan_run_of(text, bytes, boundary + n, lower);
                 return Some(lower_end + trailing_contraction(bytes, lower_end));
             }
         }
@@ -719,14 +813,14 @@ fn case_split_branch_b(
     text: &str,
     bytes: &[u8],
     start: usize,
-    upper: RunFn,
-    lower: RunFn,
+    upper: Run,
+    lower: Run,
 ) -> Option<usize> {
-    let upper_end = scan_run(text, bytes, start, upper);
+    let upper_end = scan_run_of(text, bytes, start, upper);
     if upper_end == start {
         return None;
     }
-    let lower_end = scan_run(text, bytes, upper_end, lower);
+    let lower_end = scan_run_of(text, bytes, upper_end, lower);
     Some(lower_end + trailing_contraction(bytes, lower_end))
 }
 
@@ -872,7 +966,22 @@ pub(super) fn kimi_spans(text: &str, out: &mut Vec<(usize, usize)>) {
         }
 
         if let Some(end) =
-            case_split_branches(text, bytes, pos, kimi_upper_run_at, kimi_lower_run_at)
+            // Kimi subtracts `\p{Han}` from both classes, but no Han character is
+            // ASCII, so the ASCII half of each run is identical to o200k's and shares
+            // its skip.
+            case_split_branches(
+                text,
+                bytes,
+                pos,
+                Run {
+                    at: kimi_upper_run_at,
+                    skip_ascii: swar_skip_ascii_upper,
+                },
+                Run {
+                    at: kimi_lower_run_at,
+                    skip_ascii: swar_skip_ascii_lower,
+                },
+            )
         {
             pos = end;
             out.push((start, pos));
