@@ -23,7 +23,14 @@ impl RegexBackend {
     pub(super) fn find_iter<'a>(&'a self, text: &'a str) -> Vec<(usize, usize)> {
         match self {
             RegexBackend::Scanner(scan) => {
-                let mut spans = Vec::new();
+                // Sized up front rather than grown from empty. A ~110 byte text
+                // produces ~25 spans, so `Vec::new()` reallocated four or five
+                // times per call — and on macOS's xzone allocator a `realloc`
+                // is a fresh allocation plus a `memmove` plus a free, not an
+                // in-place extension the way glibc usually manages. Sampled on
+                // an M1, that growth was 25% of single-text encode time.
+                let mut spans =
+                    Vec::with_capacity(crate::core::pretokenizer::estimated_pieces(text));
                 scan(text, &mut spans);
                 spans
             }
