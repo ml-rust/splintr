@@ -45,6 +45,7 @@ mod policy;
 pub mod precompiled;
 pub mod pretokenizer;
 pub mod pretrained;
+pub(crate) mod scratch;
 pub mod sentencepiece;
 pub mod spm;
 pub(crate) mod streaming;

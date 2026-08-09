@@ -24,8 +24,22 @@ pub(super) fn split_regex<'p>(
     invert: bool,
     out: &mut Vec<&'p str>,
 ) {
-    let mut matches: Vec<(usize, usize)> = Vec::with_capacity(estimated_pieces(piece));
-    matcher.matches(piece, &mut matches);
+    crate::core::scratch::with_spans(|matches| {
+        split_regex_spans(piece, matcher, behavior, invert, out, matches)
+    })
+}
+
+/// [`split_regex`] with the span buffer supplied, which is where it comes from.
+fn split_regex_spans<'p>(
+    piece: &'p str,
+    matcher: &super::stage::SplitMatcher,
+    behavior: Behavior,
+    invert: bool,
+    out: &mut Vec<&'p str>,
+    matches: &mut Vec<(usize, usize)>,
+) {
+    matches.reserve(estimated_pieces(piece));
+    matcher.matches(piece, matches);
 
     // Two shapes cover every bundled `tokenizer.json`, and neither needs a
     // `Segment` built and classified only to be emitted or dropped wholesale.
@@ -36,7 +50,7 @@ pub(super) fn split_regex<'p>(
         // Qwen's file is this shape.
         Behavior::Isolated => {
             let mut last = 0;
-            for (s, e) in matches {
+            for &(s, e) in matches.iter() {
                 if s > last {
                     out.push(&piece[last..s]);
                 }
@@ -56,14 +70,14 @@ pub(super) fn split_regex<'p>(
         // the output is the match list and nothing else.
         Behavior::Removed => {
             if invert {
-                for (s, e) in matches {
+                for &(s, e) in matches.iter() {
                     if e > s {
                         out.push(&piece[s..e]);
                     }
                 }
             } else {
                 let mut last = 0;
-                for (s, e) in matches {
+                for &(s, e) in matches.iter() {
                     if s > last {
                         out.push(&piece[last..s]);
                     }
@@ -92,7 +106,7 @@ pub(super) fn split_regex<'p>(
     // which is exactly the case with no gaps at all, and merging there means no
     // splitting whatsoever.
     let mut last = 0;
-    for (s, e) in matches {
+    for &(s, e) in matches.iter() {
         if s > last {
             segs.push(Segment {
                 start: last,

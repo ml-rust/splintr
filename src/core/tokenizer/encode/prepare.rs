@@ -87,6 +87,27 @@ impl Tokenizer {
         self.split_chunks_chained(text)
     }
 
+    /// [`Tokenizer::split_chunks`] appending into a caller-owned buffer, so the
+    /// encode path can hand it one that outlives the call instead of paying a
+    /// malloc and a free per text.
+    ///
+    /// The chained branch still builds its own vector: it re-runs the matcher
+    /// over every span of the previous pass, so it needs somewhere to keep that
+    /// pass while producing the next, and the buffer it was handed is where the
+    /// answer has to end up.
+    #[inline]
+    pub(in crate::core::tokenizer) fn split_chunks_into(
+        &self,
+        text: &str,
+        out: &mut Vec<(usize, usize)>,
+    ) {
+        if self.chain.is_empty() {
+            self.regex.find_into(text, out);
+            return;
+        }
+        out.extend(self.split_chunks_chained(text));
+    }
+
     /// [`Tokenizer::split_chunks`] for a multi-expression pre-tokenizer.
     ///
     /// Kept out of line so the single-expression path stays a straight call to

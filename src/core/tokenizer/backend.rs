@@ -20,30 +20,42 @@ pub(super) enum RegexBackend {
 
 impl RegexBackend {
     /// Find all matches in the given text, returning (start, end) byte offsets
-    pub(super) fn find_iter<'a>(&'a self, text: &'a str) -> Vec<(usize, usize)> {
+    ///
+    /// Allocates the vector it returns. [`RegexBackend::find_into`] is the form
+    /// the encode path uses, so that the vector can outlive the call and be
+    /// reused; this one remains for callers that genuinely want an owned list.
+    pub(super) fn find_iter(&self, text: &str) -> Vec<(usize, usize)> {
+        let mut out = Vec::with_capacity(crate::core::pretokenizer::estimated_pieces(text));
+        self.find_into(text, &mut out);
+        out
+    }
+
+    /// [`RegexBackend::find_iter`] appending into a caller-owned buffer.
+    pub(super) fn find_into(&self, text: &str, out: &mut Vec<(usize, usize)>) {
         match self {
             RegexBackend::Scanner(scan) => {
                 // Sized up front rather than grown from empty. A ~110 byte text
-                // produces ~25 spans, so `Vec::new()` reallocated four or five
+                // produces ~25 spans, so an empty `Vec` reallocated four or five
                 // times per call — and on macOS's xzone allocator a `realloc`
                 // is a fresh allocation plus a `memmove` plus a free, not an
                 // in-place extension the way glibc usually manages. Sampled on
                 // an M1, that growth was 25% of single-text encode time.
-                let mut spans =
-                    Vec::with_capacity(crate::core::pretokenizer::estimated_pieces(text));
-                scan(text, &mut spans);
-                spans
+                //
+                // A reused buffer is already large enough and this is then a
+                // no-op, which is the case the encode path is in.
+                out.reserve(crate::core::pretokenizer::estimated_pieces(text));
+                scan(text, out);
             }
-            RegexBackend::Regexr(regex) => regex
-                .find_iter(text)
-                .map(|m| (m.start(), m.end()))
-                .collect(),
+            RegexBackend::Regexr(regex) => {
+                out.extend(regex.find_iter(text).map(|m| (m.start(), m.end())))
+            }
             #[cfg(feature = "pcre2")]
-            RegexBackend::Pcre2(regex) => regex
-                .find_iter(text.as_bytes())
-                .filter_map(|m| m.ok())
-                .map(|m| (m.start(), m.end()))
-                .collect(),
+            RegexBackend::Pcre2(regex) => out.extend(
+                regex
+                    .find_iter(text.as_bytes())
+                    .filter_map(|m| m.ok())
+                    .map(|m| (m.start(), m.end())),
+            ),
         }
     }
 }

@@ -75,18 +75,25 @@ impl Tokenizer {
         let text = self.prefixed(text);
         let text = text.as_ref();
         let text_bytes = text.as_bytes();
-        let chunks = self.split_chunks(text);
 
-        if chunks.is_empty() {
-            return vec![];
-        }
+        // The spans are built, walked and dropped inside this call, which is
+        // exactly the shape a per-thread buffer serves: the vector outlives the
+        // encode and is reused by the next one on this thread. Nothing escapes
+        // — both arms return ids, never a borrow of the spans.
+        crate::core::scratch::with_spans(|chunks| {
+            self.split_chunks_into(text, chunks);
 
-        if self.use_metaspace_decoder {
-            self.encode_metaspace_chunks(text_bytes, &chunks)
-        } else {
-            // No metaspace decoder: use original logic
-            self.map_chunks(text_bytes, &chunks, parallel)
-        }
+            if chunks.is_empty() {
+                return vec![];
+            }
+
+            if self.use_metaspace_decoder {
+                self.encode_metaspace_chunks(text_bytes, chunks)
+            } else {
+                // No metaspace decoder: use original logic
+                self.map_chunks(text_bytes, chunks, parallel)
+            }
+        })
     }
 
     /// Metaspace-decoder chunk fold: spaces accumulate into `▁` prefixes for
