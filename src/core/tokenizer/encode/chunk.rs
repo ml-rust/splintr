@@ -27,7 +27,11 @@ impl Tokenizer {
             return;
         }
 
-        if self.chunk_cache.extend_into(bytes, out) {
+        // Hashed once for both the lookup and the insert that follows it: a
+        // miss visits the cache twice, and the shard hash is the same both
+        // times.
+        let hash = super::super::cache::ChunkCache::shard_hash(bytes);
+        if self.chunk_cache.extend_into(hash, bytes, out) {
             return;
         }
 
@@ -36,7 +40,7 @@ impl Tokenizer {
         // no intermediate vector to hold it.
         let start = out.len();
         self.bpe_into(bytes, out);
-        self.chunk_cache.put(bytes, &out[start..]);
+        self.chunk_cache.put(hash, bytes, &out[start..]);
     }
 
     /// Encode one pre-token chunk into `out`, applying ByteLevel encoding first

@@ -72,15 +72,24 @@ impl ChunkCache {
         }
     }
 
-    /// The shard a key belongs to.
+    /// The shard hash of `key`, so a caller that both looks up and inserts can
+    /// compute it once.
+    ///
+    /// A miss walks this cache twice — a failed [`Self::extend_into`] then a
+    /// [`Self::put`] — and hashed the same chunk each time.
+    pub(crate) fn shard_hash(key: &[u8]) -> u64 {
+        let mut hasher = FxHasher::default();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// The shard a hash belongs to.
     ///
     /// The high bits are used because `FxHasher`'s low bits are the weakest
     /// part of its output, and `SHARDS` is a power of two so only a few bits
     /// select the shard.
-    fn shard(&self, key: &[u8]) -> &Shard {
-        let mut hasher = FxHasher::default();
-        key.hash(&mut hasher);
-        &self.shards[(hasher.finish() >> 32) as usize % SHARDS]
+    fn shard(&self, hash: u64) -> &Shard {
+        &self.shards[(hash >> 32) as usize % SHARDS]
     }
 
     /// Append the ids cached for `key` to `out`, reporting whether there were
@@ -95,7 +104,7 @@ impl ChunkCache {
     ///
     /// The lookup itself allocates nothing either, borrowing via
     /// `Vec<u8>: Borrow<[u8]>`.
-    pub(crate) fn extend_into(&self, key: &[u8], out: &mut Vec<u32>) -> bool {
+    pub(crate) fn extend_into(&self, hash: u64, key: &[u8], out: &mut Vec<u32>) -> bool {
         // A read lock, and `peek` rather than `get`, so concurrent hits do not
         // serialise. `get` would bump recency, which needs `&mut` and therefore
         // a writer — turning every *read* into an exclusive section. Under
@@ -108,7 +117,7 @@ impl ChunkCache {
         // closer to insertion order than to true LRU. For a chunk cache that is
         // a fair trade: the hot set is small and stable, so the entries an LRU
         // would keep are the ones that keep being re-inserted anyway.
-        let Ok(shard) = self.shard(key).read() else {
+        let Ok(shard) = self.shard(hash).read() else {
             return false;
         };
         match shard.peek(key) {
@@ -120,9 +129,9 @@ impl ChunkCache {
         }
     }
 
-    /// Cache `ids` for `key`.
-    pub(crate) fn put(&self, key: &[u8], ids: &[u32]) {
-        if let Ok(mut shard) = self.shard(key).write() {
+    /// Cache `ids` for `key`, whose shard hash the caller already has.
+    pub(crate) fn put(&self, hash: u64, key: &[u8], ids: &[u32]) {
+        if let Ok(mut shard) = self.shard(hash).write() {
             shard.put(key.to_vec(), ids.to_vec());
         }
     }
