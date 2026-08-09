@@ -113,7 +113,10 @@ unicode-normalization = "0.1"
 # Unicode general category for punctuation detection
 unicode-general-category = "1.0"
 # JSON parsing for HuggingFace tokenizer.json loader (Whisper)
-serde_json = "1.0"
+serde = "1.0"
+# `raw_value` lets the loader record `model.vocab` as an unparsed span instead
+# of materializing a 100k-200k entry `Value` map — see `hf_json::loader`.
+serde_json = { version = "1.0", features = ["raw_value"] }
 
 [dev-dependencies]
 # Property-based testing: the BPE merge loop is checked against a slow,

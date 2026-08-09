@@ -1,7 +1,13 @@
 //! Construction: parse a `tokenizer.json` into an [`AnyTokenizer`].
 
 use rustc_hash::FxHashMap;
+use serde::de::{MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
+use serde_json::value::RawValue;
 use serde_json::Value;
+use std::borrow::Cow;
+use std::fmt;
+use std::marker::PhantomData;
 
 use super::super::byte_level::byte_level_decode;
 use super::super::normalizer::Normalizer;
@@ -17,6 +23,78 @@ use super::components::{
 };
 use super::HfJsonError;
 
+/// A JSON string kept borrowed from the input when it has no escapes.
+///
+/// `serde`'s own `Cow<str>` always allocates; this borrows whenever the parser
+/// can hand back a slice of the original buffer, which for a `tokenizer.json`
+/// vocabulary is nearly every one of its 100k-200k tokens.
+struct CowStr<'a>(Cow<'a, str>);
+
+impl<'de: 'a, 'a> Deserialize<'de> for CowStr<'a> {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct V<'a>(PhantomData<&'a ()>);
+        impl<'de: 'a, 'a> Visitor<'de> for V<'a> {
+            type Value = CowStr<'a>;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a string")
+            }
+            fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E> {
+                Ok(CowStr(Cow::Borrowed(v)))
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(CowStr(Cow::Owned(v.to_owned())))
+            }
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+                Ok(CowStr(Cow::Owned(v)))
+            }
+        }
+        de.deserialize_str(V(PhantomData))
+    }
+}
+
+/// `model.vocab` as token/id pairs in file order.
+///
+/// A `Vec` rather than a map because the loop below reads it once and builds
+/// its own tables from it: materializing serde_json's `Map<String, Value>`
+/// first meant a `String` and a `Value` per token and a `BTreeMap` insert to
+/// put them somewhere, which measured at 13% of load on its own.
+struct VocabPairs<'a>(Vec<(Cow<'a, str>, u32)>);
+
+impl<'de: 'a, 'a> Deserialize<'de> for VocabPairs<'a> {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct V<'a>(PhantomData<&'a ()>);
+        impl<'de: 'a, 'a> Visitor<'de> for V<'a> {
+            type Value = VocabPairs<'a>;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a vocabulary object")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut out = Vec::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some((token, id)) = map.next_entry::<CowStr<'a>, u32>()? {
+                    out.push((token.0, id));
+                }
+                Ok(VocabPairs(out))
+            }
+        }
+        de.deserialize_map(V(PhantomData))
+    }
+}
+
+/// Expand one recorded span into a `Value`.
+fn expand(raw: &RawValue) -> Result<Value, HfJsonError> {
+    Ok(serde_json::from_str(raw.get())?)
+}
+
+/// Rebuild an object `Value` from spans, so code written against `Value` is
+/// unchanged. Only ever used for the small fields.
+fn object_from(spans: &FxHashMap<&str, &RawValue>) -> Result<Value, HfJsonError> {
+    let mut map = serde_json::Map::with_capacity(spans.len());
+    for (key, raw) in spans {
+        map.insert((*key).to_string(), expand(raw)?);
+    }
+    Ok(Value::Object(map))
+}
+
 /// Load a tokenizer from a `tokenizer.json` file path.
 pub fn from_json_path<P: AsRef<std::path::Path>>(path: P) -> Result<AnyTokenizer, HfJsonError> {
     let bytes = std::fs::read(path)?;
@@ -25,16 +103,49 @@ pub fn from_json_path<P: AsRef<std::path::Path>>(path: P) -> Result<AnyTokenizer
 
 /// Load a tokenizer from `tokenizer.json` bytes.
 pub fn from_json_bytes(data: &[u8]) -> Result<AnyTokenizer, HfJsonError> {
-    let root: Value = serde_json::from_slice(data)?;
-    let model = root
-        .get("model")
-        .ok_or(HfJsonError::MissingField("model"))?;
+    // Read the file as unparsed spans first. `model.vocab` holds 100k-200k
+    // entries and turning it into a `Value` — a `String` key and a `Value` per
+    // token, each inserted into a `BTreeMap` — measured at roughly a third of
+    // load time, while every other field in the file is small. Recording spans
+    // costs a scan, lets the small fields keep the `Value`-based parsing they
+    // already have, and lets the vocabulary be read straight into the shape the
+    // encoder wants.
+    let top: FxHashMap<&str, &RawValue> = serde_json::from_slice(data)?;
+    let model_raw = *top.get("model").ok_or(HfJsonError::MissingField("model"))?;
+    let mut model_spans: FxHashMap<&str, &RawValue> = serde_json::from_str(model_raw.get())?;
+    let vocab_raw = model_spans.remove("vocab");
+    let merges_raw = model_spans.remove("merges");
 
-    let backend = match model_family(model)? {
-        "BPE" => build_bpe(&root, model)?,
-        "Unigram" => build_unigram(&root, model)?,
-        "WordPiece" => build_wordpiece(&root, model)?,
-        other => return Err(HfJsonError::UnsupportedModelType(other.to_string())),
+    let mut root_spans = top;
+    root_spans.remove("model");
+    let root = object_from(&root_spans)?;
+    let model = object_from(&model_spans)?;
+
+    let backend = match model_family(&model, vocab_raw, merges_raw.is_some())? {
+        "BPE" => {
+            let raw = vocab_raw.ok_or(HfJsonError::MissingField("model.vocab"))?;
+            let vocab: VocabPairs<'_> = serde_json::from_str(raw.get())?;
+            build_bpe(&root, &model, &vocab.0, merges_raw)?
+        }
+        family => {
+            // Unigram and WordPiece read `vocab` off the model as a `Value`, and
+            // neither is on a hot path worth restructuring for — put the spans
+            // back so those loaders see exactly the model they saw before.
+            let mut model = model;
+            if let Value::Object(map) = &mut model {
+                if let Some(raw) = vocab_raw {
+                    map.insert("vocab".to_string(), expand(raw)?);
+                }
+                if let Some(raw) = merges_raw {
+                    map.insert("merges".to_string(), expand(raw)?);
+                }
+            }
+            match family {
+                "Unigram" => build_unigram(&root, &model)?,
+                "WordPiece" => build_wordpiece(&root, &model)?,
+                other => return Err(HfJsonError::UnsupportedModelType(other.to_string())),
+            }
+        }
     };
     let policy = policy::parse(&root)?;
     let decoder = super::super::decoder::parse(root.get("decoder"));
@@ -56,7 +167,11 @@ pub fn from_json_bytes(data: &[u8]) -> Result<AnyTokenizer, HfJsonError> {
 /// - `max_input_chars_per_word` ⇒ WordPiece
 /// - a non-empty `continuing_subword_prefix` ⇒ WordPiece
 /// - otherwise ⇒ BPE
-fn model_family(model: &Value) -> Result<&'static str, HfJsonError> {
+fn model_family(
+    model: &Value,
+    vocab: Option<&RawValue>,
+    has_merges: bool,
+) -> Result<&'static str, HfJsonError> {
     if let Some(t) = model.get("type").and_then(Value::as_str) {
         return match t {
             "BPE" => Ok("BPE"),
@@ -69,9 +184,12 @@ fn model_family(model: &Value) -> Result<&'static str, HfJsonError> {
         .get("continuing_subword_prefix")
         .and_then(Value::as_str)
         .is_some_and(|s| !s.is_empty());
-    if model.get("vocab").map(Value::is_array).unwrap_or(false) {
+    // Unigram's vocab is an array of [token, score]; every other family's is an
+    // object. Read that off the span rather than expanding it.
+    let vocab_is_array = vocab.is_some_and(|v| v.get().trim_start().starts_with('['));
+    if vocab_is_array {
         Ok("Unigram")
-    } else if model.get("merges").is_some() {
+    } else if has_merges {
         Ok("BPE")
     } else if model.get("max_input_chars_per_word").is_some() || nonempty_prefix {
         Ok("WordPiece")
@@ -80,14 +198,14 @@ fn model_family(model: &Value) -> Result<&'static str, HfJsonError> {
     }
 }
 
-fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
+fn build_bpe(
+    root: &Value,
+    model: &Value,
+    vocab: &[(Cow<'_, str>, u32)],
+    merges: Option<&RawValue>,
+) -> Result<Backend, HfJsonError> {
     let pre = parse_pre_tokenizer(root.get("pre_tokenizer"));
     let specials = parse_special_tokens(root);
-
-    let vocab = model
-        .get("vocab")
-        .and_then(Value::as_object)
-        .ok_or(HfJsonError::MissingField("model.vocab"))?;
 
     let mut encoder: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
     encoder.reserve(vocab.len());
@@ -107,9 +225,7 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
         raw_encoder.reserve(vocab.len());
     }
     for (token, id) in vocab {
-        let id = id
-            .as_u64()
-            .ok_or(HfJsonError::MissingField("model.vocab[*] = u32"))? as u32;
+        let (token, id) = (token.as_ref(), *id);
         // A vocab entry that is ALSO declared in `added_tokens` is spelled
         // literally, not byte-level-encoded: HuggingFace matches added tokens
         // against the raw text *before* the model runs, so their vocab spelling
@@ -135,7 +251,7 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
             // token. Report it instead of quietly choosing.
             Some(added) if added.id != id => {
                 return Err(HfJsonError::AddedTokenIdConflict {
-                    content: token.clone(),
+                    content: token.to_string(),
                     vocab_id: id,
                     added_id: added.id,
                 });
@@ -145,7 +261,7 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
             None => {
                 if pre.byte_level {
                     match byte_level_decode(token) {
-                        None => return Err(HfJsonError::InvalidByteLevel(token.clone())),
+                        None => return Err(HfJsonError::InvalidByteLevel(token.to_string())),
                         Some(raw) => {
                             raw_encoder.insert(raw, id);
                         }
@@ -166,7 +282,7 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     // Merge priority comes from the `merges` list, which is independent of token
     // id (RoBERTa orders them differently from GPT-2). Build a bytes→merge-rank
     // map so BPE merges in the correct order regardless of id assignment.
-    let merge_ranks = parse_merge_ranks(model, vocab);
+    let merge_ranks = parse_merge_ranks(merges, vocab);
 
     // Use the multi-stage pre-tokenizer engine when the json declares a pipeline
     // (Digits/Punctuation/Sequence/Split/…). It emits already byte-level-encoded
@@ -233,7 +349,16 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     // vocabulary on the shelf declares `fuse_unk: true` alongside a *complete*
     // 256-entry `<0xNN>` set, where no character ever reaches the unk branch —
     // so the flag only becomes observable on a partial (or absent) byte table.
-    let unk_id = parse_unk_id(model, vocab, None);
+    let unk_id = parse_unk_id(
+        model,
+        |name| {
+            vocab
+                .iter()
+                .find(|(token, _)| token.as_ref() == name)
+                .map(|(_, id)| *id)
+        },
+        None,
+    );
     let fuse_unk = model
         .get("fuse_unk")
         .and_then(Value::as_bool)
@@ -316,10 +441,11 @@ fn build_bpe(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
 /// A merge entry is either `[a, b]` or the string `"a b"`. Returns `None` when
 /// there is no usable merges list (then BPE uses tiktoken-style id-as-rank).
 fn parse_merge_ranks(
-    model: &Value,
-    vocab: &serde_json::Map<String, Value>,
+    merges: Option<&RawValue>,
+    vocab: &[(Cow<'_, str>, u32)],
 ) -> Option<FxHashMap<Vec<u8>, u32>> {
-    let merges = model.get("merges").and_then(Value::as_array)?;
+    let merges: Vec<Value> = serde_json::from_str(merges?.get()).ok()?;
+    let merges = &merges;
 
     // Ordered list of merged tokens (and the set, to identify base tokens).
     let mut merged: Vec<String> = Vec::with_capacity(merges.len());
@@ -341,15 +467,12 @@ fn parse_merge_ranks(
     }
 
     // Vocabulary in id order, so the base-alphabet ranks are deterministic.
-    let mut base: Vec<(&String, u64)> = vocab
-        .iter()
-        .filter_map(|(k, v)| v.as_u64().map(|id| (k, id)))
-        .collect();
+    let mut base: Vec<(&str, u32)> = vocab.iter().map(|(k, id)| (k.as_ref(), *id)).collect();
     base.sort_by_key(|&(_, id)| id);
 
     Some(super::super::bpe::merge_ranks(
         &merged,
-        base.iter().map(|(k, _)| k.as_str()),
+        base.iter().map(|(k, _)| *k),
     ))
 }
 
@@ -435,8 +558,12 @@ fn build_wordpiece(root: &Value, model: &Value) -> Result<Backend, HfJsonError> 
 
     // WordPiece cannot tokenize at all without an unk, so an unresolvable one is
     // a hard error here — unlike BPE, where it just narrows byte fallback.
-    let unk_id =
-        parse_unk_id(model, vocab, Some("[UNK]")).ok_or(HfJsonError::MissingSpecial("unk"))?;
+    let unk_id = parse_unk_id(
+        model,
+        |name| vocab.get(name).and_then(Value::as_u64).map(|id| id as u32),
+        Some("[UNK]"),
+    )
+    .ok_or(HfJsonError::MissingSpecial("unk"))?;
 
     let max_word_len = model
         .get("max_input_chars_per_word")

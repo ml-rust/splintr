@@ -497,16 +497,18 @@ pub(super) fn parse_special_decode_ids(root: &Value) -> rustc_hash::FxHashSet<u3
 /// `None` when there is no spelling to look up or the declared one is absent
 /// from the vocabulary; a backend that cannot work without one turns that into
 /// [`HfJsonError::MissingSpecial`].
+/// The id of `model.unk_token`, resolved through `lookup`.
+///
+/// Takes a resolver rather than a vocabulary because the two callers no longer
+/// hold the same shape: BPE reads its vocabulary as borrowed token/id pairs and
+/// never builds a `Map`, while WordPiece still has one.
 pub(super) fn parse_unk_id(
     model: &Value,
-    vocab: &serde_json::Map<String, Value>,
+    lookup: impl Fn(&str) -> Option<u32>,
     default: Option<&str>,
 ) -> Option<u32> {
     let unk_token = model.get("unk_token").and_then(Value::as_str).or(default)?;
-    vocab
-        .get(unk_token)
-        .and_then(Value::as_u64)
-        .map(|id| id as u32)
+    lookup(unk_token)
 }
 
 /// Find the id of the first matching token content in `added_tokens`.

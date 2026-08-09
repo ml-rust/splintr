@@ -1346,6 +1346,7 @@ dependencies = [
  "rayon",
  "regexr",
  "rustc-hash",
+ "serde",
  "serde_json",
  "thiserror",
  "unicode-general-category",
