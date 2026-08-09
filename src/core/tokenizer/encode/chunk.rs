@@ -126,9 +126,27 @@ impl Tokenizer {
         #[cfg(not(feature = "rayon"))]
         let _ = parallel;
 
-        // One id per chunk is the floor; most chunks produce one or two, so this
-        // usually holds the whole text without regrowing.
-        let mut out = Vec::with_capacity(chunks.len());
+        // One id per chunk is the floor, not the estimate, and the two scripts
+        // miss it in opposite directions — hence two terms and a `max`.
+        //
+        // Latin text lands just above one id per chunk: English prose runs
+        // 1.076 and JSON 1.015-1.031, so an exact `chunks.len()` held only 33%
+        // and 50% of texts, and the rest doubled and copied the whole id
+        // buffer. An eighth of headroom holds 100% of both.
+        //
+        // CJK misses by multiples instead — 3.3-4.9 ids per chunk, since a run
+        // of Han is one chunk and many tokens — and no headroom expressed in
+        // chunks can follow that. Bytes can: dense scripts spend ~3-4 bytes per
+        // token, so `len / 4` tracks them while staying under the chunk term
+        // for the Latin text it would otherwise inflate. Measured per corpus,
+        // it is worth 9.4%/13.2% on Chinese and 6.3%/7.8% on mixed-script text
+        // (cl100k/o200k), and costs code and JSON nothing.
+        //
+        // `len / 3` was tried, to fit cl100k Chinese exactly rather than merely
+        // closely. It won another 10% there and lost roughly 1-2% on every
+        // o200k corpus including Chinese, so the tighter divisor is not carried.
+        let mut out =
+            Vec::with_capacity((chunks.len() + chunks.len() / 8).max(text_bytes.len() / 4 + 8));
         for &(start, end) in chunks {
             self.encode_chunk_into(&text_bytes[start..end], &mut out);
         }
