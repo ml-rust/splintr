@@ -81,7 +81,7 @@ Single texts stay on the sequential path, and still lead across every content ty
 
 Call it **~20x tiktoken on batches, ~5x on single texts**. The ballpark holds across machines; the exact figure does not, since absolute throughput moves with hardware, CPU architecture and the versions compared against.
 
-The tables below are a separate, more recent run than the charts — AMD Ryzen 9 5900X (24 cores, Linux), CPython 3.12, tiktoken 0.13.0, HuggingFace tokenizers 0.23.1, gigatoken 0.10.0, medians of three interleaved rounds. Where they disagree with the charts, which were plotted on different hardware against older versions, the tables are the measured ones.
+The table below is a separate, more recent run than the charts — AMD Ryzen 9 5900X (24 cores, Linux), CPython 3.12, tiktoken 0.13.0, medians of three interleaved rounds. Where it disagrees with the charts, which were plotted on different hardware against older versions, the table is the measured one.
 
 Against `tiktoken`, each library loading `cl100k_base` through its own loader:
 
@@ -92,16 +92,20 @@ Against `tiktoken`, each library loading `cl100k_base` through its own loader:
 | 100 texts   | **56.0 MB/s**  | 2.3 MB/s | 24.8x       |
 | Single text | **1.27 ms**    | 6.36 ms  | 5.0x        |
 
-Against the other Rust tokenizers, every engine loading the **same** `tokenizer.json` — the only way to compare with no loader asymmetry to argue about:
+Against the other Rust tokenizers, every engine loading the **same** `tokenizer.json` — no loader asymmetry to argue about:
 
-| Batch       | Splintr     | HF tokenizers | gigatoken      |
-| ----------- | ----------- | ------------- | -------------- |
-| 1,000 texts | 89.0 MB/s   | 29.5 MB/s     | **107.9 MB/s** |
-| 500 texts   | 91.4 MB/s   | 29.6 MB/s     | **124.2 MB/s** |
-| 100 texts   | 55.3 MB/s   | 22.4 MB/s     | **124.3 MB/s** |
-| Single text | **1.55 ms** | 20.89 ms      | 1.77 ms        |
+| Axis            | vs HF `tokenizers`  | vs `gigatoken`                                          |
+| --------------- | ------------------- | ------------------------------------------------------- |
+| Vocabulary load | **Splintr** (~1.5x) | **Splintr** (2-4x)                                      |
+| Single text     | **Splintr** (~20x)  | **Splintr** on x86-64 (~1.5x), **tie** on Apple Silicon |
+| Batch           | **Splintr** (~10x)  | **Toss-up** — either engine, ±20% each way              |
 
-Read that second table as it stands: `gigatoken` is faster on batch for the OpenAI vocabularies, splintr is faster on single texts and on load, and the two are level on batch for Qwen and GLM. Splintr's case is not that it wins every row — it is one handle over bundled, HuggingFace and GGUF vocabularies, across four backends, verified id-for-id against the reference implementations.
+On `gigatoken` specifically — the other fast Rust tokenizer with Python bindings, and in the same class:
+
+- The batch winner flips by machine, by vocabulary, and by output form. Read one row as a data point, not a verdict.
+- Load is the one axis splintr leads everywhere: bundled vocabularies are packed binary, borrowed rather than copied.
+
+Splintr's case is not that it wins every row — it is one handle over bundled, HuggingFace and GGUF vocabularies, across four backends, verified id-for-id against the reference implementations.
 
 ### Getting current numbers
 
