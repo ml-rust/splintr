@@ -7,9 +7,9 @@ use serde_json::Value;
 
 /// Run a splitter and collect its borrowed pieces as owned strings, so the
 /// assertions below can keep comparing against `vec!["a", "b"]` literals.
-fn split<'p>(piece: &'p str, f: impl Fn(&'p str, &mut Vec<&'p str>)) -> Vec<String> {
+fn split<'p>(piece: &'p str, f: impl Fn(&'p str, &mut dyn FnMut(&'p str))) -> Vec<String> {
     let mut out = Vec::new();
-    f(piece, &mut out);
+    f(piece, &mut |p| out.push(p));
     out.into_iter().map(str::to_owned).collect()
 }
 
@@ -101,7 +101,7 @@ fn split_invert_keeps_each_match_when_matches_are_contiguous() {
     let split_with = |pattern: &str, behavior, text: &'static str| {
         let re = SplitMatcher::compile(pattern).expect("compiles");
         let mut out = Vec::new();
-        split_regex(text, &re, behavior, true, &mut out);
+        split_regex(text, &re, behavior, true, &mut |p| out.push(p));
         out.into_iter().map(str::to_owned).collect::<Vec<_>>()
     };
 
@@ -131,7 +131,7 @@ fn split_invert_partitions_the_whole_piece() {
         &re,
         Behavior::Isolated,
         true,
-        &mut out,
+        &mut |p| out.push(p),
     );
     assert_eq!(out.concat(), "def f(x):\n    return x");
     assert!(out.len() > 1, "a GPT-2 pattern must split this into pieces");

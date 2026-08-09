@@ -22,7 +22,7 @@ pub(super) fn split_regex<'p>(
     matcher: &super::stage::SplitMatcher,
     behavior: Behavior,
     invert: bool,
-    out: &mut Vec<&'p str>,
+    out: &mut dyn FnMut(&'p str),
 ) {
     crate::core::scratch::with_spans(|matches| {
         split_regex_spans(piece, matcher, behavior, invert, out, matches)
@@ -35,7 +35,7 @@ fn split_regex_spans<'p>(
     matcher: &super::stage::SplitMatcher,
     behavior: Behavior,
     invert: bool,
-    out: &mut Vec<&'p str>,
+    out: &mut dyn FnMut(&'p str),
     matches: &mut Vec<(usize, usize)>,
 ) {
     matches.reserve(estimated_pieces(piece));
@@ -52,15 +52,15 @@ fn split_regex_spans<'p>(
             let mut last = 0;
             for &(s, e) in matches.iter() {
                 if s > last {
-                    out.push(&piece[last..s]);
+                    out(&piece[last..s]);
                 }
                 if e > s {
-                    out.push(&piece[s..e]);
+                    out(&piece[s..e]);
                 }
                 last = e;
             }
             if last < piece.len() {
-                out.push(&piece[last..]);
+                out(&piece[last..]);
             }
             return;
         }
@@ -72,19 +72,19 @@ fn split_regex_spans<'p>(
             if invert {
                 for &(s, e) in matches.iter() {
                     if e > s {
-                        out.push(&piece[s..e]);
+                        out(&piece[s..e]);
                     }
                 }
             } else {
                 let mut last = 0;
                 for &(s, e) in matches.iter() {
                     if s > last {
-                        out.push(&piece[last..s]);
+                        out(&piece[last..s]);
                     }
                     last = e;
                 }
                 if last < piece.len() {
-                    out.push(&piece[last..]);
+                    out(&piece[last..]);
                 }
             }
             return;
@@ -149,12 +149,17 @@ struct Segment {
 
 /// Combine ordered (text, is_delimiter) segments per the HF delimiter behavior,
 /// appending the resulting pieces to `out`.
-fn emit_segments<'p>(piece: &'p str, segs: &[Segment], behavior: Behavior, out: &mut Vec<&'p str>) {
+fn emit_segments<'p>(
+    piece: &'p str,
+    segs: &[Segment],
+    behavior: Behavior,
+    out: &mut dyn FnMut(&'p str),
+) {
     // Segments partition `piece` in order, so any two that are combined are
     // adjacent and their union is the single range from the first's start to
     // the last's end. Every behavior below is therefore a range merge, and
     // `push` is always a subslice — never a concatenation.
-    let mut push = |start: usize, end: usize| out.push(&piece[start..end]);
+    let mut push = |start: usize, end: usize| out(&piece[start..end]);
 
     match behavior {
         Behavior::Isolated => {
@@ -224,7 +229,7 @@ fn emit_segments<'p>(piece: &'p str, segs: &[Segment], behavior: Behavior, out: 
     }
 }
 
-pub(super) fn split_digits<'p>(piece: &'p str, individual: bool, out: &mut Vec<&'p str>) {
+pub(super) fn split_digits<'p>(piece: &'p str, individual: bool, out: &mut dyn FnMut(&'p str)) {
     // Tracks the open run as a range instead of accumulating a String, so each
     // emitted piece is a subslice of `piece`.
     let mut start: Option<usize> = None;
@@ -236,23 +241,27 @@ pub(super) fn split_digits<'p>(piece: &'p str, individual: bool, out: &mut Vec<&
         let d = c.is_numeric();
         if let Some(open) = start {
             if d != run_is_digit || (d && individual) {
-                out.push(&piece[open..i]);
+                out(&piece[open..i]);
                 start = None;
             }
         }
         let open = *start.get_or_insert(i);
         run_is_digit = d;
         if d && individual {
-            out.push(&piece[open..i + c.len_utf8()]);
+            out(&piece[open..i + c.len_utf8()]);
             start = None;
         }
     }
     if let Some(open) = start {
-        out.push(&piece[open..]);
+        out(&piece[open..]);
     }
 }
 
-pub(super) fn split_punctuation<'p>(piece: &'p str, behavior: Behavior, out: &mut Vec<&'p str>) {
+pub(super) fn split_punctuation<'p>(
+    piece: &'p str,
+    behavior: Behavior,
+    out: &mut dyn FnMut(&'p str),
+) {
     // Each punctuation char is a delimiter segment; consecutive non-punctuation
     // chars form a content segment. The behavior then combines them.
     let mut segs: Vec<Segment> = Vec::new();

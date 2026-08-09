@@ -135,37 +135,23 @@ impl PreTokenizer {
         self.run(text)
     }
 
-    /// Run `self.compiled[..upto]` — all cutting stages — over `text`, leaving
-    /// the pieces in `cut`.
+    /// Run `stages` — all cutting stages — over `text`, handing each final
+    /// piece to `f` as it is produced.
     ///
-    /// Two allocations for a pipeline of any length, where the obvious loop
-    /// costs one per stage. The seed is the first stage cutting `text`
-    /// directly, rather than a one-element vector holding `text` for the loop
-    /// to read back; the remaining stages alternate between `cut` and `next`
-    /// instead of building a fresh output vector and dropping the input.
+    /// No buffer between stages, and none holding the result: a stage's sink is
+    /// the next stage's input, so the whole chain is one nest of closures and
+    /// the pieces stream through it. That is what makes a cutting pipeline cost
+    /// zero allocations rather than one per stage.
     ///
-    /// `next` stays empty and therefore unallocated for the single-stage
-    /// pipeline that every GPT-2-style `tokenizer.json` is, so that shape pays
-    /// one allocation here rather than three.
-    fn cut_stages<'p>(
-        &self,
-        text: &'p str,
-        upto: usize,
-        cut: &mut Vec<&'p str>,
-        next: &mut Vec<&'p str>,
-    ) {
-        cut.clear();
-        let Some((first, rest)) = self.compiled[..upto].split_first() else {
-            cut.push(text);
-            return;
-        };
-        first.cut(text, cut);
-        for stage in rest {
-            next.clear();
-            for piece in cut.iter() {
-                stage.cut(piece, next);
-            }
-            std::mem::swap(cut, next);
+    /// Recursive, because the chain is as deep as `stages` is long and that is
+    /// a run-time length. `Stage::cut` therefore takes `dyn FnMut`: a
+    /// monomorphized sink would need a distinct closure type per depth, which
+    /// is not a type this can have.
+    fn cut_stages<'p>(stages: &[Stage], text: &'p str, f: &mut dyn FnMut(&'p str)) {
+        match stages.split_first() {
+            None => f(text),
+            Some((first, [])) => first.cut(text, f),
+            Some((first, rest)) => first.cut(text, &mut |piece| Self::cut_stages(rest, piece, f)),
         }
     }
 
@@ -178,12 +164,14 @@ impl PreTokenizer {
             .position(Stage::rewrites_content)
             .unwrap_or(self.compiled.len());
 
-        // Phase 1: cutting stages, entirely in subslices of `text`. Sized from
-        // the text rather than from the piece count — see `cut_stages` for why
-        // one is nowhere near the other.
+        // Phase 1: cutting stages, entirely in subslices of `text`. This one
+        // does have to collect — it returns the pieces — so it is sized from
+        // the text rather than from the piece count, the first stage being
+        // handed the whole text as a single piece.
         let mut cut: Vec<&'p str> = Vec::with_capacity(super::split::estimated_pieces(text));
-        let mut next: Vec<&'p str> = Vec::new();
-        self.cut_stages(text, rewrite_at, &mut cut, &mut next);
+        Self::cut_stages(&self.compiled[..rewrite_at], text, &mut |piece| {
+            cut.push(piece)
+        });
 
         if rewrite_at == self.compiled.len() {
             return cut
@@ -255,27 +243,26 @@ impl PreTokenizer {
             return;
         }
 
-        // Sized from the text, not from the piece count: the first stage is
-        // handed the whole text as one piece and returns a pre-token for
-        // roughly every four bytes of it, so taking the input count as the
-        // estimate meant regrowing from a single element every time.
-        let mut cut: Vec<&str> = Vec::with_capacity(super::split::estimated_pieces(text));
-        let mut next: Vec<&str> = Vec::new();
-        self.cut_stages(text, rewrite_at, &mut cut, &mut next);
-
+        // Straight from the cutting stages into `f`, with nothing collected on
+        // the way: every piece is consumed the moment it is produced, so the
+        // vector that used to hold them all was pure overhead.
         if rewrite_at == self.compiled.len() {
-            for piece in cut {
+            Self::cut_stages(&self.compiled, text, &mut |piece| {
                 if !piece.is_empty() {
                     f(piece);
                 }
-            }
+            });
             return;
         }
 
-        let mut scratch = String::new();
-        for piece in &cut {
-            self.compiled[rewrite_at].byte_level_for_each(piece, &mut scratch, f);
-        }
+        // See `Tokenizer::encode_content` on the sizing: cleared and refilled
+        // per piece, so it settles at the longest pre-token rather than growing
+        // from empty on each of the first few.
+        let mut scratch = String::with_capacity(64);
+        let byte_level = &self.compiled[rewrite_at];
+        Self::cut_stages(&self.compiled[..rewrite_at], text, &mut |piece| {
+            byte_level.byte_level_for_each(piece, &mut scratch, f)
+        });
     }
 
     /// Whether a ByteLevel stage byte-encodes the pieces (so BPE skips encoding).
@@ -324,12 +311,10 @@ impl PreTokenizer {
         // stage before it is a cutting stage and the walk mirrors
         // `for_each_piece_inner`'s cutting loop exactly.
         let last = self.compiled.len() - 1;
-        let mut cut: Vec<&str> = Vec::with_capacity(super::split::estimated_pieces(text));
-        let mut next: Vec<&str> = Vec::new();
-        self.cut_stages(text, last, &mut cut, &mut next);
-        for piece in &cut {
-            self.compiled[last].split_for_each(piece, f);
-        }
+        let final_stage = &self.compiled[last];
+        Self::cut_stages(&self.compiled[..last], text, &mut |piece| {
+            final_stage.split_for_each(piece, f)
+        });
     }
 
     /// Whether the pipeline has no stages, in which case it is a no-op.
