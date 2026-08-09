@@ -1,155 +1,181 @@
 //! The pre-token chunk cache.
 //!
-//! Encoding the same chunk twice is common — pre-tokenizers cut text at word
-//! boundaries and ordinary prose reuses words heavily — so memoizing chunk →
-//! ids is a large win on repetitive input.
+//! Pre-tokenizers cut text at word boundaries and prose reuses words heavily,
+//! so memoizing chunk → ids pays on ordinary input.
 //!
-//! The subtlety is that this cache sits on the one path `encode_batch` runs
-//! concurrently. A single mutex around it makes every rayon worker queue on the
-//! same lock twice per chunk, which does not merely reduce the speedup, it
-//! inverts it: measured on a 24-core machine over cache-missing text, a
-//! single-mutex cache made `encode_batch` *slower* than encoding the same texts
-//! one at a time, and adding threads past four made it worse. Sharding the
-//! lock, so concurrent chunks almost never contend, took the same workload from
-//! 17.7ms to 1.94ms at 16 threads.
+//! This cache sits on the one path `encode_batch` runs concurrently. A single
+//! lock around it does not merely reduce the speedup, it inverts it — every
+//! worker queues twice per chunk, and adding threads makes it worse. Sharding
+//! the lock is what makes the parallel path parallel.
 //!
-//! So the shards are not a micro-optimization; they are what makes the parallel
-//! path parallel.
+//! # Why the entries are inline
+//!
+//! Only the chunks that miss the whole-piece vocabulary lookup get here, and
+//! nearly all of them are short. A map keyed by `Vec<u8>` with a `Vec<u32>`
+//! value serves that population with two heap allocations and two pointer
+//! chases per entry, and it dominated the allocation count of every encode.
+//!
+//! A slot instead holds its key and ids in place: nothing to allocate, one
+//! memory access to read. A chunk too long for a slot is not cached and simply
+//! recomputes.
 
-use lru::LruCache;
 use rustc_hash::FxHasher;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
-use std::num::NonZeroUsize;
+use std::hash::{Hash, Hasher};
 use std::sync::RwLock;
 
 /// Number of independently-locked shards.
 ///
-/// Fixed rather than derived from `available_parallelism()` so a tokenizer
-/// built on one machine behaves identically on another, and so the eviction
-/// behaviour a caller measures does not change under them when the process
-/// moves to a different core count. 64 is comfortably above the thread counts
-/// this crate is used at, which is what keeps the collision probability — and
-/// therefore the contention — low.
+/// Fixed rather than derived from the core count, so a tokenizer behaves the
+/// same on every machine. It sits comfortably above the thread counts this
+/// crate is used at, which is what keeps contention low.
 const SHARDS: usize = 64;
 
-type Shard = RwLock<LruCache<Vec<u8>, Vec<u32>, BuildHasherDefault<FxHasher>>>;
+/// Longest chunk a slot can hold. Anything longer is not cached.
+const MAX_KEY: usize = 16;
+
+/// Most ids a slot can hold.
+///
+/// Equal to [`MAX_KEY`] on purpose: every id consumes at least one byte of the
+/// chunk, so a key that fits can never produce a result that does not. Sizing
+/// this to the *common* id count instead would decline the long results —
+/// precisely the chunks that took the most merges to produce.
+const MAX_IDS: usize = MAX_KEY;
+
+/// One slot: the chunk and its ids, stored in place.
+///
+/// `klen == EMPTY` marks a slot never written. No pre-tokenizer produces an
+/// empty chunk, so the sentinel cannot collide with a real entry.
+#[derive(Clone, Copy)]
+struct Slot {
+    key: [u8; MAX_KEY],
+    ids: [u32; MAX_IDS],
+    klen: u8,
+    nids: u8,
+}
+
+const EMPTY: u8 = 0;
+
+const VACANT: Slot = Slot {
+    key: [0; MAX_KEY],
+    ids: [0; MAX_IDS],
+    klen: EMPTY,
+    nids: 0,
+};
+
+type Shard = RwLock<Box<[Slot]>>;
 
 /// A chunk → token-ids cache striped across [`SHARDS`] independently-locked
-/// LRUs.
+/// slabs, each direct-mapped.
 ///
 /// Capacity is divided evenly across the shards, so eviction is per-shard
-/// rather than global: the cache holds up to the requested number of entries,
-/// but a pathologically skewed key distribution could evict from a hot shard
-/// while a cold one has room. That is the standard trade for striping, and the
-/// distribution here is a hash of the chunk bytes, so skew of that kind does
-/// not arise in practice.
+/// rather than global: a skewed key distribution could evict from a hot shard
+/// while a cold one has room. Keys are distributed by a hash of the chunk
+/// bytes, so that skew does not arise in practice.
 ///
-/// Keyed by the chunk bytes themselves (not a bare hash) so a hash collision
-/// cannot return another chunk's token ids — the `lru` crate hashes AND
-/// compares the key, making a wrong-chunk hit structurally impossible. FxHash
-/// stays as the hasher for throughput on this hot path.
+/// A slot stores the chunk bytes themselves, not a bare hash, and a hit
+/// compares them — so a collision cannot return another chunk's ids. It can
+/// only evict, which costs a merge and never correctness.
 pub(crate) struct ChunkCache {
     shards: Box<[Shard]>,
+    /// Slots per shard, always a power of two so the index is a mask.
+    mask: usize,
 }
 
 impl ChunkCache {
-    /// Build a cache holding up to `capacity` entries in total.
-    ///
-    /// A capacity below one entry per shard still yields one per shard: `lru`
-    /// requires a non-zero capacity, and rounding down to zero would silently
-    /// turn the cache off rather than make it small.
+    /// Build a cache holding up to `capacity` chunks in total.
     pub(crate) fn new(capacity: usize) -> Self {
-        let per_shard = NonZeroUsize::new(capacity / SHARDS).unwrap_or(NonZeroUsize::MIN);
+        let per_shard = (capacity / SHARDS).next_power_of_two().max(1);
         Self {
             shards: (0..SHARDS)
-                .map(|_| {
-                    RwLock::new(LruCache::with_hasher(
-                        per_shard,
-                        BuildHasherDefault::default(),
-                    ))
-                })
+                .map(|_| RwLock::new(vec![VACANT; per_shard].into_boxed_slice()))
                 .collect(),
+            mask: per_shard - 1,
         }
     }
 
     /// The shard hash of `key`, so a caller that both looks up and inserts can
-    /// compute it once.
-    ///
-    /// A miss walks this cache twice — a failed [`Self::extend_into`] then a
-    /// [`Self::put`] — and hashed the same chunk each time.
+    /// compute it once: a miss walks this cache twice, a failed
+    /// [`Self::extend_into`] then a [`Self::put`].
     pub(crate) fn shard_hash(key: &[u8]) -> u64 {
         let mut hasher = FxHasher::default();
         key.hash(&mut hasher);
         hasher.finish()
     }
 
-    /// The shard a hash belongs to.
+    /// The shard a hash belongs to, and the slot within it.
     ///
-    /// The high bits are used because `FxHasher`'s low bits are the weakest
-    /// part of its output, and `SHARDS` is a power of two so only a few bits
-    /// select the shard.
-    fn shard(&self, hash: u64) -> &Shard {
-        &self.shards[(hash >> 32) as usize % SHARDS]
+    /// The high bits pick the shard and the low bits the slot, so the two
+    /// selections cannot correlate — `FxHasher`'s low bits are its weakest, and
+    /// reusing them for both would cluster every shard's traffic into the same
+    /// few slots.
+    #[inline]
+    fn locate(&self, hash: u64) -> (&Shard, usize) {
+        (
+            &self.shards[(hash >> 32) as usize % SHARDS],
+            hash as usize & self.mask,
+        )
     }
 
     /// Append the ids cached for `key` to `out`, reporting whether there were
     /// any.
     ///
-    /// Appending rather than returning a `Vec` is what makes a cache hit
-    /// allocation-free: the ids are copied straight into the caller's buffer,
-    /// which already has the capacity, instead of into a fresh vector that the
-    /// caller then copies again and drops. The copy happens under the shard
-    /// lock, but it is a `memcpy` of a few token ids — shorter than the lookup
-    /// that preceded it.
-    ///
-    /// The lookup itself allocates nothing either, borrowing via
-    /// `Vec<u8>: Borrow<[u8]>`.
+    /// A read lock, so concurrent hits do not serialise, and the ids are copied
+    /// out from the slot itself — no pointer to follow.
     pub(crate) fn extend_into(&self, hash: u64, key: &[u8], out: &mut Vec<u32>) -> bool {
-        // A read lock, and `peek` rather than `get`, so concurrent hits do not
-        // serialise. `get` would bump recency, which needs `&mut` and therefore
-        // a writer — turning every *read* into an exclusive section. Under
-        // `encode_batch` that was the difference between the cache paying for
-        // itself and not: measured on a 24-core machine, disabling the cache
-        // entirely cost 91% more instructions yet ran at the same wall-clock,
-        // because contention was eating everything it saved.
-        //
-        // The cost is that recency now only advances on insert, so eviction is
-        // closer to insertion order than to true LRU. For a chunk cache that is
-        // a fair trade: the hot set is small and stable, so the entries an LRU
-        // would keep are the ones that keep being re-inserted anyway.
-        let Ok(shard) = self.shard(hash).read() else {
+        if key.len() > MAX_KEY {
+            return false;
+        }
+        let (shard, index) = self.locate(hash);
+        let Ok(slab) = shard.read() else {
             return false;
         };
-        match shard.peek(key) {
-            Some(ids) => {
-                out.extend_from_slice(ids);
-                true
-            }
-            None => false,
+        let slot = &slab[index];
+        if slot.klen as usize != key.len() || &slot.key[..key.len()] != key {
+            return false;
         }
+        out.extend_from_slice(&slot.ids[..slot.nids as usize]);
+        true
     }
 
     /// Cache `ids` for `key`, whose shard hash the caller already has.
+    ///
+    /// A chunk longer than a slot is declined rather than stored elsewhere,
+    /// which costs only a recomputation. The id count needs no such check: see
+    /// [`MAX_IDS`].
     pub(crate) fn put(&self, hash: u64, key: &[u8], ids: &[u32]) {
-        if let Ok(mut shard) = self.shard(hash).write() {
-            shard.put(key.to_vec(), ids.to_vec());
+        if key.len() > MAX_KEY || key.is_empty() {
+            return;
+        }
+        debug_assert!(ids.len() <= MAX_IDS, "ids outnumber the chunk's bytes");
+        let (shard, index) = self.locate(hash);
+        if let Ok(mut slab) = shard.write() {
+            let slot = &mut slab[index];
+            slot.key[..key.len()].copy_from_slice(key);
+            slot.ids[..ids.len()].copy_from_slice(ids);
+            slot.klen = key.len() as u8;
+            slot.nids = ids.len() as u8;
         }
     }
 
     /// Drop every entry.
     pub(crate) fn clear(&self) {
         for shard in &self.shards {
-            if let Ok(mut shard) = shard.write() {
-                shard.clear();
+            if let Ok(mut slab) = shard.write() {
+                slab.fill(VACANT);
             }
         }
     }
 
-    /// Total entries currently held, across all shards.
+    /// Entries currently held, across all shards.
     pub(crate) fn len(&self) -> usize {
         self.shards
             .iter()
-            .map(|shard| shard.read().map(|s| s.len()).unwrap_or(0))
+            .map(|shard| {
+                shard
+                    .read()
+                    .map(|slab| slab.iter().filter(|s| s.klen != EMPTY).count())
+                    .unwrap_or(0)
+            })
             .sum()
     }
 }
