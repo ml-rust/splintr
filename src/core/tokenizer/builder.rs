@@ -12,8 +12,13 @@ use regexr::RegexBuilder;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
-/// Default cache size for encoded chunks
-const DEFAULT_CACHE_SIZE: usize = 4096;
+/// Default number of encoded chunks held by the cache.
+///
+/// Work falls monotonically as this grows, so the choice is bounded by memory.
+/// The cache caps at this many entries and fills lazily: a tokenizer that never
+/// encodes costs nothing, and one that does settles at a fixed size however much
+/// text it sees.
+const DEFAULT_CACHE_SIZE: usize = 65536;
 
 impl Tokenizer {
     /// Create a new tokenizer from encoder map, special tokens, and regex pattern.
