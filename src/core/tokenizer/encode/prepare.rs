@@ -177,6 +177,38 @@ impl Tokenizer {
             .filter_map(|(start, end)| text.get(start..end).map(str::to_owned))
             .collect()
     }
+
+    /// Run `f` on every pre-token of `text`, exactly as `encode` produces them.
+    ///
+    /// The same split as [`pre_tokenize`](Self::pre_tokenize) without either of
+    /// the conveniences that method adds for its caller: no `String` per piece,
+    /// and no undoing of the ByteLevel mapping. Pieces arrive in the space the
+    /// merge loop receives them, which is the ByteLevel alphabet wherever the
+    /// encode path uses it.
+    ///
+    /// That makes this the form worth *timing*. `pre_tokenize` measures the
+    /// split plus an allocation and a reverse mapping per piece — real costs,
+    /// but ones `encode` never pays — so timing it and subtracting would charge
+    /// pre-tokenization for work that belongs to nothing at all. Everything
+    /// else about the two is identical, including `add_prefix_space` and the
+    /// normalizer being the caller's business rather than this method's.
+    pub fn for_each_pre_token(&self, text: &str, mut f: impl FnMut(&str)) {
+        if let Some(pt) = &self.pre_tokenizer {
+            if self.use_byte_level && self.raw_encoder.is_some() && pt.emits_raw() {
+                pt.for_each_raw_piece(text, |piece| f(piece));
+            } else {
+                pt.for_each_piece(text, |piece| f(piece));
+            }
+            return;
+        }
+
+        let text = self.prefixed(text);
+        for (start, end) in self.split_chunks(&text) {
+            if let Some(piece) = text.get(start..end) {
+                f(piece);
+            }
+        }
+    }
 }
 /// Undo the ByteLevel mapping a pre-tokenizer engine applied to a piece.
 ///

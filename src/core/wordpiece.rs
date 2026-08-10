@@ -7,6 +7,8 @@
 //!
 //! Handles `[CLS]`, `[SEP]`, `[PAD]`, `[UNK]` special tokens.
 
+use std::borrow::Cow;
+
 use super::policy::{PolicyError, SpecialDecode, SpecialMode};
 use super::streaming::{
     ByteFallbackRule, DecodePost, DecodeState, RenderRules, StreamingDecoder, Surfaces,
@@ -43,8 +45,22 @@ pub enum WordPieceError {
 /// let ids = tok.encode("hello world");
 /// ```
 pub struct WordPieceTokenizer {
-    /// Token string → ID
-    token_to_id: HashMap<String, u32>,
+    /// Tokens matchable at the start of a word.
+    initial: WordPieceTrie,
+    /// Tokens matchable after the first subword, with the continuation prefix
+    /// already stripped — so the search never builds `##` + candidate.
+    ///
+    /// `None` when the vocabulary carries no prefix (GGUF-stripped vocabs match
+    /// continuations against the same surfaces as word starts), in which case
+    /// [`initial`](Self::initial) serves both positions.
+    continuation: Option<WordPieceTrie>,
+    /// Words already segmented, so a repeat costs a probe instead of a
+    /// longest-match search.
+    ///
+    /// The same cache the BPE backend keeps, for the same reason: prose reuses
+    /// words heavily, and this path had none — every occurrence of a common
+    /// word re-ran the whole search.
+    cache: super::tokenizer::cache::ChunkCache,
     /// ID → token string. Behind an `Arc` so decoding — whole-sequence and
     /// streaming alike — can share the surface table rather than copy a
     /// 30k-entry vector per decoder.
@@ -154,8 +170,32 @@ impl WordPieceTokenizer {
             }
         }
 
+        // One trie per position. Splitting the vocabulary here is what lets the
+        // search drop the prefix concatenation: a continuation is matched
+        // against surfaces that never carried `##` in the first place.
+        let initial = WordPieceTrie::build(
+            vocab
+                .iter()
+                .enumerate()
+                .filter(|(_, token)| {
+                    continuation_prefix.is_empty() || !token.starts_with(&continuation_prefix)
+                })
+                .map(|(id, token)| (token.as_str(), id as u32)),
+        );
+        let continuation = (!continuation_prefix.is_empty()).then(|| {
+            WordPieceTrie::build(vocab.iter().enumerate().filter_map(|(id, token)| {
+                token
+                    .strip_prefix(&continuation_prefix)
+                    .map(|rest| (rest, id as u32))
+            }))
+        });
+
         Self {
-            token_to_id,
+            initial,
+            continuation,
+            // Same capacity the BPE backend uses; a word cache is worth the
+            // same room as a chunk cache because it holds the same thing.
+            cache: super::tokenizer::cache::ChunkCache::new(65_536),
             id_to_token: Arc::new(vocab),
             unk_token_id,
             max_word_len,
@@ -240,15 +280,33 @@ impl WordPieceTokenizer {
 
     /// Pre-tokenize: clean, isolate CJK, strip accents and lowercase (each only
     /// if its own flag says so), then split on whitespace and punctuation.
-    fn basic_tokenize(&self, text: &str) -> Vec<String> {
+    /// BERT's `BasicTokenizer` normalization, as one borrowing chain.
+    ///
+    /// Every stage is conditional twice over: on its own flag, and on the text
+    /// actually containing anything for it to do. `Cow` lets each hand the next
+    /// a borrow when it changed nothing, instead of copying the whole input up
+    /// to four times to produce something nearly identical to its input.
+    ///
+    /// # Why this runs over the whole text, not per word
+    ///
+    /// It looks like accent stripping and lowercasing could move behind the
+    /// word split — they map letters to letters and marks to nothing, so they
+    /// appear unable to create a boundary. They can. Canonical decomposition
+    /// turns `≠` (U+2260) into `=` followed by a combining overlay, and
+    /// stripping the mark leaves a bare `=`, which BERT *does* split on. Fold
+    /// after splitting and `407≠408` comes out `407`, `##=`, `##40`, `##8`
+    /// where the reference gives `407`, `=`, `40`, `##8`.
+    ///
+    /// Per-word folding is worth wanting — it is what would let the ASCII fast
+    /// paths fire on a document that is ASCII apart from a few characters — but
+    /// it is not equivalent, and `eng_Latn` catches it.
+    fn basic_normalize<'a>(&self, text: &'a str) -> Cow<'a, str> {
         // clean_text: drop NUL/replacement/control/format chars and turn every
         // whitespace char into a plain space, matching BERT's `_clean_text`.
-        let cleaned;
         let text = if self.clean_text {
-            cleaned = clean_text(text);
-            cleaned.as_str()
+            clean_text(text)
         } else {
-            text
+            Cow::Borrowed(text)
         };
 
         // handle_chinese_chars: surround each CJK ideograph with spaces so it
@@ -264,32 +322,60 @@ impl WordPieceTokenizer {
                     s.push(c);
                 }
             }
-            s
+            Cow::Owned(s)
         } else {
-            text.to_string()
+            text
         };
 
         // Accents and casing are independent settings, applied in HuggingFace's
         // own order (`BertNormalizer::normalize` strips first, then lowercases).
-        let text = if self.strip_accents {
-            strip_accents(&text)
-        } else {
-            text
+        let text = match self.strip_accents {
+            true => strip_accents(text),
+            false => text,
         };
-        let text = if self.do_lower_case {
+        if !self.do_lower_case {
+            return text;
+        }
+        // ASCII lowercasing is a byte map with no character ever expanding, so
+        // it needs neither `char::to_lowercase`'s iterator-of-chars nor the
+        // per-character category checks the general path makes.
+        if text.is_ascii() {
+            return match text.bytes().any(|b| b.is_ascii_uppercase()) {
+                true => Cow::Owned(text.to_ascii_lowercase()),
+                false => text,
+            };
+        }
+        match super::normalizer::needs_lowercasing(&text) {
             // Per-character, as `BertNormalizer` does — not `str::to_lowercase`,
             // whose Greek final-sigma rule the reference does not apply.
-            super::normalizer::lowercase(&text)
-        } else {
-            text
-        };
-
-        // Split on whitespace, then split each token on punctuation boundaries
-        let mut tokens = Vec::new();
-        for word in text.split_whitespace() {
-            split_on_punctuation(word, &mut tokens);
+            true => Cow::Owned(super::normalizer::lowercase(&text)),
+            false => text,
         }
-        tokens
+    }
+
+    /// Run `f` on every word the basic tokenizer produces: whitespace-split,
+    /// then cut at punctuation boundaries.
+    ///
+    /// Borrowed slices of `text` rather than a `Vec<String>`. A word is looked
+    /// at once and thrown away, so owning it was one allocation per word of
+    /// every document for nothing.
+    fn for_each_basic_token(text: &str, mut f: impl FnMut(&str)) {
+        for word in text.split_whitespace() {
+            let mut start = 0;
+            for (at, c) in word.char_indices() {
+                if !is_punctuation(c) {
+                    continue;
+                }
+                if at > start {
+                    f(&word[start..at]);
+                }
+                f(&word[at..at + c.len_utf8()]);
+                start = at + c.len_utf8();
+            }
+            if start < word.len() {
+                f(&word[start..]);
+            }
+        }
     }
 
     /// WordPiece: greedily match longest subword.
@@ -297,47 +383,51 @@ impl WordPieceTokenizer {
     /// If the vocabulary uses `##` prefix (standard HuggingFace format),
     /// continuations are looked up with `##` prefix. Otherwise (GGUF-stripped
     /// vocabs), continuations are looked up directly.
-    fn wordpiece_tokenize(&self, word: &str) -> Vec<u32> {
-        let chars: Vec<char> = word.chars().collect();
-        if chars.len() > self.max_word_len {
-            return vec![self.unk_token_id];
+    fn wordpiece_tokenize_into(&self, word: &str, out: &mut Vec<u32>) {
+        let key = word.as_bytes();
+        let hash = super::tokenizer::cache::ChunkCache::shard_hash(key);
+        if self.cache.extend_into(hash, key, out) {
+            return;
+        }
+        let mark = out.len();
+        self.segment_into(word, out);
+        self.cache.put(hash, key, &out[mark..]);
+    }
+
+    /// [`wordpiece_tokenize_into`](Self::wordpiece_tokenize_into) without the
+    /// cache around it — the greedy longest-match search itself.
+    fn segment_into(&self, word: &str, out: &mut Vec<u32>) {
+        if word.chars().count() > self.max_word_len {
+            out.push(self.unk_token_id);
+            return;
         }
 
-        let mut ids = Vec::new();
+        // Where this word's ids begin, so an un-segmentable word can withdraw
+        // the subwords it already emitted — HuggingFace maps such a word to a
+        // single `[UNK]` for the whole word, not one per character.
+        let mark = out.len();
+        let bytes = word.as_bytes();
         let mut start = 0;
 
-        while start < chars.len() {
-            let mut end = chars.len();
-            let mut matched = None;
-
-            while start < end {
-                let raw: String = chars[start..end].iter().collect();
-                let lookup = if start == 0 || self.continuation_prefix.is_empty() {
-                    raw
-                } else {
-                    format!("{}{}", self.continuation_prefix, raw)
-                };
-
-                if let Some(&id) = self.token_to_id.get(&lookup) {
-                    matched = Some(id);
-                    break;
+        while start < bytes.len() {
+            // Position, not length, selects the vocabulary: only the first
+            // subword is matched against word-initial surfaces.
+            let trie = match (start, &self.continuation) {
+                (0, _) | (_, None) => &self.initial,
+                (_, Some(continuation)) => continuation,
+            };
+            match trie.longest_prefix(&bytes[start..]) {
+                Some((len, id)) => {
+                    out.push(id);
+                    start += len;
                 }
-
-                end -= 1;
-            }
-
-            match matched {
-                Some(id) => {
-                    ids.push(id);
-                    start = end;
+                None => {
+                    out.truncate(mark);
+                    out.push(self.unk_token_id);
+                    return;
                 }
-                // HuggingFace WordPiece maps an un-segmentable word to a single
-                // `[UNK]` for the whole word — not one `[UNK]` per character.
-                None => return vec![self.unk_token_id],
             }
         }
-
-        ids
     }
 }
 
@@ -347,11 +437,11 @@ impl WordPieceTokenizer {
     /// Public on every backend, so a caller holding a concrete tokenizer has the
     /// same escape hatch regardless of which one it is.
     pub fn encode_ordinary(&self, text: &str) -> Vec<u32> {
-        let words = self.basic_tokenize(text);
+        let prepared = self.basic_normalize(text);
         let mut ids = Vec::new();
-        for word in &words {
-            ids.extend(self.wordpiece_tokenize(word));
-        }
+        Self::for_each_basic_token(&prepared, |word| {
+            self.wordpiece_tokenize_into(word, &mut ids)
+        });
         ids
     }
 
@@ -622,30 +712,32 @@ fn is_special_token(token: &str) -> bool {
 /// decompose (NFD) and drop only **Nonspacing_Mark (Mn)** characters. Spacing
 /// combining marks (Mc) — e.g. Devanagari/Thai vowel signs — are kept, unlike a
 /// blanket "all combining marks" filter which would corrupt those scripts.
-fn strip_accents(text: &str) -> String {
+fn strip_accents(text: Cow<'_, str>) -> Cow<'_, str> {
     use unicode_general_category::{get_general_category, GeneralCategory};
-    use unicode_normalization::UnicodeNormalization;
-    text.nfd()
-        .filter(|c| get_general_category(*c) != GeneralCategory::NonspacingMark)
-        .collect()
-}
+    use unicode_normalization::{is_nfd_quick, IsNormalized, UnicodeNormalization};
 
-/// Split a word on punctuation boundaries, pushing results into `out`.
-fn split_on_punctuation(word: &str, out: &mut Vec<String>) {
-    let mut current = String::new();
-    for c in word.chars() {
-        if is_punctuation(c) {
-            if !current.is_empty() {
-                out.push(std::mem::take(&mut current));
-            }
-            out.push(c.to_string());
-        } else {
-            current.push(c);
-        }
+    // ASCII is decomposed by definition and has no combining marks, so it
+    // cannot change. Worth its own test because the general check below is not
+    // cheap — `is_nfd_quick` consults the combining class of every character,
+    // and the mark scan walks the text a second time.
+    if text.is_ascii() {
+        return text;
     }
-    if !current.is_empty() {
-        out.push(current);
+
+    // Already decomposed and carrying no marks means decomposing and filtering
+    // would hand back what it was given.
+    let unchanged = is_nfd_quick(text.chars()) == IsNormalized::Yes
+        && !text
+            .chars()
+            .any(|c| get_general_category(c) == GeneralCategory::NonspacingMark);
+    if unchanged {
+        return text;
     }
+    Cow::Owned(
+        text.nfd()
+            .filter(|c| get_general_category(*c) != GeneralCategory::NonspacingMark)
+            .collect(),
+    )
 }
 
 /// Check if a character is a CJK ideograph, matching BERT's `_is_chinese_char`
@@ -658,8 +750,31 @@ fn split_on_punctuation(word: &str, out: &mut Vec<String>) {
 /// category. Measured against `tokenizers` 0.22.1 on `bert-base-uncased`,
 /// `"a\u{05ff}b"` encodes to `[UNK]` — the character survives cleaning and takes
 /// its whole word out of the vocabulary. Dropping it yielded `ab` instead.
-fn clean_text(text: &str) -> String {
+fn clean_text(text: &str) -> Cow<'_, str> {
     use unicode_general_category::{get_general_category, GeneralCategory};
+
+    /// Whether cleaning would alter `c` — dropping it, or mapping it to a space.
+    fn touched(c: char) -> bool {
+        if c == '\0' || c == '\u{fffd}' {
+            return true;
+        }
+        if matches!(c, '\t' | '\n' | '\r') {
+            return true; // mapped to a space
+        }
+        matches!(
+            get_general_category(c),
+            GeneralCategory::Control
+                | GeneralCategory::Format
+                | GeneralCategory::Surrogate
+                | GeneralCategory::PrivateUse
+                | GeneralCategory::SpaceSeparator
+        )
+    }
+
+    if !text.chars().any(touched) {
+        return Cow::Borrowed(text);
+    }
+
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         if c == '\0' || c == '\u{fffd}' {
@@ -682,7 +797,108 @@ fn clean_text(text: &str) -> String {
             out.push(c);
         }
     }
-    out
+    Cow::Owned(out)
+}
+
+/// A byte trie over one vocabulary, laid out for longest-prefix search.
+///
+/// The search this replaces asked a hash map "is `word[start..end]` a token?"
+/// once per candidate end, re-hashing a longer and longer prefix each time —
+/// and, for a continuation, concatenating `##` onto it first. A trie walks the
+/// word forward once from `start`, remembering the deepest node that spelled a
+/// token, and stops as soon as no edge continues. No hashing, no concatenation.
+///
+/// Children are stored compressed-sparse-row: node `i` owns
+/// `labels[starts[i]..starts[i + 1]]` and the matching entries of `targets`,
+/// sorted by label. Contiguous, so a walk touches one cache line per level
+/// rather than chasing a map.
+struct WordPieceTrie {
+    starts: Vec<u32>,
+    labels: Vec<u8>,
+    targets: Vec<u32>,
+    /// Token id at each node, or [`NO_TOKEN`] where the node spells no token.
+    values: Vec<u32>,
+}
+
+/// Marks a node that is not itself a token.
+const NO_TOKEN: u32 = u32::MAX;
+
+impl WordPieceTrie {
+    /// Build from `(surface, id)` pairs, where a surface is the bytes to match
+    /// with any continuation prefix already removed.
+    fn build<'a>(entries: impl Iterator<Item = (&'a str, u32)>) -> Self {
+        // Grown as an adjacency list, then flattened — building CSR directly
+        // would need each node's child count before its children are known.
+        let mut children: Vec<Vec<(u8, u32)>> = vec![Vec::new()];
+        let mut values = vec![NO_TOKEN];
+
+        for (surface, id) in entries {
+            if surface.is_empty() {
+                continue;
+            }
+            let mut node = 0usize;
+            for &byte in surface.as_bytes() {
+                node = match children[node].iter().find(|(label, _)| *label == byte) {
+                    Some(&(_, next)) => next as usize,
+                    None => {
+                        children.push(Vec::new());
+                        values.push(NO_TOKEN);
+                        let next = children.len() - 1;
+                        children[node].push((byte, next as u32));
+                        next
+                    }
+                };
+            }
+            // First writer wins, matching a map built by inserting in vocabulary
+            // order: a surface appearing twice keeps its lower id.
+            if values[node] == NO_TOKEN {
+                values[node] = id;
+            }
+        }
+
+        let mut starts = Vec::with_capacity(children.len() + 1);
+        let mut labels = Vec::new();
+        let mut targets = Vec::new();
+        for edges in &mut children {
+            starts.push(labels.len() as u32);
+            edges.sort_unstable_by_key(|(label, _)| *label);
+            for &(label, target) in edges.iter() {
+                labels.push(label);
+                targets.push(target);
+            }
+        }
+        starts.push(labels.len() as u32);
+
+        Self {
+            starts,
+            labels,
+            targets,
+            values,
+        }
+    }
+
+    /// Longest prefix of `bytes` that spells a token: its byte length and id.
+    ///
+    /// Byte-wise rather than character-wise, which needs no boundary table: a
+    /// vocabulary surface is valid UTF-8, so a node carrying a token always
+    /// sits on a character boundary and a partial character can never come
+    /// back.
+    #[inline]
+    fn longest_prefix(&self, bytes: &[u8]) -> Option<(usize, u32)> {
+        let mut node = 0usize;
+        let mut best = None;
+        for (i, &byte) in bytes.iter().enumerate() {
+            let (from, to) = (self.starts[node] as usize, self.starts[node + 1] as usize);
+            let Ok(at) = self.labels[from..to].binary_search(&byte) else {
+                break;
+            };
+            node = self.targets[from + at] as usize;
+            if self.values[node] != NO_TOKEN {
+                best = Some((i + 1, self.values[node]));
+            }
+        }
+        best
+    }
 }
 
 fn is_chinese_char(c: char) -> bool {
@@ -1402,5 +1618,37 @@ mod tests {
         let mut out = streamed.add_tokens_lossy(&ids).unwrap_or_default();
         out.push_str(&streamed.flush());
         assert_eq!(out, "hello world");
+    }
+}
+
+#[cfg(test)]
+mod fold_order_tests {
+    use super::*;
+
+    /// Accent stripping can CREATE a punctuation character, so it has to run
+    /// before the word split rather than per word.
+    ///
+    /// `≠` (U+2260) canonically decomposes to `=` plus a combining overlay;
+    /// dropping the mark leaves `=`, which BERT splits on. Folding per word
+    /// instead would leave the `=` buried inside `a≠b` and emit it as a `##`
+    /// continuation. Reference (`tokenizers` 0.22.1, `lowercase: true`):
+    /// `"a≠b"` -> `a`, `=`, `b`.
+    #[test]
+    fn accent_stripping_can_create_a_split_point() {
+        let vocab = vec![
+            "[UNK]".to_string(), // 0
+            "a".to_string(),     // 1
+            "=".to_string(),     // 2
+            "b".to_string(),     // 3
+            "##=".to_string(),   // 4
+            "##b".to_string(),   // 5
+        ];
+        let tok = WordPieceTokenizer::new(vocab, 0, 200, true);
+        assert_eq!(
+            tok.encode("a\u{2260}b"),
+            vec![1, 2, 3],
+            "the `=` that accent stripping exposed must split the word, not \
+             continue it"
+        );
     }
 }

@@ -1099,3 +1099,35 @@ fn trait_decode_lossy_and_streaming_decoder_match_the_inherent_pair() {
     out.push_str(&streamed.flush());
     assert_eq!(out, "Hello world");
 }
+
+/// The timed pre-token rung must split exactly where `encode` splits.
+///
+/// [`Tokenizer::for_each_pre_token`] exists so a caller can *measure* the
+/// split, and a measurement of a different split is worse than none: it would
+/// attribute time to a stage that never ran that way. Its pieces are in the
+/// merge loop's space, so comparing against `pre_tokenize` — which reverses the
+/// ByteLevel mapping for its caller — means reversing it here too.
+#[test]
+fn the_pre_token_rung_yields_the_same_split_as_pre_tokenize() {
+    let mut encoder = FxHashMap::default();
+    for b in 0u32..256 {
+        encoder.insert(vec![b as u8], b);
+    }
+    let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
+        .expect("the test pattern compiles");
+
+    for text in [
+        "hello world",
+        "  leading and  doubled ",
+        "你好，世界 mixed",
+        "",
+    ] {
+        let mut streamed = Vec::new();
+        tokenizer.for_each_pre_token(text, |piece| streamed.push(piece.to_owned()));
+        assert_eq!(
+            streamed,
+            tokenizer.pre_tokenize(text),
+            "the rung and `pre_tokenize` disagree on {text:?}"
+        );
+    }
+}
