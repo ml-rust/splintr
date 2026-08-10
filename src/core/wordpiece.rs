@@ -15,6 +15,7 @@ use super::streaming::{
     WordSeparator,
 };
 use super::tokenize::{Tokenize, TokenizeError};
+use super::trie::ByteTrie;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -46,14 +47,14 @@ pub enum WordPieceError {
 /// ```
 pub struct WordPieceTokenizer {
     /// Tokens matchable at the start of a word.
-    initial: WordPieceTrie,
+    initial: ByteTrie,
     /// Tokens matchable after the first subword, with the continuation prefix
     /// already stripped — so the search never builds `##` + candidate.
     ///
     /// `None` when the vocabulary carries no prefix (GGUF-stripped vocabs match
     /// continuations against the same surfaces as word starts), in which case
     /// [`initial`](Self::initial) serves both positions.
-    continuation: Option<WordPieceTrie>,
+    continuation: Option<ByteTrie>,
     /// Words already segmented, so a repeat costs a probe instead of a
     /// longest-match search.
     ///
@@ -181,7 +182,7 @@ impl WordPieceTokenizer {
         // One trie per position. Splitting the vocabulary here is what lets the
         // search drop the prefix concatenation: a continuation is matched
         // against surfaces that never carried `##` in the first place.
-        let initial = WordPieceTrie::build(
+        let initial = ByteTrie::build(
             vocab
                 .iter()
                 .enumerate()
@@ -191,7 +192,7 @@ impl WordPieceTokenizer {
                 .map(|(id, token)| (token.as_str(), id as u32)),
         );
         let continuation = (!continuation_prefix.is_empty()).then(|| {
-            WordPieceTrie::build(vocab.iter().enumerate().filter_map(|(id, token)| {
+            ByteTrie::build(vocab.iter().enumerate().filter_map(|(id, token)| {
                 token
                     .strip_prefix(&continuation_prefix)
                     .map(|rest| (rest, id as u32))
@@ -1011,125 +1012,6 @@ fn clean_text(text: &str) -> Cow<'_, str> {
         }
     }
     Cow::Owned(out)
-}
-
-/// A byte trie over one vocabulary, laid out for longest-prefix search.
-///
-/// The search this replaces asked a hash map "is `word[start..end]` a token?"
-/// once per candidate end, re-hashing a longer and longer prefix each time —
-/// and, for a continuation, concatenating `##` onto it first. A trie walks the
-/// word forward once from `start`, remembering the deepest node that spelled a
-/// token, and stops as soon as no edge continues. No hashing, no concatenation.
-///
-/// Children are stored compressed-sparse-row: node `i` owns
-/// `labels[starts[i]..starts[i + 1]]` and the matching entries of `targets`,
-/// sorted by label. Contiguous, so a walk touches one cache line per level
-/// rather than chasing a map.
-/// The root's children indexed directly by byte instead, because the root is
-/// the one node whose fan-out is the whole alphabet: a binary search there costs
-/// as much as the entire rest of the walk, and every word pays it.
-struct WordPieceTrie {
-    root: Box<[u32; 256]>,
-    starts: Vec<u32>,
-    labels: Vec<u8>,
-    targets: Vec<u32>,
-    /// Token id at each node, or [`NO_TOKEN`] where the node spells no token.
-    values: Vec<u32>,
-}
-
-/// Marks a node that is not itself a token.
-const NO_TOKEN: u32 = u32::MAX;
-
-/// Marks an absent edge in [`WordPieceTrie::root`].
-const NO_NODE: u32 = u32::MAX;
-
-impl WordPieceTrie {
-    /// Build from `(surface, id)` pairs, where a surface is the bytes to match
-    /// with any continuation prefix already removed.
-    fn build<'a>(entries: impl Iterator<Item = (&'a str, u32)>) -> Self {
-        // Grown as an adjacency list, then flattened — building CSR directly
-        // would need each node's child count before its children are known.
-        let mut children: Vec<Vec<(u8, u32)>> = vec![Vec::new()];
-        let mut values = vec![NO_TOKEN];
-
-        for (surface, id) in entries {
-            if surface.is_empty() {
-                continue;
-            }
-            let mut node = 0usize;
-            for &byte in surface.as_bytes() {
-                node = match children[node].iter().find(|(label, _)| *label == byte) {
-                    Some(&(_, next)) => next as usize,
-                    None => {
-                        children.push(Vec::new());
-                        values.push(NO_TOKEN);
-                        let next = children.len() - 1;
-                        children[node].push((byte, next as u32));
-                        next
-                    }
-                };
-            }
-            // First writer wins, matching a map built by inserting in vocabulary
-            // order: a surface appearing twice keeps its lower id.
-            if values[node] == NO_TOKEN {
-                values[node] = id;
-            }
-        }
-
-        let mut starts = Vec::with_capacity(children.len() + 1);
-        let mut labels = Vec::new();
-        let mut targets = Vec::new();
-        for edges in &mut children {
-            starts.push(labels.len() as u32);
-            edges.sort_unstable_by_key(|(label, _)| *label);
-            for &(label, target) in edges.iter() {
-                labels.push(label);
-                targets.push(target);
-            }
-        }
-        starts.push(labels.len() as u32);
-
-        let mut root = Box::new([NO_NODE; 256]);
-        for &(label, target) in &children[0] {
-            root[label as usize] = target;
-        }
-
-        Self {
-            root,
-            starts,
-            labels,
-            targets,
-            values,
-        }
-    }
-
-    /// Longest prefix of `bytes` that spells a token: its byte length and id.
-    ///
-    /// Byte-wise rather than character-wise, which needs no boundary table: a
-    /// vocabulary surface is valid UTF-8, so a node carrying a token always
-    /// sits on a character boundary and a partial character can never come
-    /// back.
-    #[inline]
-    fn longest_prefix(&self, bytes: &[u8]) -> Option<(usize, u32)> {
-        let (&first, rest) = bytes.split_first()?;
-        let mut node = self.root[first as usize] as usize;
-        if node == NO_NODE as usize {
-            return None;
-        }
-        let mut best = (self.values[node] != NO_TOKEN).then(|| (1, self.values[node]));
-
-        for (i, &byte) in rest.iter().enumerate() {
-            let (from, to) = (self.starts[node] as usize, self.starts[node + 1] as usize);
-            let Ok(at) = self.labels[from..to].binary_search(&byte) else {
-                break;
-            };
-            node = self.targets[from + at] as usize;
-            if self.values[node] != NO_TOKEN {
-                best = Some((i + 2, self.values[node]));
-            }
-        }
-        best
-    }
 }
 
 fn is_chinese_char(c: char) -> bool {

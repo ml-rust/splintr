@@ -5,6 +5,7 @@
 //! XLNet, …), with metaspace pre-tokenization, byte-fallback, an ordered
 //! normalizer pipeline, and added-token matching.
 
+use super::trie::ByteTrie;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -49,6 +50,14 @@ pub struct SentencePieceTokenizer {
     /// fifth of a t5-base encode on its own. The keys are the vocabulary and are
     /// fixed at construction, so no input can grow a collision chain here.
     token_to_id: FxHashMap<String, u32>,
+    /// The same surfaces as a byte trie, for the lattice sweep.
+    ///
+    /// The map answers "is this exact string a token", which is the right shape
+    /// for the `<0xNN>` and added-token lookups that use it. The lattice asks a
+    /// different question — every prefix of the text at this position that is a
+    /// token — and answering that from the map means re-hashing a growing
+    /// prefix once per candidate length.
+    pieces: ByteTrie,
     /// ID -> Token string mapping. Behind an `Arc` so decoding — whole-sequence
     /// and streaming alike — can share the piece table rather than copy a
     /// vocabulary-sized vector per decoder.
@@ -128,6 +137,13 @@ impl SentencePieceTokenizer {
             token_to_id.insert(token.clone(), id as u32);
         }
 
+        let pieces = ByteTrie::build(
+            tokens
+                .iter()
+                .enumerate()
+                .map(|(id, token)| (token.as_str(), id as u32)),
+        );
+
         let unk_id = token_to_id
             .get("<unk>")
             .or_else(|| token_to_id.get("<UNK>"))
@@ -142,6 +158,7 @@ impl SentencePieceTokenizer {
 
         Ok(Self {
             token_to_id,
+            pieces,
             id_to_token: Arc::new(tokens),
             scores,
             bos_token_id,
@@ -381,17 +398,28 @@ impl SentencePieceTokenizer {
         let mut back: Vec<(usize, Option<u32>)> = vec![(0, None); n + 1];
         best[0] = 0.0;
 
-        let mut buf = String::with_capacity(self.max_piece_chars * 4);
+        let mut utf8 = [0u8; 4];
         for start in 0..n {
             if best[start] == f64::NEG_INFINITY {
                 continue;
             }
-            // Known-token edges starting at `start`.
-            buf.clear();
+            // Known-token edges starting at `start`, found by one walk down the
+            // trie rather than a hash of `chars[start..end]` per `end` — the
+            // same candidates in the same ascending order, so the tie-breaking
+            // described above is untouched.
             let max_end = (start + self.max_piece_chars).min(n);
-            for end in (start + 1)..=max_end {
-                buf.push(chars[end - 1]);
-                if let Some(&id) = self.token_to_id.get(&buf) {
+            let mut node = crate::core::trie::ROOT;
+            'edges: for end in (start + 1)..=max_end {
+                for &byte in chars[end - 1].encode_utf8(&mut utf8).as_bytes() {
+                    match self.pieces.step(node, byte) {
+                        Some(next) => node = next,
+                        // No vocabulary surface continues this far, so none
+                        // reaches any longer `end` either.
+                        None => break 'edges,
+                    }
+                }
+                let id = self.pieces.value(node);
+                if id != crate::core::trie::NO_TOKEN {
                     let cand = best[start] + self.scores.get(id as usize).copied().unwrap_or(0.0);
                     if cand > best[end] {
                         best[end] = cand;

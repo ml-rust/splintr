@@ -53,6 +53,7 @@ pub mod spm;
 pub(crate) mod streaming;
 pub mod tokenize;
 mod tokenizer;
+pub(crate) mod trie;
 mod vocab;
 pub mod whisper;
 pub mod wordpiece;
