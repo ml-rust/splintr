@@ -128,7 +128,9 @@ impl AsRef<[u8]> for TokenBytes {
 pub type Encoder = FxHashMap<TokenBytes, u32>;
 
 /// Vocabulary as id → token bytes.
-pub type Decoder = FxHashMap<u32, TokenBytes>;
+///
+/// Not a map: see [`DecodeTable`](crate::core::DecodeTable).
+pub type Decoder = crate::core::decode_table::DecodeTable;
 
 /// Convert an owned vocabulary map into the internal representation.
 ///

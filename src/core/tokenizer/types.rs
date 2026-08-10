@@ -382,7 +382,7 @@ impl Tokenizer {
     /// byte-level vocabs), or the special-token text. Used to drive a
     /// configuration-declared decoder pipeline.
     pub fn token_surface(&self, id: u32) -> Option<String> {
-        if let Some(bytes) = self.decoder.get(&id) {
+        if let Some(bytes) = self.decoder.get(id) {
             Some(String::from_utf8_lossy(bytes).into_owned())
         } else {
             self.special_tokens_decoder.get(&id).cloned()
@@ -395,7 +395,7 @@ impl Tokenizer {
     /// This returns max_token_id + 1, representing the full vocabulary range.
     pub fn vocab_size(&self) -> usize {
         // Find the maximum token ID across both decoder and special tokens
-        let max_decoder_id = self.decoder.keys().max().copied().unwrap_or(0);
+        let max_decoder_id = self.decoder.max_id().unwrap_or(0);
         let max_special_id = self.special_tokens.values().max().copied().unwrap_or(0);
         let max_id = max_decoder_id.max(max_special_id);
 

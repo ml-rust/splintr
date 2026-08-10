@@ -592,10 +592,7 @@ impl Tokenizer {
         // This vocabulary was read at runtime, so its tokens are owned; the
         // borrowed representation is only for the embedded ones.
         let encoder = encoder_from_owned(encoder);
-        let mut decoder: crate::core::token_bytes::Decoder = decoder
-            .into_iter()
-            .map(|(id, bytes)| (id, crate::core::token_bytes::TokenBytes::from(bytes)))
-            .collect();
+        let mut decoder: crate::core::token_bytes::Decoder = decoder.into_iter().collect();
 
         // Compile regex
         let regex = RegexBuilder::new(pattern).jit(true).build()?;
@@ -609,10 +606,7 @@ impl Tokenizer {
 
         // Add special tokens to decoder
         for (token_str, id) in &special_tokens {
-            decoder.insert(
-                *id,
-                crate::core::token_bytes::TokenBytes::from(token_str.as_bytes().to_vec()),
-            );
+            decoder.insert(*id, token_str.as_bytes());
         }
 
         // Build the tokenizer manually with explicit decoder

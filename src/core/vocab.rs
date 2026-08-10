@@ -429,12 +429,11 @@ pub fn place_special_pieces(
 /// The decoder is used during the decode phase to convert token IDs back to
 /// their original byte sequences.
 ///
-/// Cloning a [`TokenBytes`] copies a pointer when the vocabulary is embedded
-/// and the bytes only when it was read at runtime, so for a bundled vocabulary
-/// this inverts the map without allocating per token — around a third of
-/// `cl100k_base`'s load and over a third of `o200k_base`'s.
+/// The bytes are copied once into the table's own buffer, which is two
+/// allocations for a whole vocabulary where inverting into a map cost one per
+/// token.
 pub fn build_decoder(encoder: &Encoder) -> Decoder {
-    encoder.iter().map(|(k, v)| (*v, k.clone())).collect()
+    Decoder::from_encoder(encoder)
 }
 
 #[cfg(test)]
@@ -595,13 +594,7 @@ mod tests {
         encoder.insert(TokenBytes::from(b"World".to_vec()), 1);
 
         let decoder = build_decoder(&encoder);
-        assert_eq!(
-            decoder.get(&0).map(TokenBytes::as_slice),
-            Some(&b"Hello"[..])
-        );
-        assert_eq!(
-            decoder.get(&1).map(TokenBytes::as_slice),
-            Some(&b"World"[..])
-        );
+        assert_eq!(decoder.get(0), Some(&b"Hello"[..]));
+        assert_eq!(decoder.get(1), Some(&b"World"[..]));
     }
 }

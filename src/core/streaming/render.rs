@@ -516,7 +516,7 @@ impl RenderRules {
 
         match &self.surfaces {
             Surfaces::ById(map) => {
-                if let Some(bytes) = map.get(&id) {
+                if let Some(bytes) = map.get(id) {
                     // The declared `ByteFallback` step parses the surface, so —
                     // exactly as in the `ByIndex` arm — it resolves here, with
                     // the surface in hand and ahead of it being rendered.
@@ -528,10 +528,10 @@ impl RenderRules {
                             Some(decoded) => Cow::Owned(decoded),
                             // Fallback: a surface the ByteLevel alphabet cannot
                             // explain is passed through as raw bytes.
-                            None => Cow::Borrowed(bytes.as_slice()),
+                            None => Cow::Borrowed(bytes),
                         }
                     } else {
-                        Cow::Borrowed(bytes.as_slice())
+                        Cow::Borrowed(bytes)
                     };
                     return Rendered::Bytes {
                         lead: Lead::None,
@@ -626,11 +626,8 @@ mod tests {
     /// The BPE shape [`RenderRules::plain_by_id`] names: id-keyed surfaces and
     /// nothing else declared.
     fn plain(byte_fallback: ByteFallbackRule, use_byte_level: bool) -> RenderRules {
-        let mut surfaces = FxHashMap::default();
-        surfaces.insert(
-            1u32,
-            crate::core::token_bytes::TokenBytes::from(b"Hi".to_vec()),
-        );
+        let mut surfaces = crate::core::DecodeTable::default();
+        surfaces.insert(1u32, b"Hi");
         RenderRules::new(
             Surfaces::ById(Arc::new(surfaces)),
             Arc::new(FxHashMap::default()),
@@ -648,11 +645,7 @@ mod tests {
     fn plain_by_id_accepts_the_plain_bpe_shape() {
         let rules = plain(ByteFallbackRule::None, false);
         let map = rules.plain_by_id().expect("the plain BPE shape qualifies");
-        assert_eq!(
-            map.get(&1)
-                .map(crate::core::token_bytes::TokenBytes::as_slice),
-            Some(b"Hi".as_slice())
-        );
+        assert_eq!(map.get(1), Some(b"Hi".as_slice()));
     }
 
     #[test]
@@ -722,7 +715,7 @@ mod tests {
         skip.insert(5u32);
         skip.insert(9000u32);
         let rules = RenderRules::new(
-            Surfaces::ById(Arc::new(FxHashMap::default())),
+            Surfaces::ById(Arc::new(crate::core::DecodeTable::default())),
             Arc::new(FxHashMap::default()),
             Arc::new(skip),
             ByteFallbackRule::None,
@@ -765,7 +758,7 @@ mod tests {
         let mut first_skip = FxHashSet::default();
         first_skip.insert(5u32);
         let rules = RenderRules::declared(ByteFallbackRule::None, false).with_vocabulary(
-            Surfaces::ById(Arc::new(FxHashMap::default())),
+            Surfaces::ById(Arc::new(crate::core::DecodeTable::default())),
             Arc::new(FxHashMap::default()),
             Arc::new(first_skip),
         );
@@ -775,7 +768,7 @@ mod tests {
         let mut second_skip = FxHashSet::default();
         second_skip.insert(9000u32);
         let rules = rules.with_vocabulary(
-            Surfaces::ById(Arc::new(FxHashMap::default())),
+            Surfaces::ById(Arc::new(crate::core::DecodeTable::default())),
             Arc::new(FxHashMap::default()),
             Arc::new(second_skip),
         );
@@ -791,7 +784,7 @@ mod tests {
         let mut skip = FxHashSet::default();
         skip.insert(5u32);
         let rules = RenderRules::new(
-            Surfaces::ById(Arc::new(FxHashMap::default())),
+            Surfaces::ById(Arc::new(crate::core::DecodeTable::default())),
             Arc::new(FxHashMap::default()),
             Arc::new(skip),
             ByteFallbackRule::None,

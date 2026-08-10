@@ -361,7 +361,7 @@ impl<S: Borrow<DecodeState>> DecodeCursor<S> {
                     // `ById` arm of `render` hardcodes it — so no separator is
                     // ever emitted and `rendered_a_token` is only written, never
                     // read.
-                    match map.get(&id) {
+                    match map.get(id) {
                         Some(bytes) => {
                             self.bytes.push(bytes);
                             // Even when `bytes` was empty: a token rendered.
@@ -692,16 +692,10 @@ mod tests {
     /// surface that is *empty* (id 3), a skipped id (4), an id that only the
     /// special-token table knows (5), and — by omission — ids in no table at all.
     fn plain_state() -> DecodeState {
-        let mut surfaces = FxHashMap::default();
-        surfaces.insert(
-            1u32,
-            crate::core::token_bytes::TokenBytes::from(b"He".to_vec()),
-        );
-        surfaces.insert(
-            2u32,
-            crate::core::token_bytes::TokenBytes::from(b"llo".to_vec()),
-        );
-        surfaces.insert(3u32, crate::core::token_bytes::TokenBytes::from(Vec::new()));
+        let mut surfaces = crate::core::DecodeTable::default();
+        surfaces.insert(1u32, b"He");
+        surfaces.insert(2u32, b"llo");
+        surfaces.insert(3u32, b"");
 
         let mut specials = FxHashMap::default();
         specials.insert(5u32, "<eos>".to_string());

@@ -212,7 +212,7 @@ impl Tokenizer {
         // Append a resolved token by its vocabulary spelling. `None` when the
         // id has no spelling — see this method's own `None` contract.
         let push_token = |buf: &mut Vec<u8>, seeds: &mut Vec<Seed>, id: u32| -> Option<()> {
-            let spelling = self.decoder.get(&id)?;
+            let spelling = self.decoder.get(id)?;
             seeds.push(Seed {
                 start: buf.len(),
                 len: spelling.len(),
