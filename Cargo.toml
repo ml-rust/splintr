@@ -44,14 +44,20 @@ name = "splintr"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# Every bundled vocabulary is on by default: `from_pretrained` is the crate's
-# headline entry point, and a name that silently stops resolving because a
-# feature defaulted off is worse than the ~20 MB the whole set weighs. Turning
-# them off is an explicit, deliberate act — `default-features = false` plus the
-# families actually needed.
-default = [
-    "rayon",
-    "regexr-jit",
+# No bundled vocabulary by default: the set is ~20 MB of `include_bytes!`, and
+# a consumer loading their own `tokenizer.json`/GGUF should not carry it. Opt in
+# with `vocabs`, or the `vocab-*` families needed; `from_pretrained` still
+# compiles either way and names the missing feature.
+default = ["rayon", "regexr-jit"]
+# A Python user cannot enable a cargo feature, so the wheel carries the whole
+# set. Declared here rather than in `[tool.maturin] features` so it survives
+# `maturin develop --features python,pcre2`, which replaces that list.
+python = ["dep:pyo3", "vocabs"]
+pcre2 = ["dep:pcre2"]
+rayon = ["dep:rayon"]
+regexr-jit = ["regexr/jit", "regexr/simd"]
+# Every bundled vocabulary at once.
+vocabs = [
     "vocab-cl100k",
     "vocab-o200k",
     "vocab-gpt-oss",
@@ -63,10 +69,6 @@ default = [
     "vocab-mistral",
     "vocab-whisper",
 ]
-python = ["dep:pyo3"]
-pcre2 = ["dep:pcre2"]
-rayon = ["dep:rayon"]
-regexr-jit = ["regexr/jit", "regexr/simd"]
 
 # One feature per bundled vocabulary family. Each gates only the `include_bytes!`
 # payload and its loader arm — `PretrainedVocab` and every metadata accessor
@@ -121,6 +123,9 @@ lru = "0.18"
 regexr = { version = "0.3.2", default-features = false }
 # Unicode normalization for WordPiece accent stripping
 unicode-normalization = "0.1"
+# Grapheme clustering for `CharsmapDialect::HuggingFace`. Same crate
+# `spm_precompiled` uses, so the cluster boundaries are the reference's own.
+unicode-segmentation = "1"
 # Unicode general category for punctuation detection
 unicode-general-category = "1.0"
 # JSON parsing for HuggingFace tokenizer.json loader (Whisper)
@@ -130,6 +135,11 @@ serde = "1.0"
 serde_json = { version = "1.0", features = ["raw_value"] }
 
 [dev-dependencies]
+# splintr on itself: Cargo has no dev-only feature, and this is how `vocabs`
+# gets switched on for test and bench builds without a consumer's `cargo build`
+# picking it up. Without it every vocabulary-loading unit test would need a
+# `#[cfg]` gate and `cargo test` would silently skip them.
+splintr = { path = ".", features = ["vocabs"] }
 # Property-based testing: the BPE merge loop is checked against a slow,
 # obviously-correct reference implementation over generated inputs.
 proptest = "1"
@@ -141,6 +151,9 @@ fluxbench = "0.1"
 [[bench]]
 name = "encode"
 harness = false
+# `harness = false` means the file must produce a `main`, so it cannot gate
+# itself out with `#![cfg]` the way the integration tests do.
+required-features = ["vocab-llama3"]
 
 [profile.release]
 opt-level = 3
