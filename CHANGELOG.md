@@ -14,6 +14,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - WordPiece and the `Lowercase` normalizer lowercase per character, as HuggingFace does: word-final `Σ` is `σ`, not `ς`.
 - BERT's `clean_text` keeps unassigned (`Cn`) codepoints, so a word carrying one becomes `[UNK]` as in the reference.
 - A `Precompiled` charsmap from a `tokenizer.json` is read as `spm_precompiled` reads it, via the new `CharsmapDialect`; the sentencepiece reading stays the default and serves the GGUF path.
+- DeepSeek's CJK pre-tokenizer pass reaches its scanner when loaded from a `tokenizer.json`, which spells the character class with the characters themselves rather than `\u{...}` escapes. It had fallen back to the regex engine and scanned every document for CJK: 12-36% fewer instructions per byte on deepseek-v4.
 
 ### Changed
 

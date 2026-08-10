@@ -1318,7 +1318,7 @@ pub(crate) fn for_pattern(pattern: &str) -> Option<SpanScanner> {
         Some(kimi_spans)
     } else if pattern == p::DEEPSEEK_V3_PATTERNS[0] {
         Some(deepseek_v3_pass1_spans)
-    } else if pattern == p::DEEPSEEK_V3_PATTERNS[1] {
+    } else if pattern == p::DEEPSEEK_V3_PATTERNS[1] || pattern == p::DEEPSEEK_V3_PASS2_LITERAL {
         Some(deepseek_v3_pass2_spans)
     } else if pattern == p::DEEPSEEK_V3_PATTERNS[2] {
         Some(deepseek_v3_pass3_spans)
@@ -1361,6 +1361,60 @@ mod tests {
                 deepseek_v3_pass3_spans as Scanner,
             ),
         ]
+    }
+
+    /// The two spellings of the DeepSeek CJK pass must be the same expression,
+    /// and both must reach the scanner.
+    ///
+    /// The lookup compares expression text exactly, so accepting a second
+    /// spelling is only safe if it really is the same class — asserted here by
+    /// running the compiled engine over both and against the scanner, rather
+    /// than by looking at them.
+    #[test]
+    fn both_spellings_of_the_deepseek_cjk_pass_agree() {
+        use crate::core::tokenizer::patterns::DEEPSEEK_V3_PASS2_LITERAL;
+
+        assert!(
+            for_pattern(DEEPSEEK_V3_PASS2_LITERAL).is_some(),
+            "the spelling `tokenizer.json` uses must reach the scanner"
+        );
+
+        let escaped = regexr::RegexBuilder::new(DEEPSEEK_V3_PATTERNS[1])
+            .jit(true)
+            .build()
+            .expect("escaped spelling compiles");
+        let literal = regexr::RegexBuilder::new(DEEPSEEK_V3_PASS2_LITERAL)
+            .jit(true)
+            .build()
+            .expect("literal spelling compiles");
+
+        // Inside the class and just outside it on both sides of every range,
+        // mixed with text the class must not claim.
+        for text in [
+            "abc",
+            "中文字",
+            "ひらがな",
+            "カタカナ",
+            "a中b",
+            "\u{4DFF}\u{4E00}\u{9FA5}\u{9FA6}",
+            "\u{303F}\u{3040}\u{309F}\u{30A0}\u{30FF}\u{3100}",
+            "1 2 3",
+            "",
+        ] {
+            let want: Vec<(usize, usize)> = escaped
+                .find_iter(text)
+                .map(|m| (m.start(), m.end()))
+                .collect();
+            let got: Vec<(usize, usize)> = literal
+                .find_iter(text)
+                .map(|m| (m.start(), m.end()))
+                .collect();
+            assert_eq!(want, got, "spellings disagree on {text:?}");
+
+            let mut scanned = Vec::new();
+            deepseek_v3_pass2_spans(text, &mut scanned);
+            assert_eq!(want, scanned, "scanner disagrees on {text:?}");
+        }
     }
 
     /// The scanners exist to make the bundled vocabularies fast, so a new one

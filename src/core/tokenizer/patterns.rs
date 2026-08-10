@@ -135,3 +135,18 @@ pub const DEEPSEEK_V3_PATTERNS: &[&str] = &[
     r"[\u{4E00}-\u{9FA5}\u{3040}-\u{309F}\u{30A0}-\u{30FF}]+",
     "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",
 ];
+
+/// The second DeepSeek pass as `tokenizer.json` files actually spell it: the
+/// same character class written with the characters themselves instead of
+/// `\u{...}` escapes.
+///
+/// Both spellings exist in the wild and the scanner lookup compares expression
+/// text exactly — deliberately, so an expression that merely resembles one of
+/// these cannot be handed a scanner that does not implement it. Exactness cuts
+/// both ways, though: without this, every `deepseek` model loaded from a
+/// `tokenizer.json` ran this pass through the regex engine, scanning each
+/// document for CJK that most of them do not contain.
+///
+/// A test pins the two against each other rather than trusting the eye.
+pub const DEEPSEEK_V3_PASS2_LITERAL: &str =
+    "[\u{4E00}-\u{9FA5}\u{3040}-\u{309F}\u{30A0}-\u{30FF}]+";
