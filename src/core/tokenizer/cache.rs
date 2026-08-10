@@ -271,7 +271,12 @@ impl ChunkCache {
             if slot.klen as usize != key.len() || &slot.key[..key.len()] != key {
                 return false;
             }
-            out.extend_from_slice(&slot.ids[..slot.nids as usize]);
+            // Almost every chunk resolves to one id, and `extend_from_slice`
+            // spends a length-driven `memcpy` and a capacity check on it.
+            match slot.nids {
+                1 => out.push(slot.ids[0]),
+                n => out.extend_from_slice(&slot.ids[..n as usize]),
+            }
             true
         })
     }
