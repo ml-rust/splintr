@@ -29,9 +29,22 @@
 //! script's statistics; a cliff sized on English silently disables the cache
 //! for CJK, which is the text that needs it most.
 //!
-//! So a chunk that does not fit inline goes to a second, boxed tier instead of
-//! being declined. Short chunks keep the allocation-free path; long ones pay
-//! one allocation on insert, which is what they cost before any of this.
+//! So a chunk that does not fit inline goes to a second, growable tier instead
+//! of being declined. Short chunks keep the allocation-free path; long ones
+//! overwrite the buffers already in their slot, so a slot allocates while it is
+//! growing to the longest chunk that has landed in it and not afterwards. That
+//! matters because "long" is the whole population for CJK, where replacing the
+//! buffers per insert made every miss cost two allocations and two frees.
+//!
+//! The two tiers hold the same number of slots. Giving the long tier a fraction
+//! of the inline tier's looks like it saves memory on the English workloads that
+//! never use it, but "long" and "short" are not two slices of one population —
+//! they are different scripts, and each is the whole of its own. Starving the
+//! long tier therefore does not right-size it, it evicts CJK's working set and
+//! makes those chunks re-merge: measured, a quarter share costs up to a fifth of
+//! the instructions on Chinese and Japanese and saves nothing on English. Empty
+//! slots are two `Vec` headers, which is not a price worth optimising against
+//! model weights.
 
 use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
@@ -53,13 +66,6 @@ const MAX_KEY: usize = 16;
 /// chunk, so a key that fits inline can never produce a result that does not,
 /// and the inline tier needs no length test on its ids.
 const MAX_IDS: usize = MAX_KEY;
-
-/// Slots in the boxed tier, as a fraction of the inline tier's.
-///
-/// Long chunks are the minority in mixed text but the whole of it in CJK, so
-/// this is a compromise rather than a measurement — sized to hold a realistic
-/// working set of long chunks without doubling the cache's memory.
-const LONG_SHARE: usize = 4;
 
 /// One slot: the chunk and its ids, stored in place.
 ///
@@ -84,11 +90,14 @@ const VACANT: Slot = Slot {
 
 /// A chunk too long for an inline slot, with its ids.
 ///
-/// Vacant slots hold an empty key, which allocates nothing.
+/// Vacant slots hold an empty key, which allocates nothing. `Vec` rather than
+/// `Box<[_]>` so an overwrite reuses the buffer: the slot keeps the capacity of
+/// the longest chunk it has held, which is what makes a steady-state insert
+/// allocation-free.
 #[derive(Clone, Default)]
 struct LongSlot {
-    key: Box<[u8]>,
-    ids: Box<[u32]>,
+    key: Vec<u8>,
+    ids: Vec<u32>,
 }
 
 /// One shard's two tiers, behind a single lock so a chunk takes one lock
@@ -113,28 +122,25 @@ type Shard = RwLock<Tiers>;
 /// only evict, which costs a merge and never correctness.
 pub(crate) struct ChunkCache {
     shards: Box<[Shard]>,
-    /// Inline slots per shard, always a power of two so the index is a mask.
+    /// Slots per shard in each tier, always a power of two so the index is a
+    /// mask.
     mask: usize,
-    /// The same for the boxed tier.
-    long_mask: usize,
 }
 
 impl ChunkCache {
     /// Build a cache holding up to `capacity` chunks in total.
     pub(crate) fn new(capacity: usize) -> Self {
         let per_shard = (capacity / SHARDS).next_power_of_two().max(1);
-        let long_per_shard = (per_shard / LONG_SHARE).next_power_of_two().max(1);
         Self {
             shards: (0..SHARDS)
                 .map(|_| {
                     RwLock::new(Tiers {
                         inline: vec![VACANT; per_shard].into_boxed_slice(),
-                        long: vec![LongSlot::default(); long_per_shard].into_boxed_slice(),
+                        long: vec![LongSlot::default(); per_shard].into_boxed_slice(),
                     })
                 })
                 .collect(),
             mask: per_shard - 1,
-            long_mask: long_per_shard - 1,
         }
     }
 
@@ -147,22 +153,18 @@ impl ChunkCache {
         hasher.finish()
     }
 
-    /// The shard a hash belongs to, and the slot within it.
+    /// The shard a hash belongs to, and the slot within it. Which *tier* that
+    /// slot is in is the caller's business, and both tiers are the same size.
     ///
     /// The high bits pick the shard and the low bits the slot, so the two
     /// selections cannot correlate — `FxHasher`'s low bits are its weakest, and
     /// reusing them for both would cluster every shard's traffic into the same
     /// few slots.
     #[inline]
-    fn locate(&self, hash: u64, key_len: usize) -> (&Shard, usize) {
-        let mask = if key_len > MAX_KEY {
-            self.long_mask
-        } else {
-            self.mask
-        };
+    fn locate(&self, hash: u64) -> (&Shard, usize) {
         (
             &self.shards[(hash >> 32) as usize % SHARDS],
-            hash as usize & mask,
+            hash as usize & self.mask,
         )
     }
 
@@ -172,13 +174,13 @@ impl ChunkCache {
     /// A read lock, so concurrent hits do not serialise, and the ids are copied
     /// out from the slot itself — no pointer to follow.
     pub(crate) fn extend_into(&self, hash: u64, key: &[u8], out: &mut Vec<u32>) -> bool {
-        let (shard, index) = self.locate(hash, key.len());
+        let (shard, index) = self.locate(hash);
         let Ok(tiers) = shard.read() else {
             return false;
         };
         if key.len() > MAX_KEY {
             let slot = &tiers.long[index];
-            if &*slot.key != key {
+            if slot.key != key {
                 return false;
             }
             out.extend_from_slice(&slot.ids);
@@ -194,22 +196,24 @@ impl ChunkCache {
 
     /// Cache `ids` for `key`, whose shard hash the caller already has.
     ///
-    /// A chunk longer than an inline slot goes to the boxed tier, which costs
-    /// one allocation for the key and one for the ids. The inline tier's id
-    /// count needs no check: see [`MAX_IDS`].
+    /// A chunk longer than an inline slot goes to the growable tier, whose
+    /// buffers are overwritten in place rather than replaced — allocating only
+    /// while the slot grows to the longest chunk it has held. The inline tier's
+    /// id count needs no check: see [`MAX_IDS`].
     pub(crate) fn put(&self, hash: u64, key: &[u8], ids: &[u32]) {
         if key.is_empty() {
             return;
         }
-        let (shard, index) = self.locate(hash, key.len());
+        let (shard, index) = self.locate(hash);
         let Ok(mut tiers) = shard.write() else {
             return;
         };
         if key.len() > MAX_KEY {
-            tiers.long[index] = LongSlot {
-                key: key.into(),
-                ids: ids.into(),
-            };
+            let slot = &mut tiers.long[index];
+            slot.key.clear();
+            slot.key.extend_from_slice(key);
+            slot.ids.clear();
+            slot.ids.extend_from_slice(ids);
             return;
         }
         debug_assert!(ids.len() <= MAX_IDS, "ids outnumber the chunk's bytes");
@@ -281,6 +285,20 @@ mod tests {
             roundtrip(&cache, key, &[1, 2, 3, 4, 5]).as_deref(),
             Some(&[1, 2, 3, 4, 5][..])
         );
+    }
+
+    /// Overwriting a long slot must replace its contents, not append to them —
+    /// the buffers are reused rather than rebuilt, so a missing `clear` would
+    /// leave the previous entry's tail behind and answer with too many ids.
+    #[test]
+    fn overwriting_a_long_slot_replaces_its_ids() {
+        let cache = ChunkCache::new(1024);
+        let key = "那么，线性代数又是如何来解决这些问题的呢".as_bytes();
+        assert_eq!(
+            roundtrip(&cache, key, &[1, 2, 3, 4, 5]).as_deref(),
+            Some(&[1, 2, 3, 4, 5][..])
+        );
+        assert_eq!(roundtrip(&cache, key, &[9]).as_deref(), Some(&[9][..]));
     }
 
     #[test]
