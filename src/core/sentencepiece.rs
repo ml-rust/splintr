@@ -50,6 +50,15 @@ pub struct SentencePieceTokenizer {
     /// fifth of a t5-base encode on its own. The keys are the vocabulary and are
     /// fixed at construction, so no input can grow a collision chain here.
     token_to_id: FxHashMap<String, u32>,
+    /// Segments already resolved, so a repeat costs a probe instead of a
+    /// lattice sweep.
+    ///
+    /// The same cache the BPE and WordPiece backends keep, for the same reason:
+    /// prose reuses words heavily and this backend had none, so every
+    /// occurrence of a common word re-ran the whole Viterbi. A segment's
+    /// segmentation depends on nothing but the segment and the vocabulary, so
+    /// memoizing it cannot change an answer.
+    cache: super::tokenizer::cache::ChunkCache,
     /// The same surfaces as a byte trie, for the lattice sweep.
     ///
     /// The map answers "is this exact string a token", which is the right shape
@@ -102,6 +111,19 @@ pub struct SentencePieceTokenizer {
     /// Ids of `special=true` added tokens dropped on decode (HF default).
     special_decode: rustc_hash::FxHashSet<u32>,
 }
+
+/// Longest segment worth memoizing.
+///
+/// A segment is what falls between two metaspace markers, which in a
+/// space-separated script is a word. Scripts that do not separate words — Thai
+/// has no spaces at all — hand the sweep a whole clause instead, and a clause
+/// neither repeats nor fits an inline cache slot, so caching it buys a hash and
+/// a heap-backed slot for nothing.
+///
+/// Swept over the corpora: past this, English and Russian have converged and
+/// only Chinese and Thai keep moving, in the wrong direction — the bound is
+/// where the scripts that never benefit stop paying.
+const MAX_CACHED_SEGMENT: usize = 32;
 
 /// The three buffers a lattice sweep needs, owned by the caller so they are
 /// allocated once per encode rather than once per word.
@@ -170,6 +192,8 @@ impl SentencePieceTokenizer {
 
         Ok(Self {
             token_to_id,
+            // Same capacity the other two backends use.
+            cache: super::tokenizer::cache::ChunkCache::new(65_536),
             pieces,
             id_to_token: Arc::new(tokens),
             scores,
@@ -350,9 +374,7 @@ impl SentencePieceTokenizer {
                     let escaped =
                         super::metaspace::escape(&word, prefix, self.remove_extra_whitespaces);
                     for segment in super::metaspace::segments(&escaped) {
-                        chars.clear();
-                        chars.extend(segment.chars());
-                        self.viterbi_piece(&chars, &mut tokens, &mut lattice);
+                        self.segment_into(segment, &mut tokens, &mut chars, &mut lattice);
                     }
                 }
             }
@@ -364,13 +386,40 @@ impl SentencePieceTokenizer {
                 let escaped =
                     super::metaspace::escape(&normalized, prefix, self.remove_extra_whitespaces);
                 for segment in super::metaspace::segments(&escaped) {
-                    chars.clear();
-                    chars.extend(segment.chars());
-                    self.viterbi_piece(&chars, &mut tokens, &mut lattice);
+                    self.segment_into(segment, &mut tokens, &mut chars, &mut lattice);
                 }
             }
         }
         tokens
+    }
+
+    /// Append one segment's ids to `tokens`, through the cache.
+    fn segment_into(
+        &self,
+        segment: &str,
+        tokens: &mut Vec<u32>,
+        chars: &mut Vec<char>,
+        lattice: &mut Lattice,
+    ) {
+        let key = segment.as_bytes();
+        if key.len() > MAX_CACHED_SEGMENT {
+            chars.clear();
+            chars.extend(segment.chars());
+            self.viterbi_piece(chars, tokens, lattice);
+            return;
+        }
+        let hash = super::tokenizer::cache::ChunkCache::shard_hash(key);
+        if self.cache.extend_into(hash, key, tokens) {
+            return;
+        }
+        // The sweep appends in place, so what it produced for this segment is
+        // the tail of `tokens` — which is what the cache needs to record, with
+        // no intermediate vector to hold it.
+        let mark = tokens.len();
+        chars.clear();
+        chars.extend(segment.chars());
+        self.viterbi_piece(chars, tokens, lattice);
+        self.cache.put(hash, key, &tokens[mark..]);
     }
 
     /// Append the maximum-score Unigram segmentation of `chars` to `tokens`.
