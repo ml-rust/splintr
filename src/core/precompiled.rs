@@ -36,6 +36,14 @@ pub struct Precompiled {
     normalized: Vec<u8>,
     /// Which reference implementation [`normalize`](Self::normalize) reproduces.
     dialect: CharsmapDialect,
+    /// Whether each ASCII byte is left alone by this charsmap.
+    ///
+    /// A one-byte grapheme cluster is answered by two trie searches otherwise —
+    /// once for the cluster and once for the character inside it — and on the
+    /// text these models actually see, nearly every cluster is one ASCII byte
+    /// that no rule touches. Resolving that at construction turns the pair of
+    /// searches into an array read.
+    ascii_untouched: Box<[bool; 128]>,
 }
 
 // darts-clone unit accessors.
@@ -84,11 +92,28 @@ impl Precompiled {
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let normalized = blob[trie_end..].to_vec();
-        Some(Self {
+        let mut me = Self {
             trie,
             normalized,
             dialect: CharsmapDialect::SentencePiece,
-        })
+            ascii_untouched: Box::new([false; 128]),
+        };
+        // Asked of the same `transform` the grapheme pass would call, so the
+        // table cannot disagree with the path it short-circuits.
+        let mut untouched = [false; 128];
+        for (byte, slot) in untouched.iter_mut().enumerate() {
+            let one = [byte as u8];
+            // ASCII, so always valid UTF-8.
+            let Ok(text) = std::str::from_utf8(&one) else {
+                continue;
+            };
+            *slot = match me.transform(text) {
+                None => true,
+                Some(replacement) => replacement == one,
+            };
+        }
+        me.ascii_untouched = Box::new(untouched);
+        Some(me)
     }
 
     /// Choose which reference implementation [`normalize`](Self::normalize)
@@ -171,28 +196,80 @@ impl Precompiled {
         }
     }
 
+    /// How far from `at` the text is ASCII that this charsmap leaves alone and
+    /// that cannot be part of a longer grapheme cluster.
+    ///
+    /// Two things end a run early. A `\r` may take a following `\n` into one
+    /// cluster, and any non-ASCII byte may be a combining mark that attaches to
+    /// the character before it — so the byte *preceding* non-ASCII is left to
+    /// the segmenter as well.
+    fn ascii_run_end(&self, bytes: &[u8], at: usize) -> usize {
+        let mut i = at;
+        while i < bytes.len() {
+            let byte = bytes[i];
+            if byte >= 0x80 || byte == b'\r' || !self.ascii_untouched[byte as usize] {
+                break;
+            }
+            if bytes.get(i + 1).is_some_and(|&next| next >= 0x80) {
+                break;
+            }
+            i += 1;
+        }
+        i
+    }
+
     /// `spm_precompiled::Precompiled::normalize_string`.
+    ///
+    /// Grapheme segmentation is the expensive part and most text does not need
+    /// it: a run of ASCII that no rule rewrites is its own answer, one cluster
+    /// per byte. So the pass alternates — copy the next such run wholesale, then
+    /// hand the segmenter the stretch that genuinely needs clustering, until the
+    /// next run begins.
     fn normalize_hf(&self, text: &str) -> String {
         use unicode_segmentation::UnicodeSegmentation;
         let mut out = String::with_capacity(text.len());
-        for grapheme in text.graphemes(true) {
-            // The `< 6` bound is upstream's: a longer cluster goes straight to
-            // the per-character pass even when a rule for it exists.
-            if grapheme.len() < 6 {
-                if let Some(norm) = self.transform(grapheme) {
-                    out.push_str(&String::from_utf8_lossy(norm));
-                    continue;
+        let bytes = text.as_bytes();
+        let mut at = 0;
+        while at < bytes.len() {
+            let run_end = self.ascii_run_end(bytes, at);
+            if run_end > at {
+                out.push_str(&text[at..run_end]);
+                at = run_end;
+                continue;
+            }
+            let base = at;
+            let mut consumed = 0;
+            for grapheme in text[base..].graphemes(true) {
+                self.normalize_grapheme(grapheme, &mut out);
+                consumed += grapheme.len();
+                // Back to the fast path as soon as one is available, so the
+                // segmenter is only ever run over the text that needs it.
+                if self.ascii_run_end(bytes, base + consumed) > base + consumed {
+                    break;
                 }
             }
-            for c in grapheme.chars() {
-                let mut buf = [0u8; 4];
-                match self.transform(c.encode_utf8(&mut buf)) {
-                    Some(norm) => out.push_str(&String::from_utf8_lossy(norm)),
-                    None => out.push(c),
-                }
-            }
+            at = base + consumed;
         }
         out
+    }
+
+    /// One grapheme cluster of [`Self::normalize_hf`], appended to `out`.
+    fn normalize_grapheme(&self, grapheme: &str, out: &mut String) {
+        // The `< 6` bound is upstream's: a longer cluster goes straight to
+        // the per-character pass even when a rule for it exists.
+        if grapheme.len() < 6 {
+            if let Some(norm) = self.transform(grapheme) {
+                out.push_str(&String::from_utf8_lossy(norm));
+                return;
+            }
+        }
+        for c in grapheme.chars() {
+            let mut buf = [0u8; 4];
+            match self.transform(c.encode_utf8(&mut buf)) {
+                Some(norm) => out.push_str(&String::from_utf8_lossy(norm)),
+                None => out.push(c),
+            }
+        }
     }
 
     /// sentencepiece's `Normalizer::Normalize`: repeatedly replace the longest
