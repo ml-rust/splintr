@@ -29,11 +29,44 @@ impl PreTokenizer {
     /// and therefore the token ids — with nothing to point at. A
     /// [`SplitPattern::Literal`] is escaped before compiling, so it always
     /// compiles.
+    /// Whether `stages` opens with DeepSeek's three `Split` passes, in order,
+    /// each isolating and none inverted.
+    ///
+    /// Matched on the compiled scanners rather than the pattern text, so a file
+    /// spelling one of the expressions differently still qualifies as long as it
+    /// resolved to the same scanner — which is the property that actually makes
+    /// the fused walk equivalent.
+    fn opens_with_deepseek(stages: &[PreTokStage]) -> bool {
+        use crate::core::tokenizer::scanner;
+        let pass = |i: usize, want: &str| match stages.get(i) {
+            Some(PreTokStage::Split {
+                pattern,
+                behavior,
+                invert,
+            }) if !*invert && matches!(behavior, crate::SplitBehavior::Isolated) => {
+                let text = match pattern {
+                    SplitPattern::Literal(_) => return false,
+                    SplitPattern::Regex(s) => s.as_str(),
+                };
+                scanner::for_pattern(text).is_some_and(|got| {
+                    scanner::for_pattern(want).is_some_and(|want| std::ptr::fn_addr_eq(got, want))
+                })
+            }
+            _ => false,
+        };
+        let want = crate::core::tokenizer::patterns::DEEPSEEK_V3_PATTERNS;
+        pass(0, want[0]) && pass(1, want[1]) && pass(2, want[2])
+    }
+
     pub fn new(stages: Vec<PreTokStage>) -> Result<Self, TokenizerError> {
         let mut compiled = Vec::with_capacity(stages.len());
         let mut byte_level = false;
         let mut add_prefix_space = false;
-        for stage in &stages {
+        // The three passes partition the text, so what they compute by cutting
+        // and re-splitting is one left-to-right walk — see
+        // `scanner::deepseek_v3_spans`.
+        let fuse_deepseek = Self::opens_with_deepseek(&stages);
+        for stage in stages.iter().skip(if fuse_deepseek { 3 } else { 0 }) {
             compiled.push(match stage {
                 PreTokStage::Split {
                     pattern,
@@ -80,6 +113,12 @@ impl PreTokenizer {
                     re: whitespace_regex()?,
                 },
             });
+        }
+        if fuse_deepseek {
+            compiled.insert(
+                0,
+                Stage::Fused(crate::core::tokenizer::scanner::deepseek_v3_for_each),
+            );
         }
         Ok(Self {
             spec: stages,

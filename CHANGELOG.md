@@ -28,8 +28,8 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - The chunk cache is 16-way set-associative, probed by a one-byte tag per slot (eight lanes per `u64`), gives long chunks as many slots as short ones, overwrites their buffers in place, and returns a one-token chunk with a push rather than a length-driven copy.
 - The pre-tokenizer's span scratch is one buffer per nesting depth, so a chained pre-tokenizer's later stages reuse a buffer instead of allocating one per piece.
 - The vocabulary lookup hashes without the length prefix `Hash for [u8]` prepends, and compares a short key at a constant length rather than through a `memcmp` call.
-- The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character, and DeepSeek's letter runs skip ASCII eight bytes at a time where the bulk skip can apply.
-- DeepSeek's main pre-tokenizer pass routes a word, and a space before one, straight to the branch that matches them instead of trying the branches that cannot.
+- The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character.
+- DeepSeek's three `Split` passes are recognised as one composition and walked once, streaming their pieces, rather than run in sequence with each re-splitting what the one before it produced. The walk routes each position straight to the branch that can match it and skips ASCII letter runs eight bytes at a time.
 
 ## [0.17.0] - 2026-08-10
 

@@ -58,6 +58,11 @@ pub(super) enum Stage {
     WhitespaceSplit,
     /// GPT-2 word regex (pre-compiled) without byte-encoding.
     Whitespace { re: SplitMatcher },
+    /// Several `Split` stages recognised as one composition and walked once.
+    ///
+    /// Emits the pieces the stages it replaces would have produced between
+    /// them, so it stands in for all of them rather than feeding the next.
+    Fused(for<'p> fn(&'p str, &mut dyn FnMut(&'p str))),
 }
 impl Stage {
     /// Whether this stage rewrites its input's content rather than only cutting
@@ -88,6 +93,7 @@ impl Stage {
             } => split_regex(piece, matcher, *behavior, *invert, out),
             Stage::Digits { individual } => split_digits(piece, *individual, out),
             Stage::Punctuation { behavior } => split_punctuation(piece, *behavior, out),
+            Stage::Fused(walk) => walk(piece, out),
             Stage::WhitespaceSplit => piece.split_whitespace().for_each(out),
             Stage::Whitespace { re } => split_regex(piece, re, Behavior::Isolated, false, out),
             Stage::ByteLevel { .. } => {

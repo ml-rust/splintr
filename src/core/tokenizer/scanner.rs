@@ -1191,98 +1191,260 @@ pub(super) fn deepseek_v3_pass3_spans(text: &str, out: &mut Vec<(usize, usize)>)
     let bytes = text.as_bytes();
     let len = bytes.len();
     let mut pos = 0usize;
+    while pos < len {
+        match deepseek_pass3_match(text, bytes, pos, false) {
+            Some(end) => {
+                out.push((pos, end));
+                pos = end;
+            }
+            // A digit not followed by letters reaches no branch, so the engine
+            // moves on without emitting. Passes 1 and 2 are what claim those
+            // characters.
+            None => pos += char_at(text, pos).1,
+        }
+    }
+}
+
+/// The two shapes ordinary text is mostly made of: a word, and a space then a
+/// word. `None` if `pos` starts neither.
+///
+/// Split out because the fused walk needs it *before* it tests for digits and
+/// CJK, and the staged pass needs it first among its branches. Neither shape can
+/// be a digit or a CJK character, so running it ahead of those tests cannot
+/// take a character the earlier passes had claimed — and it saves every word in
+/// ordinary text two failed checks.
+///
+/// A letter cannot open the punctuation branch, and it makes the optional prefix
+/// of the letter branch empty — so the letter run starts where it does. A space
+/// cannot open the punctuation branch either, and is exactly what that prefix
+/// accepts: not a newline, not a letter, not punctuation or a symbol. Both
+/// therefore reach the same span the alternation reaches by trying and failing.
+///
+/// The letter after a space is matched as a character, not as an ASCII byte:
+/// scripts written entirely in multi-byte letters still separate their words
+/// with ASCII spaces, and testing only for ASCII would hand them the cost of
+/// this route without the benefit.
+#[inline]
+fn deepseek_word_match(text: &str, bytes: &[u8], pos: usize, stop_at_cjk: bool) -> Option<usize> {
+    let run = |at: usize, n: usize| {
+        if stop_at_cjk {
+            scan_run_of(text, bytes, at + n, LETTER_OR_MARK_NOT_CJK)
+        } else {
+            scan_letter_or_mark_run(text, bytes, at, n)
+        }
+    };
+    match CLASS[bytes[pos] as usize] {
+        Class::Letter => Some(run(pos, 1)),
+        Class::Space if bytes[pos] == b' ' && pos + 1 < bytes.len() => {
+            let next = bytes[pos + 1];
+            if CLASS[next as usize] == Class::Letter {
+                Some(run(pos + 1, 1))
+            } else if next >= 0x80 {
+                let at = if stop_at_cjk {
+                    letter_or_mark_not_cjk_at(text, bytes, pos + 1)
+                } else {
+                    letter_or_mark_at(text, bytes, pos + 1)
+                };
+                at.map(|n| run(pos + 1, n))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// One match of DeepSeek's third-pass alternation starting at `pos`, or `None`
+/// where no branch matches there.
+///
+/// `stop_at_cjk` is what lets [`deepseek_v3_spans`] fuse the three passes: CJK
+/// is `\p{Lo}`, so a letter run would otherwise swallow the characters the
+/// second pass had already cut out of the piece this one used to see.
+#[inline]
+fn deepseek_pass3_match(text: &str, bytes: &[u8], pos: usize, stop_at_cjk: bool) -> Option<usize> {
+    let len = bytes.len();
+    let run = |text: &str, bytes: &[u8], at: usize, n: usize| {
+        if stop_at_cjk {
+            scan_run_of(text, bytes, at + n, LETTER_OR_MARK_NOT_CJK)
+        } else {
+            scan_letter_or_mark_run(text, bytes, at, n)
+        }
+    };
+    let letter_at = |text: &str, bytes: &[u8], at: usize| {
+        if stop_at_cjk {
+            letter_or_mark_not_cjk_at(text, bytes, at)
+        } else {
+            letter_or_mark_at(text, bytes, at)
+        }
+    };
+
+    if let Some(end) = deepseek_word_match(text, bytes, pos, stop_at_cjk) {
+        return Some(end);
+    }
+
+    // `[!-/:-@\[-`{-~][A-Za-z]+` — one ASCII punctuation mark followed by ASCII
+    // letters.
+    if bytes[pos].is_ascii_graphic()
+        && CLASS[bytes[pos] as usize] == Class::Punct
+        && pos + 1 < len
+        && bytes[pos + 1].is_ascii_alphabetic()
+    {
+        return Some(swar_skip_ascii_letters(bytes, pos + 1));
+    }
+
+    // `[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+` — the prefix class differs from the
+    // cl100k family's: it excludes punctuation and symbols rather than digits,
+    // so a digit *can* introduce a letter run here.
+    if let Some(n) = letter_at(text, bytes, pos) {
+        return Some(run(text, bytes, pos, n));
+    }
+    if let Some(prefix) = deepseek_prefix_len(text, bytes, pos) {
+        if let Some(n) = (pos + prefix < len)
+            .then(|| letter_at(text, bytes, pos + prefix))
+            .flatten()
+        {
+            return Some(run(text, bytes, pos + prefix, n));
+        }
+    }
+
+    // ` ?[\p{P}\p{S}]+[\r\n]*`
+    let after_space = if bytes[pos] == b' ' { pos + 1 } else { pos };
+    if after_space < len && punct_or_symbol_at(text, bytes, after_space).is_some() {
+        let mut end = scan_run(text, bytes, after_space, punct_or_symbol_at);
+        while end < len && (bytes[end] == b'\r' || bytes[end] == b'\n') {
+            end += 1;
+        }
+        return Some(end);
+    }
+
+    if space_at(text, bytes, pos).is_some() {
+        let (_, e) = whitespace_span(text, bytes, pos, WhitespaceOrder::NewlineFirst);
+        return Some(e);
+    }
+
+    None
+}
+
+/// `[\p{L}\p{M}]` minus the characters DeepSeek's second pass claims.
+#[inline]
+fn letter_or_mark_not_cjk_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    let class = CLASS[bytes[pos] as usize];
+    if class != Class::Lead {
+        return (class == Class::Letter).then_some(1);
+    }
+    let (c, len) = char_at(text, pos);
+    if is_deepseek_cjk(c) {
+        return None;
+    }
+    (is_letter_char(c) || is_mark_char(c)).then_some(len)
+}
+
+const LETTER_OR_MARK_NOT_CJK: Run = Run {
+    at: letter_or_mark_not_cjk_at,
+    skip_ascii: swar_skip_ascii_letters,
+};
+
+/// DeepSeek's three `Split` passes as one traversal, emitting the pieces the
+/// staged form produces rather than the matches of a single pass.
+///
+/// The three patterns partition the text: `\p{N}{1,3}` takes digits, the second
+/// pass takes its CJK ranges, and the third splits what is left. Because the
+/// classes are disjoint, what the staged form computes by cutting the text into
+/// spans and re-splitting each one can be decided in a single left-to-right
+/// walk — which is what this does, at one third of the passes over the text and
+/// none of the intermediate span buffers.
+///
+/// Two things preserve the staged meaning. A letter run stops at CJK, since the
+/// second pass had already removed those characters from the piece the third
+/// pass saw. And a digit run is capped at three characters, as `{1,3}` caps it.
+/// Streams its pieces rather than collecting them: the staged form never held
+/// more than one piece's spans at a time, because each stage fed the next one
+/// piece at a time, and collecting a whole document's spans first would trade
+/// that for a buffer proportional to the text.
+pub(crate) fn deepseek_v3_for_each<'p>(text: &'p str, out: &mut dyn FnMut(&'p str)) {
+    deepseek_v3_walk(text, |s, e| {
+        if let Some(piece) = text.get(s..e) {
+            out(piece);
+        }
+    });
+}
+
+fn deepseek_v3_walk(text: &str, mut emit: impl FnMut(usize, usize)) {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0usize;
+    // Characters no pass claims become one piece with their neighbours, exactly
+    // as the unmatched gap between two matches did — which is a cursor, not a
+    // flag: whatever lies between the last match and this one is that gap.
+    let mut last = 0usize;
 
     while pos < len {
-        let start = pos;
+        // Ahead of the two passes below because neither a digit nor a CJK
+        // character can start a word, so this cannot take what they claim.
+        if let Some(end) = deepseek_word_match(text, bytes, pos, true) {
+            if pos > last {
+                emit(last, pos);
+            }
+            emit(pos, end);
+            last = end;
+            pos = end;
+            continue;
+        }
 
-        // The two shapes ordinary text is mostly made of, routed by their lead
-        // byte so neither pays for the branches below that cannot match them.
-        //
-        // A letter cannot open the punctuation branch, and it makes the optional
-        // prefix of the letter branch empty — so the letter run starts where it
-        // does. A space cannot open the punctuation branch either, and is
-        // exactly what that optional prefix accepts: not a newline, not a
-        // letter, not punctuation or a symbol. Both therefore reach the same
-        // span the alternation reaches by trying and failing first.
-        //
-        // The letter after a space is matched as a character, not as an ASCII
-        // byte: scripts written entirely in multi-byte letters still separate
-        // their words with ASCII spaces, and testing only for ASCII would hand
-        // them the cost of this route without the benefit.
-        let fast = match CLASS[bytes[pos] as usize] {
-            Class::Letter => Some(scan_letter_or_mark_run(text, bytes, pos, 1)),
-            Class::Space if bytes[pos] == b' ' && pos + 1 < len => {
-                let next = bytes[pos + 1];
-                if CLASS[next as usize] == Class::Letter {
-                    Some(scan_letter_or_mark_run(text, bytes, pos + 1, 1))
-                } else if next >= 0x80 {
-                    letter_or_mark_at(text, bytes, pos + 1)
-                        .map(|n| scan_letter_or_mark_run(text, bytes, pos + 1, n))
-                } else {
-                    None
+        // `\p{N}{1,3}` — the first pass, capped at three characters.
+        if let Some(n) = number_at(text, bytes, pos) {
+            let start = pos;
+            pos += n;
+            for _ in 1..3 {
+                match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
+                    Some(n) => pos += n,
+                    None => break,
                 }
             }
-            _ => None,
-        };
-        if let Some(end) = fast {
-            pos = end;
-            out.push((start, pos));
+            if start > last {
+                emit(last, start);
+            }
+            emit(start, pos);
+            last = pos;
             continue;
         }
 
-        // `[!-/:-@\[-`{-~][A-Za-z]+` — one ASCII punctuation mark followed by
-        // ASCII letters.
-        if bytes[pos].is_ascii_graphic()
-            && CLASS[bytes[pos] as usize] == Class::Punct
-            && pos + 1 < len
-            && bytes[pos + 1].is_ascii_alphabetic()
-        {
-            pos = swar_skip_ascii_letters(bytes, pos + 1);
-            out.push((start, pos));
-            continue;
-        }
-
-        // `[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+` — the prefix class differs from
-        // the cl100k family's: it excludes punctuation and symbols rather than
-        // digits, so a digit *can* introduce a letter run here.
-        if let Some(n) = letter_or_mark_at(text, bytes, pos) {
-            pos = scan_letter_or_mark_run(text, bytes, pos, n);
-            out.push((start, pos));
-            continue;
-        }
-        if let Some(prefix) = deepseek_prefix_len(text, bytes, pos) {
-            if let Some(n) = (pos + prefix < len)
-                .then(|| letter_or_mark_at(text, bytes, pos + prefix))
-                .flatten()
-            {
-                pos = scan_letter_or_mark_run(text, bytes, pos + prefix, n);
-                out.push((start, pos));
+        // The second pass's CJK ranges.
+        if bytes[pos] >= 0x80 {
+            let (c, l) = char_at(text, pos);
+            if is_deepseek_cjk(c) {
+                let start = pos;
+                pos += l;
+                while pos < len && bytes[pos] >= 0x80 {
+                    let (c, l) = char_at(text, pos);
+                    if !is_deepseek_cjk(c) {
+                        break;
+                    }
+                    pos += l;
+                }
+                if start > last {
+                    emit(last, start);
+                }
+                emit(start, pos);
+                last = pos;
                 continue;
             }
         }
 
-        // ` ?[\p{P}\p{S}]+[\r\n]*`
-        let after_space = if bytes[pos] == b' ' { pos + 1 } else { pos };
-        if after_space < len && punct_or_symbol_at(text, bytes, after_space).is_some() {
-            pos = scan_run(text, bytes, after_space, punct_or_symbol_at);
-            while pos < len && (bytes[pos] == b'\r' || bytes[pos] == b'\n') {
-                pos += 1;
+        match deepseek_pass3_match(text, bytes, pos, true) {
+            Some(end) => {
+                if pos > last {
+                    emit(last, pos);
+                }
+                emit(pos, end);
+                last = end;
+                pos = end;
             }
-            out.push((start, pos));
-            continue;
+            None => pos += char_at(text, pos).1,
         }
-
-        if space_at(text, bytes, pos).is_some() {
-            let (s, e) = whitespace_span(text, bytes, pos, WhitespaceOrder::NewlineFirst);
-            pos = e;
-            out.push((s, e));
-            continue;
-        }
-
-        // A digit not followed by letters reaches no branch, so the engine moves
-        // on without emitting. Passes 1 and 2 are what claim those characters.
-        let (_, l) = char_at(text, pos);
-        pos += l;
+    }
+    if last < len {
+        emit(last, len);
     }
 }
 
@@ -1398,6 +1560,123 @@ pub(crate) fn for_pattern(pattern: &str) -> Option<SpanScanner> {
         Some(deepseek_v3_pass3_spans)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod fused_tests {
+    use super::*;
+
+    /// Apply one `Split{Isolated}` pass: the matches, and the gaps between them.
+    fn isolate(text: &str, scan: fn(&str, &mut Vec<(usize, usize)>)) -> Vec<(usize, usize)> {
+        let mut matches = Vec::new();
+        scan(text, &mut matches);
+        let mut out = Vec::new();
+        let mut last = 0;
+        for &(s, e) in &matches {
+            if s > last {
+                out.push((last, s));
+            }
+            if e > s {
+                out.push((s, e));
+            }
+            last = e;
+        }
+        if last < text.len() {
+            out.push((last, text.len()));
+        }
+        out
+    }
+
+    /// The three passes composed the way the pipeline composes them: each pass
+    /// re-splits every piece the one before it produced.
+    fn staged(text: &str) -> Vec<String> {
+        let mut level = vec![text.to_string()];
+        for scan in [
+            deepseek_v3_pass1_spans as fn(&str, &mut Vec<(usize, usize)>),
+            deepseek_v3_pass2_spans,
+            deepseek_v3_pass3_spans,
+        ] {
+            let mut next = Vec::new();
+            for piece in &level {
+                for (s, e) in isolate(piece, scan) {
+                    next.push(piece[s..e].to_string());
+                }
+            }
+            level = next;
+        }
+        level
+    }
+
+    fn fused(text: &str) -> Vec<String> {
+        let mut pieces = Vec::new();
+        deepseek_v3_for_each(text, &mut |piece| pieces.push(piece.to_string()));
+        pieces
+    }
+
+    /// The whole point of the fused walk: it must be the three passes, exactly.
+    #[test]
+    fn the_fused_walk_matches_the_three_passes() {
+        let cases = [
+            "",
+            "hello world",
+            " the quick brown fox",
+            "abc123def",
+            "12345",
+            "1 2 3",
+            "a1b2c3",
+            "中文字",
+            "abc中def",
+            "中123文",
+            "ひらがなカタカナ",
+            "  spaced   out  ",
+            "line\nbreak\r\nhere",
+            "!!!shout",
+            "a.b,c;d",
+            " ?!@#",
+            "café naïve",
+            "Привет мир",
+            "ελληνικά",
+            "ไทยไม่มีช่องว่าง",
+            "\u{0}control\u{7f}",
+            "mixed 中文 and 123 and abc!",
+            "\u{200d}zwj\u{200c}",
+            "emoji 🎉 here",
+            "tab\tsep",
+            "trailing   ",
+            "   leading",
+            "1234567890",
+            "a\u{301}combining",
+            "ＦＵＬＬＷＩＤＴＨ",
+        ];
+        for text in cases {
+            assert_eq!(fused(text), staged(text), "fused walk diverged on {text:?}");
+        }
+    }
+
+    /// Hand-picked cases are what let a regression through last time, so the
+    /// equivalence is also asserted over generated text drawn from every class
+    /// the three passes disagree about.
+    #[test]
+    fn the_fused_walk_matches_the_three_passes_on_generated_text() {
+        use proptest::prelude::*;
+
+        // One character from each class that decides a branch: digits (pass 1),
+        // CJK and kana (pass 2), letters and marks, punctuation, symbols,
+        // whitespace, newlines, and characters no pass claims.
+        let alphabet: Vec<char> =
+            "ab_Zé中文ひカ0159 \t\n\r.,!?#$@'\u{200d}\u{301}\u{0}\u{7f}\u{ad}αДไ🎉"
+                .chars()
+                .collect();
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        let strategy = proptest::collection::vec(0usize..alphabet.len(), 0..48);
+        runner
+            .run(&strategy, |picks| {
+                let text: String = picks.iter().map(|&i| alphabet[i]).collect();
+                prop_assert_eq!(fused(&text), staged(&text), "diverged on {:?}", text);
+                Ok(())
+            })
+            .expect("fused walk must equal the three passes on every generated string");
     }
 }
 
