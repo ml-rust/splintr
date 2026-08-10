@@ -10,15 +10,16 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Fixed
 
-- A `tokenizer.json` whose `pre_tokenizer` puts `WhitespaceSplit` (or `Whitespace`) in front of `Metaspace` now drops the whitespace it splits on, instead of emitting a spurious `▁` per whitespace run. T5 and other converted SentencePiece models were wrong on every corpus containing a double space or newline.
-- WordPiece and the `Lowercase` normalizer lowercase per character, as HuggingFace does, rather than through `str::to_lowercase` and its Greek final-sigma rule: word-final `Σ` is now `σ`, not `ς`.
-- BERT's `clean_text` keeps unassigned (`Cn`) codepoints instead of stripping them, so a word carrying one becomes `[UNK]` as in the reference.
-- A `Precompiled` charsmap from a `tokenizer.json` is read the way `spm_precompiled` reads it — per grapheme cluster, shortest rule, whole cluster replaced — via the new `CharsmapDialect`. The sentencepiece reading stays the default and is what the GGUF path uses.
+- `WhitespaceSplit`/`Whitespace` in front of `Metaspace` now drops the whitespace it splits on, instead of adding a spurious `▁` per run. T5 was wrong wherever a double space or newline appeared.
+- WordPiece and the `Lowercase` normalizer lowercase per character, as HuggingFace does: word-final `Σ` is `σ`, not `ς`.
+- BERT's `clean_text` keeps unassigned (`Cn`) codepoints, so a word carrying one becomes `[UNK]` as in the reference.
+- A `Precompiled` charsmap from a `tokenizer.json` is read as `spm_precompiled` reads it, via the new `CharsmapDialect`; the sentencepiece reading stays the default and serves the GGUF path.
 
 ### Changed
 
-- The long-piece merge path reuses per-thread node and candidate buffers instead of allocating both per piece, cutting bytes allocated per encode by roughly 20x on non-Latin scripts. Token ids are unchanged.
-- The chunk cache gives long chunks as many slots as short ones and overwrites their buffers in place, so a script whose chunks are all long stops evicting its own working set. Instructions per byte drop by 12-36% on Cyrillic, Arabic, Korean, Chinese and Japanese, and allocations per encode fall to single digits; English is unchanged.
+- The long-piece merge path reuses per-thread buffers instead of allocating per piece, cutting bytes allocated per encode by roughly 20x on non-Latin scripts. Token ids are unchanged.
+- Merge selection splits its queue — initial pairs sorted once, only merge-created pairs heaped — and picks its strategy per script as well as per length: 30-48% fewer instructions per byte on Cyrillic, Arabic, Korean, Chinese and Japanese, English unchanged. Token ids are unchanged.
+- The chunk cache gives long chunks as many slots as short ones and overwrites their buffers in place, so a script whose chunks are all long stops evicting its own working set. Allocations per encode fall to single digits.
 - Bundled vocabularies are no longer default features; enable `vocabs`, or the `vocab-*` families needed. The Python wheel is unaffected — `python` pulls them in.
 - The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character: o200k/gpt-oss encode ~19% fewer instructions on Chinese and ~9% on Japanese and Korean. Token ids are unchanged.
 

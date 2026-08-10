@@ -25,20 +25,23 @@
 //!   stack-resident table and rescans it for the minimum on every merge. That
 //!   is O(N) per merge and quadratic overall, but it allocates nothing and the
 //!   table is contiguous, so at small N it beats anything with a heap in it.
-//! - **Heap** ([`merge::merge_by_heap`]) keeps candidate pairs in a binary heap
-//!   with lazy deletion: superseded entries are left in the heap and discarded
-//!   on pop (see [`nodes::Merge`]), so no entry ever has to be found and
-//!   removed. Each merge pushes at most two new candidates, so the heap holds
-//!   O(N) entries over the whole run and every push/pop is O(log N).
+//! - **Queue** ([`merge::merge_by_queue`]) splits candidates by where they came
+//!   from. The pairs the piece *starts with* are all known before the first
+//!   merge, so they are sorted once and read front to back. Only the pairs a
+//!   merge *creates* — at most two per merge — go in a live binary heap. Both
+//!   tiers use lazy deletion: a superseded entry is left where it is and skipped
+//!   when it surfaces, so no entry is ever found and removed.
 //!
-//! Which regime applies is decided by the *pre-tokenizer*, not by the input
-//! size. A tokenizer that splits (nearly all of them) hands the merge loop one
-//! short word at a time and never leaves the first regime; one that does not
-//! split at all — `pre_tokenizer: null`, which is how Mistral's AWQ and GPTQ
-//! `tokenizer.json` files are shaped — hands over the entire document and needs
-//! the second. So the strategy is chosen per piece, at
-//! [`merge::SCAN_SYMBOL_LIMIT`], and that constant carries the measurements
-//! behind the crossover.
+//! Which regime applies is decided by the *pre-tokenizer* and by the *script*,
+//! not by the input size. A tokenizer that splits (nearly all of them) hands the
+//! merge loop one short word at a time; one that does not split at all —
+//! `pre_tokenizer: null`, which is how Mistral's AWQ and GPTQ `tokenizer.json`
+//! files are shaped — hands over the entire document and needs the queue's
+//! asymptote. Script matters because symbols are counted in ByteLevel space,
+//! where one CJK character is several, so a non-Latin piece leaves the scan's
+//! regime in a handful of characters. The choice is made per piece by
+//! [`merge::prefers_scan`], from [`merge::SCAN_SYMBOL_LIMIT`] and a per-script
+//! byte gate; those constants carry the measurements behind the crossover.
 //!
 //! Both strategies resolve equal ranks LEFTMOST and treat `u32::MAX` as
 //! unmergeable, so they are bit-exact with each other and with tiktoken. The
@@ -49,8 +52,9 @@
 //!
 //! - **Time**: O(N log N) for a piece above the threshold; O(N²) below it, on
 //!   an N bounded by a small constant, which is why it is the faster half
-//! - **Space**: O(N) for the node list, plus O(N) for the heap above the
-//!   threshold and nothing below it
+//! - **Space**: O(N) for the node list, plus O(N) for the queue above the
+//!   threshold and nothing below it. Both come from a per-thread scratch
+//!   ([`scratch`]), so they are allocated once per thread rather than per piece
 //!
 //! # Algorithm Steps
 //!
@@ -84,4 +88,4 @@ pub(crate) use ranks::{merge_ranks, BytePairRanks, RankLookup};
 #[allow(unused_imports)]
 use encode::byte_pair_encode_with_ranks;
 #[allow(unused_imports)]
-use nodes::{Merge, Node};
+use nodes::Node;

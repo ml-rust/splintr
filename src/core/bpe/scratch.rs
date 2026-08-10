@@ -12,15 +12,15 @@
 //! rayon workers without a lock.
 
 use std::cell::RefCell;
-use std::collections::BinaryHeap;
 
-use super::nodes::{Merge, Node};
+use super::merge::QueueScratch;
+use super::nodes::Node;
 
-/// The two buffers the heap-selection merge needs.
+/// The buffers the queue-selection merge needs.
 #[derive(Default)]
 pub(super) struct MergeScratch {
     pub(super) nodes: Vec<Node>,
-    pub(super) queue: BinaryHeap<Merge>,
+    pub(super) queue: QueueScratch,
 }
 
 thread_local! {
@@ -60,12 +60,8 @@ mod tests {
     fn the_buffers_arrive_empty_however_they_were_left() {
         with_merge_scratch(|s| {
             s.nodes.push(Node::PLACEHOLDER);
-            s.queue.push(Merge {
-                left: 0,
-                right: 1,
-                rank: 0,
-                len: 2,
-            });
+            s.queue.cold.push(1);
+            s.queue.ranks.push(0);
         });
         with_merge_scratch(|s| {
             assert!(s.nodes.is_empty(), "nodes leaked between calls");

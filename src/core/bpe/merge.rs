@@ -1,12 +1,13 @@
 use crate::core::encoder::Encoder;
+use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use super::encode::{Piece, Seed};
-use super::nodes::{Merge, Node};
+use super::nodes::Node;
 use super::ranks::RankLookup;
 
 /// Symbol count at or below which merges are selected by scanning a
-/// stack-resident rank table instead of a heap.
+/// stack-resident rank table instead of a queue.
 ///
 /// The two strategies are asymptotically opposite and there is no single right
 /// answer, so the threshold is measured rather than guessed. Selection cost per
@@ -16,8 +17,10 @@ use super::ranks::RankLookup;
 /// heap is ~46x ahead; at 16 symbols the scan is ~25% ahead).
 ///
 /// That measurement predates [`super::scratch`], which amortizes the heap's
-/// allocation per thread rather than per piece. The crossover is therefore
-/// lower than it was, and 64 has not been re-measured against it.
+/// allocation per thread rather than per piece, so the crossover is lower than
+/// it was. Re-measured since: for ASCII it is still above 64, which is why
+/// [`GATE_ASCII`] does not lower it; for multi-byte scripts it is far below,
+/// which is what [`GATE_MULTI`] exists to express.
 ///
 /// 64 sits deliberately on the safe side of that crossover. It also covers the
 /// entire realistic range of the dominant workload: a pre-tokenizer emits
@@ -27,7 +30,94 @@ use super::ranks::RankLookup;
 /// whole document and needs the heap's asymptote to stay usable.
 ///
 /// The table is `[u32; 64]` — 256 bytes, four cache lines, no allocation.
+///
+/// This is the scan's *capacity*, not the whole of the choice: which strategy a
+/// piece actually gets also depends on its script, via [`prefers_scan`].
 pub(super) const SCAN_SYMBOL_LIMIT: usize = 64;
+
+/// Longest piece, in bytes, still handed to the scan when its content starts
+/// with an ASCII byte.
+///
+/// Equal to [`SCAN_SYMBOL_LIMIT`], i.e. no gate at all: an ASCII piece has one
+/// symbol per byte, so the symbol limit already binds first. Lowering it was
+/// measured and does not pay — English is a hair worse at 24, because the scan
+/// is genuinely the better strategy at these lengths.
+const GATE_ASCII: u8 = 64;
+
+/// The same for a piece whose content starts outside ASCII, and for a piece that
+/// is only whitespace.
+///
+/// Lower than [`GATE_ASCII`] because the two are not counting the same thing. A
+/// multi-byte character is several symbols, so a non-Latin piece reaches any
+/// symbol count in a fraction of the characters an English word needs, and the
+/// scan is quadratic in symbols.
+///
+/// Swept against llama-3 over the per-script corpora. The answer depends on how
+/// expensive the queue is, and moved once [`merge_by_queue`] got cheaper: with
+/// the old heap, seeded with every adjacent pair, the curve did not flatten
+/// until 32 and 8 cost Arabic ~12%; with the cold/hot split it is flat from 8 to
+/// 16 and rises from 24. 16 is the middle of that flat region rather than its
+/// edge, so the constant is not sitting on a cliff.
+const GATE_MULTI: u8 = 16;
+
+/// Longest scannable piece per leading content byte.
+const fn build_byte_gate() -> [u8; 256] {
+    let mut gate = [GATE_MULTI; 256];
+    let mut b = 0;
+    while b < 0x80 {
+        gate[b] = GATE_ASCII;
+        b += 1;
+    }
+    // Reached only by a piece that is *nothing but* whitespace, since a piece
+    // with content is classified past its delimiter. Such a piece merges no
+    // further than its own run, so it belongs on the cheap gate.
+    gate[b' ' as usize] = GATE_MULTI;
+    gate[b'\t' as usize] = GATE_MULTI;
+    gate[b'\n' as usize] = GATE_MULTI;
+    gate[b'\r' as usize] = GATE_MULTI;
+    gate
+}
+
+static BYTE_GATE: [u8; 256] = build_byte_gate();
+
+/// Where a piece's content begins, past whatever word delimiter the
+/// pre-tokenizer put in front of it.
+///
+/// Classifying byte 0 would classify the delimiter — every ByteLevel piece
+/// starts `Ġ` and every Metaspace piece starts `▁`, so every piece in a corpus
+/// would look alike and the gate would say nothing about the script.
+#[inline]
+fn content_start(piece: &[u8]) -> usize {
+    match piece {
+        // Metaspace `▁` (U+2581).
+        [0xE2, 0x96, 0x81, rest @ ..] if !rest.is_empty() => 3,
+        // ByteLevel `Ġ` (U+0120), the byte-level spelling of a leading space.
+        [0xC4, 0xA0, rest @ ..] if !rest.is_empty() => 2,
+        // A literal leading space, which ByteLevel also hands over unmapped.
+        [ws, rest @ ..] if ws.is_ascii_whitespace() && !rest.is_empty() => 1,
+        _ => 0,
+    }
+}
+
+/// Whether `piece`, holding `symbols` symbols, should be merged by scan rather
+/// than by heap.
+///
+/// The single source of the decision: the caller picks the node buffer from it
+/// and [`link_and_merge`] picks the strategy from it, so the two cannot
+/// disagree about which one a piece is getting.
+#[inline]
+pub(super) fn prefers_scan(piece: &[u8], symbols: usize) -> bool {
+    if symbols > SCAN_SYMBOL_LIMIT {
+        return false;
+    }
+    // No gate is lower than the smallest one, so a piece that short is scanned
+    // whatever its script — and classifying it would be pure overhead on the
+    // shortest, most common pieces there are.
+    if piece.len() <= GATE_MULTI as usize {
+        return true;
+    }
+    piece.len() <= BYTE_GATE[piece[content_start(piece)] as usize] as usize
+}
 
 /// Merge rank of the pair `(left, right)`, or `u32::MAX` when the vocabulary
 /// cannot merge it.
@@ -109,75 +199,161 @@ fn merge_by_scan(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) 
     }
 }
 
-/// Merge selection for long pieces: a binary heap of candidates with lazy
-/// deletion, so selection is O(log N) instead of O(N) per merge.
+/// A queued merge candidate: its rank in the high half, the index of its left
+/// node in the low half.
 ///
-/// Superseded entries are left in the heap and discarded on pop, so no entry
-/// ever has to be found and removed. Each merge pushes at most two new
-/// candidates, so the heap holds O(N) entries over the whole run.
-fn merge_by_heap(
+/// Packed so that comparing two keys as integers *is* the ordering BPE
+/// prescribes — lowest rank first, and on a tie the lowest left index, which is
+/// the leftmost pair (node indices are assigned in list order and never
+/// reassigned). The tie-break is load-bearing for bit-exactness with tiktoken;
+/// `test_tiebreak_leftmost_wins` locks it in.
+#[inline]
+fn key(rank: u32, left: usize) -> u64 {
+    ((rank as u64) << 32) | (left as u64 & 0xFFFF_FFFF)
+}
+
+#[inline]
+fn key_rank(key: u64) -> u32 {
+    (key >> 32) as u32
+}
+
+#[inline]
+fn key_left(key: u64) -> usize {
+    (key & 0xFFFF_FFFF) as usize
+}
+
+/// The buffers [`merge_by_queue`] works in, reused across pieces.
+#[derive(Default)]
+pub(super) struct QueueScratch {
+    /// Current merge rank of the pair starting at each node, `u32::MAX` when
+    /// that pair cannot merge or the node has been absorbed.
+    ///
+    /// This is what makes a stale key recognizable without re-deriving it: a
+    /// key is live exactly when `ranks[left]` still equals the rank it was
+    /// pushed with.
+    pub(super) ranks: Vec<u32>,
+    /// The pairs the piece starts with. All of them are known before the first
+    /// merge, so they are sorted once and read front to back — no heap.
+    pub(super) cold: Vec<u64>,
+    /// The pairs merges create. Only these need a live priority queue, and
+    /// there are at most two per merge.
+    pub(super) hot: BinaryHeap<Reverse<u64>>,
+}
+
+impl QueueScratch {
+    /// Empty every buffer, keeping the capacity that makes reuse worthwhile.
+    pub(super) fn clear(&mut self) {
+        self.ranks.clear();
+        self.cold.clear();
+        self.hot.clear();
+    }
+
+    /// Whether every buffer is empty. Only the scratch's own tests ask.
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.ranks.is_empty() && self.cold.is_empty() && self.hot.is_empty()
+    }
+}
+
+/// Merge selection for long pieces, split across two queues.
+///
+/// The insight is that the initial pairs and the created pairs have completely
+/// different access patterns. Every initial pair is known before the first
+/// merge, so sorting them once and walking the result is strictly cheaper than
+/// heapifying them and paying a sift-down per pop. Only the pairs a merge
+/// *creates* arrive unpredictably, and there are at most two per merge, so the
+/// live heap stays small. Seeding one heap with everything, as this used to,
+/// pays heap prices for the majority of candidates that never needed them.
+///
+/// Superseded entries are left where they are and skipped when they surface,
+/// so no entry is ever found and removed.
+fn merge_by_queue(
     piece: &[u8],
     nodes: &mut [Node],
     merge_ranks: RankLookup<'_>,
-    queue: &mut BinaryHeap<Merge>,
+    q: &mut QueueScratch,
 ) -> usize {
     let count = nodes.len();
+    q.ranks.clear();
+    q.ranks.resize(count, u32::MAX);
+    q.cold.clear();
+    q.hot.clear();
 
-    // Queue a pair as a merge candidate, if the vocabulary can merge it. A pair
-    // with no rank can never be selected, so it is simply never pushed.
-    let push = |queue: &mut BinaryHeap<Merge>, left: usize, right: usize, nodes: &[Node]| {
-        let rank = rank_of(piece, nodes, left, right, merge_ranks);
-        if rank != u32::MAX {
-            queue.push(Merge {
-                left,
-                right,
-                rank,
-                len: nodes[left].len + nodes[right].len,
-            });
-        }
-    };
-
-    // Seed the heap with every adjacent pair. `saturating_sub` because the
-    // callers guarantee a non-empty list through their own guards, and neither
-    // may become an underflow if a third ever appears.
-    //
-    // The queue is the caller's, cleared and grown to fit rather than built
-    // fresh: on a CJK corpus this is one allocation per chunk otherwise. Cleared
-    // here as well as by the scratch, so a caller passing its own buffer cannot
-    // seed the run with stale candidates.
-    queue.clear();
-    queue.reserve(count * 2);
+    // `saturating_sub` because the callers guarantee a non-empty list through
+    // their own guards, and this may not become an underflow if a third ever
+    // appears.
     for i in 0..count.saturating_sub(1) {
-        push(queue, i, i + 1, nodes);
+        let rank = rank_of(piece, nodes, i, i + 1, merge_ranks);
+        q.ranks[i] = rank;
+        if rank != u32::MAX {
+            q.cold.push(key(rank, i));
+        }
     }
+    q.cold.sort_unstable();
 
+    let mut cursor = 0usize;
     let mut live = count;
-    while let Some(candidate) = queue.pop() {
-        let (li, ri) = (candidate.left, candidate.right);
-
-        // Staleness test, exact rather than heuristic. `left.len` only ever
-        // changes by absorbing rightward, and that also changes `left.next` —
-        // so `next == right` proves the left side is untouched since the push,
-        // and the length sum then proves the right side is too. A tombstoned
-        // left node (len 0) has been absorbed by its own predecessor.
-        let (left, right) = (nodes[li], nodes[ri]);
-        if left.len == 0 || left.next != ri || left.len + right.len != candidate.len {
-            continue;
+    loop {
+        // Retire stale entries from the front of each queue, so the two
+        // candidates compared below are both live.
+        while let Some(&k) = q.cold.get(cursor) {
+            if q.ranks[key_left(k)] == key_rank(k) {
+                break;
+            }
+            cursor += 1;
+        }
+        while let Some(&Reverse(k)) = q.hot.peek() {
+            if q.ranks[key_left(k)] == key_rank(k) {
+                break;
+            }
+            q.hot.pop();
         }
 
-        let new_next = absorb(nodes, li, ri);
+        let next = match (q.cold.get(cursor).copied(), q.hot.peek().map(|r| r.0)) {
+            (None, None) => return live,
+            (Some(cold), None) => {
+                cursor += 1;
+                cold
+            }
+            (None, Some(hot)) => {
+                q.hot.pop();
+                hot
+            }
+            (Some(cold), Some(hot)) => {
+                if cold < hot {
+                    cursor += 1;
+                    cold
+                } else {
+                    q.hot.pop();
+                    hot
+                }
+            }
+        };
+
+        // A live key's rank is the current rank of `(left, left.next)`, and a
+        // rankable pair has a right node, so this cannot be the tail.
+        let left = key_left(next);
+        let right = nodes[left].next;
+        let new_next = absorb(nodes, left, right);
         live -= 1;
+        q.ranks[right] = u32::MAX;
 
-        // The merge created at most two new adjacencies, around the merged node.
-        let prev = nodes[li].prev;
+        // The merge changed at most two adjacencies, around the merged node.
+        // Recording their new ranks is what invalidates their old keys.
+        let prev = nodes[left].prev;
         if prev != usize::MAX {
-            push(queue, prev, li, nodes);
+            let rank = rank_of(piece, nodes, prev, left, merge_ranks);
+            q.ranks[prev] = rank;
+            if rank != u32::MAX {
+                q.hot.push(Reverse(key(rank, prev)));
+            }
         }
-        if new_next != usize::MAX {
-            push(queue, li, new_next, nodes);
+        let rank = rank_of(piece, nodes, left, new_next, merge_ranks);
+        q.ranks[left] = rank;
+        if rank != u32::MAX {
+            q.hot.push(Reverse(key(rank, left)));
         }
     }
-    live
 }
 
 /// Link `nodes` into a list and run the merge loop over them, returning how
@@ -190,7 +366,7 @@ fn link_and_merge(
     piece: &[u8],
     nodes: &mut [Node],
     merge_ranks: RankLookup<'_>,
-    queue: &mut BinaryHeap<Merge>,
+    queue: &mut QueueScratch,
 ) -> usize {
     let count = nodes.len();
     for (i, node) in nodes.iter_mut().enumerate() {
@@ -198,10 +374,10 @@ fn link_and_merge(
         node.next = if i + 1 == count { usize::MAX } else { i + 1 };
     }
 
-    if count <= SCAN_SYMBOL_LIMIT {
+    if prefers_scan(piece, count) {
         merge_by_scan(piece, nodes, merge_ranks)
     } else {
-        merge_by_heap(piece, nodes, merge_ranks, queue)
+        merge_by_queue(piece, nodes, merge_ranks, queue)
     }
 }
 
@@ -240,7 +416,7 @@ pub(super) fn merge_and_collect(
     merge_ranks: RankLookup<'_>,
     id_encoder: &Encoder,
     seeds: Option<&[Seed]>,
-    queue: &mut BinaryHeap<Merge>,
+    queue: &mut QueueScratch,
 ) -> Vec<Piece> {
     link_and_merge(piece, nodes, merge_ranks, queue);
 
@@ -333,7 +509,7 @@ pub(super) fn merge_and_collect_ids_into(
     merge_ranks: RankLookup<'_>,
     id_encoder: &Encoder,
     out: &mut Vec<u32>,
-    queue: &mut BinaryHeap<Merge>,
+    queue: &mut QueueScratch,
 ) {
     let live = link_and_merge(piece, nodes, merge_ranks, queue);
 

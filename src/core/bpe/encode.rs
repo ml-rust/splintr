@@ -1,7 +1,8 @@
 use crate::core::encoder::Encoder;
-use std::collections::BinaryHeap;
 
-use super::merge::{merge_and_collect, merge_and_collect_ids_into, SCAN_SYMBOL_LIMIT};
+use super::merge::{
+    merge_and_collect, merge_and_collect_ids_into, prefers_scan, QueueScratch, SCAN_SYMBOL_LIMIT,
+};
 use super::nodes::Node;
 use super::ranks::RankLookup;
 use super::scratch::with_merge_scratch;
@@ -174,19 +175,20 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
     }
 
     let symbols = symbol_count(piece, char_granular);
-    if symbols <= SCAN_SYMBOL_LIMIT {
+    if prefers_scan(piece, symbols) {
         let mut buf = [Node::PLACEHOLDER; SCAN_SYMBOL_LIMIT];
         let nodes = &mut buf[..symbols];
         seed_nodes_into(piece, char_granular, nodes);
-        // Below the threshold the merge is selected by scan, which never looks
-        // at the queue — an empty `BinaryHeap` allocates nothing.
+        // The scan never looks at the queue, and an empty `QueueScratch` holds
+        // empty buffers, so this allocates nothing — and this branch is chosen
+        // by the same predicate the strategy is, so the scan is what runs.
         merge_and_collect_ids_into(
             piece,
             nodes,
             merge_ranks,
             id_encoder,
             out,
-            &mut BinaryHeap::new(),
+            &mut QueueScratch::default(),
         );
     } else {
         with_merge_scratch(|s| {

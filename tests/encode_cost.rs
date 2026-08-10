@@ -200,14 +200,18 @@ fn chaining_encoder() -> splintr::core::Encoder {
 #[test]
 fn merge_allocation_count_does_not_grow_with_piece_length() {
     let encoder = chaining_encoder();
-    // Both lengths sit below the threshold where selection switches strategy,
-    // so this compares like with like; the crossover itself is covered by the
-    // property tests in the bpe module.
+    // These lengths straddle the point where selection switches strategy, which
+    // is the interesting comparison rather than a confounded one: the property
+    // being pinned is that neither strategy allocates per merge.
     let short = b"abcdab".to_vec();
     let long = b"abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd".to_vec();
 
-    // Warm any one-time allocation out of the measured region.
+    // Warm any one-time allocation out of the measured region, through BOTH
+    // strategies — the heap path's node and candidate buffers are per-thread
+    // and grown on first use, so warming only a short piece would charge the
+    // long one for buffers it then reuses forever.
     let _ = byte_pair_encode(b"aa", &encoder);
+    let _ = byte_pair_encode(&long, &encoder);
 
     let short_allocs = allocations_of(|| byte_pair_encode(&short, &encoder));
     let long_allocs = allocations_of(|| byte_pair_encode(&long, &encoder));
