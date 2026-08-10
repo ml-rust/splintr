@@ -1,6 +1,5 @@
 //! Vocabulary normalization, merge-rank construction and dialect dispatch.
 
-use rustc_hash::FxHashMap;
 
 use super::loader::{
     build_merge_ranks, byte_level_pattern, find_special_token_id, normalize_wordpiece_vocab,
