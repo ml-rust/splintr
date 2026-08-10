@@ -166,6 +166,40 @@ impl Encoder {
         (hash.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & mask
     }
 
+    /// Whether two keys of equal length hold the same bytes.
+    ///
+    /// `==` on slices of unknown length is a `memcmp` call, and a vocabulary
+    /// key is a word: measured on `deepseek-v4`, that call is 8% of an encode's
+    /// instructions on its own. Dispatching on the length first gives the
+    /// comparison a *constant* size, which compiles to one word compare and no
+    /// call at all; only a longer key is worth the call it used to make.
+    ///
+    /// A scalar byte loop was tried instead and is worse than the call — the
+    /// win here is the constant length, not the avoidance of vectors.
+    #[inline]
+    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
+        match a.len() {
+            0 => true,
+            1 => a[..1] == b[..1],
+            2 => a[..2] == b[..2],
+            3 => a[..3] == b[..3],
+            4 => a[..4] == b[..4],
+            5 => a[..5] == b[..5],
+            6 => a[..6] == b[..6],
+            7 => a[..7] == b[..7],
+            8 => a[..8] == b[..8],
+            9 => a[..9] == b[..9],
+            10 => a[..10] == b[..10],
+            11 => a[..11] == b[..11],
+            12 => a[..12] == b[..12],
+            13 => a[..13] == b[..13],
+            14 => a[..14] == b[..14],
+            15 => a[..15] == b[..15],
+            16 => a[..16] == b[..16],
+            _ => a == b,
+        }
+    }
+
     #[inline]
     fn key_at<'a>(arena: &'a [u8], entry: &Entry) -> &'a [u8] {
         let start = entry.offset as usize;
@@ -182,7 +216,9 @@ impl Encoder {
             if entry.len == u32::MAX {
                 return None;
             }
-            if entry.len as usize == key.len() && Self::key_at(&self.arena, &entry) == key {
+            if entry.len as usize == key.len()
+                && Self::same_bytes(Self::key_at(&self.arena, &entry), key)
+            {
                 return Some(entry.id);
             }
             slot = (slot + 1) & mask;
