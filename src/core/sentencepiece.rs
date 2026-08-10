@@ -370,27 +370,88 @@ impl SentencePieceTokenizer {
             // pieces. A pre-tokenizer that returns no words (pure whitespace)
             // yields no ids, which is what the reference does.
             Some(pre) => {
-                for word in pre.split_pieces(&normalized) {
-                    let escaped =
-                        super::metaspace::escape(&word, prefix, self.remove_extra_whitespaces);
-                    for segment in super::metaspace::segments(&escaped) {
-                        self.segment_into(segment, &mut tokens, &mut chars, &mut lattice);
+                // Streamed rather than collected, and escaped into one reused
+                // buffer: the collected form allocated a `String` per word for
+                // the split and another for the escape.
+                let mut escaped = String::new();
+                pre.for_each_piece(&normalized, |word| {
+                    if self.marked_word_into(word, prefix, &mut tokens, &mut chars, &mut lattice) {
+                        return;
                     }
-                }
+                    super::metaspace::escape_into(
+                        word,
+                        prefix,
+                        self.remove_extra_whitespaces,
+                        &mut escaped,
+                    );
+                    super::metaspace::for_each_segment(&escaped, |segment| {
+                        self.segment_into(segment, &mut tokens, &mut chars, &mut lattice);
+                    });
+                });
             }
             // Classic SentencePiece pre-tokenization: spaces become `▁` pieces
             // (they are vocabulary entries, not delimiters to discard) and the
             // text is cut before each marker. Each segment is then
             // Viterbi-segmented independently.
             None => {
-                let escaped =
-                    super::metaspace::escape(&normalized, prefix, self.remove_extra_whitespaces);
-                for segment in super::metaspace::segments(&escaped) {
+                let mut escaped = String::new();
+                super::metaspace::escape_into(
+                    &normalized,
+                    prefix,
+                    self.remove_extra_whitespaces,
+                    &mut escaped,
+                );
+                super::metaspace::for_each_segment(&escaped, |segment| {
                     self.segment_into(segment, &mut tokens, &mut chars, &mut lattice);
-                }
+                });
             }
         }
         tokens
+    }
+
+    /// Append the ids of a word whose escaped form is just a marker and the
+    /// word, reporting whether it applied.
+    ///
+    /// Escaping such a word copies it into a buffer to prepend three known
+    /// bytes, and a cache hit then throws the copy away — so the cache is asked
+    /// about the *word* and the copy is made only when it misses.
+    ///
+    /// # Why the two key spaces cannot collide
+    ///
+    /// This path keys on a word that does not begin with the marker; every key
+    /// the escaped path stores does begin with one, because `WhenAbsent`
+    /// prepends a marker to exactly the words that lack one and a segment
+    /// starts at its marker. The conditions below are what hold that apart:
+    /// another prefix mode, a word already carrying a marker, or a word
+    /// containing a space (which would escape to more than one segment) all go
+    /// the escaped way.
+    fn marked_word_into(
+        &self,
+        word: &str,
+        prefix: super::metaspace::Prefix,
+        tokens: &mut Vec<u32>,
+        chars: &mut Vec<char>,
+        lattice: &mut Lattice,
+    ) -> bool {
+        let key = word.as_bytes();
+        if prefix != super::metaspace::Prefix::WhenAbsent
+            || key.len() > MAX_CACHED_SEGMENT
+            || word.starts_with(super::metaspace::WORD_BOUNDARY)
+            || word.contains(' ')
+        {
+            return false;
+        }
+        let hash = super::tokenizer::cache::ChunkCache::shard_hash(key);
+        if self.cache.extend_into(hash, key, tokens) {
+            return true;
+        }
+        let mark = tokens.len();
+        chars.clear();
+        chars.extend(super::metaspace::WORD_BOUNDARY.chars());
+        chars.extend(word.chars());
+        self.viterbi_piece(chars, tokens, lattice);
+        self.cache.put(hash, key, &tokens[mark..]);
+        true
     }
 
     /// Append one segment's ids to `tokens`, through the cache.
@@ -813,6 +874,44 @@ mod tests {
     use super::*;
     use crate::core::metaspace::WORD_BOUNDARY;
     use proptest::prelude::*;
+
+    /// A word and that word already carrying a marker must not answer for each
+    /// other in the segment cache.
+    ///
+    /// `marked_word_into` keys on the bare word and means "this word with a
+    /// marker in front"; the escaped path keys on text that already starts with
+    /// one. If those two key spaces ever overlapped, whichever was seen first
+    /// would answer for the other and the ids would be silently wrong — so this
+    /// encodes both in one text, in both orders.
+    #[test]
+    fn a_bare_word_and_a_marked_word_do_not_share_a_cache_entry() {
+        use crate::core::pretokenizer::{PreTokStage, PreTokenizer};
+
+        let tokens = vec![
+            "<unk>".to_string(),          // 0
+            format!("{WORD_BOUNDARY}ab"), // 1
+            "ab".to_string(),             // 2
+            WORD_BOUNDARY.to_string(),    // 3
+        ];
+        let scores = vec![0.0, 0.0, -1.0, -1.0];
+        let split = PreTokenizer::new(vec![PreTokStage::WhitespaceSplit]).unwrap();
+        let tok = SentencePieceTokenizer::new(tokens, scores, Some(0), 0)
+            .unwrap()
+            .with_word_split(split);
+
+        // Bare word: escapes to `▁ab`, one token.
+        assert_eq!(tok.encode_ordinary("ab"), vec![1]);
+        // Already marked: `▁` is already there, so it must not gain another —
+        // and must not be answered by the entry the bare word left behind.
+        assert_eq!(tok.encode_ordinary(&format!("{WORD_BOUNDARY}ab")), vec![1]);
+
+        // Both orders, in one encode each, so a stale entry from the first word
+        // would show up in the second.
+        let bare_first = tok.encode_ordinary(&format!("ab {WORD_BOUNDARY}ab"));
+        let marked_first = tok.encode_ordinary(&format!("{WORD_BOUNDARY}ab ab"));
+        assert_eq!(bare_first, vec![1, 1], "bare-then-marked");
+        assert_eq!(marked_first, vec![1, 1], "marked-then-bare");
+    }
 
     fn make_tokenizer() -> SentencePieceTokenizer {
         // Minimal vocab: ▁Hello, ▁world, ▁, <0x48> (byte fallback for 'H')

@@ -339,7 +339,14 @@ impl ChunkCache {
             tiers.long_tags[index] = tag;
             return;
         }
-        debug_assert!(ids.len() <= MAX_IDS, "ids outnumber the chunk's bytes");
+        // Normally unreachable — a chunk's ids each consume at least one of its
+        // bytes, so a key that fits inline cannot produce ids that do not. A
+        // caller whose key stands for slightly more text than it contains can
+        // break that, and declining to cache is the right answer where
+        // overflowing the slot would be a panic.
+        if ids.len() > MAX_IDS {
+            return;
+        }
         let index = Self::insert_slot(&tiers.inline_tags, home, hash, tag, |i| {
             let slot = &tiers.inline[i];
             slot.klen as usize == key.len() && slot.key[..key.len()] == *key
