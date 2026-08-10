@@ -8,7 +8,7 @@
 
 use std::convert::Infallible;
 
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, Anchored, Input, MatchKind, StartKind};
 use rustc_hash::FxHashMap;
 
 use super::policy::{PolicyError, SpecialMode};
@@ -142,11 +142,147 @@ impl FromIterator<(String, AddedToken)> for AddedTokenSet {
     }
 }
 
+/// Where a match can begin, tested before the automaton is entered.
+///
+/// Aho-Corasick picks its own prefilter from bytes that are rare *across the
+/// patterns*, which is not the same as rare in the text being scanned. DeepSeek
+/// is the case that shows the difference: 1,282 of its 1,283 added tokens open
+/// with `<`, which is 0.0035% of Chinese text, but the one that does not opens
+/// with `｜` — and that character's lead byte, `0xEF`, is 1.5% of Chinese text,
+/// because it also leads every fullwidth comma and period. The automaton was
+/// being entered tens of thousands of times per megabyte to fail on the second
+/// byte.
+///
+/// Testing that second byte is the whole idea: `｜` is `EF BD 9C` and `，` is
+/// `EF BC 8C`, so one bit lookup separates them. A prefilter can only ever skip
+/// positions where no pattern *could* start, so this cannot change which matches
+/// are found — only how quickly the misses are dismissed.
+#[derive(Clone)]
+struct StartBytes {
+    /// The distinct bytes any pattern opens with. Built only when there are
+    /// three or fewer, which is what `memchr3` and its narrower forms cover.
+    first: Vec<u8>,
+    /// One bit per `(first, second)` byte pair some pattern opens with. A
+    /// one-byte pattern sets its whole row: anything may follow it.
+    pairs: Box<[u64; 1024]>,
+}
+
+impl StartBytes {
+    /// The set for `patterns`, or `None` when they open with too many distinct
+    /// bytes for a byte scan to be selective.
+    fn new(patterns: &[&str]) -> Option<Self> {
+        let mut first: Vec<u8> = Vec::new();
+        let mut pairs = Box::new([0u64; 1024]);
+        for pattern in patterns {
+            let bytes = pattern.as_bytes();
+            let &lead = bytes.first()?;
+            if !first.contains(&lead) {
+                first.push(lead);
+                if first.len() > 3 {
+                    return None;
+                }
+            }
+            match bytes.get(1) {
+                Some(&second) => {
+                    let bit = (lead as usize) << 8 | second as usize;
+                    pairs[bit >> 6] |= 1 << (bit & 63);
+                }
+                // Nothing has to follow a one-byte pattern.
+                None => {
+                    for slot in &mut pairs[(lead as usize) << 2..(lead as usize) << 2 | 4] {
+                        *slot = u64::MAX;
+                    }
+                }
+            }
+        }
+        Some(Self { first, pairs })
+    }
+
+    /// Whether a pattern may open at `pos`.
+    #[inline]
+    fn admits(&self, haystack: &[u8], pos: usize) -> bool {
+        let bit = (haystack[pos] as usize) << 8 | *haystack.get(pos + 1).unwrap_or(&0) as usize;
+        self.pairs[bit >> 6] & 1 << (bit & 63) != 0
+    }
+
+    /// The next position at or after `from` where a pattern may open.
+    #[inline]
+    fn next(&self, haystack: &[u8], from: usize) -> Option<usize> {
+        let mut at = from;
+        loop {
+            let found = match *self.first.as_slice() {
+                [a] => memchr::memchr(a, &haystack[at..]),
+                [a, b] => memchr::memchr2(a, b, &haystack[at..]),
+                [a, b, c] => memchr::memchr3(a, b, c, &haystack[at..]),
+                _ => unreachable!("StartBytes holds one to three lead bytes"),
+            }?;
+            let pos = at + found;
+            if self.admits(haystack, pos) {
+                return Some(pos);
+            }
+            at = pos + 1;
+        }
+    }
+}
+
+/// The match stream behind [`AddedTokens::find_iter`].
+///
+/// Two shapes because the scan can be driven from either side: by the automaton
+/// when it has to find its own candidates, and by [`StartBytes`] when it does
+/// not.
+enum Matches<'a, 'h> {
+    Scan(aho_corasick::FindIter<'a, 'h>),
+    Candidates {
+        matcher: &'a AhoCorasick,
+        starts: &'a StartBytes,
+        text: &'h str,
+        at: usize,
+    },
+}
+
+impl Iterator for Matches<'_, '_> {
+    type Item = aho_corasick::Match;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Matches::Scan(iter) => iter.next(),
+            Matches::Candidates {
+                matcher,
+                starts,
+                text,
+                at,
+            } => loop {
+                let pos = starts.next(text.as_bytes(), *at)?;
+                let found = matcher
+                    .try_find(
+                        Input::new(text)
+                            .span(pos..text.len())
+                            .anchored(Anchored::Yes),
+                    )
+                    .ok()
+                    .flatten();
+                match found {
+                    // Non-overlapping, as the automaton's own scan is: the next
+                    // candidate is sought past the match, not inside it.
+                    Some(m) => {
+                        *at = m.end().max(pos + 1);
+                        return Some(m);
+                    }
+                    None => *at = pos + 1,
+                }
+            },
+        }
+    }
+}
+
 /// An Aho-Corasick matcher over a set of added-token strings → [`AddedToken`]s.
 #[derive(Clone)]
 pub struct AddedTokens {
     matcher: AhoCorasick,
     tokens: Vec<AddedToken>,
+    /// Drives the scan when the patterns open with few enough distinct bytes,
+    /// leaving the automaton to verify candidates rather than find them.
+    starts: Option<StartBytes>,
 }
 
 impl AddedTokens {
@@ -175,8 +311,42 @@ impl AddedTokens {
         // which would split the run into several short tokens.
         let matcher = AhoCorasickBuilder::new()
             .match_kind(MatchKind::LeftmostLongest)
+            // Anchored searches are what let the scan be driven from outside:
+            // the prefilter finds a candidate and the automaton is asked only
+            // whether a pattern starts *there*.
+            .start_kind(StartKind::Both)
             .build(&patterns)?;
-        Ok(Some(Self { matcher, tokens }))
+        // Both halves have to hold: enough selectivity in the lead bytes, and an
+        // automaton that will answer anchored questions. An automaton that will
+        // not simply keeps its own scan.
+        let anchored_supported = matcher
+            .try_find(Input::new("").anchored(Anchored::Yes))
+            .is_ok();
+        let starts = anchored_supported
+            .then(|| StartBytes::new(&patterns))
+            .flatten();
+        Ok(Some(Self {
+            matcher,
+            tokens,
+            starts,
+        }))
+    }
+
+    /// Every match in `text`, leftmost-longest, non-overlapping.
+    ///
+    /// Driven by [`StartBytes`] when the patterns allow it, and by the
+    /// automaton's own scan otherwise. The two enumerate the same matches: a
+    /// candidate the prefilter skips is a position where no pattern begins.
+    fn find_iter<'h>(&self, text: &'h str) -> Matches<'_, 'h> {
+        match &self.starts {
+            Some(starts) => Matches::Candidates {
+                matcher: &self.matcher,
+                starts,
+                text,
+                at: 0,
+            },
+            None => Matches::Scan(self.matcher.find_iter(text)),
+        }
     }
 
     /// The id of the added token occupying byte 0 of `text`, if any.
@@ -283,7 +453,7 @@ impl AddedTokens {
     {
         let mut out = Vec::new();
         let mut last = 0;
-        for m in self.matcher.find_iter(text) {
+        for m in self.find_iter(text) {
             // A previous token's `rstrip` can reach past this match: the matcher
             // runs over the whole text, and whitespace itself can be an added
             // token (gpt-neox declares whole space runs). Such a match no longer
@@ -389,6 +559,76 @@ mod tests {
     /// Encode gaps as their raw bytes so any leftover text is visible in the ids.
     fn bytes(gap: &str) -> Vec<u32> {
         gap.bytes().map(u32::from).collect()
+    }
+
+    /// The prefilter must not change which matches are found, only how the
+    /// scan reaches them — so it is checked against the automaton's own scan on
+    /// generated text, not on hand-picked strings.
+    ///
+    /// The alphabet is the one that made the prefilter worth building: patterns
+    /// that nearly all share a lead byte, one that does not, and text full of
+    /// characters sharing that odd lead byte without matching it (`｜` is
+    /// `EF BD 9C`, `，` is `EF BC 8C`).
+    #[test]
+    fn the_prefilter_finds_exactly_what_the_automaton_finds() {
+        use proptest::prelude::*;
+
+        let set = plain_set(&[
+            ("<|start|>", 1),
+            ("<|end|>", 2),
+            ("<pad>", 3),
+            ("｜DSML｜", 4),
+            ("<", 5),
+        ]);
+        let added = AddedTokens::new(&set).expect("builds").expect("non-empty");
+        assert!(
+            added.starts.is_some(),
+            "these patterns open with two distinct bytes and must take the prefilter"
+        );
+
+        let pieces = [
+            "<|start|>",
+            "<|end|>",
+            "<pad>",
+            "｜DSML｜",
+            "<",
+            "，",
+            "。",
+            "中",
+            "a",
+            " ",
+            "<|",
+            "｜",
+            "<p",
+            "\n",
+        ];
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        let strategy = proptest::collection::vec(0usize..pieces.len(), 0..24);
+        runner
+            .run(&strategy, |picks| {
+                let text: String = picks.iter().map(|&i| pieces[i]).collect();
+                let mine: Vec<_> = added
+                    .find_iter(&text)
+                    .map(|m| (m.start(), m.end(), m.pattern().as_usize()))
+                    .collect();
+                let theirs: Vec<_> = added
+                    .matcher
+                    .find_iter(text.as_str())
+                    .map(|m| (m.start(), m.end(), m.pattern().as_usize()))
+                    .collect();
+                prop_assert_eq!(mine, theirs, "diverged on {:?}", text);
+                Ok(())
+            })
+            .expect("the prefilter must agree with the automaton on every generated string");
+    }
+
+    /// Too many distinct lead bytes for a byte scan to be selective, so the
+    /// automaton keeps its own.
+    #[test]
+    fn the_prefilter_declines_patterns_with_many_lead_bytes() {
+        let set = plain_set(&[("a", 1), ("b", 2), ("c", 3), ("d", 4)]);
+        let added = AddedTokens::new(&set).expect("builds").expect("non-empty");
+        assert!(added.starts.is_none());
     }
 
     #[test]

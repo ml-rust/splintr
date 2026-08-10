@@ -1340,6 +1340,7 @@ dependencies = [
  "base64",
  "fluxbench",
  "lru",
+ "memchr",
  "pcre2",
  "proptest",
  "pyo3",
