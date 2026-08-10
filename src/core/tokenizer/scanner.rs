@@ -1318,11 +1318,39 @@ fn deepseek_pass3_match(text: &str, bytes: &[u8], pos: usize, stop_at_cjk: bool)
     }
 
     if space_at(text, bytes, pos).is_some() {
+        // `\s+(?!\S)` gives a character back so the lookahead sees whitespace
+        // rather than what ends the run — but only when something follows the
+        // run *in the piece this pass was given*. Passes 1 and 2 cut that piece
+        // at the next digit or CJK character, so a run ending at one ends the
+        // piece, the lookahead holds, and the run is taken whole. Newlines are
+        // an earlier branch and unaffected by what follows.
+        if stop_at_cjk {
+            let run_end = scan_run(text, bytes, pos, space_at);
+            if run_end < len
+                && !bytes[pos..run_end]
+                    .iter()
+                    .any(|&b| b == b'\r' || b == b'\n')
+                && earlier_pass_starts_at(text, bytes, run_end)
+            {
+                return Some(run_end);
+            }
+        }
         let (_, e) = whitespace_span(text, bytes, pos, WhitespaceOrder::NewlineFirst);
         return Some(e);
     }
 
     None
+}
+
+/// Whether pass 1 or pass 2 claims the character at `pos` — that is, whether the
+/// piece pass 3 used to be given ends here.
+#[inline]
+fn earlier_pass_starts_at(text: &str, bytes: &[u8], pos: usize) -> bool {
+    if bytes[pos] < 0x80 {
+        return bytes[pos].is_ascii_digit();
+    }
+    let (c, _) = char_at(text, pos);
+    is_deepseek_cjk(c) || is_number_char(c)
 }
 
 /// `[\p{L}\p{M}]` minus the characters DeepSeek's second pass claims.
@@ -1648,6 +1676,16 @@ mod fused_tests {
             "1234567890",
             "a\u{301}combining",
             "ＦＵＬＬＷＩＤＴＨ",
+            // A whitespace run ending where pass 1 or pass 2 cut the piece:
+            // `\s+(?!\S)` reaches the end of the piece there, so the run is
+            // taken whole rather than giving its last character back.
+            "  0",
+            "  中",
+            "\u{a0} 中",
+            "\u{3000}\t5b",
+            "a \u{a0}\u{a0}文0",
+            "x  \r\n  1",
+            " \u{a0}\u{3000} ひ",
         ];
         for text in cases {
             assert_eq!(fused(text), staged(text), "fused walk diverged on {text:?}");
@@ -1665,7 +1703,7 @@ mod fused_tests {
         // CJK and kana (pass 2), letters and marks, punctuation, symbols,
         // whitespace, newlines, and characters no pass claims.
         let alphabet: Vec<char> =
-            "ab_Zé中文ひカ0159 \t\n\r.,!?#$@'\u{200d}\u{301}\u{0}\u{7f}\u{ad}αДไ🎉"
+            "ab_Zé中文ひカ0159 \t\n\r\u{a0}\u{3000}.,!?#$@'\u{200d}\u{301}\u{0}\u{7f}\u{ad}αДไ🎉²"
                 .chars()
                 .collect();
         let mut runner = proptest::test_runner::TestRunner::deterministic();
