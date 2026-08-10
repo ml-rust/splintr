@@ -69,6 +69,11 @@ pub(crate) enum Seeding {
     Chars,
     /// One symbol per byte of a raw, unmapped piece.
     RawBytes,
+    /// [`Seeding::RawBytes`], but with every character the vocabulary says can
+    /// be seeded whole taking one symbol instead of its bytes. A character it
+    /// does not vouch for still seeds as bytes, in the same piece — the
+    /// judgement is per character.
+    RawChars,
 }
 
 /// One output of the merge phase: either a resolved token, or a run of bytes
@@ -212,6 +217,34 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
         Seeding::Bytes if merge_ranks.by_id().is_some_and(|t| t.seeds_by_char()) => Seeding::Chars,
         other => other,
     };
+
+    // Mixed seeding cannot be sized ahead of the walk that produces it — how
+    // many symbols a piece has is exactly what the walk decides — so it seeds
+    // into the buffer that grows, and the strategy is chosen afterwards from the
+    // count that came out. Long pieces, which is where this earns its keep, take
+    // that buffer anyway.
+    if seeding == Seeding::RawChars {
+        let table = merge_ranks
+            .by_id()
+            .expect("RawChars is only chosen when the id table vouched for a character");
+        // Always the reused buffer, never the stack array the other seedings
+        // take for a short piece: declaring that array costs a kilobyte of
+        // stack writes per call, and measured against this path it loses on
+        // every script — including the ones whose pieces are short.
+        return with_merge_scratch(|s| {
+            s.nodes.clear();
+            s.nodes.reserve(piece.len());
+            walk_raw_chars(piece, table, |node| s.nodes.push(node));
+            merge_and_collect_ids_into(
+                piece,
+                &mut s.nodes,
+                merge_ranks,
+                id_encoder,
+                out,
+                &mut s.queue,
+            );
+        });
+    }
     let symbols = symbol_count(piece, seeding == Seeding::Chars);
     if prefers_scan(piece, symbols) {
         let mut buf = [Node::PLACEHOLDER; SCAN_SYMBOL_LIMIT];
@@ -309,6 +342,50 @@ fn symbol_count(piece: &[u8], char_granular: bool) -> usize {
 /// merge phase once that length is known.
 /// Seed `nodes` into a buffer the caller is reusing, so a long piece costs no
 /// allocation once that buffer has grown to fit one.
+/// Seed one symbol per character the vocabulary vouches for, and one per byte
+/// for every other character.
+///
+/// The two are interleaved freely within a piece: whether a character may be
+/// pre-assembled is decided from the vocabulary alone and does not depend on
+/// what sits beside it, so a piece needs no single answer.
+fn walk_raw_chars(piece: &[u8], table: &PairRanks, mut emit: impl FnMut(Node)) {
+    let mut at = 0;
+    while at < piece.len() {
+        // A lead byte's high bits give the character's length; anything that is
+        // not one starts a byte the walk cannot group, which the `1` covers.
+        let len = match piece[at] {
+            b if b < 0x80 => 1,
+            b if b >> 5 == 0b110 => 2,
+            b if b >> 4 == 0b1110 => 3,
+            b if b >> 3 == 0b11110 => 4,
+            _ => 1,
+        }
+        .min(piece.len() - at);
+
+        let id = table.char_seed(&piece[at..at + len]);
+        if len > 1 && id != u32::MAX {
+            emit(Node {
+                prev: 0,
+                next: 0,
+                start: at,
+                len,
+                id,
+            });
+        } else {
+            for (offset, &byte) in piece[at..at + len].iter().enumerate() {
+                emit(Node {
+                    prev: 0,
+                    next: 0,
+                    start: at + offset,
+                    len: 1,
+                    id: table.raw_byte_id(byte),
+                });
+            }
+        }
+        at += len;
+    }
+}
+
 fn seed_nodes_reusing(
     piece: &[u8],
     seeding: Seeding,

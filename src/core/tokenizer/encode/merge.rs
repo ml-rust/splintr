@@ -115,7 +115,10 @@ impl Tokenizer {
 
         let Some(fallback) = fallback else {
             let seeding = match (self.merges_raw(), char_granular) {
-                (true, _) => Seeding::RawBytes,
+                (true, _) => match ranks.by_id().is_some_and(|t| t.seeds_chars()) {
+                    true => Seeding::RawChars,
+                    false => Seeding::RawBytes,
+                },
                 (false, true) => Seeding::Chars,
                 (false, false) => Seeding::Bytes,
             };

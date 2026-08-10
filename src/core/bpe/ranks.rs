@@ -278,6 +278,9 @@ pub(crate) struct PairRanks {
     /// merged without ever entering ByteLevel space: the merge only ever needs
     /// its symbols' ids, and this supplies them from the input bytes directly.
     raw_byte_ids: Option<Box<[u32; 256]>>,
+    /// Id per character a merge may start from already assembled, indexed by
+    /// codepoint — see [`CharSeeds`] and [`PairRanks::char_seeds`].
+    char_seeds: Option<CharSeeds>,
 }
 
 impl PairRanks {
@@ -314,6 +317,27 @@ impl PairRanks {
     #[inline]
     pub(crate) fn seeds_raw(&self) -> bool {
         self.raw_byte_ids.is_some()
+    }
+
+    /// The id of the whole character `bytes` spells, or `u32::MAX` when it must
+    /// be merged up from its bytes instead.
+    ///
+    /// A direct index rather than a hash, because this is asked once per
+    /// character of every chunk that reaches the merge and the answer is often
+    /// *no* — a script whose characters mostly fail the test would otherwise pay
+    /// a probe per character to learn nothing.
+    #[inline]
+    pub(crate) fn char_seed(&self, bytes: &[u8]) -> u32 {
+        match &self.char_seeds {
+            Some(seeds) => seeds.get(bytes),
+            None => u32::MAX,
+        }
+    }
+
+    /// Whether any character can be seeded whole.
+    #[inline]
+    pub(crate) fn seeds_chars(&self) -> bool {
+        self.char_seeds.is_some()
     }
 
     /// The id of the token a raw input byte stands for. Only called when
@@ -404,6 +428,7 @@ impl PairRanks {
             // All or nothing: the raw path has no way to render a byte the
             // alphabet does not cover, and falling back mid-piece would mean
             // merging raw bytes against a map keyed in ByteLevel space.
+            char_seeds: None,
             raw_byte_ids: raw_encoder.and_then(|raw| {
                 let mut ids = Box::new([u32::MAX; 256]);
                 for (byte, slot) in ids.iter_mut().enumerate() {
@@ -440,13 +465,23 @@ impl PairRanks {
 
         // Identical maps mean the id is the rank, and the array would be
         // `rank_by_id[i] == i`.
-        if !std::ptr::eq(rank_map, id_encoder) {
+        let ranks = (!std::ptr::eq(rank_map, id_encoder)).then(|| {
             let mut ranks = vec![u32::MAX; max_id as usize + 1].into_boxed_slice();
             for (key, rank) in rank_map {
                 if let Some(id) = id_encoder.get(key) {
                     ranks[id as usize] = rank;
                 }
             }
+            ranks
+        });
+        let rank_of = |id: u32| match &ranks {
+            Some(ranks) => ranks[id as usize],
+            None => id,
+        };
+
+        table.char_seeds = raw_encoder.map(|raw| Self::char_seeds(raw, &rank_of));
+
+        if let Some(ranks) = ranks {
             // The merge loop only ever *compares* ranks, so a vocabulary that
             // numbers its tokens in merge order — which is what a model whose
             // ids were assigned as its merges were learned does — needs no
@@ -464,6 +499,75 @@ impl PairRanks {
         }
 
         Some(table)
+    }
+
+    /// The characters a merge may start from already assembled, keyed by their
+    /// raw bytes.
+    ///
+    /// A merge that seeds a character whole skips the merges that would have
+    /// built it out of its bytes. That is only the same computation if those
+    /// merges were going to happen anyway, before anything else could touch the
+    /// character's bytes — which is what this decides, per character, from the
+    /// vocabulary alone.
+    ///
+    /// A character `c` qualifies when **every token that could take a piece of
+    /// it from a neighbour ranks above `c` itself**: no token ending in a proper
+    /// prefix of `c` merges earlier than `c` does, and none beginning with a
+    /// proper suffix of `c` does either. Then nothing can reach into `c` before
+    /// it is whole, so byte seeding always assembles it first and pre-assembling
+    /// it changes nothing.
+    ///
+    /// That single condition is enough on its own. It might look as though a
+    /// merge *consuming* the finished character also needs checking — under byte
+    /// seeding such a merge has to wait for `c`, and pre-assembly would let it
+    /// fire earlier — but any token containing `c` is built either from `c`
+    /// itself or from a token straddling `c`'s edge, and the condition already
+    /// puts both above `c`. So no merge involving the whole character can
+    /// outrank the character.
+    ///
+    /// Characters failing the test are simply left out, and seed as their bytes
+    /// exactly as before; the decision is per character and needs nothing from
+    /// its neighbours.
+    fn char_seeds(raw: &Encoder, rank_of: &impl Fn(u32) -> u32) -> CharSeeds {
+        // Lowest rank among tokens having each short byte string as a *proper*
+        // suffix, and as a proper prefix. Only lengths a character's proper
+        // prefixes and suffixes can take are worth recording.
+        let mut min_suffix: rustc_hash::FxHashMap<u32, u32> = rustc_hash::FxHashMap::default();
+        let mut min_prefix: rustc_hash::FxHashMap<u32, u32> = rustc_hash::FxHashMap::default();
+        for (key, id) in raw {
+            let rank = rank_of(id);
+            for len in 1..key.len().min(SYMBOL_MAX) {
+                let head = SymbolIds::pack_key(&key[..len]) as u32;
+                let tail = SymbolIds::pack_key(&key[key.len() - len..]) as u32;
+                let slot = min_prefix.entry(head).or_insert(u32::MAX);
+                *slot = (*slot).min(rank);
+                let slot = min_suffix.entry(tail).or_insert(u32::MAX);
+                *slot = (*slot).min(rank);
+            }
+        }
+
+        let mut safe: Vec<(&[u8], u32)> = Vec::new();
+        for (key, id) in raw {
+            if key.len() > SYMBOL_MAX || !Self::is_one_character(key) {
+                continue;
+            }
+            let rank = rank_of(id);
+            let reachable = (1..key.len()).any(|at| {
+                let head = SymbolIds::pack_key(&key[..at]) as u32;
+                let tail = SymbolIds::pack_key(&key[at..]) as u32;
+                min_suffix.get(&head).is_some_and(|&r| r < rank)
+                    || min_prefix.get(&tail).is_some_and(|&r| r < rank)
+            });
+            if !reachable {
+                safe.push((key, id));
+            }
+        }
+        CharSeeds::new(&safe)
+    }
+
+    /// Whether `key` spells exactly one character.
+    fn is_one_character(key: &[u8]) -> bool {
+        std::str::from_utf8(key).is_ok_and(|text| text.chars().nth(1).is_none())
     }
 
     #[inline]
@@ -503,6 +607,77 @@ impl PairRanks {
         match &self.rank_by_id {
             Some(ranks) => ranks[id as usize],
             None => id,
+        }
+    }
+}
+
+/// Lowest codepoint spelled with two UTF-8 bytes, and the lowest spelled with
+/// three — the bases the two tables are indexed from.
+const TWO_BYTE_BASE: u32 = 0x80;
+const THREE_BYTE_BASE: u32 = 0x800;
+/// One past the highest codepoint spelled with three bytes.
+const FOUR_BYTE_BASE: u32 = 0x1_0000;
+
+/// Id per character that may be seeded whole, indexed by codepoint.
+///
+/// `u32::MAX` where the character is absent from the vocabulary or failed the
+/// test in [`PairRanks::char_seeds`]. Both tables together are a quarter of a
+/// megabyte and answer in one load, which is the point: the question is asked
+/// per character and the answer is often no.
+#[derive(Clone)]
+struct CharSeeds {
+    two: Box<[u32]>,
+    three: Box<[u32]>,
+}
+
+impl CharSeeds {
+    fn new(entries: &[(&[u8], u32)]) -> Self {
+        let mut seeds = Self {
+            two: vec![u32::MAX; (THREE_BYTE_BASE - TWO_BYTE_BASE) as usize].into_boxed_slice(),
+            three: vec![u32::MAX; (FOUR_BYTE_BASE - THREE_BYTE_BASE) as usize].into_boxed_slice(),
+        };
+        for (key, id) in entries {
+            let Some(codepoint) = std::str::from_utf8(key)
+                .ok()
+                .and_then(|text| text.chars().next())
+                .map(u32::from)
+            else {
+                continue;
+            };
+            match key.len() {
+                2 => seeds.two[(codepoint - TWO_BYTE_BASE) as usize] = *id,
+                3 => seeds.three[(codepoint - THREE_BYTE_BASE) as usize] = *id,
+                // One byte is already one symbol, and four-byte characters are
+                // too rare to spend a third table on.
+                _ => {}
+            }
+        }
+        seeds
+    }
+
+    /// The id of the character `bytes` spells, or `u32::MAX`.
+    ///
+    /// `bytes` is one whole character as the seeding walk cut it, so its length
+    /// is what selects the table and its continuation bytes need no validation.
+    #[inline]
+    fn get(&self, bytes: &[u8]) -> u32 {
+        match *bytes {
+            [b0, b1] => {
+                let codepoint = (b0 as u32 & 0x1F) << 6 | (b1 as u32 & 0x3F);
+                match codepoint.checked_sub(TWO_BYTE_BASE) {
+                    Some(at) => self.two[at as usize],
+                    None => u32::MAX,
+                }
+            }
+            [b0, b1, b2] => {
+                let codepoint =
+                    (b0 as u32 & 0x0F) << 12 | (b1 as u32 & 0x3F) << 6 | (b2 as u32 & 0x3F);
+                match codepoint.checked_sub(THREE_BYTE_BASE) {
+                    Some(at) => self.three[at as usize],
+                    None => u32::MAX,
+                }
+            }
+            _ => u32::MAX,
         }
     }
 }

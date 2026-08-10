@@ -730,3 +730,182 @@ proptest! {
         }
     }
 }
+
+/// Seeding a character whole must be the same computation as merging it up from
+/// its bytes — which is a claim about the *vocabulary*, so it is checked against
+/// a vocabulary built the way real ones are: by actually running BPE merges over
+/// a corpus until the merge list contains tokens that straddle character
+/// boundaries, which is exactly what makes the naive version of this unsound.
+mod char_seeding {
+    use super::*;
+    use crate::core::bpe::ranks::PairRanks;
+    use crate::core::byte_level::byte_level_encode;
+
+    /// A corpus with three scripts and a lot of repetition, so the merges it
+    /// trains include whole characters, multi-character words, and pieces that
+    /// cut across character boundaries.
+    const CORPUS: &[&str] = &[
+        "中国人民",
+        "中文字典",
+        "人民日报",
+        "日本語",
+        "日本の中国",
+        "the quick brown",
+        "the中国",
+        " 中国 the",
+        "한국어",
+        "한국 사람",
+        "中国한국",
+        "quick中",
+        "языки",
+        "я中国",
+    ];
+
+    /// One BPE training run: start from single bytes and merge the most frequent
+    /// adjacent pair, assigning ids in merge order.
+    ///
+    /// Ids in merge order is what real vocabularies do and what lets rank and id
+    /// be the same number, so the table under test takes its ordinary path.
+    fn train(merges: usize) -> (Encoder, Encoder) {
+        let mut words: Vec<Vec<Vec<u8>>> = CORPUS
+            .iter()
+            .map(|w| w.as_bytes().iter().map(|&b| vec![b]).collect())
+            .collect();
+        // The alphabet first: every byte value, so any input can be seeded.
+        let mut raw: Vec<Vec<u8>> = (0..=u8::MAX).map(|b| vec![b]).collect();
+
+        for _ in 0..merges {
+            let mut counts: FxHashMap<(Vec<u8>, Vec<u8>), usize> = FxHashMap::default();
+            for word in &words {
+                for pair in word.windows(2) {
+                    *counts
+                        .entry((pair[0].clone(), pair[1].clone()))
+                        .or_default() += 1;
+                }
+            }
+            // Deterministic: most frequent, ties broken by the pair itself.
+            let Some((best, _)) = counts
+                .into_iter()
+                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+            else {
+                break;
+            };
+            let mut joined = best.0.clone();
+            joined.extend_from_slice(&best.1);
+            if raw.contains(&joined) {
+                break;
+            }
+            raw.push(joined.clone());
+            for word in &mut words {
+                let mut at = 0;
+                while at + 1 < word.len() {
+                    if word[at] == best.0 && word[at + 1] == best.1 {
+                        word[at] = joined.clone();
+                        word.remove(at + 1);
+                    } else {
+                        at += 1;
+                    }
+                }
+            }
+        }
+
+        let raw_encoder: Encoder = raw
+            .iter()
+            .enumerate()
+            .map(|(id, bytes)| (bytes.as_slice(), id as u32))
+            .collect();
+        let mapped: Vec<(String, u32)> = raw
+            .iter()
+            .enumerate()
+            .map(|(id, bytes)| (byte_level_encode(bytes), id as u32))
+            .collect();
+        let id_encoder: Encoder = mapped
+            .iter()
+            .map(|(text, id)| (text.as_bytes(), *id))
+            .collect();
+        (id_encoder, raw_encoder)
+    }
+
+    /// The vocabulary must actually contain the hazard, or the property below
+    /// would pass by never meeting it.
+    #[test]
+    fn the_trained_vocabulary_contains_straddling_tokens() {
+        let (_, raw_encoder) = train(400);
+        let straddling = raw_encoder
+            .keys()
+            .filter(|key| {
+                std::str::from_utf8(key).is_err()
+                    && key[1..].iter().any(|&b| !(0x80..0xC0).contains(&b))
+            })
+            .count();
+        assert!(
+            straddling > 0,
+            "the training corpus must produce tokens crossing character boundaries"
+        );
+    }
+
+    #[test]
+    fn seeding_characters_whole_matches_seeding_their_bytes() {
+        let (id_encoder, raw_encoder) = train(400);
+        // A separate rank map, as a model with its own `merges` list has: the
+        // ranks happen to equal the ids here, which is what a vocabulary
+        // numbered in merge order gives.
+        let rank_map = id_encoder.clone();
+        let table = PairRanks::build(&rank_map, &id_encoder, Some(&raw_encoder))
+            .expect("the trained vocabulary is addressable by id");
+        assert!(
+            table.seeds_chars(),
+            "some character of this vocabulary must be safe to seed whole"
+        );
+
+        // The filter has to be doing work in both directions, or the property
+        // below would hold for reasons that say nothing about it: some character
+        // must be vouched for and some must be refused.
+        let multi_byte: Vec<&[u8]> = raw_encoder
+            .keys()
+            .filter(|key| {
+                key.len() > 1
+                    && std::str::from_utf8(key).is_ok_and(|text| text.chars().nth(1).is_none())
+            })
+            .collect();
+        let vouched = multi_byte
+            .iter()
+            .filter(|key| table.char_seed(key) != u32::MAX)
+            .count();
+        assert!(vouched > 0, "no character was vouched for");
+        assert!(
+            vouched < multi_byte.len(),
+            "every character was vouched for, so the safety test refused nothing"
+        );
+
+        let ranks = RankLookup::new(&rank_map).with_ids(Some(&table));
+        let alphabet: Vec<&str> = vec![
+            "中", "国", "人", "民", "日", "本", "語", "한", "국", "어", "я", "з", "ы", "the",
+            "quick", " ", "中国", "日本", "한국",
+        ];
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        let strategy = proptest::collection::vec(0usize..alphabet.len(), 0..20);
+        runner
+            .run(&strategy, |picks| {
+                let text: String = picks.iter().map(|&i| alphabet[i]).collect();
+                let (mut chars, mut bytes) = (Vec::new(), Vec::new());
+                byte_pair_encode_ids_seeded_into(
+                    text.as_bytes(),
+                    ranks,
+                    &raw_encoder,
+                    Seeding::RawChars,
+                    &mut chars,
+                );
+                byte_pair_encode_ids_seeded_into(
+                    text.as_bytes(),
+                    ranks,
+                    &raw_encoder,
+                    Seeding::RawBytes,
+                    &mut bytes,
+                );
+                prop_assert_eq!(chars, bytes, "diverged on {:?}", text);
+                Ok(())
+            })
+            .expect("character seeding must equal byte seeding on every generated string");
+    }
+}
