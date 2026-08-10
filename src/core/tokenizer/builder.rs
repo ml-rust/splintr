@@ -257,6 +257,7 @@ impl Tokenizer {
         // never pays for it, and one whose ranks are replaced by
         // `with_merge_ranks` would otherwise build it twice.
         let pair_ranks = Arc::new(OnceLock::new());
+        let raw_space = Arc::new(OnceLock::new());
 
         Ok(Self {
             raw_encoder: None,
@@ -264,6 +265,7 @@ impl Tokenizer {
             merge_ranks: None,
             byte_pair_ranks,
             pair_ranks,
+            raw_space,
             decoder: Arc::new(decoder),
             special_tokens,
             special_tokens_decoder: Arc::new(special_tokens_decoder),
@@ -315,6 +317,7 @@ impl Tokenizer {
         // answer with the wrong ranks.
         self.byte_pair_ranks = Arc::new(BytePairRanks::build(&merge_ranks));
         self.pair_ranks = Arc::new(OnceLock::new());
+        self.raw_space = Arc::new(OnceLock::new());
         self.merge_ranks = Some(merge_ranks);
         self
     }
@@ -628,6 +631,7 @@ impl Tokenizer {
         // never pays for it, and one whose ranks are replaced by
         // `with_merge_ranks` would otherwise build it twice.
         let pair_ranks = Arc::new(OnceLock::new());
+        let raw_space = Arc::new(OnceLock::new());
 
         Ok(Self {
             encoder,
@@ -636,6 +640,7 @@ impl Tokenizer {
             merge_ranks: None,
             byte_pair_ranks,
             pair_ranks,
+            raw_space,
             decoder: Arc::new(decoder),
             special_tokens,
             special_tokens_decoder: Arc::new(special_tokens_decoder),

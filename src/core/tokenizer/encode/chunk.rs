@@ -26,7 +26,16 @@ impl Tokenizer {
             out.push(rank);
             return;
         }
+        self.encode_unresolved_bytes_into(bytes, out);
+    }
 
+    /// [`Tokenizer::encode_bytes_into`] for a caller that has already asked the
+    /// vocabulary about the whole chunk and been told no.
+    ///
+    /// Split out because in raw space that question is asked against the very
+    /// map this would ask again — the two used to be different maps in different
+    /// spaces, and are now one.
+    fn encode_unresolved_bytes_into(&self, bytes: &[u8], out: &mut Vec<u32>) {
         // Hashed once for both the lookup and the insert that follows it: a
         // miss visits the cache twice, and the shard hash is the same both
         // times.
@@ -85,7 +94,9 @@ impl Tokenizer {
         // which is then the input's own bytes rather than the one-to-two-byte
         // expansion of them.
         if self.merges_raw() {
-            self.encode_bytes_into(raw, out);
+            // The whole-chunk question was just asked, against the same map
+            // `encode_bytes_into` would ask — so go straight past it.
+            self.encode_unresolved_bytes_into(raw, out);
             return;
         }
         scratch.clear();

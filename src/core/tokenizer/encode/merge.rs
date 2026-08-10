@@ -43,12 +43,17 @@ impl Tokenizer {
     /// its symbols' ids, and only that table can supply them without the
     /// mapping. A pipeline that emits already-mapped pieces has no raw form to
     /// offer and keeps the mapped space.
+    ///
+    /// Answered once and remembered: every chunk asks, and the question reaches
+    /// through the lazily-built id table to do it.
     #[inline]
     pub(super) fn merges_raw(&self) -> bool {
-        self.use_byte_level
-            && self.raw_encoder.is_some()
-            && self.pre_tokenizer.as_ref().is_none_or(|pt| pt.emits_raw())
-            && self.rank_lookup().by_id().is_some_and(|t| t.seeds_raw())
+        *self.raw_space.get_or_init(|| {
+            self.use_byte_level
+                && self.raw_encoder.is_some()
+                && self.pre_tokenizer.as_ref().is_none_or(|pt| pt.emits_raw())
+                && self.rank_lookup().by_id().is_some_and(|t| t.seeds_raw())
+        })
     }
 
     /// The vocabulary keyed in the space chunks arrive in.

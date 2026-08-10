@@ -192,6 +192,10 @@ pub struct Tokenizer {
     /// for the same reason as those: derived, and never mutated after
     /// construction.
     pub(super) pair_ranks: Arc<OnceLock<Option<PairRanks>>>,
+    /// Whether chunks stay in the input's own bytes — see
+    /// [`Tokenizer::merges_raw`], which every chunk asks and which would
+    /// otherwise reach through `pair_ranks` to answer.
+    pub(super) raw_space: Arc<OnceLock<bool>>,
     /// Behind an `Arc` so a clone — and every
     /// [`StreamingDecoder`](crate::StreamingDecoder) built from this tokenizer —
     /// shares the id→bytes table instead of copying a vocabulary-sized map.
@@ -281,6 +285,7 @@ impl Clone for Tokenizer {
             merge_ranks: self.merge_ranks.clone(),
             byte_pair_ranks: Arc::clone(&self.byte_pair_ranks),
             pair_ranks: Arc::clone(&self.pair_ranks),
+            raw_space: Arc::clone(&self.raw_space),
             // Immutable once built, so the clone shares the table rather than
             // duplicating it (the same reasoning as the compiled regex above).
             decoder: Arc::clone(&self.decoder),
