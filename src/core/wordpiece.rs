@@ -85,6 +85,14 @@ pub struct WordPieceTokenizer {
     /// Whether to strip control/format characters and `\0`/`�` and normalize
     /// whitespace before tokenizing (BERT's `clean_text`). Default true.
     clean_text: bool,
+    /// What every ASCII byte normalizes to, or [`ASCII_DROP`] if it is removed:
+    /// cleaning and lowercasing resolved down to one table lookup.
+    ///
+    /// Accent stripping is not in it because ASCII has no decomposition and
+    /// carries no marks, which is also why the table can be built at
+    /// construction while [`with_strip_accents`](Self::with_strip_accents) is
+    /// still free to change that flag afterwards.
+    ascii_fold: [u8; 128],
     /// Special token IDs for [CLS], [SEP], [PAD]
     cls_token_id: Option<u32>,
     sep_token_id: Option<u32>,
@@ -206,6 +214,7 @@ impl WordPieceTokenizer {
             continuation_prefix,
             handle_chinese_chars,
             clean_text,
+            ascii_fold: ascii_fold_table(clean_text, do_lower_case),
             cls_token_id,
             sep_token_id,
             pad_token_id,
@@ -300,7 +309,140 @@ impl WordPieceTokenizer {
     /// Per-word folding is worth wanting — it is what would let the ASCII fast
     /// paths fire on a document that is ASCII apart from a few characters — but
     /// it is not equivalent, and `eng_Latn` catches it.
+    ///
+    /// # Why it is one pass and not four
+    ///
+    /// The stages read as a pipeline and used to run as one, each walking the
+    /// text and handing the next an owned copy. That cost far more than the
+    /// work in them: a document that is 99% ASCII is still not `is_ascii()`, so
+    /// a single non-Latin quotation mark put the *whole* text on the slow path,
+    /// and cleaning alone consulted the general category of every character in
+    /// it. Fusing keeps the per-character order the stages define — clean, then
+    /// isolate, then strip, then lowercase — while walking the text once, and
+    /// lets the cheap decisions stay byte decisions.
     fn basic_normalize<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        match self.fold(text) {
+            Some(folded) => folded,
+            // The ordering guard fired: redo the whole pipeline stage by stage,
+            // through the full NFD path.
+            None => self.fold_staged(text),
+        }
+    }
+
+    /// Every normalization stage in one pass, or `None` if canonical ordering
+    /// turned out to be observable — see [`Self::fold_staged`].
+    fn fold<'a>(&self, text: &'a str) -> Option<Cow<'a, str>> {
+        use unicode_general_category::{get_general_category, GeneralCategory};
+        use unicode_normalization::char::{canonical_combining_class, decompose_canonical};
+
+        if !self.clean_text
+            && !self.handle_chinese_chars
+            && !self.strip_accents
+            && !self.do_lower_case
+        {
+            return Some(Cow::Borrowed(text));
+        }
+
+        // How much of the head no stage would touch. Borrowing the whole text
+        // when that is all of it is the common case for already-clean lowercase
+        // input, and a non-ASCII byte ends the run because deciding it needs a
+        // decoded character.
+        let bytes = text.as_bytes();
+        let prefix = bytes
+            .iter()
+            .position(|&b| b >= 0x80 || self.ascii_fold[b as usize] != b)
+            .unwrap_or(bytes.len());
+        if prefix == bytes.len() {
+            return Some(Cow::Borrowed(text));
+        }
+
+        // Isolation adds two bytes per ideograph, so CJK outgrows its input;
+        // everything else lands at or below it.
+        let mut out = String::with_capacity(text.len() + text.len() / 8 + 16);
+        out.push_str(&text[..prefix]);
+        let mut ordered = true;
+
+        let rest = &text[prefix..];
+        let rb = rest.as_bytes();
+        let mut i = 0;
+        while i < rb.len() {
+            let b = rb[i];
+            if b < 0x80 {
+                let folded = self.ascii_fold[b as usize];
+                if folded != ASCII_DROP {
+                    out.push(folded as char);
+                }
+                i += 1;
+                continue;
+            }
+
+            // `unwrap_or` rather than `unwrap`: `i` is on a character boundary
+            // by construction, so the iterator always yields, and the fallback
+            // costs nothing on a path that never takes it.
+            let c = rest[i..]
+                .chars()
+                .next()
+                .unwrap_or(char::REPLACEMENT_CHARACTER);
+            i += c.len_utf8();
+
+            // Ideographs are letters, so they are none of the categories
+            // cleaning removes — testing two ranges is cheaper than the
+            // category lookup it lets us skip, on the text made of them.
+            let ideograph = is_chinese_char(c);
+            if !ideograph && self.clean_text {
+                if c == '\u{fffd}' {
+                    continue;
+                }
+                match get_general_category(c) {
+                    GeneralCategory::Control
+                    | GeneralCategory::Format
+                    | GeneralCategory::Surrogate
+                    | GeneralCategory::PrivateUse => continue,
+                    GeneralCategory::SpaceSeparator => {
+                        out.push(' ');
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+
+            // handle_chinese_chars: an ideograph becomes its own word.
+            let isolate = ideograph && self.handle_chinese_chars;
+            if isolate {
+                out.push(' ');
+            }
+
+            if is_plain_ideograph(c) || (!self.strip_accents && !self.do_lower_case) {
+                out.push(c);
+            } else if !self.strip_accents {
+                push_folded(&mut out, c, self.do_lower_case);
+            } else {
+                decompose_canonical(c, |d| {
+                    if get_general_category(d) == GeneralCategory::NonspacingMark {
+                        return;
+                    }
+                    if canonical_combining_class(d) != 0 {
+                        ordered = false;
+                    }
+                    push_folded(&mut out, d, self.do_lower_case);
+                });
+            }
+
+            if isolate {
+                out.push(' ');
+            }
+        }
+
+        ordered.then_some(Cow::Owned(out))
+    }
+
+    /// [`Self::fold`] as the four separate stages it fuses, each allocating.
+    ///
+    /// Only reached when the fused pass sees a character that survives the
+    /// mark-drop and carries a non-zero combining class, which is the one case
+    /// where skipping canonical *reordering* could change the answer.
+    #[cold]
+    fn fold_staged<'a>(&self, text: &'a str) -> Cow<'a, str> {
         // clean_text: drop NUL/replacement/control/format chars and turn every
         // whitespace char into a plain space, matching BERT's `_clean_text`.
         let text = if self.clean_text {
@@ -329,27 +471,6 @@ impl WordPieceTokenizer {
 
         // Accents and casing are independent settings, applied in HuggingFace's
         // own order (`BertNormalizer::normalize` strips first, then lowercases).
-        if !self.strip_accents && !self.do_lower_case {
-            return text;
-        }
-
-        // ASCII cannot be decomposed and never carries a mark, so accent
-        // stripping is a no-op on it and lowercasing is a byte map — no
-        // decomposition, no per-character category lookups, no `to_lowercase`
-        // iterator.
-        if text.is_ascii() {
-            if !self.do_lower_case || !text.bytes().any(|b| b.is_ascii_uppercase()) {
-                return text;
-            }
-            return Cow::Owned(text.to_ascii_lowercase());
-        }
-
-        if let Some(folded) = fold_fast(&text, self.strip_accents, self.do_lower_case) {
-            return Cow::Owned(folded);
-        }
-
-        // The guard in `fold_fast` fired: canonical ordering can be observed
-        // here, so redo it the slow way, stage by stage.
         let text = match self.strip_accents {
             true => strip_accents(text),
             false => text,
@@ -734,38 +855,53 @@ fn is_special_token(token: &str) -> bool {
 /// ordered, and reordering never crosses a starter. If one ever survives, the
 /// caller redoes the work through the full NFD path.
 ///
-/// Returns `None` when that guard fires.
-fn fold_fast(text: &str, strip: bool, lower: bool) -> Option<String> {
-    use unicode_general_category::{get_general_category, GeneralCategory};
-    use unicode_normalization::char::{canonical_combining_class, decompose_canonical};
+/// Marks an ASCII byte that cleaning removes.
+///
+/// Out of the range a fold can produce, so it needs no second table.
+const ASCII_DROP: u8 = 0xFF;
 
-    let mut out = String::with_capacity(text.len());
-    let mut ordered = true;
-
-    for c in text.chars() {
-        // ASCII has no canonical decomposition and is never a mark, so the
-        // whole Unicode path is skippable for it — which is nearly every
-        // character of nearly every document.
-        if c.is_ascii() {
-            out.push(if lower { c.to_ascii_lowercase() } else { c });
-            continue;
-        }
-        if !strip {
-            push_folded(&mut out, c, lower);
-            continue;
-        }
-        decompose_canonical(c, |d| {
-            if get_general_category(d) == GeneralCategory::NonspacingMark {
-                return;
+/// Cleaning and lowercasing, resolved per ASCII byte.
+///
+/// ASCII cleaning is entirely byte-determined: `Cc` is `0x00..0x20` plus `0x7f`,
+/// the only ASCII `Zs` is the space itself, and the replacement character and
+/// the `Cf`/`Cs`/`Co` categories are all above it.
+fn ascii_fold_table(clean: bool, lower: bool) -> [u8; 128] {
+    let mut table = [0u8; 128];
+    for (b, slot) in table.iter_mut().enumerate() {
+        let mut c = b as u8;
+        if clean {
+            if matches!(c, b'\t' | b'\n' | b'\r') {
+                c = b' ';
+            } else if c < 0x20 || c == 0x7f {
+                *slot = ASCII_DROP;
+                continue;
             }
-            if canonical_combining_class(d) != 0 {
-                ordered = false;
-            }
-            push_folded(&mut out, d, lower);
-        });
+        }
+        *slot = if lower { c.to_ascii_lowercase() } else { c };
     }
+    table
+}
 
-    ordered.then_some(out)
+/// Whether `c` is an ideograph the fold copies through untouched.
+///
+/// CJK Unified Ideographs and their extensions are caseless letters with no
+/// canonical decomposition, so stripping and lowercasing are both identity on
+/// them — worth knowing, because on CJK text that is every character and the
+/// two lookups it skips are the bulk of the pass.
+///
+/// The CJK Compatibility Ideographs [`is_chinese_char`] also accepts are
+/// excluded: those *do* decompose, each to a unified ideograph. Both facts are
+/// fixed by Unicode's stability policies — no character gains a canonical
+/// decomposition or a case mapping — so this cannot drift out of date.
+#[inline]
+fn is_plain_ideograph(c: char) -> bool {
+    let cp = c as u32;
+    (0x4E00..=0x9FFF).contains(&cp)
+        || (0x3400..=0x4DBF).contains(&cp)
+        || (0x20000..=0x2A6DF).contains(&cp)
+        || (0x2A700..=0x2B73F).contains(&cp)
+        || (0x2B740..=0x2B81F).contains(&cp)
+        || (0x2B820..=0x2CEAF).contains(&cp)
 }
 
 /// Append `c`, lowercased per character when asked — never through
@@ -1716,6 +1852,28 @@ mod fold_order_tests {
             vec![1, 2, 3],
             "the `=` that accent stripping exposed must split the word, not \
              continue it"
+        );
+    }
+
+    /// The boundary [`is_plain_ideograph`] draws inside [`is_chinese_char`].
+    ///
+    /// A CJK *compatibility* ideograph is isolated as its own word like any
+    /// other, but unlike the unified blocks it carries a canonical
+    /// decomposition — U+FA0C to U+5140 — so the copy-through fast path must
+    /// not claim it.
+    #[test]
+    fn a_compatibility_ideograph_still_decomposes() {
+        let vocab = vec![
+            "[UNK]".to_string(),    // 0
+            "a".to_string(),        // 1
+            "\u{5140}".to_string(), // 2 — what U+FA0C decomposes to
+            "\u{fa0c}".to_string(), // 3 — the undecomposed form
+        ];
+        let tok = WordPieceTokenizer::new(vocab, 0, 200, true);
+        assert_eq!(
+            tok.encode("a\u{fa0c}"),
+            vec![1, 2],
+            "the compatibility ideograph must decompose, and be its own word"
         );
     }
 }
