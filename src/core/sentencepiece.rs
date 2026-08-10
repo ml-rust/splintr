@@ -103,6 +103,18 @@ pub struct SentencePieceTokenizer {
     special_decode: rustc_hash::FxHashSet<u32>,
 }
 
+/// The three buffers a lattice sweep needs, owned by the caller so they are
+/// allocated once per encode rather than once per word.
+///
+/// `best[i]` is the best total score reaching position `i`, `back[i]` the edge
+/// chosen into it, and `edges` the backtrack, reversed into forward order.
+#[derive(Default)]
+struct Lattice {
+    best: Vec<f64>,
+    back: Vec<(usize, Option<u32>)>,
+    edges: Vec<(usize, Option<u32>)>,
+}
+
 impl SentencePieceTokenizer {
     /// Create a tokenizer from raw vocabulary data.
     ///
@@ -324,6 +336,10 @@ impl SentencePieceTokenizer {
 
         let mut tokens = Vec::new();
         let mut chars: Vec<char> = Vec::new();
+        // Reused across segments for the same reason `chars` is: the lattice is
+        // rebuilt per segment, and a segment is a word, so allocating its three
+        // buffers inside the sweep was three mallocs per word of the document.
+        let mut lattice = Lattice::default();
         match &self.word_split {
             // A whitespace-dropping pre-tokenizer ran first: escape each word on
             // its own, so the discarded whitespace cannot come back as `▁`
@@ -336,7 +352,7 @@ impl SentencePieceTokenizer {
                     for segment in super::metaspace::segments(&escaped) {
                         chars.clear();
                         chars.extend(segment.chars());
-                        self.viterbi_piece(&chars, &mut tokens);
+                        self.viterbi_piece(&chars, &mut tokens, &mut lattice);
                     }
                 }
             }
@@ -350,7 +366,7 @@ impl SentencePieceTokenizer {
                 for segment in super::metaspace::segments(&escaped) {
                     chars.clear();
                     chars.extend(segment.chars());
-                    self.viterbi_piece(&chars, &mut tokens);
+                    self.viterbi_piece(&chars, &mut tokens, &mut lattice);
                 }
             }
         }
@@ -358,6 +374,8 @@ impl SentencePieceTokenizer {
     }
 
     /// Append the maximum-score Unigram segmentation of `chars` to `tokens`.
+    ///
+    /// `lattice` is caller-owned scratch — see [`Lattice`].
     ///
     /// The lattice sweep mirrors HuggingFace `tokenizers`'
     /// `unigram::Lattice::viterbi` exactly, and the correspondence is load-bearing
@@ -384,18 +402,21 @@ impl SentencePieceTokenizer {
     ///   segmentation flips. Replaying this DP in Python over 13k fuzz strings,
     ///   `f64` accumulation reproduced HF on every case and `f32` on all but that
     ///   one family.
-    fn viterbi_piece(&self, chars: &[char], tokens: &mut Vec<u32>) {
+    fn viterbi_piece(&self, chars: &[char], tokens: &mut Vec<u32>, lattice: &mut Lattice) {
         let n = chars.len();
         if n == 0 {
             return;
         }
+        let Lattice { best, back, edges } = lattice;
 
         // Viterbi over the character lattice. `best[i]` = best total score to
         // reach position i; `back[i]` = (start, piece) of the chosen edge into i.
         // A piece is Some(id) for a vocab token, or None for an unknown char.
         let unk_penalty = self.min_score - 10.0; // SentencePiece's kUnkPenalty
-        let mut best = vec![f64::NEG_INFINITY; n + 1];
-        let mut back: Vec<(usize, Option<u32>)> = vec![(0, None); n + 1];
+        best.clear();
+        best.resize(n + 1, f64::NEG_INFINITY);
+        back.clear();
+        back.resize(n + 1, (0, None));
         best[0] = 0.0;
 
         let mut utf8 = [0u8; 4];
@@ -436,7 +457,7 @@ impl SentencePieceTokenizer {
         }
 
         // Backtrack into edges, then emit in forward order.
-        let mut edges: Vec<(usize, Option<u32>)> = Vec::new();
+        edges.clear();
         let mut pos = n;
         while pos > 0 {
             let (start, piece) = back[pos];
@@ -446,7 +467,7 @@ impl SentencePieceTokenizer {
         edges.reverse();
 
         let mut prev_unk = false;
-        for (start, piece) in edges {
+        for &(start, piece) in edges.iter() {
             match piece {
                 Some(id) => {
                     tokens.push(id);
