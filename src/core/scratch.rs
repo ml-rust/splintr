@@ -20,9 +20,9 @@
 use std::cell::RefCell;
 
 thread_local! {
-    /// Reused by [`with_spans`]. `const` init so the first access on a thread
-    /// is not a lazy-initialization check.
-    static SPANS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
+    /// Reused by [`with_spans`], one buffer per nesting depth. `const` init so
+    /// the first access on a thread is not a lazy-initialization check.
+    static SPANS: RefCell<Vec<Vec<(usize, usize)>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Run `f` with a cleared span buffer that survives between calls on this
@@ -37,17 +37,30 @@ thread_local! {
 /// **Reentrancy.** `f` may end up back here — a chained pre-tokenizer
 /// subdivides spans by re-running the matcher over each piece — and the
 /// buffer is already borrowed at that point. The nested call gets a fresh
-/// `Vec` rather than a panicking `borrow_mut` or, worse, the outer caller's
-/// spans overwritten underneath it. That costs the nested call exactly what it
-/// paid before this module existed.
+/// buffer of its own rather than the outer caller's spans overwritten
+/// underneath it.
+///
+/// A stack, not one buffer, because nesting is the common case and not the rare
+/// one: a chained pre-tokenizer runs its second stage inside the first stage's
+/// borrow, and its third inside that, so with a single buffer every stage below
+/// the first allocated once per piece. DeepSeek's three-stage pipeline spent a
+/// tenth of an encode there. Depth is bounded by the number of stages, so the
+/// stack settles at a handful of buffers per thread and every one of them keeps
+/// its capacity.
 pub(crate) fn with_spans<R>(f: impl FnOnce(&mut Vec<(usize, usize)>) -> R) -> R {
-    SPANS.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut buf) => {
-            buf.clear();
-            f(&mut buf)
+    // Taken out of the stack for the duration, so `f` may re-enter and reach
+    // the next buffer down without any borrow overlapping this one.
+    let mut buf = SPANS
+        .with(|stack| stack.borrow_mut().pop())
+        .unwrap_or_default();
+    buf.clear();
+    let result = f(&mut buf);
+    SPANS.with(|stack| {
+        if let Ok(mut stack) = stack.try_borrow_mut() {
+            stack.push(buf);
         }
-        Err(_) => f(&mut Vec::new()),
-    })
+    });
+    result
 }
 
 #[cfg(test)]
@@ -77,6 +90,27 @@ mod tests {
                 &[(0, 3), (3, 6)],
                 "a nested call overwrote the outer buffer"
             );
+        });
+    }
+
+    /// The reason this is a stack: a nested call must reuse a buffer too, not
+    /// allocate one. A chained pre-tokenizer nests once per stage and calls
+    /// this once per piece, so a nested call that allocates is an allocation
+    /// per piece of every document.
+    #[test]
+    fn a_nested_call_reuses_a_buffer_across_calls() {
+        // Fill the depth-2 buffer once so it has capacity to keep.
+        with_spans(|_outer| {
+            with_spans(|inner| inner.extend((0..64).map(|i| (i, i + 1))));
+        });
+        with_spans(|_outer| {
+            with_spans(|inner| {
+                assert!(inner.is_empty(), "nested buffer arrived dirty");
+                assert!(
+                    inner.capacity() >= 64,
+                    "nested call allocated instead of reusing"
+                );
+            });
         });
     }
 
