@@ -31,7 +31,7 @@
 //! looks like free density — measured **+15.7% instructions**, because linear
 //! probing degrades faster than the smaller footprint repays.
 
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 
 use rustc_hash::{FxHashMap, FxHasher};
 
@@ -147,10 +147,16 @@ impl Encoder {
         self.arena.reserve(additional * 8);
     }
 
+    /// `Hasher::write` directly, not `key.hash(..)`.
+    ///
+    /// `Hash for [u8]` writes a length prefix before the bytes, which costs a
+    /// whole extra round of the hasher on every lookup and buys nothing here:
+    /// an entry's length is compared separately, so two keys of different
+    /// lengths are already told apart without it.
     #[inline]
     fn hash(key: &[u8]) -> u64 {
         let mut hasher = FxHasher::default();
-        key.hash(&mut hasher);
+        hasher.write(key);
         hasher.finish()
     }
 

@@ -14,29 +14,21 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - WordPiece and the `Lowercase` normalizer lowercase per character, as HuggingFace does: word-final `Σ` is `σ`, not `ς`.
 - BERT's `clean_text` keeps unassigned (`Cn`) codepoints, so a word carrying one becomes `[UNK]` as in the reference.
 - A `Precompiled` charsmap from a `tokenizer.json` is read as `spm_precompiled` reads it, via the new `CharsmapDialect`; the sentencepiece reading stays the default and serves the GGUF path.
-- DeepSeek's CJK pre-tokenizer pass reaches its scanner when loaded from a `tokenizer.json`, which spells the character class with the characters themselves rather than `\u{...}` escapes. It had fallen back to the regex engine and scanned every document for CJK: 12-36% fewer instructions per byte on deepseek-v4.
+- DeepSeek's CJK pre-tokenizer pass reaches its scanner when loaded from a `tokenizer.json`, which spells the character class with the characters themselves rather than `\u{...}` escapes; it had been falling back to the regex engine.
 
 ### Changed
 
-- The long-piece merge path reuses per-thread buffers instead of allocating per piece, cutting bytes allocated per encode by roughly 20x on non-Latin scripts.
-- Merge selection splits its queue — initial pairs sorted once, only merge-created pairs heaped — and picks its strategy per script as well as per length: 30-48% fewer instructions per byte on Cyrillic, Arabic, Korean, Chinese and Japanese, English unchanged.
-- WordPiece matches through a byte trie instead of re-hashing every candidate subword, streams borrowed words instead of allocating one per word, and caches segmented words as the BPE backend does. bert-base-uncased encodes about 6.5x faster; allocations per encode fall from millions to thousands.
-- The Unigram vocabulary is an `FxHashMap`, as every other vocabulary in the crate already was; it was the one left on the default `SipHash`. 37-56% fewer instructions per byte on t5-base.
-- The vocabulary lookup compares a short key at a constant length, so the comparison is one word compare rather than a `memcmp` call: 1-4% fewer instructions per byte across the BPE models, and none more on the others.
-- The pre-tokenizer's span scratch is one buffer per nesting depth, so a chained pre-tokenizer's later stages reuse a buffer instead of allocating one per piece. Allocations per encode fall 91% on deepseek-v4; 1-7% fewer instructions per byte, and none more on the unchained models.
-- DeepSeek's letter runs skip ASCII eight bytes at a time, as the other scanners already did, and offer the bulk skip only where it can apply: 16% fewer instructions per byte on English and code for deepseek-v4, and 1% fewer on Greek, Cyrillic and Thai rather than 2-4% more.
-- The shared byte trie is a double array: a transition is an XOR and a compare instead of a binary search over the node's fan-out, whatever its size. 15-16% fewer instructions per byte on t5-base for English and code, and a smaller gain on bert-base-uncased; vocabulary loading costs a few milliseconds more and about the same memory.
-- Unigram's metaspace stage streams borrowed words and segments into one reused buffer, finds its markers by byte scan rather than the general substring searcher, and asks the cache about a word before copying it to prepend a marker. 19-44% fewer instructions per byte on English, code and Cyrillic.
-- Unigram caches the segments it has already resolved, as the BPE and WordPiece backends do — it was the one backend re-running its whole lattice for every repeat of a common word. 17-47% fewer instructions per byte on English, code and Cyrillic.
-- A `Precompiled` charsmap resolves each ASCII byte at construction and copies runs of untouched ASCII wholesale, so grapheme segmentation only runs over text that needs clustering. Normalization falls from a fifth of a t5-base encode to a fortieth.
-- The Unigram lattice's three buffers are owned by the encode rather than the sweep, which allocated them per word.
-- Unigram's lattice finds each position's candidate pieces by one walk down the byte trie WordPiece already used, instead of re-hashing a growing prefix once per candidate length: a further 11-61% off instructions per byte on t5-base.
-- The chunk cache returns a one-token chunk with a push instead of a length-driven copy, and the WordPiece trie indexes its root by byte rather than searching it: 4% fewer instructions per byte and 6% more throughput on bert-base-uncased.
-- BERT's normalization runs as one pass instead of four, deciding ASCII by table and copying caseless ideographs through untouched. A document that is 99% ASCII no longer takes the fully general path for the other 1%: 25-42% fewer instructions per byte on English, code and Chinese.
-- The chunk cache is 16-way set-associative, probed by a one-byte tag per slot (eight lanes per `u64`), instead of direct-mapped: two chunks sharing a home slot no longer evict each other forever. Another 12-30% off instructions per byte, English included.
-- The chunk cache gives long chunks as many slots as short ones and overwrites their buffers in place, so a script whose chunks are all long stops evicting its own working set. Allocations per encode fall to single digits.
 - Bundled vocabularies are no longer default features; enable `vocabs`, or the `vocab-*` families needed. The Python wheel is unaffected — `python` pulls them in.
-- The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character.
+- WordPiece matches through a byte trie instead of re-hashing every candidate subword, cleans and folds in a single pass that decides ASCII by table, streams borrowed words rather than allocating one per word, and caches the words it has segmented.
+- Unigram's lattice finds each position's candidate pieces by walking that same trie instead of re-hashing a growing prefix, caches the segments it has resolved, and keeps its buffers across words. Its vocabulary is an `FxHashMap`, as every other vocabulary in the crate already was.
+- Unigram's metaspace stage streams borrowed words and segments through one reused buffer, finds its markers by byte scan rather than the general substring searcher, and asks the cache about a word before copying it to prepend a marker.
+- A `Precompiled` charsmap resolves each ASCII byte at construction and copies runs of untouched ASCII wholesale, so grapheme segmentation only runs over text that needs clustering.
+- The byte trie behind WordPiece and Unigram is a double array: a transition is an XOR and a compare rather than a search over the node's fan-out. Vocabulary loading costs a few milliseconds more.
+- Merge selection splits its queue — initial pairs sorted once, only merge-created pairs heaped — and picks its strategy per script as well as per length. The long-piece merge path reuses per-thread buffers instead of allocating per piece.
+- The chunk cache is 16-way set-associative, probed by a one-byte tag per slot (eight lanes per `u64`), gives long chunks as many slots as short ones, overwrites their buffers in place, and returns a one-token chunk with a push rather than a length-driven copy.
+- The pre-tokenizer's span scratch is one buffer per nesting depth, so a chained pre-tokenizer's later stages reuse a buffer instead of allocating one per piece.
+- The vocabulary lookup hashes without the length prefix `Hash for [u8]` prepends, and compares a short key at a constant length rather than through a `memcmp` call.
+- The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character, and DeepSeek's letter runs skip ASCII eight bytes at a time where the bulk skip can apply.
 
 ## [0.17.0] - 2026-08-10
 
