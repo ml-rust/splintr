@@ -5,8 +5,7 @@
 //! XLNet, …), with metaspace pre-tokenization, byte-fallback, an ordered
 //! normalizer pipeline, and added-token matching.
 
-use rustc_hash::FxHashSet;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::convert::Infallible;
 use std::sync::Arc;
 use thiserror::Error;
@@ -43,8 +42,13 @@ pub enum SentencePieceError {
 /// let tok = SentencePieceTokenizer::new(tokens, scores, None, 2).unwrap();
 /// ```
 pub struct SentencePieceTokenizer {
-    /// Token string -> ID mapping
-    token_to_id: HashMap<String, u32>,
+    /// Token string -> ID mapping.
+    ///
+    /// `FxHashMap`, as every other vocabulary in the crate is: the Viterbi loop
+    /// probes this once per candidate piece, and the default `SipHash` was a
+    /// fifth of a t5-base encode on its own. The keys are the vocabulary and are
+    /// fixed at construction, so no input can grow a collision chain here.
+    token_to_id: FxHashMap<String, u32>,
     /// ID -> Token string mapping. Behind an `Arc` so decoding — whole-sequence
     /// and streaming alike — can share the piece table rather than copy a
     /// vocabulary-sized vector per decoder.
@@ -119,7 +123,7 @@ impl SentencePieceTokenizer {
             scores
         };
 
-        let mut token_to_id = HashMap::with_capacity(tokens.len());
+        let mut token_to_id = FxHashMap::with_capacity_and_hasher(tokens.len(), Default::default());
         for (id, token) in tokens.iter().enumerate() {
             token_to_id.insert(token.clone(), id as u32);
         }
