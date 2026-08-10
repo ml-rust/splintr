@@ -246,6 +246,14 @@ pub(crate) struct PairRanks {
     /// `2 * PAIR_ID_BITS` bits and the merged token's id above them.
     slots: Box<[u64]>,
     mask: usize,
+    /// Merged id of every pair whose operands are both below [`DENSE_IDS`],
+    /// indexed directly rather than probed.
+    ///
+    /// A vocabulary's alphabet takes its lowest ids, and every merge starts from
+    /// the alphabet, so this answers the pairs a piece is seeded with — the
+    /// largest single group of lookups, and the one whose operands repeat most
+    /// across pieces and so stay resident.
+    dense: Box<[u32]>,
     /// Merge priority per token id, when the model orders its merges
     /// independently of its ids. `None` for tiktoken-style vocabularies, where a
     /// token's id *is* its rank and the indirection would be an identity.
@@ -253,6 +261,10 @@ pub(crate) struct PairRanks {
     /// Id of each single byte, `u32::MAX` where the vocabulary has no such
     /// token. Byte-seeded pieces start here.
     byte_ids: Box<[u32; 256]>,
+    /// Id of each two-byte token, indexed directly. This is what a ByteLevel
+    /// vocabulary seeds its non-ASCII characters from, and there is one lookup
+    /// per character of every chunk that reaches the merge.
+    pair_byte_ids: Box<[u32]>,
     /// Id of every token of one to four bytes: what character-seeded pieces
     /// start from, since a UTF-8 character is never longer.
     symbol_ids: SymbolIds,
@@ -262,15 +274,24 @@ pub(crate) struct PairRanks {
 }
 
 impl PairRanks {
+    /// The id of the token a single byte is, or `u32::MAX`.
+    #[inline]
+    pub(crate) fn byte_id(&self, byte: u8) -> u32 {
+        self.byte_ids[byte as usize]
+    }
+
     /// The id a seed symbol of `bytes` stands for, or `u32::MAX` when the
     /// vocabulary has no such token and the piece must take the byte path.
     ///
-    /// Single bytes go through the direct table: byte-seeded pieces ask for
-    /// nothing else, and they are the majority of traffic.
+    /// One and two bytes are indexed directly. Between them they are every
+    /// symbol a ByteLevel vocabulary can seed from — its alphabet is 256
+    /// characters, none of them wider — so the hash below serves only the
+    /// character-seeded vocabularies whose alphabet is genuine text.
     #[inline]
     pub(crate) fn seed_id(&self, bytes: &[u8]) -> u32 {
         match bytes {
             [byte] => self.byte_ids[*byte as usize],
+            [hi, lo] => self.pair_byte_ids[(*hi as usize) << 8 | *lo as usize],
             _ => self.symbol_ids.get(bytes),
         }
     }
@@ -281,6 +302,11 @@ impl PairRanks {
         self.seeds_by_char
     }
 }
+
+/// Ids below this are indexed directly by [`PairRanks::dense`]. The square of
+/// it is the table's size in entries, so it buys the alphabet and the earliest
+/// merges, not the vocabulary.
+const DENSE_IDS: u32 = 512;
 
 impl PairRanks {
     /// A slot holding no entry. Distinct from every real one because all three
@@ -341,12 +367,19 @@ impl PairRanks {
         let mut table = Self {
             slots: vec![Self::EMPTY; capacity].into_boxed_slice(),
             mask: capacity - 1,
+            dense: vec![u32::MAX; (DENSE_IDS * DENSE_IDS) as usize].into_boxed_slice(),
             rank_by_id: None,
             byte_ids: Box::new([u32::MAX; 256]),
+            pair_byte_ids: vec![u32::MAX; 256 * 256].into_boxed_slice(),
             symbol_ids: SymbolIds::build(id_encoder)?,
             seeds_by_char,
         };
         for (key, merged) in pairs {
+            let (left, right) = (key >> PAIR_ID_BITS, key & ((1 << PAIR_ID_BITS) - 1));
+            if left < DENSE_IDS as u64 && right < DENSE_IDS as u64 {
+                table.dense[(left * DENSE_IDS as u64 + right) as usize] = merged;
+                continue;
+            }
             let mut slot = table.slot_of(key);
             // A duplicate key cannot occur: a pair of ids determines the bytes
             // it concatenates to, which the map holds at most once.
@@ -361,6 +394,11 @@ impl PairRanks {
                 table.byte_ids[byte as usize] = id;
             }
         }
+        for (key, id) in id_encoder {
+            if let [hi, lo] = key {
+                table.pair_byte_ids[(*hi as usize) << 8 | *lo as usize] = id;
+            }
+        }
 
         // Identical maps mean the id is the rank, and the array would be
         // `rank_by_id[i] == i`.
@@ -371,7 +409,20 @@ impl PairRanks {
                     ranks[id as usize] = rank;
                 }
             }
-            table.rank_by_id = Some(ranks);
+            // The merge loop only ever *compares* ranks, so a vocabulary that
+            // numbers its tokens in merge order — which is what a model whose
+            // ids were assigned as its merges were learned does — needs no
+            // ranks at all: comparing ids is the same comparison. Dropping the
+            // array takes a dependent load out of the loop's inner step, and
+            // that load is a random access into a table the size of the
+            // vocabulary.
+            let ordered = ranks
+                .iter()
+                .filter(|&&rank| rank != u32::MAX)
+                .is_sorted_by(|a, b| a < b);
+            if !ordered {
+                table.rank_by_id = Some(ranks);
+            }
         }
 
         Some(table)
@@ -391,6 +442,9 @@ impl PairRanks {
     /// The id the pair merges to, or `u32::MAX` when it does not merge.
     #[inline]
     fn merged(&self, left: u32, right: u32) -> u32 {
+        if left < DENSE_IDS && right < DENSE_IDS {
+            return self.dense[(left * DENSE_IDS + right) as usize];
+        }
         let key = Self::pack(left, right);
         let mut slot = self.slot_of(key);
         loop {

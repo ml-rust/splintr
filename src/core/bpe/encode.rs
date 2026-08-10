@@ -4,7 +4,7 @@ use super::merge::{
     merge_and_collect, merge_and_collect_ids_into, prefers_scan, QueueScratch, SCAN_SYMBOL_LIMIT,
 };
 use super::nodes::Node;
-use super::ranks::RankLookup;
+use super::ranks::{PairRanks, RankLookup};
 use super::scratch::with_merge_scratch;
 
 /// Perform byte-pair encoding on a piece of text using a linked-list approach.
@@ -118,6 +118,9 @@ pub(crate) fn byte_pair_encode_pieces_seeded(
             char_granular,
             symbol_count(piece, char_granular),
             &mut s.nodes,
+            // `Piece`-reporting callers keep the byte-keyed path, so there are
+            // no ids to resolve and the seeding cannot fail.
+            None,
         );
         merge_and_collect(
             piece,
@@ -188,8 +191,7 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
     if prefers_scan(piece, symbols) {
         let mut buf = [Node::PLACEHOLDER; SCAN_SYMBOL_LIMIT];
         let nodes = &mut buf[..symbols];
-        seed_nodes_into(piece, granular, nodes);
-        if !seed_ids(nodes, piece, merge_ranks) {
+        if !seed_nodes_into(piece, granular, nodes, merge_ranks.by_id()) {
             return byte_pair_encode_ids_seeded_into(
                 piece,
                 merge_ranks.without_ids(),
@@ -211,8 +213,7 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
         );
     } else {
         let seeded = with_merge_scratch(|s| {
-            seed_nodes_reusing(piece, granular, symbols, &mut s.nodes);
-            if !seed_ids(&mut s.nodes, piece, merge_ranks) {
+            if !seed_nodes_reusing(piece, granular, symbols, &mut s.nodes, merge_ranks.by_id()) {
                 return false;
             }
             merge_and_collect_ids_into(
@@ -237,42 +238,37 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
     }
 }
 
-/// Resolve every seed symbol to a token id, reporting whether all of them did.
-///
-/// A `false` sends the piece back through the byte-keyed path at the
-/// granularity that path has always used — nothing has been emitted yet, so the
-/// retry is a clean start. Giving up per *piece* rather than per vocabulary is
-/// what makes the id path safe to offer at all: the table is a property of the
-/// vocabulary, but whether a piece's symbols are in it is a property of the
-/// piece.
-#[inline]
-fn seed_ids(nodes: &mut [Node], piece: &[u8], merge_ranks: RankLookup<'_>) -> bool {
-    let Some(table) = merge_ranks.by_id() else {
-        return true;
-    };
-    for node in nodes.iter_mut() {
-        node.id = table.seed_id(&piece[node.start..node.start + node.len]);
-        if node.id == u32::MAX {
-            return false;
-        }
-    }
-    true
-}
-
 /// How many symbols [`seed_nodes_into`] will produce for `piece`.
 ///
 /// Byte seeding is one per byte; character seeding is one per UTF-8 character,
 /// falling back to bytes on input that is not valid UTF-8 — the same fallback
 /// [`seed_nodes_into`] applies, so the two always agree.
+///
+/// A character is counted as a byte that is not a continuation byte, eight at a
+/// time, rather than by decoding the string: the count does not depend on what
+/// the characters *are*, and on a dense script decoding costs several times what
+/// counting does.
 #[inline]
 fn symbol_count(piece: &[u8], char_granular: bool) -> usize {
-    match char_granular
-        .then(|| std::str::from_utf8(piece).ok())
-        .flatten()
-    {
-        Some(text) => text.chars().count(),
-        None => piece.len(),
+    if !char_granular || std::str::from_utf8(piece).is_err() {
+        return piece.len();
     }
+    let mut count = 0usize;
+    let mut chunks = piece.chunks_exact(8);
+    for chunk in &mut chunks {
+        // A continuation byte is `0b10xxxxxx`. `x & !(x << 1)` leaves the high
+        // bit set exactly where a byte has bit 7 set and bit 6 clear, so the
+        // ones counted below are the lead and ASCII bytes.
+        let word = u64::from_le_bytes(chunk.try_into().expect("chunks_exact(8) is 8 bytes"));
+        let continuation = word & !(word << 1) & 0x8080_8080_8080_8080;
+        count += 8 - continuation.count_ones() as usize;
+    }
+    count
+        + chunks
+            .remainder()
+            .iter()
+            .filter(|&&b| b & 0xC0 != 0x80)
+            .count()
 }
 
 /// Seed the linked list: one node per byte, or one node per whole UTF-8
@@ -288,15 +284,32 @@ fn symbol_count(piece: &[u8], char_granular: bool) -> usize {
 /// merge phase once that length is known.
 /// Seed `nodes` into a buffer the caller is reusing, so a long piece costs no
 /// allocation once that buffer has grown to fit one.
-fn seed_nodes_reusing(piece: &[u8], char_granular: bool, symbols: usize, nodes: &mut Vec<Node>) {
+fn seed_nodes_reusing(
+    piece: &[u8],
+    char_granular: bool,
+    symbols: usize,
+    nodes: &mut Vec<Node>,
+    table: Option<&PairRanks>,
+) -> bool {
     nodes.clear();
     nodes.resize(symbols, Node::PLACEHOLDER);
-    seed_nodes_into(piece, char_granular, nodes);
+    seed_nodes_into(piece, char_granular, nodes, table)
 }
 
 /// Seed nodes into storage the caller already has, which may be a stack
 /// array. `nodes` must be exactly [`symbol_count`] long.
-fn seed_nodes_into(piece: &[u8], char_granular: bool, nodes: &mut [Node]) {
+///
+/// Resolves each symbol's token id in the same pass when `table` is present, and
+/// reports `false` as soon as one does not resolve — the piece then goes back
+/// through the byte-keyed path, which needs no ids. Resolving here rather than
+/// in a second walk matters because these are the only two passes over a chunk
+/// before the merge, and on a dense script the chunk is the whole run.
+fn seed_nodes_into(
+    piece: &[u8],
+    char_granular: bool,
+    nodes: &mut [Node],
+    table: Option<&PairRanks>,
+) -> bool {
     match char_granular
         .then(|| std::str::from_utf8(piece).ok())
         .flatten()
@@ -305,15 +318,28 @@ fn seed_nodes_into(piece: &[u8], char_granular: bool, nodes: &mut [Node]) {
             for (node, (start, c)) in nodes.iter_mut().zip(text.char_indices()) {
                 node.start = start;
                 node.len = c.len_utf8();
+                if let Some(table) = table {
+                    node.id = table.seed_id(&piece[start..start + node.len]);
+                    if node.id == u32::MAX {
+                        return false;
+                    }
+                }
             }
         }
         None => {
             for (start, node) in nodes.iter_mut().enumerate() {
                 node.start = start;
                 node.len = 1;
+                if let Some(table) = table {
+                    node.id = table.byte_id(piece[start]);
+                    if node.id == u32::MAX {
+                        return false;
+                    }
+                }
             }
         }
     }
+    true
 }
 
 /// One symbol the merge starts from, when the caller has already decided the
