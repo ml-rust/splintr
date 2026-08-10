@@ -363,6 +363,17 @@ fn punct_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
     )
 }
 
+/// `[\p{L}\p{M}]` as a run: ASCII letters eight bytes at a time, then one
+/// character wherever the bulk skip stops.
+///
+/// The class is overwhelmingly ASCII letters on the text these models see, and
+/// walking them one byte at a time — a table lookup, a compare and a branch
+/// each — was a quarter of a deepseek encode.
+const LETTER_OR_MARK: Run = Run {
+    at: letter_or_mark_at,
+    skip_ascii: swar_skip_ascii_letters,
+};
+
 /// `[\p{L}\p{M}]`, DeepSeek's letter class.
 #[inline]
 fn letter_or_mark_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
@@ -1172,7 +1183,7 @@ pub(super) fn deepseek_v3_pass3_spans(text: &str, out: &mut Vec<(usize, usize)>)
         // the cl100k family's: it excludes punctuation and symbols rather than
         // digits, so a digit *can* introduce a letter run here.
         if let Some(n) = letter_or_mark_at(text, bytes, pos) {
-            pos = scan_run(text, bytes, pos + n, letter_or_mark_at);
+            pos = scan_run_of(text, bytes, pos + n, LETTER_OR_MARK);
             out.push((start, pos));
             continue;
         }
@@ -1181,7 +1192,7 @@ pub(super) fn deepseek_v3_pass3_spans(text: &str, out: &mut Vec<(usize, usize)>)
                 .then(|| letter_or_mark_at(text, bytes, pos + prefix))
                 .flatten()
             {
-                pos = scan_run(text, bytes, pos + prefix + n, letter_or_mark_at);
+                pos = scan_run_of(text, bytes, pos + prefix + n, LETTER_OR_MARK);
                 out.push((start, pos));
                 continue;
             }

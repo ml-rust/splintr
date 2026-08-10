@@ -18,22 +18,23 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Changed
 
-- The long-piece merge path reuses per-thread buffers instead of allocating per piece, cutting bytes allocated per encode by roughly 20x on non-Latin scripts. Token ids are unchanged.
-- Merge selection splits its queue — initial pairs sorted once, only merge-created pairs heaped — and picks its strategy per script as well as per length: 30-48% fewer instructions per byte on Cyrillic, Arabic, Korean, Chinese and Japanese, English unchanged. Token ids are unchanged.
-- WordPiece matches through a byte trie instead of re-hashing every candidate subword, streams borrowed words instead of allocating one per word, and caches segmented words as the BPE backend does. bert-base-uncased encodes about 6.5x faster; allocations per encode fall from millions to thousands. Token ids are unchanged.
-- The Unigram vocabulary is an `FxHashMap`, as every other vocabulary in the crate already was; it was the one left on the default `SipHash`. 37-56% fewer instructions per byte on t5-base. Token ids are unchanged.
-- The shared byte trie is a double array: a transition is an XOR and a compare instead of a binary search over the node's fan-out, whatever its size. 15-16% fewer instructions per byte on t5-base for English and code, and a smaller gain on bert-base-uncased; vocabulary loading costs a few milliseconds more and about the same memory. Token ids are unchanged.
-- Unigram's metaspace stage streams borrowed words and segments into one reused buffer, finds its markers by byte scan rather than the general substring searcher, and asks the cache about a word before copying it to prepend a marker. 19-44% fewer instructions per byte on English, code and Cyrillic. Token ids are unchanged.
-- Unigram caches the segments it has already resolved, as the BPE and WordPiece backends do — it was the one backend re-running its whole lattice for every repeat of a common word. 17-47% fewer instructions per byte on English, code and Cyrillic. Token ids are unchanged.
+- The long-piece merge path reuses per-thread buffers instead of allocating per piece, cutting bytes allocated per encode by roughly 20x on non-Latin scripts.
+- Merge selection splits its queue — initial pairs sorted once, only merge-created pairs heaped — and picks its strategy per script as well as per length: 30-48% fewer instructions per byte on Cyrillic, Arabic, Korean, Chinese and Japanese, English unchanged.
+- WordPiece matches through a byte trie instead of re-hashing every candidate subword, streams borrowed words instead of allocating one per word, and caches segmented words as the BPE backend does. bert-base-uncased encodes about 6.5x faster; allocations per encode fall from millions to thousands.
+- The Unigram vocabulary is an `FxHashMap`, as every other vocabulary in the crate already was; it was the one left on the default `SipHash`. 37-56% fewer instructions per byte on t5-base.
+- DeepSeek's letter runs skip ASCII eight bytes at a time, as the other scanners already did: 9% fewer instructions per byte on English for deepseek-v4.
+- The shared byte trie is a double array: a transition is an XOR and a compare instead of a binary search over the node's fan-out, whatever its size. 15-16% fewer instructions per byte on t5-base for English and code, and a smaller gain on bert-base-uncased; vocabulary loading costs a few milliseconds more and about the same memory.
+- Unigram's metaspace stage streams borrowed words and segments into one reused buffer, finds its markers by byte scan rather than the general substring searcher, and asks the cache about a word before copying it to prepend a marker. 19-44% fewer instructions per byte on English, code and Cyrillic.
+- Unigram caches the segments it has already resolved, as the BPE and WordPiece backends do — it was the one backend re-running its whole lattice for every repeat of a common word. 17-47% fewer instructions per byte on English, code and Cyrillic.
 - A `Precompiled` charsmap resolves each ASCII byte at construction and copies runs of untouched ASCII wholesale, so grapheme segmentation only runs over text that needs clustering. Normalization falls from a fifth of a t5-base encode to a fortieth.
 - The Unigram lattice's three buffers are owned by the encode rather than the sweep, which allocated them per word.
-- Unigram's lattice finds each position's candidate pieces by one walk down the byte trie WordPiece already used, instead of re-hashing a growing prefix once per candidate length: a further 11-61% off instructions per byte on t5-base. Token ids are unchanged.
-- The chunk cache returns a one-token chunk with a push instead of a length-driven copy, and the WordPiece trie indexes its root by byte rather than searching it: 4% fewer instructions per byte and 6% more throughput on bert-base-uncased. Token ids are unchanged.
-- BERT's normalization runs as one pass instead of four, deciding ASCII by table and copying caseless ideographs through untouched. A document that is 99% ASCII no longer takes the fully general path for the other 1%: 25-42% fewer instructions per byte on English, code and Chinese. Token ids are unchanged.
+- Unigram's lattice finds each position's candidate pieces by one walk down the byte trie WordPiece already used, instead of re-hashing a growing prefix once per candidate length: a further 11-61% off instructions per byte on t5-base.
+- The chunk cache returns a one-token chunk with a push instead of a length-driven copy, and the WordPiece trie indexes its root by byte rather than searching it: 4% fewer instructions per byte and 6% more throughput on bert-base-uncased.
+- BERT's normalization runs as one pass instead of four, deciding ASCII by table and copying caseless ideographs through untouched. A document that is 99% ASCII no longer takes the fully general path for the other 1%: 25-42% fewer instructions per byte on English, code and Chinese.
 - The chunk cache is 16-way set-associative, probed by a one-byte tag per slot (eight lanes per `u64`), instead of direct-mapped: two chunks sharing a home slot no longer evict each other forever. Another 12-30% off instructions per byte, English included.
 - The chunk cache gives long chunks as many slots as short ones and overwrites their buffers in place, so a script whose chunks are all long stops evicting its own working set. Allocations per encode fall to single digits.
 - Bundled vocabularies are no longer default features; enable `vocabs`, or the `vocab-*` families needed. The Python wheel is unaffected — `python` pulls them in.
-- The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character. Token ids are unchanged.
+- The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character.
 
 ## [0.17.0] - 2026-08-10
 
@@ -44,7 +45,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - The encoder holds every token's bytes in one arena addressed by span, rather than a map of individually allocated keys: allocations per `from_json` load drop a further 35-45%, load retires 7-11% fewer instructions, and encode retires 1.5-3.8% fewer with 15-39% fewer cache misses.
 - The decode table addresses token bytes by id in one buffer instead of a map keyed by id, retiring 3-6% fewer instructions per load, cutting allocations per `from_json` load by 15-19%, and holding 3-6 MB less.
 - Merge ranks for three- and four-byte keys come from a packed side table rather than the vocabulary map, retiring ~1% fewer instructions per encode and taking 9-13% off cache misses for models with their own merge list.
-- The case-split pre-tokenizers take an all-ASCII shortcut through their letter branches, and skip them outright where no letter branch can match: Kimi encodes ~31% and o200k/gpt-oss ~23% fewer instructions. Token ids are unchanged.
+- The case-split pre-tokenizers take an all-ASCII shortcut through their letter branches, and skip them outright where no letter branch can match: Kimi encodes ~31% and o200k/gpt-oss ~23% fewer instructions.
 - `from_json` reads `model.merges` without materializing a `serde_json::Value` per entry, sizes its merge-rank tables up front, and builds its vocabulary tables once instead of rebuilding or re-copying them, retiring 20-35% fewer instructions per load.
 - `Encoder` is a concrete type rather than a `HashMap` alias: `get` returns `Option<u32>` by value and `insert` takes `&[u8]`.
 - `Decoder` is a `DecodeTable` rather than a map: `get` takes a `u32` by value and returns `Option<&[u8]>`.
@@ -64,7 +65,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 - Batch encoding releases the GIL.
 - Batches too small to pay for a thread pool encode on the calling thread, making them ~1.4x faster.
-- ByteLevel `tokenizer.json` vocabularies resolve most pre-tokens without mapping them into ByteLevel space first, ~17% fewer instructions per encode. Token ids are unchanged.
+- ByteLevel `tokenizer.json` vocabularies resolve most pre-tokens without mapping them into ByteLevel space first, ~17% fewer instructions per encode.
 - Kimi encodes ~16% faster: its case-split letter runs skip ASCII eight bytes at a time instead of one character per call.
 - Bundled vocabularies embed a packed binary form instead of base64 text, loading ~2x faster. Encode and decode are unchanged.
 - The bundled vocabulary constants are now `*_VOCAB_PACKED` and take `Tokenizer::from_packed_chain` / `from_packed_byte_level_chain`. `.tiktoken` files and `from_file` are unaffected.
@@ -94,7 +95,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Changed
 
-- Pre-tokenization runs a direct scanner instead of the regex engine, making single-text encode 1.4-2x faster. Token ids are unchanged.
+- Pre-tokenization runs a direct scanner instead of the regex engine, making single-text encode 1.4-2x faster.
 - Tokenizers loaded with `from_json` no longer allocate a string per pre-token, size their buffers up front, and skip the segment bookkeeping their split behaviour discards, making them 2x faster on single texts.
 - Normalizers that leave the text unchanged no longer copy it. A vocabulary declaring `NFC`, as most HuggingFace files do, encodes up to 2.4x faster.
 - Chunk-cache hits take a shared lock instead of an exclusive one, making `encode_batch` 1.2-1.3x faster. Cache eviction is now nearer insertion order than least-recently-used.
