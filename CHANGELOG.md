@@ -19,9 +19,10 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 - The long-piece merge path reuses per-thread buffers instead of allocating per piece, cutting bytes allocated per encode by roughly 20x on non-Latin scripts. Token ids are unchanged.
 - Merge selection splits its queue — initial pairs sorted once, only merge-created pairs heaped — and picks its strategy per script as well as per length: 30-48% fewer instructions per byte on Cyrillic, Arabic, Korean, Chinese and Japanese, English unchanged. Token ids are unchanged.
+- The chunk cache is 16-way set-associative, probed by a one-byte tag per slot (eight lanes per `u64`), instead of direct-mapped: two chunks sharing a home slot no longer evict each other forever. Another 12-30% off instructions per byte, English included.
 - The chunk cache gives long chunks as many slots as short ones and overwrites their buffers in place, so a script whose chunks are all long stops evicting its own working set. Allocations per encode fall to single digits.
 - Bundled vocabularies are no longer default features; enable `vocabs`, or the `vocab-*` families needed. The Python wheel is unaffected — `python` pulls them in.
-- The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character: o200k/gpt-oss encode ~19% fewer instructions on Chinese and ~9% on Japanese and Korean. Token ids are unchanged.
+- The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character. Token ids are unchanged.
 
 ## [0.17.0] - 2026-08-10
 
