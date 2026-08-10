@@ -244,7 +244,7 @@ mod tests {
         }
 
         let byte_fallback = Tokenizer::byte_fallback_from_encoder(
-            &crate::core::token_bytes::encoder_from_owned(encoder.clone()),
+            &crate::core::encoder::encoder_from_owned(encoder.clone()),
             None,
             true,
         );

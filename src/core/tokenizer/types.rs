@@ -1,9 +1,10 @@
 use super::cache::ChunkCache;
 use crate::core::added::AddedTokens;
 use crate::core::bpe::BytePairRanks;
+use crate::core::decode_table::Decoder;
+use crate::core::encoder::Encoder;
 use crate::core::policy::{PolicyError, SpecialDecode, SpecialMode};
 use crate::core::streaming::StreamingDecoder;
-use crate::core::token_bytes::{Decoder, Encoder};
 use crate::core::tokenize::{token_bytes_of, token_text_of, Tokenize, TokenizeError};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;

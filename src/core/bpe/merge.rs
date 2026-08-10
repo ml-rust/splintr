@@ -1,4 +1,4 @@
-use crate::core::token_bytes::Encoder;
+use crate::core::encoder::Encoder;
 use std::collections::BinaryHeap;
 
 use super::encode::{Piece, Seed};
@@ -205,7 +205,7 @@ fn resolve(
         .and_then(|seeds| seeds.get(index))
         .filter(|seed| seed.len == node.len)
         .and_then(|seed| seed.id)
-        .or_else(|| id_encoder.get(slice).copied())
+        .or_else(|| id_encoder.get(slice))
 }
 
 /// Link, merge, and collect the result as [`Piece`]s, reporting byte spans the
@@ -248,7 +248,7 @@ pub(super) fn merge_and_collect(
             // Fallback: if somehow we have an unknown token, try to encode bytes individually
             // This shouldn't happen with a proper BPE vocabulary that covers all bytes
             for (offset, &byte) in slice.iter().enumerate() {
-                if let Some(&id) = id_encoder.get(&[byte][..]) {
+                if let Some(id) = id_encoder.get(&[byte][..]) {
                     if let Some((start, len)) = unresolved_run.take() {
                         result.push(Piece::Unresolved { start, len });
                     }
@@ -328,7 +328,7 @@ pub(super) fn merge_and_collect_ids_into(
         let slice = &piece[node.start..node.start + node.len];
 
         match id_encoder.get(slice) {
-            Some(&id) => out.push(id),
+            Some(id) => out.push(id),
             // Same contract as `merge_and_collect`'s fallback branch, minus the
             // span bookkeeping: a byte that resolves is emitted, one that does
             // not is dropped.

@@ -16,8 +16,8 @@ use super::super::tokenizer::Tokenizer;
 use super::super::wordpiece::WordPieceTokenizer;
 
 use super::super::any_tokenizer::{AnyTokenizer, Backend};
+use super::super::encoder::Encoder;
 use super::super::policy;
-use super::super::token_bytes::{Encoder, TokenBytes};
 use super::components::{
     find_added_token, parse_bert_norm, parse_norm_ops, parse_pre_tokenizer,
     parse_special_decode_ids, parse_special_tokens, parse_unk_id,
@@ -328,7 +328,7 @@ fn build_bpe(
                     match byte_level_decode(token) {
                         None => return Err(HfJsonError::InvalidByteLevel(token.to_string())),
                         Some(raw) => {
-                            raw_encoder.insert(TokenBytes::from(raw), id);
+                            raw_encoder.insert(&raw, id);
                         }
                     }
                 }
@@ -341,7 +341,7 @@ fn build_bpe(
         // the id→bytes table, and both the built-in byte-level decode and the
         // declared `ByteLevel` decoder pass a non-byte-level token through
         // unchanged, so the id renders as the literal string it was declared as.
-        encoder.insert(TokenBytes::from(token.as_bytes().to_vec()), id);
+        encoder.insert(token.as_bytes(), id);
     }
 
     // Merge priority comes from the `merges` list, which is independent of token

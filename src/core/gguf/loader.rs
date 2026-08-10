@@ -668,7 +668,7 @@ fn remove_extra_whitespaces(vocab: &GgufVocab) -> bool {
 pub(super) fn build_merge_ranks(
     merges: &[String],
     tokens: &[String],
-) -> crate::core::token_bytes::Encoder {
+) -> crate::core::encoder::Encoder {
     // Each entry is "a b"; byte-level tokens encode real spaces as `Ġ`, so the
     // first space is always the separator.
     let merged: Vec<String> = merges.iter().map(|s| s.replacen(' ', "", 1)).collect();

@@ -25,7 +25,7 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::core::token_bytes::Encoder;
+use crate::core::encoder::Encoder;
 
 /// Where one token's bytes sit in the buffer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -48,6 +48,9 @@ impl Span {
         self.offset == u32::MAX
     }
 }
+
+/// Vocabulary as id → token bytes.
+pub type Decoder = DecodeTable;
 
 /// Token bytes addressed by token id.
 #[derive(Default, Clone)]
@@ -74,9 +77,9 @@ impl DecodeTable {
         let limit = Self::dense_limit(encoder.len());
         let dense_len = encoder
             .values()
-            .filter(|&&id| id < limit)
+            .filter(|&id| id < limit)
             .max()
-            .map_or(0, |&id| id as usize + 1);
+            .map_or(0, |id| id as usize + 1);
 
         let mut table = Self {
             bytes: Vec::with_capacity(total),
@@ -84,7 +87,7 @@ impl DecodeTable {
             sparse: FxHashMap::default(),
             count: 0,
         };
-        for (key, &id) in encoder {
+        for (key, id) in encoder {
             table.insert(id, key);
         }
         table
@@ -186,13 +189,9 @@ impl FromIterator<(u32, Vec<u8>)> for DecodeTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::token_bytes::TokenBytes;
 
     fn encoder(entries: &[(&[u8], u32)]) -> Encoder {
-        entries
-            .iter()
-            .map(|(bytes, id)| (TokenBytes::from(bytes.to_vec()), *id))
-            .collect()
+        entries.iter().map(|(bytes, id)| (*bytes, *id)).collect()
     }
 
     #[test]

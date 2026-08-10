@@ -1,4 +1,4 @@
-use crate::core::token_bytes::Encoder;
+use crate::core::encoder::Encoder;
 
 use super::merge::{merge_and_collect, merge_and_collect_ids_into, SCAN_SYMBOL_LIMIT};
 use super::nodes::Node;
@@ -99,13 +99,13 @@ pub(crate) fn byte_pair_encode_pieces_seeded(
     // Fast path: single byte
     if piece.len() == 1 {
         return match id_encoder.get(piece) {
-            Some(&r) => vec![Piece::Token(r)],
+            Some(r) => vec![Piece::Token(r)],
             None => vec![Piece::Unresolved { start: 0, len: 1 }],
         };
     }
 
     // Fast path: entire piece is a single token
-    if let Some(&id) = id_encoder.get(piece) {
+    if let Some(id) = id_encoder.get(piece) {
         return vec![Piece::Token(id)];
     }
 
@@ -147,12 +147,12 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
     // Fast path: single byte. An unresolvable one is dropped, which is what the
     // `Piece::Unresolved` this would otherwise produce amounts to here.
     if piece.len() == 1 {
-        out.extend(id_encoder.get(piece).copied());
+        out.extend(id_encoder.get(piece));
         return;
     }
 
     // Fast path: entire piece is a single token
-    if let Some(&id) = id_encoder.get(piece) {
+    if let Some(id) = id_encoder.get(piece) {
         out.push(id);
         return;
     }

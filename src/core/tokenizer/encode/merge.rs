@@ -232,7 +232,7 @@ impl Tokenizer {
             let mut encoded = [0u8; 4];
             let ch_bytes = ch.encode_utf8(&mut encoded).as_bytes();
 
-            if let Some(&id) = self.encoder.get(ch_bytes) {
+            if let Some(id) = self.encoder.get(ch_bytes) {
                 if let Some(unk) = pending_unk.take() {
                     push_token(&mut buf, &mut seeds, unk)?;
                 }

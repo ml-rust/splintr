@@ -14,9 +14,9 @@
 //! than by growing a second, drifting description of "ids → text".
 
 use crate::core::byte_level::{byte_level_decode, byte_level_decode_bytes};
+use crate::core::decode_table::Decoder;
 use crate::core::decoder::parse_byte_token;
 use crate::core::metaspace::WORD_BOUNDARY;
-use crate::core::token_bytes::Decoder;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::sync::Arc;

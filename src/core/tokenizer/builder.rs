@@ -4,7 +4,7 @@ use super::error::TokenizerError;
 use super::types::{ByteFallback, Tokenizer};
 use crate::core::added::{AddedTokenSet, AddedTokens};
 use crate::core::bpe::BytePairRanks;
-use crate::core::token_bytes::{encoder_from_owned, Encoder};
+use crate::core::encoder::{encoder_from_owned, Encoder};
 use crate::core::vocab::{
     build_decoder, load_packed_bpe_borrowed, load_tiktoken_bpe, load_tiktoken_bpe_file,
 };
@@ -592,7 +592,7 @@ impl Tokenizer {
         // This vocabulary was read at runtime, so its tokens are owned; the
         // borrowed representation is only for the embedded ones.
         let encoder = encoder_from_owned(encoder);
-        let mut decoder: crate::core::token_bytes::Decoder = decoder.into_iter().collect();
+        let mut decoder: crate::core::decode_table::Decoder = decoder.into_iter().collect();
 
         // Compile regex
         let regex = RegexBuilder::new(pattern).jit(true).build()?;
@@ -690,7 +690,7 @@ impl Tokenizer {
         let mut any = false;
         if declares_byte_fallback {
             for (b, slot) in byte_ids.iter_mut().enumerate() {
-                *slot = encoder.get(format!("<0x{b:02X}>").as_bytes()).copied();
+                *slot = encoder.get(format!("<0x{b:02X}>").as_bytes());
                 any |= slot.is_some();
             }
         }

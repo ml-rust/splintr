@@ -22,7 +22,7 @@ impl Tokenizer {
         // Fast path: the entire chunk is one known token. Ahead of the cache
         // deliberately — it is a single hash lookup against a map that is
         // already hot, so caching its answer would cost more than recomputing.
-        if let Some(&rank) = self.encoder.get(bytes) {
+        if let Some(rank) = self.encoder.get(bytes) {
             out.push(rank);
             return;
         }
@@ -75,7 +75,7 @@ impl Tokenizer {
         scratch: &mut String,
     ) {
         if let Some(raw_encoder) = &self.raw_encoder {
-            if let Some(&rank) = raw_encoder.get(raw) {
+            if let Some(rank) = raw_encoder.get(raw) {
                 out.push(rank);
                 return;
             }

@@ -1,4 +1,4 @@
-use crate::core::token_bytes::{Encoder, TokenBytes};
+use crate::core::encoder::Encoder;
 
 /// Build a bytes → merge-rank map (lower rank = merged first) from a model's
 /// ordered merge list and the vocabulary it was built over.
@@ -34,27 +34,21 @@ pub(crate) fn merge_ranks<'a>(
     merge_set.extend(merged.iter().map(String::as_str));
 
     // The base alphabet adds a few hundred entries on top of the merges.
-    let mut ranks: Encoder =
-        Encoder::with_capacity_and_hasher(merged.len() + 512, rustc_hash::FxBuildHasher);
+    let mut ranks: Encoder = Encoder::with_capacity(merged.len() + 512);
 
     // Base alphabet first, in id order for determinism.
     for token in vocab_in_id_order.filter(|t| !merge_set.contains(t)) {
         let next = ranks.len() as u32;
-        ranks
-            .entry(TokenBytes::from(token.as_bytes().to_vec()))
-            .or_insert(next);
+        ranks.insert_if_absent(token.as_bytes(), next);
     }
 
-    // Then the merges, preserving list priority. The set borrowed from
-    // `merged`; dropping it first lets each token be *moved* into its key
-    // rather than copied, which is one allocation saved per merge over a list
-    // as long as the vocabulary.
+    // Then the merges, preserving list priority. The set borrows from
+    // `merged`, so drop it first — `merged.into_iter()` below consumes the
+    // vec it points into.
     drop(merge_set);
     let base_count = ranks.len() as u32;
     for (i, token) in merged.into_iter().enumerate() {
-        ranks
-            .entry(TokenBytes::Owned(token.into_bytes().into_boxed_slice()))
-            .or_insert(base_count + i as u32);
+        ranks.insert_if_absent(token.as_bytes(), base_count + i as u32);
     }
     ranks
 }
@@ -100,7 +94,7 @@ impl BytePairRanks {
     /// Index every two-byte entry of `map`, and every three- and four-byte one.
     pub(crate) fn build(map: &Encoder) -> Self {
         let mut ranks = vec![u32::MAX; 256 * 256];
-        for (key, &rank) in map {
+        for (key, rank) in map {
             if let [hi, lo] = key[..] {
                 ranks[(hi as usize) << 8 | lo as usize] = rank;
             }
@@ -180,7 +174,7 @@ impl ShortRanks {
             mask: capacity - 1,
         };
 
-        for (key, &rank) in map {
+        for (key, rank) in map {
             if !(SHORT_MIN..=SHORT_MAX).contains(&key.len()) {
                 continue;
             }
@@ -270,7 +264,7 @@ impl<'a> RankLookup<'a> {
                 return short.get(key);
             }
         }
-        self.map.get(key).copied().unwrap_or(u32::MAX)
+        self.map.get(key).unwrap_or(u32::MAX)
     }
 }
 
@@ -279,10 +273,7 @@ mod tests {
     use super::*;
 
     fn encoder(entries: &[(&[u8], u32)]) -> Encoder {
-        entries
-            .iter()
-            .map(|(bytes, rank)| (TokenBytes::from(bytes.to_vec()), *rank))
-            .collect()
+        entries.iter().copied().collect()
     }
 
     /// The length bit in a packed key. Without it a three-byte key and the

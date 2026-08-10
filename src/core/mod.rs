@@ -38,6 +38,7 @@ mod bpe;
 pub mod byte_level;
 pub mod decode_table;
 mod decoder;
+pub mod encoder;
 pub mod gguf;
 pub mod hf_json;
 mod metaspace;
@@ -50,7 +51,6 @@ pub(crate) mod scratch;
 pub mod sentencepiece;
 pub mod spm;
 pub(crate) mod streaming;
-mod token_bytes;
 pub mod tokenize;
 mod tokenizer;
 mod vocab;
@@ -62,6 +62,8 @@ pub use any_tokenizer::{AnyTokenizer, Backend};
 pub use bpe::byte_pair_encode;
 pub use byte_level::{byte_level_decode, byte_level_decode_bytes, byte_level_encode};
 pub use decode_table::DecodeTable;
+pub use decode_table::Decoder;
+pub use encoder::{encoder_from_owned, Encoder};
 pub use gguf::{from_gguf_vocab, GgufVocab, GgufVocabError};
 pub use hf_json::{from_json_bytes, from_json_path, HfJsonError};
 pub use normalizer::{NormOp, Normalizer};
@@ -78,7 +80,6 @@ pub use pretrained::{
 pub use sentencepiece::{SentencePieceError, SentencePieceTokenizer};
 pub use spm::{SpmError, SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
 pub use streaming::StreamingDecoder;
-pub use token_bytes::{encoder_from_owned, Decoder, Encoder, TokenBytes};
 pub use tokenize::{Tokenize, TokenizeError};
 pub use tokenizer::{
     cl100k_agent_tokens, deepseek_v3_agent_tokens, glm4_agent_tokens, gpt_oss_agent_tokens,

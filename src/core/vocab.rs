@@ -42,7 +42,8 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use rustc_hash::FxHashMap;
 use thiserror::Error;
 
-use super::token_bytes::{Decoder, Encoder, TokenBytes};
+use super::decode_table::Decoder;
+use super::encoder::Encoder;
 
 /// Type alias for encoder/decoder pair returned by `load_tiktoken_bpe_with_decoder`.
 pub type EncoderDecoderPair = (FxHashMap<Vec<u8>, u32>, FxHashMap<u32, Vec<u8>>);
@@ -235,13 +236,7 @@ const PACKED_MAGIC: &[u8; 8] = b"SPLNTRV1";
 /// instead of refusing it.
 pub fn load_packed_bpe(data: &[u8]) -> Result<Encoder, VocabError> {
     let count = packed_header(data)?;
-    // Sized up front: this map is 100k-200k entries and growing it by doubling
-    // rehashes the whole table several times on the load path.
-    let mut encoder = Encoder::with_capacity_and_hasher(count, rustc_hash::FxBuildHasher);
-    walk_packed(data, count, |token, rank| {
-        encoder.insert(TokenBytes::from(token.to_vec()), rank);
-    })?;
-    Ok(encoder)
+    packed_into_arena(data, count)
 }
 
 /// Load a packed vocabulary **without copying any token bytes**.
@@ -259,9 +254,21 @@ pub fn load_packed_bpe(data: &[u8]) -> Result<Encoder, VocabError> {
 /// contiguous bytes anywhere until something decodes them.
 pub fn load_packed_bpe_borrowed(data: &'static [u8]) -> Result<Encoder, VocabError> {
     let count = packed_header(data)?;
-    let mut encoder = Encoder::with_capacity_and_hasher(count, rustc_hash::FxBuildHasher);
+    packed_into_arena(data, count)
+}
+
+/// Build an encoder whose arena *is* the packed buffer.
+///
+/// Every token already sits contiguously inside `data`, so the encoder takes
+/// one copy of the whole buffer and records where each token is, rather than
+/// copying tokens out one at a time. The framing bytes between tokens ride
+/// along unused — a few hundred KB against 100k-200k separate copies.
+fn packed_into_arena(data: &[u8], count: usize) -> Result<Encoder, VocabError> {
+    let mut encoder = Encoder::with_arena(data.to_vec(), count);
+    let base = data.as_ptr() as usize;
     walk_packed(data, count, |token, rank| {
-        encoder.insert(TokenBytes::Static(token), rank);
+        let offset = (token.as_ptr() as usize - base) as u32;
+        encoder.insert_span(offset, token.len() as u32, rank);
     })?;
     Ok(encoder)
 }
@@ -590,8 +597,8 @@ mod tests {
     #[test]
     fn test_build_decoder() {
         let mut encoder = Encoder::default();
-        encoder.insert(TokenBytes::from(b"Hello".to_vec()), 0);
-        encoder.insert(TokenBytes::from(b"World".to_vec()), 1);
+        encoder.insert(b"Hello", 0);
+        encoder.insert(b"World", 1);
 
         let decoder = build_decoder(&encoder);
         assert_eq!(decoder.get(0), Some(&b"Hello"[..]));

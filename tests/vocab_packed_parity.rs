@@ -66,7 +66,7 @@ fn packed_matches_text_for_every_vocabulary() {
         for (token, rank) in &text {
             match packed.get(token.as_slice()) {
                 Some(packed_rank) => assert_eq!(
-                    packed_rank, rank,
+                    packed_rank, *rank,
                     "{stem}: token {token:?} is rank {rank} in text, {packed_rank} in packed"
                 ),
                 None => panic!("{stem}: token {token:?} (rank {rank}) missing from packed"),
@@ -83,7 +83,7 @@ fn the_empty_token_survives_packing() {
     let packed = load_packed_bpe(&read("whisper", "splv")).expect("whisper.splv");
     assert_eq!(
         packed.get(b"".as_slice()),
-        Some(&50256),
+        Some(50256),
         "whisper's empty token lost its rank in the packed form"
     );
 }
@@ -110,8 +110,8 @@ fn a_gap_in_the_rank_space_is_preserved() {
 
     let packed = load_packed_bpe(&buf).expect("synthetic packed vocabulary");
     let actual: HashMap<Vec<u8>, u32> = packed
-        .into_iter()
-        .map(|(token, rank)| (token.as_slice().to_vec(), rank))
+        .iter()
+        .map(|(token, rank)| (token.to_vec(), rank))
         .collect();
     let expected: HashMap<Vec<u8>, u32> = [(b"a".to_vec(), 0), (b"b".to_vec(), 300)].into();
     assert_eq!(
@@ -127,7 +127,7 @@ fn a_gap_in_the_rank_space_is_preserved() {
 fn every_bundled_vocabulary_is_contiguous_today() {
     for stem in VOCABS {
         let packed = load_packed_bpe(&read(stem, "splv")).unwrap_or_else(|e| panic!("{stem}: {e}"));
-        let max = packed.values().copied().max().expect("non-empty");
+        let max = packed.values().max().expect("non-empty");
         assert_eq!(
             packed.len() as u32,
             max + 1,

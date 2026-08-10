@@ -246,7 +246,7 @@ fn byte_operand_merge_tokenizer() -> Tokenizer {
 
     Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
         .expect("the test pattern compiles")
-        .with_merge_ranks(crate::core::token_bytes::encoder_from_owned(merge_ranks))
+        .with_merge_ranks(crate::core::encoder::encoder_from_owned(merge_ranks))
         .with_byte_fallback(Some(ByteFallback::new(byte_ids, Some(0))))
 }
 
@@ -322,7 +322,7 @@ fn a_multi_byte_char_s_fallback_tokens_merge_with_each_other() {
 
     let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
         .expect("the test pattern compiles")
-        .with_merge_ranks(crate::core::token_bytes::encoder_from_owned(merge_ranks))
+        .with_merge_ranks(crate::core::encoder::encoder_from_owned(merge_ranks))
         .with_byte_fallback(Some(ByteFallback::new(byte_ids, Some(0))));
 
     assert_eq!(tokenizer.encode("é"), vec![4]);
@@ -357,7 +357,7 @@ fn resolving_first_leaves_a_vocabulary_without_byte_operand_merges_alone() {
 
     let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
         .expect("the test pattern compiles")
-        .with_merge_ranks(crate::core::token_bytes::encoder_from_owned(merge_ranks))
+        .with_merge_ranks(crate::core::encoder::encoder_from_owned(merge_ranks))
         .with_byte_fallback(Some(ByteFallback::new(byte_ids, Some(0))));
 
     assert_eq!(tokenizer.encode("abxbc"), vec![1, 3, 0, 0, 2]);
@@ -389,7 +389,7 @@ fn fuse_unk_still_holds_when_the_fallback_is_resolved_first() {
     let build = |fuse_unk: bool| {
         Tokenizer::new(encoder.clone(), FxHashMap::default(), r"\S+|\s+")
             .expect("the test pattern compiles")
-            .with_merge_ranks(crate::core::token_bytes::encoder_from_owned(
+            .with_merge_ranks(crate::core::encoder::encoder_from_owned(
                 merge_ranks.clone(),
             ))
             .with_byte_fallback(Some(
@@ -428,7 +428,7 @@ fn a_fallback_id_with_no_vocabulary_spelling_keeps_the_after_merge_answer() {
 
     let tokenizer = Tokenizer::new(encoder, FxHashMap::default(), r"\S+|\s+")
         .expect("the test pattern compiles")
-        .with_merge_ranks(crate::core::token_bytes::encoder_from_owned(merge_ranks))
+        .with_merge_ranks(crate::core::encoder::encoder_from_owned(merge_ranks))
         .with_byte_fallback(Some(ByteFallback::new(byte_ids, Some(0))));
 
     assert_eq!(tokenizer.encode("abxbc"), vec![1, 3, 0, 0, 2]);
@@ -946,7 +946,7 @@ fn byte_fallback_tokenizer() -> Tokenizer {
     }
 
     let byte_fallback = Tokenizer::byte_fallback_from_encoder(
-        &crate::core::token_bytes::encoder_from_owned(encoder.clone()),
+        &crate::core::encoder::encoder_from_owned(encoder.clone()),
         None,
         true,
     );

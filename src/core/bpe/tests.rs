@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::token_bytes::{encoder_from_owned, Encoder, TokenBytes};
+use crate::core::encoder::{encoder_from_owned, Encoder};
 use proptest::prelude::*;
 use rustc_hash::FxHashMap;
 
@@ -67,11 +67,11 @@ fn byte_pair_encode_reference_seeded(
 
     // Fast path: single byte
     if piece.len() == 1 {
-        return id_encoder.get(piece).copied().map_or(vec![], |r| vec![r]);
+        return id_encoder.get(piece).map_or(vec![], |r| vec![r]);
     }
 
     // Fast path: entire piece is a single token
-    if let Some(&id) = id_encoder.get(piece) {
+    if let Some(id) = id_encoder.get(piece) {
         return vec![id];
     }
 
@@ -115,7 +115,7 @@ fn byte_pair_encode_reference_seeded(
         let len = left.len + right.len;
         let slice = &piece[start..start + len];
 
-        merge_ranks.get(slice).copied().unwrap_or(u32::MAX)
+        merge_ranks.get(slice).unwrap_or(u32::MAX)
     };
 
     // Initial rank calculation for all adjacent pairs
@@ -187,13 +187,13 @@ fn byte_pair_encode_reference_seeded(
         let node = &nodes[curr];
         let slice = &piece[node.start..node.start + node.len];
 
-        if let Some(&id) = id_encoder.get(slice) {
+        if let Some(id) = id_encoder.get(slice) {
             result.push(id);
         } else {
             // Fallback: if somehow we have an unknown token, try to encode bytes individually
             // This shouldn't happen with a proper BPE vocabulary that covers all bytes
             for &byte in slice {
-                if let Some(&id) = id_encoder.get(&[byte][..]) {
+                if let Some(id) = id_encoder.get(&[byte][..]) {
                     result.push(id);
                 }
             }
@@ -670,10 +670,7 @@ proptest! {
             (prop::collection::vec(any::<u8>(), 1..5), any::<u32>()), 0..40),
         probes in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..5), 1..40)
     ) {
-        let map: Encoder = entries
-            .into_iter()
-            .map(|(bytes, rank)| (TokenBytes::from(bytes), rank))
-            .collect();
+        let map: Encoder = entries.into_iter().collect();
         let pairs = BytePairRanks::build(&map);
         let plain = RankLookup::new(&map);
         let fronted = RankLookup::with_pairs(&map, &pairs);
