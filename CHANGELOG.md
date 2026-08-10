@@ -6,18 +6,24 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
-## [Unreleased]
+## [0.17.0] - 2026-08-10
 
 ### Changed
 
 - The chunk cache holds more entries by default, retiring 5-9% fewer instructions per encode across the bundled vocabularies.
 - Chunk cache entries store their chunk and ids inline rather than in two heap allocations, cutting allocations per encode by 98% and cache misses by 7-12%. Chunks too long to store inline — which is every CJK chunk, and every chunk at all under ByteLevel — go to a second tier rather than going uncached. Its memory is now reserved up front instead of growing.
-- The encoder holds every token's bytes in one arena addressed by span, rather than a map of individually allocated keys: allocations per `from_json` load drop a further 35-45%, load retires 7-11% fewer instructions, and encode retires 1.5-3.8% fewer with 15-39% fewer cache misses. `TokenBytes` is gone and `Encoder` is a concrete type — `get` returns `Option<u32>` by value, `insert` takes `&[u8]`.
+- The encoder holds every token's bytes in one arena addressed by span, rather than a map of individually allocated keys: allocations per `from_json` load drop a further 35-45%, load retires 7-11% fewer instructions, and encode retires 1.5-3.8% fewer with 15-39% fewer cache misses.
 - The decode table addresses token bytes by id in one buffer instead of a map keyed by id, retiring 3-6% fewer instructions per load, cutting allocations per `from_json` load by 15-19%, and holding 3-6 MB less.
 - Merge ranks for three- and four-byte keys come from a packed side table rather than the vocabulary map, retiring ~1% fewer instructions per encode and taking 9-13% off cache misses for models with their own merge list.
 - The case-split pre-tokenizers take an all-ASCII shortcut through their letter branches, and skip them outright where no letter branch can match: Kimi encodes ~31% and o200k/gpt-oss ~23% fewer instructions. Token ids are unchanged.
 - `from_json` reads `model.merges` without materializing a `serde_json::Value` per entry, sizes its merge-rank tables up front, and builds its vocabulary tables once instead of rebuilding or re-copying them, retiring 20-35% fewer instructions per load.
+- `Encoder` is a concrete type rather than a `HashMap` alias: `get` returns `Option<u32>` by value and `insert` takes `&[u8]`.
+- `Decoder` is a `DecodeTable` rather than a map: `get` takes a `u32` by value and returns `Option<&[u8]>`.
 - `Tokenizer::with_merge_ranks` takes an `Encoder` rather than a `FxHashMap<Vec<u8>, u32>`, matching what `encoder()` already returns.
+
+### Removed
+
+- `TokenBytes`. The encoder owns its token bytes in one arena, so there is nothing left for it to spell.
 
 ## [0.16.1] - 2026-08-09
 
