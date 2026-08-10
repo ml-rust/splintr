@@ -10,12 +10,14 @@ use super::ranks::RankLookup;
 ///
 /// The two strategies are asymptotically opposite and there is no single right
 /// answer, so the threshold is measured rather than guessed. Selection cost per
-/// merge is O(symbols) for the scan and O(log symbols) for the heap, but the
-/// heap pays a heap *allocation* that grows as candidates are queued, and at
-/// small symbol counts that allocation dominates everything else. Measured on
+/// merge is O(symbols) for the scan and O(log symbols) for the heap. Measured on
 /// llama-3 over novel words, the scan wins up to roughly 100 symbols and the
 /// heap wins above it, diverging fast in both directions (at 8000 symbols the
 /// heap is ~46x ahead; at 16 symbols the scan is ~25% ahead).
+///
+/// That measurement predates [`super::scratch`], which amortizes the heap's
+/// allocation per thread rather than per piece. The crossover is therefore
+/// lower than it was, and 64 has not been re-measured against it.
 ///
 /// 64 sits deliberately on the safe side of that crossover. It also covers the
 /// entire realistic range of the dominant workload: a pre-tokenizer emits
@@ -113,7 +115,12 @@ fn merge_by_scan(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) 
 /// Superseded entries are left in the heap and discarded on pop, so no entry
 /// ever has to be found and removed. Each merge pushes at most two new
 /// candidates, so the heap holds O(N) entries over the whole run.
-fn merge_by_heap(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) -> usize {
+fn merge_by_heap(
+    piece: &[u8],
+    nodes: &mut [Node],
+    merge_ranks: RankLookup<'_>,
+    queue: &mut BinaryHeap<Merge>,
+) -> usize {
     let count = nodes.len();
 
     // Queue a pair as a merge candidate, if the vocabulary can merge it. A pair
@@ -133,9 +140,15 @@ fn merge_by_heap(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) 
     // Seed the heap with every adjacent pair. `saturating_sub` because the
     // callers guarantee a non-empty list through their own guards, and neither
     // may become an underflow if a third ever appears.
-    let mut queue: BinaryHeap<Merge> = BinaryHeap::with_capacity(count * 2);
+    //
+    // The queue is the caller's, cleared and grown to fit rather than built
+    // fresh: on a CJK corpus this is one allocation per chunk otherwise. Cleared
+    // here as well as by the scratch, so a caller passing its own buffer cannot
+    // seed the run with stale candidates.
+    queue.clear();
+    queue.reserve(count * 2);
     for i in 0..count.saturating_sub(1) {
-        push(&mut queue, i, i + 1, nodes);
+        push(queue, i, i + 1, nodes);
     }
 
     let mut live = count;
@@ -158,10 +171,10 @@ fn merge_by_heap(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) 
         // The merge created at most two new adjacencies, around the merged node.
         let prev = nodes[li].prev;
         if prev != usize::MAX {
-            push(&mut queue, prev, li, nodes);
+            push(queue, prev, li, nodes);
         }
         if new_next != usize::MAX {
-            push(&mut queue, li, new_next, nodes);
+            push(queue, li, new_next, nodes);
         }
     }
     live
@@ -170,8 +183,15 @@ fn merge_by_heap(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) 
 /// Link `nodes` into a list and run the merge loop over them, returning how
 /// many nodes are still live.
 ///
-/// `nodes` arrives with `start`/`len` set and `prev`/`next` ignored.
-fn link_and_merge(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) -> usize {
+/// `nodes` arrives with `start`/`len` set and `prev`/`next` ignored. `queue` is
+/// touched only on the heap branch; the scan branch never looks at it, so a
+/// caller that knows it is below the threshold may pass an empty one.
+fn link_and_merge(
+    piece: &[u8],
+    nodes: &mut [Node],
+    merge_ranks: RankLookup<'_>,
+    queue: &mut BinaryHeap<Merge>,
+) -> usize {
     let count = nodes.len();
     for (i, node) in nodes.iter_mut().enumerate() {
         node.prev = if i == 0 { usize::MAX } else { i - 1 };
@@ -181,7 +201,7 @@ fn link_and_merge(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>)
     if count <= SCAN_SYMBOL_LIMIT {
         merge_by_scan(piece, nodes, merge_ranks)
     } else {
-        merge_by_heap(piece, nodes, merge_ranks)
+        merge_by_heap(piece, nodes, merge_ranks, queue)
     }
 }
 
@@ -216,12 +236,13 @@ fn resolve(
 /// the ordinary path, where every node resolves through `id_encoder` alone.
 pub(super) fn merge_and_collect(
     piece: &[u8],
-    mut nodes: Vec<Node>,
+    nodes: &mut [Node],
     merge_ranks: RankLookup<'_>,
     id_encoder: &Encoder,
     seeds: Option<&[Seed]>,
+    queue: &mut BinaryHeap<Merge>,
 ) -> Vec<Piece> {
-    link_and_merge(piece, &mut nodes, merge_ranks);
+    link_and_merge(piece, nodes, merge_ranks, queue);
 
     // Collect final pieces by traversing the linked list. Node 0 is always the
     // head: a merge keeps the left node, so the first node is never absorbed.
@@ -312,8 +333,9 @@ pub(super) fn merge_and_collect_ids_into(
     merge_ranks: RankLookup<'_>,
     id_encoder: &Encoder,
     out: &mut Vec<u32>,
+    queue: &mut BinaryHeap<Merge>,
 ) {
-    let live = link_and_merge(piece, nodes, merge_ranks);
+    let live = link_and_merge(piece, nodes, merge_ranks, queue);
 
     // One id per surviving node, except where a node's surface resolves to no
     // token and is spelled out byte by byte instead — rare enough (it needs a

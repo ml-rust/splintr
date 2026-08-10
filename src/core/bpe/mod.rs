@@ -65,6 +65,7 @@ mod encode;
 mod merge;
 mod nodes;
 mod ranks;
+mod scratch;
 #[cfg(test)]
 mod tests;
 

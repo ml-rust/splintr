@@ -1,8 +1,10 @@
 use crate::core::encoder::Encoder;
+use std::collections::BinaryHeap;
 
 use super::merge::{merge_and_collect, merge_and_collect_ids_into, SCAN_SYMBOL_LIMIT};
 use super::nodes::Node;
 use super::ranks::RankLookup;
+use super::scratch::with_merge_scratch;
 
 /// Perform byte-pair encoding on a piece of text using a linked-list approach.
 ///
@@ -109,8 +111,22 @@ pub(crate) fn byte_pair_encode_pieces_seeded(
         return vec![Piece::Token(id)];
     }
 
-    let nodes = seed_nodes(piece, char_granular);
-    merge_and_collect(piece, nodes, merge_ranks, id_encoder, None)
+    with_merge_scratch(|s| {
+        seed_nodes_reusing(
+            piece,
+            char_granular,
+            symbol_count(piece, char_granular),
+            &mut s.nodes,
+        );
+        merge_and_collect(
+            piece,
+            &mut s.nodes,
+            merge_ranks,
+            id_encoder,
+            None,
+            &mut s.queue,
+        )
+    })
 }
 
 /// [`byte_pair_encode_pieces_seeded`] with the [`Piece`] layer removed: token
@@ -130,9 +146,9 @@ pub(crate) fn byte_pair_encode_pieces_seeded(
 ///
 /// The node list is stack-resident for pieces at or below
 /// [`SCAN_SYMBOL_LIMIT`](super::merge::SCAN_SYMBOL_LIMIT) symbols, which is the
-/// same bound the merge strategy switches on and covers every chunk a
-/// pre-tokenizer produces. Above it the piece is long enough that one heap
-/// allocation is noise against the merge itself.
+/// same bound the merge strategy switches on. Above it the buffers come from
+/// [`with_merge_scratch`], so the first long piece on a thread pays the
+/// allocation and the rest reuse it.
 pub(crate) fn byte_pair_encode_ids_seeded_into(
     piece: &[u8],
     merge_ranks: RankLookup<'_>,
@@ -162,10 +178,28 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
         let mut buf = [Node::PLACEHOLDER; SCAN_SYMBOL_LIMIT];
         let nodes = &mut buf[..symbols];
         seed_nodes_into(piece, char_granular, nodes);
-        merge_and_collect_ids_into(piece, nodes, merge_ranks, id_encoder, out);
+        // Below the threshold the merge is selected by scan, which never looks
+        // at the queue — an empty `BinaryHeap` allocates nothing.
+        merge_and_collect_ids_into(
+            piece,
+            nodes,
+            merge_ranks,
+            id_encoder,
+            out,
+            &mut BinaryHeap::new(),
+        );
     } else {
-        let mut nodes = seed_nodes(piece, char_granular);
-        merge_and_collect_ids_into(piece, &mut nodes, merge_ranks, id_encoder, out);
+        with_merge_scratch(|s| {
+            seed_nodes_reusing(piece, char_granular, symbols, &mut s.nodes);
+            merge_and_collect_ids_into(
+                piece,
+                &mut s.nodes,
+                merge_ranks,
+                id_encoder,
+                out,
+                &mut s.queue,
+            );
+        });
     }
 }
 
@@ -196,13 +230,15 @@ fn symbol_count(piece: &[u8], char_granular: bool) -> usize {
 /// longer than its own byte count) so no separate spans buffer is allocated;
 /// `prev`/`next` only depend on final list length, so they are filled in by the
 /// merge phase once that length is known.
-fn seed_nodes(piece: &[u8], char_granular: bool) -> Vec<Node> {
-    let mut nodes = vec![Node::PLACEHOLDER; symbol_count(piece, char_granular)];
-    seed_nodes_into(piece, char_granular, &mut nodes);
-    nodes
+/// Seed `nodes` into a buffer the caller is reusing, so a long piece costs no
+/// allocation once that buffer has grown to fit one.
+fn seed_nodes_reusing(piece: &[u8], char_granular: bool, symbols: usize, nodes: &mut Vec<Node>) {
+    nodes.clear();
+    nodes.resize(symbols, Node::PLACEHOLDER);
+    seed_nodes_into(piece, char_granular, nodes);
 }
 
-/// [`seed_nodes`] into storage the caller already has, which may be a stack
+/// Seed nodes into storage the caller already has, which may be a stack
 /// array. `nodes` must be exactly [`symbol_count`] long.
 fn seed_nodes_into(piece: &[u8], char_granular: bool, nodes: &mut [Node]) {
     match char_granular
@@ -262,11 +298,20 @@ pub(crate) fn byte_pair_encode_pieces_presegmented(
     if seeds.is_empty() {
         return vec![];
     }
-    let nodes = Vec::from_iter(seeds.iter().map(|seed| Node {
-        prev: 0,
-        next: 0,
-        start: seed.start,
-        len: seed.len,
-    }));
-    merge_and_collect(piece, nodes, merge_ranks, id_encoder, Some(seeds))
+    with_merge_scratch(|s| {
+        s.nodes.extend(seeds.iter().map(|seed| Node {
+            prev: 0,
+            next: 0,
+            start: seed.start,
+            len: seed.len,
+        }));
+        merge_and_collect(
+            piece,
+            &mut s.nodes,
+            merge_ranks,
+            id_encoder,
+            Some(seeds),
+            &mut s.queue,
+        )
+    })
 }
