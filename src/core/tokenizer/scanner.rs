@@ -111,6 +111,17 @@ fn word_at(bytes: &[u8], pos: usize) -> Option<u64> {
 /// is not one (including any non-ASCII lead byte, left to the caller).
 #[inline]
 fn swar_skip_ascii_letters(bytes: &[u8], mut pos: usize) -> usize {
+    // Decline in one byte. Without this the whole probe — an eight-byte load, a
+    // high-bit test and the scalar tail below — runs before concluding there is
+    // nothing to skip, and a script written entirely in non-ASCII letters
+    // (Greek, Cyrillic, Thai) pays it once per character. Equivalent to what
+    // follows: neither loop can advance from a byte that is not an ASCII letter.
+    if bytes
+        .get(pos)
+        .is_none_or(|&b| (b | 0x20).wrapping_sub(b'a') >= 26)
+    {
+        return pos;
+    }
     while let Some(word) = word_at(bytes, pos) {
         // A non-ASCII byte anywhere in the word invalidates the range trick, so
         // hand the whole word back to the scalar loop.
@@ -361,6 +372,23 @@ fn punct_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
         |c| c == Class::Punct,
         |c| !c.is_whitespace() && !is_letter_char(c) && !is_number_char(c),
     )
+}
+
+/// Scan `[\p{L}\p{M}]` from `pos`, whose first character is `n` bytes long.
+///
+/// Both scanners accept the same class and differ only in whether they try to
+/// skip ASCII in bulk, so choosing between them is a pure question of which is
+/// cheaper here — and the answer is decided by the first character. A run that
+/// opens with a non-ASCII letter is usually written entirely in one, and Greek,
+/// Cyrillic and Thai would otherwise offer the bulk skip a character at a time
+/// and have it decline every time.
+#[inline]
+fn scan_letter_or_mark_run(text: &str, bytes: &[u8], pos: usize, n: usize) -> usize {
+    if n == 1 {
+        scan_run_of(text, bytes, pos + n, LETTER_OR_MARK)
+    } else {
+        scan_run(text, bytes, pos + n, letter_or_mark_at)
+    }
 }
 
 /// `[\p{L}\p{M}]` as a run: ASCII letters eight bytes at a time, then one
@@ -1183,7 +1211,7 @@ pub(super) fn deepseek_v3_pass3_spans(text: &str, out: &mut Vec<(usize, usize)>)
         // the cl100k family's: it excludes punctuation and symbols rather than
         // digits, so a digit *can* introduce a letter run here.
         if let Some(n) = letter_or_mark_at(text, bytes, pos) {
-            pos = scan_run_of(text, bytes, pos + n, LETTER_OR_MARK);
+            pos = scan_letter_or_mark_run(text, bytes, pos, n);
             out.push((start, pos));
             continue;
         }
@@ -1192,7 +1220,7 @@ pub(super) fn deepseek_v3_pass3_spans(text: &str, out: &mut Vec<(usize, usize)>)
                 .then(|| letter_or_mark_at(text, bytes, pos + prefix))
                 .flatten()
             {
-                pos = scan_run_of(text, bytes, pos + prefix + n, LETTER_OR_MARK);
+                pos = scan_letter_or_mark_run(text, bytes, pos + prefix, n);
                 out.push((start, pos));
                 continue;
             }
