@@ -79,6 +79,11 @@ pub struct SentencePieceTokenizer {
     /// SentencePiece `remove_extra_whitespaces`: a run of spaces escapes to a
     /// single `▁` rather than one per space.
     remove_extra_whitespaces: bool,
+    /// A pre-tokenizer run *before* the metaspace escaping, for files whose
+    /// `pre_tokenizer` puts a whitespace-dropping stage in front of `Metaspace`
+    /// (T5's `Sequence[WhitespaceSplit, Metaspace]`). `None` is classic
+    /// SentencePiece — see [`with_word_split`](Self::with_word_split).
+    word_split: Option<super::pretokenizer::PreTokenizer>,
     /// Added tokens recognized in the input (HF matches these during encoding).
     added: Option<super::added::AddedTokens>,
     /// Ids of `special=true` added tokens dropped on decode (HF default).
@@ -144,6 +149,7 @@ impl SentencePieceTokenizer {
             normalizer: super::normalizer::Normalizer::default(),
             add_prefix_space: true,
             remove_extra_whitespaces: false,
+            word_split: None,
             added: None,
             special_decode: rustc_hash::FxHashSet::default(),
         })
@@ -197,6 +203,26 @@ impl SentencePieceTokenizer {
     /// asked would not.
     pub fn with_remove_extra_whitespaces(mut self, remove_extra_whitespaces: bool) -> Self {
         self.remove_extra_whitespaces = remove_extra_whitespaces;
+        self
+    }
+
+    /// Split the normalized text into words *before* metaspace escaping, and
+    /// escape each word on its own. Returns `self` for chaining.
+    ///
+    /// What `Sequence[WhitespaceSplit, Metaspace]` asks for, and not the same
+    /// tokenizer as `Metaspace` alone: `WhitespaceSplit` **discards** what it
+    /// splits on, so `Metaspace` marks only the surviving words, where classic
+    /// SentencePiece keeps every space as a `▁` piece. Measured against
+    /// `tokenizers` 0.22.1 on `t5-base`, `"a\n\nb"` is `▁ a ▁ b`; letting the
+    /// escaping own the split gives `▁ a ▁ ▁ b`, one spurious `▁` per whitespace
+    /// run, and turns pure whitespace into a token where the reference emits
+    /// none.
+    ///
+    /// A whole [`PreTokenizer`](super::pretokenizer::PreTokenizer) rather than a
+    /// flag, because `Whitespace` — which also cuts words from punctuation —
+    /// arrives the same way and needs its own regex.
+    pub fn with_word_split(mut self, word_split: super::pretokenizer::PreTokenizer) -> Self {
+        self.word_split = Some(word_split);
         self
     }
 
@@ -269,26 +295,43 @@ impl SentencePieceTokenizer {
             return Vec::new();
         }
 
-        // SentencePiece pre-tokenization: spaces become `▁` pieces (they are
-        // vocabulary entries, not delimiters to discard) and the text is cut
-        // before each marker. Each segment is then Viterbi-segmented
-        // independently.
-        let escaped = super::metaspace::escape(
-            &normalized,
-            if self.add_prefix_space {
-                super::metaspace::Prefix::WhenAbsent
-            } else {
-                super::metaspace::Prefix::None
-            },
-            self.remove_extra_whitespaces,
-        );
+        let prefix = if self.add_prefix_space {
+            super::metaspace::Prefix::WhenAbsent
+        } else {
+            super::metaspace::Prefix::None
+        };
 
         let mut tokens = Vec::new();
         let mut chars: Vec<char> = Vec::new();
-        for segment in super::metaspace::segments(&escaped) {
-            chars.clear();
-            chars.extend(segment.chars());
-            self.viterbi_piece(&chars, &mut tokens);
+        match &self.word_split {
+            // A whitespace-dropping pre-tokenizer ran first: escape each word on
+            // its own, so the discarded whitespace cannot come back as `▁`
+            // pieces. A pre-tokenizer that returns no words (pure whitespace)
+            // yields no ids, which is what the reference does.
+            Some(pre) => {
+                for word in pre.split_pieces(&normalized) {
+                    let escaped =
+                        super::metaspace::escape(&word, prefix, self.remove_extra_whitespaces);
+                    for segment in super::metaspace::segments(&escaped) {
+                        chars.clear();
+                        chars.extend(segment.chars());
+                        self.viterbi_piece(&chars, &mut tokens);
+                    }
+                }
+            }
+            // Classic SentencePiece pre-tokenization: spaces become `▁` pieces
+            // (they are vocabulary entries, not delimiters to discard) and the
+            // text is cut before each marker. Each segment is then
+            // Viterbi-segmented independently.
+            None => {
+                let escaped =
+                    super::metaspace::escape(&normalized, prefix, self.remove_extra_whitespaces);
+                for segment in super::metaspace::segments(&escaped) {
+                    chars.clear();
+                    chars.extend(segment.chars());
+                    self.viterbi_piece(&chars, &mut tokens);
+                }
+            }
         }
         tokens
     }

@@ -189,6 +189,33 @@ fn metaspace_prepends_and_preserves_whitespace_runs() {
     );
 }
 
+/// The same fixture behind `Sequence[WhitespaceSplit, Metaspace]` — T5's shape —
+/// where whitespace is a separator rather than a piece.
+///
+/// `WhitespaceSplit` discards what it splits on, so `Metaspace` never sees the
+/// run and every input below collapses to the single-space answer, and pure
+/// whitespace produces nothing at all. Treating the sequence as plain Metaspace
+/// gave `[13, 4, 6, 9, 10]` for the two-space case and `[4]` for `"   "`.
+///
+/// Reference (`tokenizers` 0.22.1, this document with that `pre_tokenizer`):
+/// all three spellings -> `[13, 6, 9, 10]`; `"   "` -> `[]`.
+#[test]
+fn whitespace_split_drops_the_whitespace_it_splits_on() {
+    let json = UNIGRAM_JSON.replace(
+        r#""pre_tokenizer": {"type": "Metaspace", "replacement": "▁", "prepend_scheme": "always", "split": true}"#,
+        r#""pre_tokenizer": {"type": "Sequence", "pretokenizers": [{"type": "WhitespaceSplit"}, {"type": "Metaspace", "replacement": "▁", "prepend_scheme": "always", "split": true}]}"#,
+    );
+    let tok = from_json_bytes(json.as_bytes()).expect("whitespace-split fixture loads");
+    for text in [
+        "the understanding",
+        "the  understanding",
+        "the\n\nunderstanding",
+    ] {
+        assert_eq!(tok.encode_raw(text), vec![13, 6, 9, 10], "{text:?}");
+    }
+    assert_eq!(tok.encode_raw("   "), Vec::<u32>::new());
+}
+
 /// A character absent from the vocabulary falls back to `unk_id` (0) for the
 /// whole word rather than dropping it or panicking; the Metaspace prefix still
 /// becomes its own `▁` piece.

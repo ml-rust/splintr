@@ -41,7 +41,7 @@ pub use core::{
 /// [`SentencePieceTokenizer`] are actually callable from outside this crate:
 /// building a [`Normalizer`] requires naming [`NormOp`], and applying a
 /// SentencePiece charsmap step requires naming [`Precompiled`].
-pub use core::{NormOp, Normalizer, Precompiled};
+pub use core::{CharsmapDialect, NormOp, Normalizer, Precompiled};
 /// The pre-tokenizer pipeline and its stages, re-exported so
 /// [`Tokenizer::with_pre_tokenizer`] is actually callable from outside this
 /// crate: building a [`PreTokenizer`] requires naming [`PreTokStage`], and

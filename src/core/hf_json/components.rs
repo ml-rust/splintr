@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::super::added::{AddedToken, AddedTokenSet};
 use super::super::normalizer::NormOp;
-use super::super::precompiled::Precompiled;
+use super::super::precompiled::{CharsmapDialect, Precompiled};
 use super::super::tokenizer::{GPT2_PATTERN, NO_SPLIT_PATTERN, SENTENCEPIECE_PATTERN};
 use super::HfJsonError;
 
@@ -392,7 +392,12 @@ pub(super) fn parse_norm_ops(norm: Option<&Value>) -> Result<Vec<NormOp>, HfJson
                     use base64::Engine;
                     if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
                         if let Some(pc) = Precompiled::from_bytes(&bytes) {
-                            ops.push(NormOp::Precompiled(pc));
+                            // A charsmap read out of a `tokenizer.json` is read
+                            // back the way `tokenizers` reads it, which is not
+                            // the way sentencepiece does.
+                            ops.push(NormOp::Precompiled(
+                                pc.with_dialect(CharsmapDialect::HuggingFace),
+                            ));
                         }
                     }
                 }

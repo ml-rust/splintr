@@ -277,7 +277,9 @@ impl WordPieceTokenizer {
             text
         };
         let text = if self.do_lower_case {
-            text.to_lowercase()
+            // Per-character, as `BertNormalizer` does — not `str::to_lowercase`,
+            // whose Greek final-sigma rule the reference does not apply.
+            super::normalizer::lowercase(&text)
         } else {
             text
         };
@@ -649,8 +651,13 @@ fn split_on_punctuation(word: &str, out: &mut Vec<String>) {
 /// Check if a character is a CJK ideograph, matching BERT's `_is_chinese_char`
 /// (the CJK Unified Ideographs blocks and their extensions/compatibility forms).
 /// BERT `_clean_text`: drop `\0`, the replacement char, and control/format
-/// characters (Unicode categories `C*`, except `\t`/`\n`/`\r`); map every
+/// characters (`Cc`, `Cf`, `Cs`, `Co`, except `\t`/`\n`/`\r`); map every
 /// whitespace character (including `Zs`) to a plain space.
+///
+/// `Cn` (unassigned) is deliberately **not** in that list, despite being a `C*`
+/// category. Measured against `tokenizers` 0.22.1 on `bert-base-uncased`,
+/// `"a\u{05ff}b"` encodes to `[UNK]` — the character survives cleaning and takes
+/// its whole word out of the vocabulary. Dropping it yielded `ab` instead.
 fn clean_text(text: &str) -> String {
     use unicode_general_category::{get_general_category, GeneralCategory};
     let mut out = String::with_capacity(text.len());
@@ -664,8 +671,7 @@ fn clean_text(text: &str) -> String {
                 GeneralCategory::Control
                 | GeneralCategory::Format
                 | GeneralCategory::Surrogate
-                | GeneralCategory::PrivateUse
-                | GeneralCategory::Unassigned => continue,
+                | GeneralCategory::PrivateUse => continue,
                 _ => {}
             }
         }
@@ -716,6 +722,23 @@ fn is_punctuation(c: char) -> bool {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// `clean_text` drops `Cc`/`Cf`/`Co` but keeps `Cn`. Unassigned codepoints
+    /// survive into the word and take it out of the vocabulary — measured
+    /// against `tokenizers` 0.22.1, `"a\u{05ff}b"` on `bert-base-uncased` is
+    /// `[UNK]`, not `ab`.
+    #[test]
+    fn clean_text_keeps_unassigned_codepoints() {
+        assert_eq!(clean_text("a\u{05ff}b"), "a\u{05ff}b");
+        assert_eq!(clean_text("a\u{0378}b"), "a\u{0378}b");
+        // Cc, Cf, Co and the replacement char still go.
+        assert_eq!(clean_text("a\u{0007}b"), "ab");
+        assert_eq!(clean_text("a\u{00ad}b"), "ab");
+        assert_eq!(clean_text("a\u{e000}b"), "ab");
+        assert_eq!(clean_text("a\u{fffd}b"), "ab");
+        // Whitespace, including the keepable kinds, becomes a plain space.
+        assert_eq!(clean_text("a\tb\u{00a0}c"), "a b c");
+    }
 
     fn make_tokenizer() -> WordPieceTokenizer {
         let vocab = vec![

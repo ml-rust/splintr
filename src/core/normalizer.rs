@@ -15,6 +15,26 @@ use unicode_normalization::{
 
 use super::precompiled::Precompiled;
 
+/// Lowercase `s` one character at a time, which is **not** `str::to_lowercase`.
+///
+/// `str::to_lowercase` applies Unicode's context-sensitive SpecialCasing rules,
+/// most visibly Greek final sigma (word-final `Σ` → `ς`). HuggingFace has no
+/// such rule — both its `Lowercase` normalizer and `BertNormalizer` map each
+/// `char` through `char::to_lowercase` — so on `bert-base-uncased` `ΟΠΩΣ` is
+/// `ο ##π ##ω ##σ` there and was `ο ##π ##ω ##ς` here.
+pub(crate) fn lowercase(s: &str) -> String {
+    s.chars().flat_map(char::to_lowercase).collect()
+}
+
+/// Whether [`lowercase`] would change `s`, asked before allocating.
+///
+/// Titlecase is tested separately: `ǅ` (U+01C5) is `Lt`, not covered by the
+/// `Uppercase` property `char::is_uppercase` reports, and still lowercases.
+pub(crate) fn needs_lowercasing(s: &str) -> bool {
+    s.chars()
+        .any(|c| c.is_uppercase() || get_general_category(c) == GeneralCategory::TitlecaseLetter)
+}
+
 /// A single normalization step, matching one HuggingFace normalizer type.
 ///
 /// `#[non_exhaustive]`: this enum tracks HuggingFace's normalizer spec and
@@ -75,8 +95,8 @@ impl NormOp {
                 IsNormalized::Yes => s,
                 _ => Cow::Owned(s.nfkd().collect()),
             },
-            NormOp::Lowercase => match s.chars().any(char::is_uppercase) {
-                true => Cow::Owned(s.to_lowercase()),
+            NormOp::Lowercase => match needs_lowercasing(&s) {
+                true => Cow::Owned(lowercase(&s)),
                 false => s,
             },
             // Matches HuggingFace's `StripAccents`: drop only Nonspacing_Mark (Mn)
@@ -217,6 +237,32 @@ fn nmt(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lowercasing is per character, so a word-final `Σ` is `σ` and not the
+    /// contextual `ς` that `str::to_lowercase` produces. Every word-final
+    /// capital sigma in a Greek corpus is a different id, so the two are pinned
+    /// against each other rather than only the expected answer being asserted.
+    #[test]
+    fn lowercase_does_not_apply_the_greek_final_sigma_rule() {
+        assert_eq!(lowercase("ΟΠΩΣ"), "οπωσ");
+        assert_eq!("ΟΠΩΣ".to_lowercase(), "οπως");
+        assert_eq!(
+            NormOp::Lowercase.apply(std::borrow::Cow::Borrowed("ΟΠΩΣ")),
+            "οπωσ"
+        );
+    }
+
+    /// The fast path must not skip a titlecase letter: `ǅ` is `Lt`, which the
+    /// Unicode `Uppercase` property does not cover.
+    #[test]
+    fn lowercase_fast_path_sees_titlecase() {
+        assert!(needs_lowercasing("ǅ"));
+        assert!(!needs_lowercasing("already lower"));
+        assert_eq!(
+            NormOp::Lowercase.apply(std::borrow::Cow::Borrowed("ǅ")),
+            "ǆ"
+        );
+    }
 
     #[test]
     fn nfc_and_nfd_roundtrip() {

@@ -578,17 +578,27 @@ fn build_unigram(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
         .unwrap_or(0);
 
     let ops = parse_norm_ops(root.get("normalizer"))?;
-    // The Unigram backend does its own metaspace escaping and splitting, so
-    // `pre` is consulted only for `add_prefix_space` — there is no GPT-2 default
-    // to silently guess here. Space-run merging stays off: a `tokenizer.json`
-    // that wants it declares it as a normalizer step (XLM-R's
-    // `Replace{" {2,}" → " "}`), which the pipeline above already applies.
+    // The Unigram backend does its own metaspace escaping, so `pre` is consulted
+    // only for `add_prefix_space` — there is no GPT-2 default to silently guess
+    // here. Space-run merging stays off: a `tokenizer.json` that wants it
+    // declares it as a normalizer step (XLM-R's `Replace{" {2,}" → " "}`), which
+    // the pipeline above already applies.
     let pre = parse_pre_tokenizer(root.get("pre_tokenizer"));
     let tok = SentencePieceTokenizer::new(tokens, scores, None, eos)?
         .with_normalizer(Normalizer::new(ops))
         .with_prefix_space(pre.add_prefix_space)
         .with_added_tokens(parse_special_tokens(root))?
         .with_special_decode_ids(parse_special_decode_ids(root));
+    // Stages the escaping cannot express — `WhitespaceSplit` and friends, which
+    // drop what they split on — run ahead of it. The stage parser does not model
+    // `Metaspace`, precisely because this backend implements it, so a plain
+    // `Metaspace` pre-tokenizer parses to no stages and nothing changes here.
+    let tok = match super::super::pretokenizer::parse(root.get("pre_tokenizer"))? {
+        // A ByteLevel pipeline rewrites pieces into the GPT-2 byte alphabet,
+        // which a `▁`-marked Unigram vocabulary cannot match.
+        Some(pt) if !pt.byte_level() => tok.with_word_split(pt),
+        _ => tok,
+    };
     Ok(Backend::Unigram(tok))
 }
 

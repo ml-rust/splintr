@@ -68,7 +68,7 @@ pub use gguf::{from_gguf_vocab, GgufVocab, GgufVocabError};
 pub use hf_json::{from_json_bytes, from_json_path, HfJsonError};
 pub use normalizer::{NormOp, Normalizer};
 pub use policy::{PolicyError, SpecialDecode, SpecialMode, SpecialPolicy};
-pub use precompiled::Precompiled;
+pub use precompiled::{CharsmapDialect, Precompiled};
 pub use pretokenizer::{PreTokStage, PreTokenizer, SplitBehavior, SplitPattern};
 pub use pretrained::{
     base_vocab_size, base_vocab_size_by_name, bos_token_id, bos_token_id_by_name,

@@ -8,6 +8,13 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ## [Unreleased]
 
+### Fixed
+
+- A `tokenizer.json` whose `pre_tokenizer` puts `WhitespaceSplit` (or `Whitespace`) in front of `Metaspace` now drops the whitespace it splits on, instead of emitting a spurious `▁` per whitespace run. T5 and other converted SentencePiece models were wrong on every corpus containing a double space or newline.
+- WordPiece and the `Lowercase` normalizer lowercase per character, as HuggingFace does, rather than through `str::to_lowercase` and its Greek final-sigma rule: word-final `Σ` is now `σ`, not `ς`.
+- BERT's `clean_text` keeps unassigned (`Cn`) codepoints instead of stripping them, so a word carrying one becomes `[UNK]` as in the reference.
+- A `Precompiled` charsmap from a `tokenizer.json` is read the way `spm_precompiled` reads it — per grapheme cluster, shortest rule, whole cluster replaced — via the new `CharsmapDialect`. The sentencepiece reading stays the default and is what the GGUF path uses.
+
 ### Changed
 
 - The long-piece merge path reuses per-thread node and candidate buffers instead of allocating both per piece, cutting bytes allocated per encode by roughly 20x on non-Latin scripts. Token ids are unchanged.
