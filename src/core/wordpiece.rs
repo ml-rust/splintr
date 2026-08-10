@@ -329,25 +329,32 @@ impl WordPieceTokenizer {
 
         // Accents and casing are independent settings, applied in HuggingFace's
         // own order (`BertNormalizer::normalize` strips first, then lowercases).
+        if !self.strip_accents && !self.do_lower_case {
+            return text;
+        }
+
+        // ASCII cannot be decomposed and never carries a mark, so accent
+        // stripping is a no-op on it and lowercasing is a byte map — no
+        // decomposition, no per-character category lookups, no `to_lowercase`
+        // iterator.
+        if text.is_ascii() {
+            if !self.do_lower_case || !text.bytes().any(|b| b.is_ascii_uppercase()) {
+                return text;
+            }
+            return Cow::Owned(text.to_ascii_lowercase());
+        }
+
+        if let Some(folded) = fold_fast(&text, self.strip_accents, self.do_lower_case) {
+            return Cow::Owned(folded);
+        }
+
+        // The guard in `fold_fast` fired: canonical ordering can be observed
+        // here, so redo it the slow way, stage by stage.
         let text = match self.strip_accents {
             true => strip_accents(text),
             false => text,
         };
-        if !self.do_lower_case {
-            return text;
-        }
-        // ASCII lowercasing is a byte map with no character ever expanding, so
-        // it needs neither `char::to_lowercase`'s iterator-of-chars nor the
-        // per-character category checks the general path makes.
-        if text.is_ascii() {
-            return match text.bytes().any(|b| b.is_ascii_uppercase()) {
-                true => Cow::Owned(text.to_ascii_lowercase()),
-                false => text,
-            };
-        }
-        match super::normalizer::needs_lowercasing(&text) {
-            // Per-character, as `BertNormalizer` does — not `str::to_lowercase`,
-            // whose Greek final-sigma rule the reference does not apply.
+        match self.do_lower_case && super::normalizer::needs_lowercasing(&text) {
             true => Cow::Owned(super::normalizer::lowercase(&text)),
             false => text,
         }
@@ -712,6 +719,66 @@ fn is_special_token(token: &str) -> bool {
 /// decompose (NFD) and drop only **Nonspacing_Mark (Mn)** characters. Spacing
 /// combining marks (Mc) — e.g. Devanagari/Thai vowel signs — are kept, unlike a
 /// blanket "all combining marks" filter which would corrupt those scripts.
+/// Accent stripping and lowercasing in a single pass.
+///
+/// The two used to run as separate stages, each walking the text and each
+/// allocating a copy of it; together they were about half of a BERT encode.
+/// Fusing them is sound because lowercasing is per-character and therefore
+/// commutes with anything downstream of the decomposition.
+///
+/// The pass decomposes one character at a time rather than running the text
+/// through an NFD iterator. That skips canonical *reordering*, which NFD also
+/// does — so `ordered` watches for the only case where the difference could
+/// show: a character that survives the mark-drop and carries a non-zero
+/// combining class. Marks that get dropped cannot matter, however they were
+/// ordered, and reordering never crosses a starter. If one ever survives, the
+/// caller redoes the work through the full NFD path.
+///
+/// Returns `None` when that guard fires.
+fn fold_fast(text: &str, strip: bool, lower: bool) -> Option<String> {
+    use unicode_general_category::{get_general_category, GeneralCategory};
+    use unicode_normalization::char::{canonical_combining_class, decompose_canonical};
+
+    let mut out = String::with_capacity(text.len());
+    let mut ordered = true;
+
+    for c in text.chars() {
+        // ASCII has no canonical decomposition and is never a mark, so the
+        // whole Unicode path is skippable for it — which is nearly every
+        // character of nearly every document.
+        if c.is_ascii() {
+            out.push(if lower { c.to_ascii_lowercase() } else { c });
+            continue;
+        }
+        if !strip {
+            push_folded(&mut out, c, lower);
+            continue;
+        }
+        decompose_canonical(c, |d| {
+            if get_general_category(d) == GeneralCategory::NonspacingMark {
+                return;
+            }
+            if canonical_combining_class(d) != 0 {
+                ordered = false;
+            }
+            push_folded(&mut out, d, lower);
+        });
+    }
+
+    ordered.then_some(out)
+}
+
+/// Append `c`, lowercased per character when asked — never through
+/// `str::to_lowercase`, whose Greek final-sigma rule the reference does not
+/// apply.
+#[inline]
+fn push_folded(out: &mut String, c: char, lower: bool) {
+    match lower {
+        true => out.extend(c.to_lowercase()),
+        false => out.push(c),
+    }
+}
+
 fn strip_accents(text: Cow<'_, str>) -> Cow<'_, str> {
     use unicode_general_category::{get_general_category, GeneralCategory};
     use unicode_normalization::{is_nfd_quick, IsNormalized, UnicodeNormalization};
