@@ -119,12 +119,17 @@ pub(super) fn prefers_scan(piece: &[u8], symbols: usize) -> bool {
     piece.len() <= BYTE_GATE[piece[content_start(piece)] as usize] as usize
 }
 
-/// Merge rank of the pair `(left, right)`, or `u32::MAX` when the vocabulary
-/// cannot merge it.
+/// Merge rank of the pair `(left, right)` and the id it merges to, or
+/// `(u32::MAX, u32::MAX)` when the vocabulary cannot merge it.
 ///
 /// Both selection strategies go through here, which is what keeps them
-/// bit-exact with each other. The `u32::MAX` sentinel and its handling live in
-/// [`RankLookup::get`].
+/// bit-exact with each other — and, since the two lookups are chosen here and
+/// nowhere else, what keeps the id-keyed path bit-exact with the byte-keyed one.
+///
+/// The merged id is carried out alongside the rank because the caller that
+/// performs the merge needs it, and asking the table a second time would double
+/// the lookups the id path exists to make cheap. On the byte path it is
+/// `u32::MAX` and unread: ids are resolved from the surface after merging there.
 #[inline]
 fn rank_of(
     piece: &[u8],
@@ -132,19 +137,26 @@ fn rank_of(
     left: usize,
     right: usize,
     merge_ranks: RankLookup<'_>,
-) -> u32 {
+) -> (u32, u32) {
     if left == usize::MAX || right == usize::MAX {
-        return u32::MAX;
+        return (u32::MAX, u32::MAX);
+    }
+    if let Some(table) = merge_ranks.by_id() {
+        return merge_ranks.pair(table, nodes[left].id, nodes[right].id);
     }
     let (l, r) = (&nodes[left], &nodes[right]);
     let len = l.len + r.len;
-    merge_ranks.get(&piece[l.start..l.start + len])
+    (merge_ranks.get(&piece[l.start..l.start + len]), u32::MAX)
 }
 
 /// Absorb `right` into `left` and unlink it, returning the node that follows.
+///
+/// `merged` is the id the pair resolves to on the id path, and `u32::MAX` on the
+/// byte path, where the field is never read.
 #[inline]
-fn absorb(nodes: &mut [Node], left: usize, right: usize) -> usize {
+fn absorb(nodes: &mut [Node], left: usize, right: usize, merged: u32) -> usize {
     nodes[left].len += nodes[right].len;
+    nodes[left].id = merged;
     nodes[right].len = 0;
 
     let new_next = nodes[right].next;
@@ -166,8 +178,11 @@ fn absorb(nodes: &mut [Node], left: usize, right: usize) -> usize {
 fn merge_by_scan(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) -> usize {
     let count = nodes.len();
     let mut ranks = [u32::MAX; SCAN_SYMBOL_LIMIT];
-    for (i, rank) in ranks.iter_mut().enumerate().take(count.saturating_sub(1)) {
-        *rank = rank_of(piece, nodes, i, i + 1, merge_ranks);
+    // The id each pair merges to, held alongside its rank so performing the
+    // merge costs no second lookup. Unused on the byte path.
+    let mut merged = [u32::MAX; SCAN_SYMBOL_LIMIT];
+    for i in 0..count.saturating_sub(1) {
+        (ranks[i], merged[i]) = rank_of(piece, nodes, i, i + 1, merge_ranks);
     }
 
     let mut live = count;
@@ -185,7 +200,7 @@ fn merge_by_scan(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) 
         }
 
         let right = nodes[best].next;
-        let new_next = absorb(nodes, best, right);
+        let new_next = absorb(nodes, best, right, merged[best]);
         live -= 1;
         // The absorbed node can never be selected again.
         ranks[right] = u32::MAX;
@@ -193,9 +208,9 @@ fn merge_by_scan(piece: &[u8], nodes: &mut [Node], merge_ranks: RankLookup<'_>) 
         // Only the two adjacencies around the merged node changed.
         let prev = nodes[best].prev;
         if prev != usize::MAX {
-            ranks[prev] = rank_of(piece, nodes, prev, best, merge_ranks);
+            (ranks[prev], merged[prev]) = rank_of(piece, nodes, prev, best, merge_ranks);
         }
-        ranks[best] = rank_of(piece, nodes, best, new_next, merge_ranks);
+        (ranks[best], merged[best]) = rank_of(piece, nodes, best, new_next, merge_ranks);
     }
 }
 
@@ -232,6 +247,9 @@ pub(super) struct QueueScratch {
     /// key is live exactly when `ranks[left]` still equals the rank it was
     /// pushed with.
     pub(super) ranks: Vec<u32>,
+    /// The id the pair starting at each node merges to, held alongside its rank
+    /// so performing the merge costs no second lookup. Unused on the byte path.
+    pub(super) merged: Vec<u32>,
     /// The pairs the piece starts with. All of them are known before the first
     /// merge, so they are sorted once and read front to back — no heap.
     pub(super) cold: Vec<u64>,
@@ -244,6 +262,7 @@ impl QueueScratch {
     /// Empty every buffer, keeping the capacity that makes reuse worthwhile.
     pub(super) fn clear(&mut self) {
         self.ranks.clear();
+        self.merged.clear();
         self.cold.clear();
         self.hot.clear();
     }
@@ -251,7 +270,10 @@ impl QueueScratch {
     /// Whether every buffer is empty. Only the scratch's own tests ask.
     #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
-        self.ranks.is_empty() && self.cold.is_empty() && self.hot.is_empty()
+        self.ranks.is_empty()
+            && self.merged.is_empty()
+            && self.cold.is_empty()
+            && self.hot.is_empty()
     }
 }
 
@@ -276,6 +298,8 @@ fn merge_by_queue(
     let count = nodes.len();
     q.ranks.clear();
     q.ranks.resize(count, u32::MAX);
+    q.merged.clear();
+    q.merged.resize(count, u32::MAX);
     q.cold.clear();
     q.hot.clear();
 
@@ -283,8 +307,9 @@ fn merge_by_queue(
     // their own guards, and this may not become an underflow if a third ever
     // appears.
     for i in 0..count.saturating_sub(1) {
-        let rank = rank_of(piece, nodes, i, i + 1, merge_ranks);
+        let (rank, merged) = rank_of(piece, nodes, i, i + 1, merge_ranks);
         q.ranks[i] = rank;
+        q.merged[i] = merged;
         if rank != u32::MAX {
             q.cold.push(key(rank, i));
         }
@@ -334,7 +359,7 @@ fn merge_by_queue(
         // rankable pair has a right node, so this cannot be the tail.
         let left = key_left(next);
         let right = nodes[left].next;
-        let new_next = absorb(nodes, left, right);
+        let new_next = absorb(nodes, left, right, q.merged[left]);
         live -= 1;
         q.ranks[right] = u32::MAX;
 
@@ -342,14 +367,16 @@ fn merge_by_queue(
         // Recording their new ranks is what invalidates their old keys.
         let prev = nodes[left].prev;
         if prev != usize::MAX {
-            let rank = rank_of(piece, nodes, prev, left, merge_ranks);
+            let (rank, merged) = rank_of(piece, nodes, prev, left, merge_ranks);
             q.ranks[prev] = rank;
+            q.merged[prev] = merged;
             if rank != u32::MAX {
                 q.hot.push(Reverse(key(rank, prev)));
             }
         }
-        let rank = rank_of(piece, nodes, left, new_next, merge_ranks);
+        let (rank, merged) = rank_of(piece, nodes, left, new_next, merge_ranks);
         q.ranks[left] = rank;
+        q.merged[left] = merged;
         if rank != u32::MAX {
             q.hot.push(Reverse(key(rank, left)));
         }
@@ -520,6 +547,17 @@ pub(super) fn merge_and_collect_ids_into(
     // `out` is shared across chunks and usually already has the room.
     out.reserve(live);
     let mut curr = 0;
+
+    // On the id path every surviving node already knows its token: a seed
+    // resolved before the merge began, and a merged node took its id from the
+    // pair that produced it. There is nothing left to look up.
+    if merge_ranks.by_id().is_some() {
+        while curr != usize::MAX {
+            out.push(nodes[curr].id);
+            curr = nodes[curr].next;
+        }
+        return;
+    }
 
     while curr != usize::MAX {
         let node = &nodes[curr];

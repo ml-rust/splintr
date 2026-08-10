@@ -211,6 +211,289 @@ impl ShortRanks {
     }
 }
 
+/// Widest id [`PairRanks`] can address, and the widest merge rank it can carry.
+///
+/// A slot is one `u64`: two ids for the key and one for the merged token, so
+/// three fields of 20 bits leave four spare and keep every real entry below
+/// [`PairRanks::EMPTY`]. No published vocabulary is within two orders of
+/// magnitude of the limit; one that were simply keeps the byte-keyed path.
+const PAIR_ID_BITS: u32 = 20;
+const PAIR_ID_LIMIT: u32 = 1 << PAIR_ID_BITS;
+
+/// Merge ranks keyed by the **ids of the pair being merged**, rather than by the
+/// bytes the pair concatenates to.
+///
+/// The byte-keyed tables above are complete only for short keys — two bytes
+/// directly, three and four through [`ShortRanks`] — and a merge's key grows as
+/// the merge proceeds. That is invisible on Latin text, whose merges stay
+/// short, and dominant on every other script: a CJK character is three bytes, so
+/// the *first* merge already produces a six-byte key and every one after it is
+/// nine, twelve, fifteen. All of those fall through to a hash of a byte string
+/// and a `memcmp`.
+///
+/// Keyed by id there is no such gradient. Every symbol the merge loop holds is a
+/// vocabulary token — a seed symbol is one by construction, and a merged one is
+/// one because a pair only merges when the vocabulary contains what it
+/// concatenates to — so a pair is two `u32`s whatever its surface is, and a probe
+/// is a multiply and an aligned load.
+///
+/// The table answers for exactly the pairs the byte-keyed map answers for: every
+/// split of every mergeable surface into two halves the vocabulary also has.
+/// That is what keeps the two paths bit-exact rather than merely similar — it is
+/// the same relation, addressed differently.
+pub(crate) struct PairRanks {
+    /// Open-addressed, always a power of two. A slot packs the pair in the low
+    /// `2 * PAIR_ID_BITS` bits and the merged token's id above them.
+    slots: Box<[u64]>,
+    mask: usize,
+    /// Merge priority per token id, when the model orders its merges
+    /// independently of its ids. `None` for tiktoken-style vocabularies, where a
+    /// token's id *is* its rank and the indirection would be an identity.
+    rank_by_id: Option<Box<[u32]>>,
+    /// Id of each single byte, `u32::MAX` where the vocabulary has no such
+    /// token. Byte-seeded pieces start here.
+    byte_ids: Box<[u32; 256]>,
+    /// Id of every token of one to four bytes: what character-seeded pieces
+    /// start from, since a UTF-8 character is never longer.
+    symbol_ids: SymbolIds,
+    /// Whether a merge must start from whole characters rather than bytes,
+    /// because the vocabulary does not contain every single byte as a token.
+    seeds_by_char: bool,
+}
+
+impl PairRanks {
+    /// The id a seed symbol of `bytes` stands for, or `u32::MAX` when the
+    /// vocabulary has no such token and the piece must take the byte path.
+    ///
+    /// Single bytes go through the direct table: byte-seeded pieces ask for
+    /// nothing else, and they are the majority of traffic.
+    #[inline]
+    pub(crate) fn seed_id(&self, bytes: &[u8]) -> u32 {
+        match bytes {
+            [byte] => self.byte_ids[*byte as usize],
+            _ => self.symbol_ids.get(bytes),
+        }
+    }
+
+    /// Whether pieces must be seeded by character for this vocabulary.
+    #[inline]
+    pub(crate) fn seeds_by_char(&self) -> bool {
+        self.seeds_by_char
+    }
+}
+
+impl PairRanks {
+    /// A slot holding no entry. Distinct from every real one because all three
+    /// packed fields are bounded by [`PAIR_ID_LIMIT`].
+    const EMPTY: u64 = u64::MAX;
+
+    /// Index every pair `rank_map` can merge, or `None` when the vocabulary
+    /// cannot be addressed by id.
+    ///
+    /// All-or-nothing, like [`ShortRanks::build`] and for the same reason: the
+    /// merge loop takes a miss as authoritative and never consults the map
+    /// afterwards, which is only sound if every mergeable pair is present.
+    pub(crate) fn build(rank_map: &Encoder, id_encoder: &Encoder) -> Option<Self> {
+        let mut max_id = 0u32;
+        for (_, id) in id_encoder {
+            if id >= PAIR_ID_LIMIT {
+                return None;
+            }
+            max_id = max_id.max(id);
+        }
+
+        // Every split of every mergeable surface whose two halves are also
+        // tokens. Collected first so the table can be sized exactly rather than
+        // walking the vocabulary twice.
+        let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(rank_map.len() * 2);
+        for (key, _) in rank_map {
+            let Some(merged) = id_encoder.get(key) else {
+                continue;
+            };
+            for split in 1..key.len() {
+                // Left first and only then right: most splits of a token are not
+                // two tokens, and building this walks the whole vocabulary, so
+                // the probe that is skipped is the majority of the work.
+                let Some(left) = id_encoder.get(&key[..split]) else {
+                    continue;
+                };
+                let Some(right) = id_encoder.get(&key[split..]) else {
+                    continue;
+                };
+                pairs.push((Self::pack(left, right), merged));
+            }
+        }
+
+        // Seeding by byte needs every byte to be a token. Where one is not — a
+        // ByteLevel vocabulary, whose alphabet is characters — the merge must
+        // start from characters instead, which is only equivalent because the
+        // alphabet holds the lowest merge ranks and byte seeding would
+        // reassemble exactly those characters first. A vocabulary whose ranks
+        // *are* its ids has no such alphabet ordering to rely on, so it does not
+        // get the id path at all unless byte seeding already works for it.
+        let seeds_by_char = (0..=u8::MAX).any(|byte| id_encoder.get(&[byte][..]).is_none());
+        if seeds_by_char && std::ptr::eq(rank_map, id_encoder) {
+            return None;
+        }
+
+        // Half full at most: linear probing degrades sharply past that.
+        let capacity = (pairs.len() * 2).next_power_of_two().max(16);
+        let mut table = Self {
+            slots: vec![Self::EMPTY; capacity].into_boxed_slice(),
+            mask: capacity - 1,
+            rank_by_id: None,
+            byte_ids: Box::new([u32::MAX; 256]),
+            symbol_ids: SymbolIds::build(id_encoder)?,
+            seeds_by_char,
+        };
+        for (key, merged) in pairs {
+            let mut slot = table.slot_of(key);
+            // A duplicate key cannot occur: a pair of ids determines the bytes
+            // it concatenates to, which the map holds at most once.
+            while table.slots[slot] != Self::EMPTY {
+                slot = (slot + 1) & table.mask;
+            }
+            table.slots[slot] = key | (merged as u64) << (2 * PAIR_ID_BITS);
+        }
+
+        for byte in 0..=u8::MAX {
+            if let Some(id) = id_encoder.get(&[byte][..]) {
+                table.byte_ids[byte as usize] = id;
+            }
+        }
+
+        // Identical maps mean the id is the rank, and the array would be
+        // `rank_by_id[i] == i`.
+        if !std::ptr::eq(rank_map, id_encoder) {
+            let mut ranks = vec![u32::MAX; max_id as usize + 1].into_boxed_slice();
+            for (key, rank) in rank_map {
+                if let Some(id) = id_encoder.get(key) {
+                    ranks[id as usize] = rank;
+                }
+            }
+            table.rank_by_id = Some(ranks);
+        }
+
+        Some(table)
+    }
+
+    #[inline]
+    fn pack(left: u32, right: u32) -> u64 {
+        (left as u64) << PAIR_ID_BITS | right as u64
+    }
+
+    /// Fibonacci hashing, as [`ShortRanks::slot_of`].
+    #[inline]
+    fn slot_of(&self, key: u64) -> usize {
+        (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & self.mask
+    }
+
+    /// The id the pair merges to, or `u32::MAX` when it does not merge.
+    #[inline]
+    fn merged(&self, left: u32, right: u32) -> u32 {
+        let key = Self::pack(left, right);
+        let mut slot = self.slot_of(key);
+        loop {
+            let entry = self.slots[slot];
+            if entry == Self::EMPTY {
+                return u32::MAX;
+            }
+            if entry & ((1 << (2 * PAIR_ID_BITS)) - 1) == key {
+                return (entry >> (2 * PAIR_ID_BITS)) as u32;
+            }
+            slot = (slot + 1) & self.mask;
+        }
+    }
+
+    /// The merge priority of the token `id` stands for.
+    #[inline]
+    fn rank(&self, id: u32) -> u32 {
+        match &self.rank_by_id {
+            Some(ranks) => ranks[id as usize],
+            None => id,
+        }
+    }
+}
+
+/// Longest symbol [`SymbolIds`] indexes: a UTF-8 character is never longer, and
+/// nothing else seeds a merge.
+const SYMBOL_MAX: usize = 4;
+
+/// Id of every token short enough to seed a merge, in one open-addressed table.
+///
+/// [`ShortRanks`] one map over: the same packing, keyed the same way, but
+/// answering with an id rather than a rank and covering one byte as well, since
+/// a seed symbol may be a single character.
+struct SymbolIds {
+    slots: Box<[u64]>,
+    mask: usize,
+}
+
+impl SymbolIds {
+    const EMPTY: u64 = u64::MAX;
+
+    /// The key's bytes in the low 32 bits and its length above them, leaving the
+    /// rest for the id. Two length bits, so a three-byte key cannot collide with
+    /// the four-byte key that ends in a zero.
+    #[inline]
+    fn pack_key(key: &[u8]) -> u64 {
+        let mut bytes = [0u8; 4];
+        bytes[..key.len()].copy_from_slice(key);
+        u32::from_le_bytes(bytes) as u64 | ((key.len() - 1) as u64) << 32
+    }
+
+    #[inline]
+    fn slot_of(&self, packed_key: u64) -> usize {
+        (packed_key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & self.mask
+    }
+
+    /// Index every token of [`SYMBOL_MAX`] bytes or fewer, or `None` when one
+    /// carries an id too wide to pack.
+    fn build(map: &Encoder) -> Option<Self> {
+        let count = map.keys().filter(|k| k.len() <= SYMBOL_MAX).count();
+        let capacity = (count * 2).next_power_of_two().max(16);
+        let mut table = Self {
+            slots: vec![Self::EMPTY; capacity].into_boxed_slice(),
+            mask: capacity - 1,
+        };
+        for (key, id) in map {
+            if key.is_empty() || key.len() > SYMBOL_MAX {
+                continue;
+            }
+            if id >= PAIR_ID_LIMIT {
+                return None;
+            }
+            let packed_key = Self::pack_key(key);
+            let mut slot = table.slot_of(packed_key);
+            while table.slots[slot] != Self::EMPTY {
+                slot = (slot + 1) & table.mask;
+            }
+            table.slots[slot] = packed_key | (id as u64) << 34;
+        }
+        Some(table)
+    }
+
+    /// The id of `key`, or `u32::MAX` when the vocabulary does not have it.
+    #[inline]
+    fn get(&self, key: &[u8]) -> u32 {
+        if key.is_empty() || key.len() > SYMBOL_MAX {
+            return u32::MAX;
+        }
+        let packed_key = Self::pack_key(key);
+        let mut slot = self.slot_of(packed_key);
+        loop {
+            let entry = self.slots[slot];
+            if entry == Self::EMPTY {
+                return u32::MAX;
+            }
+            if entry & 0x3_FFFF_FFFF == packed_key {
+                return (entry >> 34) as u32;
+            }
+            slot = (slot + 1) & self.mask;
+        }
+    }
+}
+
 /// Where the merge loop reads ranks from: the authoritative map, optionally
 /// fronted by [`BytePairRanks`] for the short keys.
 ///
@@ -224,6 +507,8 @@ pub(crate) struct RankLookup<'a> {
     /// Held here rather than reached through `pairs` so a vocabulary without
     /// one tests a register instead of loading through it on every probe.
     short: Option<&'a ShortRanks>,
+    /// The id-keyed table, when the vocabulary could be indexed by id.
+    by_id: Option<&'a PairRanks>,
 }
 
 impl<'a> RankLookup<'a> {
@@ -233,6 +518,7 @@ impl<'a> RankLookup<'a> {
             map,
             pairs: None,
             short: None,
+            by_id: None,
         }
     }
 
@@ -242,6 +528,41 @@ impl<'a> RankLookup<'a> {
             map,
             pairs: Some(pairs),
             short: pairs.short.as_ref(),
+            by_id: None,
+        }
+    }
+
+    /// The same lookup, also carrying the id-keyed table.
+    pub(crate) fn with_ids(mut self, by_id: Option<&'a PairRanks>) -> Self {
+        self.by_id = by_id;
+        self
+    }
+
+    /// The same lookup with the id-keyed table dropped.
+    ///
+    /// The table is a property of the vocabulary, but seeding by id is a
+    /// property of the *piece*: a symbol the vocabulary does not have has no id
+    /// to merge by. A piece that cannot be seeded takes this and runs exactly
+    /// the byte-keyed path it always did.
+    pub(crate) fn without_ids(mut self) -> Self {
+        self.by_id = None;
+        self
+    }
+
+    /// The id-keyed table, when this lookup has one.
+    #[inline]
+    pub(crate) fn by_id(&self) -> Option<&'a PairRanks> {
+        self.by_id
+    }
+
+    /// The merge rank of the pair `(left, right)` and the id it merges to, or
+    /// `(u32::MAX, u32::MAX)` when the vocabulary cannot merge it.
+    #[inline]
+    pub(crate) fn pair(&self, table: &PairRanks, left: u32, right: u32) -> (u32, u32) {
+        let merged = table.merged(left, right);
+        match merged {
+            u32::MAX => (u32::MAX, u32::MAX),
+            id => (table.rank(id), id),
         }
     }
 

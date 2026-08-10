@@ -1,13 +1,13 @@
 use super::cache::ChunkCache;
 use crate::core::added::AddedTokens;
-use crate::core::bpe::BytePairRanks;
+use crate::core::bpe::{BytePairRanks, PairRanks};
 use crate::core::decode_table::Decoder;
 use crate::core::encoder::Encoder;
 use crate::core::policy::{PolicyError, SpecialDecode, SpecialMode};
 use crate::core::streaming::StreamingDecoder;
 use crate::core::tokenize::{token_bytes_of, token_text_of, Tokenize, TokenizeError};
 use rustc_hash::FxHashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use super::backend::RegexBackend;
 use super::error::TokenizerError;
@@ -185,6 +185,13 @@ pub struct Tokenizer {
     /// ranks from, indexed directly rather than hashed. Shared on clone: it is
     /// derived state, 256 KB of it, and never mutated after construction.
     pub(super) byte_pair_ranks: Arc<BytePairRanks>,
+    /// The same merge ranks keyed by the ids of the pair rather than by the
+    /// bytes it concatenates to, when the vocabulary can be addressed that way.
+    /// This is what keeps a merge's cost independent of how long its operands
+    /// have grown, which the byte-keyed tables above cannot be. Shared on clone
+    /// for the same reason as those: derived, and never mutated after
+    /// construction.
+    pub(super) pair_ranks: Arc<OnceLock<Option<PairRanks>>>,
     /// Behind an `Arc` so a clone — and every
     /// [`StreamingDecoder`](crate::StreamingDecoder) built from this tokenizer —
     /// shares the id→bytes table instead of copying a vocabulary-sized map.
@@ -273,6 +280,7 @@ impl Clone for Tokenizer {
             raw_encoder: self.raw_encoder.clone(),
             merge_ranks: self.merge_ranks.clone(),
             byte_pair_ranks: Arc::clone(&self.byte_pair_ranks),
+            pair_ranks: Arc::clone(&self.pair_ranks),
             // Immutable once built, so the clone shares the table rather than
             // duplicating it (the same reasoning as the compiled regex above).
             decoder: Arc::clone(&self.decoder),

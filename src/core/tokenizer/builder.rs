@@ -10,7 +10,7 @@ use crate::core::vocab::{
 };
 use regexr::RegexBuilder;
 use rustc_hash::FxHashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Default number of encoded chunks held by the cache.
 ///
@@ -253,12 +253,17 @@ impl Tokenizer {
         let chunk_cache = ChunkCache::new(cache_size);
         // Ranks come from the encoder until `with_merge_ranks` replaces the source.
         let byte_pair_ranks = Arc::new(BytePairRanks::build(&encoder));
+        // Built on first use, not here: a vocabulary that never runs a merge
+        // never pays for it, and one whose ranks are replaced by
+        // `with_merge_ranks` would otherwise build it twice.
+        let pair_ranks = Arc::new(OnceLock::new());
 
         Ok(Self {
             raw_encoder: None,
             encoder,
             merge_ranks: None,
             byte_pair_ranks,
+            pair_ranks,
             decoder: Arc::new(decoder),
             special_tokens,
             special_tokens_decoder: Arc::new(special_tokens_decoder),
@@ -309,6 +314,7 @@ impl Tokenizer {
         // has to be rebuilt — leaving the encoder-derived one in place would
         // answer with the wrong ranks.
         self.byte_pair_ranks = Arc::new(BytePairRanks::build(&merge_ranks));
+        self.pair_ranks = Arc::new(OnceLock::new());
         self.merge_ranks = Some(merge_ranks);
         self
     }
@@ -618,6 +624,10 @@ impl Tokenizer {
         let chunk_cache = ChunkCache::new(DEFAULT_CACHE_SIZE);
         // Ranks come from the encoder until `with_merge_ranks` replaces the source.
         let byte_pair_ranks = Arc::new(BytePairRanks::build(&encoder));
+        // Built on first use, not here: a vocabulary that never runs a merge
+        // never pays for it, and one whose ranks are replaced by
+        // `with_merge_ranks` would otherwise build it twice.
+        let pair_ranks = Arc::new(OnceLock::new());
 
         Ok(Self {
             encoder,
@@ -625,6 +635,7 @@ impl Tokenizer {
             raw_encoder: None,
             merge_ranks: None,
             byte_pair_ranks,
+            pair_ranks,
             decoder: Arc::new(decoder),
             special_tokens,
             special_tokens_decoder: Arc::new(special_tokens_decoder),

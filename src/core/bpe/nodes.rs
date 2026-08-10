@@ -13,6 +13,10 @@ pub(super) struct Node {
     /// Length of this piece in bytes. Zero marks a node absorbed by a merge
     /// (a tombstone); it is no longer reachable through the list.
     pub(super) len: usize,
+    /// The id of the token this node's surface is, on the id-keyed merge path;
+    /// `u32::MAX` and unread on the byte-keyed one, which resolves ids from the
+    /// surface after merging instead.
+    pub(super) id: u32,
 }
 
 impl Node {
@@ -27,5 +31,6 @@ impl Node {
         next: 0,
         start: 0,
         len: 0,
+        id: u32::MAX,
     };
 }

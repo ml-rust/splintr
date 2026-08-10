@@ -122,7 +122,9 @@ pub(crate) fn byte_pair_encode_pieces_seeded(
         merge_and_collect(
             piece,
             &mut s.nodes,
-            merge_ranks,
+            // `Piece`-reporting callers keep the byte-keyed path: they exist for
+            // byte fallback, whose symbols the id seeding does not cover.
+            merge_ranks.without_ids(),
             id_encoder,
             None,
             &mut s.queue,
@@ -174,11 +176,28 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
         return;
     }
 
-    let symbols = symbol_count(piece, char_granular);
+    // Merging by id needs an id for every symbol the merge starts from, which
+    // may mean seeding at a different granularity: a ByteLevel vocabulary's
+    // alphabet is its characters, so the individual bytes of a two-byte one are
+    // not tokens and have no id. The two seedings agree there — the alphabet
+    // takes the lowest merge ranks, so byte seeding reassembles exactly those
+    // characters before any other merge runs — which is what makes the choice
+    // free to make.
+    let granular = char_granular || merge_ranks.by_id().is_some_and(|t| t.seeds_by_char());
+    let symbols = symbol_count(piece, granular);
     if prefers_scan(piece, symbols) {
         let mut buf = [Node::PLACEHOLDER; SCAN_SYMBOL_LIMIT];
         let nodes = &mut buf[..symbols];
-        seed_nodes_into(piece, char_granular, nodes);
+        seed_nodes_into(piece, granular, nodes);
+        if !seed_ids(nodes, piece, merge_ranks) {
+            return byte_pair_encode_ids_seeded_into(
+                piece,
+                merge_ranks.without_ids(),
+                id_encoder,
+                char_granular,
+                out,
+            );
+        }
         // The scan never looks at the queue, and an empty `QueueScratch` holds
         // empty buffers, so this allocates nothing — and this branch is chosen
         // by the same predicate the strategy is, so the scan is what runs.
@@ -191,8 +210,11 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
             &mut QueueScratch::default(),
         );
     } else {
-        with_merge_scratch(|s| {
-            seed_nodes_reusing(piece, char_granular, symbols, &mut s.nodes);
+        let seeded = with_merge_scratch(|s| {
+            seed_nodes_reusing(piece, granular, symbols, &mut s.nodes);
+            if !seed_ids(&mut s.nodes, piece, merge_ranks) {
+                return false;
+            }
             merge_and_collect_ids_into(
                 piece,
                 &mut s.nodes,
@@ -201,8 +223,40 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
                 out,
                 &mut s.queue,
             );
+            true
         });
+        if !seeded {
+            byte_pair_encode_ids_seeded_into(
+                piece,
+                merge_ranks.without_ids(),
+                id_encoder,
+                char_granular,
+                out,
+            );
+        }
     }
+}
+
+/// Resolve every seed symbol to a token id, reporting whether all of them did.
+///
+/// A `false` sends the piece back through the byte-keyed path at the
+/// granularity that path has always used — nothing has been emitted yet, so the
+/// retry is a clean start. Giving up per *piece* rather than per vocabulary is
+/// what makes the id path safe to offer at all: the table is a property of the
+/// vocabulary, but whether a piece's symbols are in it is a property of the
+/// piece.
+#[inline]
+fn seed_ids(nodes: &mut [Node], piece: &[u8], merge_ranks: RankLookup<'_>) -> bool {
+    let Some(table) = merge_ranks.by_id() else {
+        return true;
+    };
+    for node in nodes.iter_mut() {
+        node.id = table.seed_id(&piece[node.start..node.start + node.len]);
+        if node.id == u32::MAX {
+            return false;
+        }
+    }
+    true
 }
 
 /// How many symbols [`seed_nodes_into`] will produce for `piece`.
@@ -306,11 +360,15 @@ pub(crate) fn byte_pair_encode_pieces_presegmented(
             next: 0,
             start: seed.start,
             len: seed.len,
+            // The presegmented path is byte-keyed: this seeding exists to
+            // reproduce HuggingFace's byte-fallback order, whose symbols are
+            // vocabulary *spellings* the id path has no seed table for.
+            id: u32::MAX,
         }));
         merge_and_collect(
             piece,
             &mut s.nodes,
-            merge_ranks,
+            merge_ranks.without_ids(),
             id_encoder,
             Some(seeds),
             &mut s.queue,

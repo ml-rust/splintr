@@ -1,7 +1,7 @@
 use super::super::types::{ByteFallback, Tokenizer};
 use crate::core::bpe::{
     byte_pair_encode_ids_seeded_into, byte_pair_encode_pieces_presegmented,
-    byte_pair_encode_pieces_seeded, Piece, RankLookup, Seed,
+    byte_pair_encode_pieces_seeded, PairRanks, Piece, RankLookup, Seed,
 };
 use crate::core::precompiled::utf8_len;
 
@@ -16,6 +16,16 @@ impl Tokenizer {
         RankLookup::with_pairs(
             self.merge_ranks.as_ref().unwrap_or(&self.encoder),
             &self.byte_pair_ranks,
+        )
+        .with_ids(
+            self.pair_ranks
+                .get_or_init(|| {
+                    PairRanks::build(
+                        self.merge_ranks.as_ref().unwrap_or(&self.encoder),
+                        &self.encoder,
+                    )
+                })
+                .as_ref(),
         )
     }
     /// Run BPE on a piece, honoring a separate merge-rank map when present,
