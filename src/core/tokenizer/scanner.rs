@@ -428,6 +428,58 @@ struct Run {
     skip_ascii: fn(&[u8], usize) -> usize,
 }
 
+/// Lead bytes of the three-byte sequences encoding `U+5000..=U+9FFF`.
+///
+/// That span sits inside CJK Unified Ideographs, which is uniformly `\p{Lo}`,
+/// so a class containing `\p{Lo}` can accept such a character from its lead
+/// byte alone — no decode, no category lookup. It is the bulk of Chinese and of
+/// Japanese kanji. The neighbouring blocks are deliberately absent: Hiragana,
+/// Katakana and the compatibility ideographs carry marks, punctuation and
+/// unassigned code points, so no such shortcut is sound for them.
+const IDEOGRAPH_LEAD: std::ops::RangeInclusive<u8> = 0xE5..=0xE9;
+
+/// Skip a run of ideographs, three bytes at a time.
+///
+/// The counterpart to the SWAR ASCII skip, for the population on the other side
+/// of it. ASCII is classified from its byte through [`CLASS`]; this classifies
+/// from the lead byte the same way, where the general path decodes the
+/// character and reads the Unicode tables once per character.
+#[inline]
+fn skip_ideographs(bytes: &[u8], mut pos: usize) -> usize {
+    while pos + 3 <= bytes.len() && IDEOGRAPH_LEAD.contains(&bytes[pos]) {
+        pos += 3;
+    }
+    pos
+}
+
+/// Both bulk skips, alternating until neither advances.
+///
+/// Folded into the run's existing `skip_ascii` slot rather than added beside
+/// it: the scan loop runs per character, and a second indirect call there costs
+/// more than the skip saves. A class that excludes `\p{Lo}` — Kimi's, which
+/// subtracts `\p{Han}` — keeps the plain ASCII skip.
+///
+/// Which runs are wrapped also moves codegen, in a direction that does not
+/// follow from the source: wrapping every run measured worse than wrapping only
+/// these two. Treat the asymmetry as deliberate and re-measure before tidying
+/// it. The tests below pin the behaviour; nothing pins the codegen.
+macro_rules! ascii_or_ideograph_skip {
+    ($name:ident, $ascii:ident) => {
+        fn $name(bytes: &[u8], mut pos: usize) -> usize {
+            loop {
+                let advanced = skip_ideographs(bytes, $ascii(bytes, pos));
+                if advanced == pos {
+                    return pos;
+                }
+                pos = advanced;
+            }
+        }
+    };
+}
+
+ascii_or_ideograph_skip!(skip_upper_or_ideograph, swar_skip_ascii_upper);
+ascii_or_ideograph_skip!(skip_lower_or_ideograph, swar_skip_ascii_lower);
+
 /// End of the maximal run of `run`'s class, ASCII spans taken eight bytes at a
 /// time and everything else one character at a time.
 #[inline]
@@ -738,11 +790,11 @@ fn o200k_letter_branches(text: &str, bytes: &[u8], pos: usize) -> Option<usize> 
         pos,
         Run {
             at: upper_run_at,
-            skip_ascii: swar_skip_ascii_upper,
+            skip_ascii: skip_upper_or_ideograph,
         },
         Run {
             at: lower_run_at,
-            skip_ascii: swar_skip_ascii_lower,
+            skip_ascii: skip_lower_or_ideograph,
         },
     )
 }
@@ -1028,9 +1080,10 @@ pub(super) fn kimi_spans(text: &str, out: &mut Vec<(usize, usize)>) {
         }
 
         if let Some(end) =
-            // Kimi subtracts `\p{Han}` from both classes, but no Han character is
-            // ASCII, so the ASCII half of each run is identical to o200k's and shares
-            // its skip.
+            // Kimi subtracts `\p{Han}` from both classes. No Han character is
+            // ASCII, so the ASCII skip is the same one o200k's runs build on —
+            // but not the ideograph skip layered over it there, which is
+            // exactly what Kimi excludes.
             case_split_branches(
                 text,
                 bytes,
@@ -1741,5 +1794,70 @@ mod tests {
                 assert_agrees(name, pattern, scan, &input);
             }
         }
+    }
+
+    /// The lead-byte range must cover only code points that are certainly
+    /// `\p{Lo}`, or a run would swallow a character its class excludes.
+    #[test]
+    fn the_ideograph_lead_range_is_uniformly_other_letter() {
+        for lead in IDEOGRAPH_LEAD {
+            for (lo, hi) in [(0x80u32, 0x80u32), (0xBF, 0xBF)] {
+                let cp = ((lead as u32 & 0x0F) << 12) | ((lo & 0x3F) << 6) | (hi & 0x3F);
+                let c = char::from_u32(cp).expect("valid scalar");
+                assert_eq!(
+                    get_general_category(c),
+                    GeneralCategory::OtherLetter,
+                    "U+{cp:04X} (lead {lead:#04X}) is not OtherLetter"
+                );
+            }
+        }
+    }
+
+    /// Every code point the range can encode, not just its corners.
+    #[test]
+    fn every_code_point_the_lead_range_encodes_is_other_letter() {
+        for cp in 0x5000u32..=0x9FFF {
+            let c = char::from_u32(cp).expect("valid scalar");
+            assert_eq!(
+                get_general_category(c),
+                GeneralCategory::OtherLetter,
+                "U+{cp:04X} is not OtherLetter"
+            );
+        }
+    }
+
+    /// The bulk skip must stop exactly where the run does, and must not read
+    /// past a truncated trailing sequence.
+    #[test]
+    fn ideographs_are_skipped_in_bulk() {
+        let text = "漢字漢字a";
+        assert_eq!(skip_ideographs(text.as_bytes(), 0), 12, "four ideographs");
+        assert_eq!(skip_ideographs(text.as_bytes(), 12), 12, "stops at ASCII");
+        assert_eq!(skip_ideographs(b"", 0), 0);
+        // Hiragana is outside the range and must not be skipped.
+        assert_eq!(skip_ideographs("ひらがな".as_bytes(), 0), 0);
+    }
+
+    /// The wiring, not just the helper: o200k's case-split runs must take the
+    /// skip and Kimi's must not, because Kimi subtracts `\p{Han}` from both
+    /// classes. Reverting either would be silent without this.
+    #[test]
+    fn only_the_runs_containing_other_letter_take_the_skip() {
+        let han = "漢字漢字";
+        let upper = Run {
+            at: upper_run_at,
+            skip_ascii: skip_upper_or_ideograph,
+        };
+        assert_eq!(scan_run_of(han, han.as_bytes(), 0, upper), han.len());
+
+        let kimi_upper = Run {
+            at: kimi_upper_run_at,
+            skip_ascii: swar_skip_ascii_upper,
+        };
+        assert_eq!(
+            scan_run_of(han, han.as_bytes(), 0, kimi_upper),
+            0,
+            "Kimi excludes Han from its case-split classes"
+        );
     }
 }

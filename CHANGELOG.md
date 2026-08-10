@@ -6,6 +6,12 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [Unreleased]
+
+### Changed
+
+- The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character: o200k/gpt-oss encode ~19% fewer instructions on Chinese and ~9% on Japanese and Korean. Token ids are unchanged.
+
 ## [0.17.0] - 2026-08-10
 
 ### Changed
