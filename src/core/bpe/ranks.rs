@@ -271,6 +271,13 @@ pub(crate) struct PairRanks {
     /// Whether a merge must start from whole characters rather than bytes,
     /// because the vocabulary does not contain every single byte as a token.
     seeds_by_char: bool,
+    /// Id of the token each **raw** input byte stands for, for a ByteLevel
+    /// vocabulary — that is, of the alphabet character the byte maps to.
+    ///
+    /// `None` unless every one of the 256 resolves. With it a piece can be
+    /// merged without ever entering ByteLevel space: the merge only ever needs
+    /// its symbols' ids, and this supplies them from the input bytes directly.
+    raw_byte_ids: Option<Box<[u32; 256]>>,
 }
 
 impl PairRanks {
@@ -301,6 +308,23 @@ impl PairRanks {
     pub(crate) fn seeds_by_char(&self) -> bool {
         self.seeds_by_char
     }
+
+    /// Whether this vocabulary can merge a piece straight from its raw input
+    /// bytes, with no mapping into ByteLevel space.
+    #[inline]
+    pub(crate) fn seeds_raw(&self) -> bool {
+        self.raw_byte_ids.is_some()
+    }
+
+    /// The id of the token a raw input byte stands for. Only called when
+    /// [`Self::seeds_raw`] holds, where every byte resolves.
+    #[inline]
+    pub(crate) fn raw_byte_id(&self, byte: u8) -> u32 {
+        match &self.raw_byte_ids {
+            Some(ids) => ids[byte as usize],
+            None => u32::MAX,
+        }
+    }
 }
 
 /// Ids below this are indexed directly by [`PairRanks::dense`]. The square of
@@ -319,7 +343,11 @@ impl PairRanks {
     /// All-or-nothing, like [`ShortRanks::build`] and for the same reason: the
     /// merge loop takes a miss as authoritative and never consults the map
     /// afterwards, which is only sound if every mergeable pair is present.
-    pub(crate) fn build(rank_map: &Encoder, id_encoder: &Encoder) -> Option<Self> {
+    pub(crate) fn build(
+        rank_map: &Encoder,
+        id_encoder: &Encoder,
+        raw_encoder: Option<&Encoder>,
+    ) -> Option<Self> {
         let mut max_id = 0u32;
         for (_, id) in id_encoder {
             if id >= PAIR_ID_LIMIT {
@@ -373,6 +401,16 @@ impl PairRanks {
             pair_byte_ids: vec![u32::MAX; 256 * 256].into_boxed_slice(),
             symbol_ids: SymbolIds::build(id_encoder)?,
             seeds_by_char,
+            // All or nothing: the raw path has no way to render a byte the
+            // alphabet does not cover, and falling back mid-piece would mean
+            // merging raw bytes against a map keyed in ByteLevel space.
+            raw_byte_ids: raw_encoder.and_then(|raw| {
+                let mut ids = Box::new([u32::MAX; 256]);
+                for (byte, slot) in ids.iter_mut().enumerate() {
+                    *slot = raw.get(&[byte as u8][..])?;
+                }
+                Some(ids)
+            }),
         };
         for (key, merged) in pairs {
             let (left, right) = (key >> PAIR_ID_BITS, key & ((1 << PAIR_ID_BITS) - 1));

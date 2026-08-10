@@ -29,6 +29,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - The pre-tokenizer's span scratch is one buffer per nesting depth, so a chained pre-tokenizer's later stages reuse a buffer instead of allocating one per piece.
 - Merges are ranked by the ids of the pair being merged rather than by the bytes it concatenates to, so a merge costs the same whatever its operands have grown to, and the pairs a piece is seeded with are indexed directly. Non-Latin scripts gain most: their merges outgrow the byte-keyed tables immediately, Latin ones rarely do.
 - A merge's symbols are counted and resolved to ids in the pass that seeds them, rather than in two further passes over the same chunk.
+- A ByteLevel vocabulary merges and caches chunks in the input's own bytes rather than mapping each one into ByteLevel space first. The merge works from token ids, so the surface never has to be spelled — and outside ASCII the mapped form is up to twice as long.
 - The vocabulary lookup hashes without the length prefix `Hash for [u8]` prepends, and compares a short key at a constant length rather than through a `memcmp` call.
 - The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character.
 - DeepSeek's three `Split` passes are recognised as one composition and walked once, streaming their pieces, rather than run in sequence with each re-splitting what the one before it produced. The walk routes each position straight to the branch that can match it and skips ASCII letter runs eight bytes at a time.

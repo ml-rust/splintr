@@ -1,7 +1,7 @@
 use super::super::types::{ByteFallback, Tokenizer};
 use crate::core::bpe::{
     byte_pair_encode_ids_seeded_into, byte_pair_encode_pieces_presegmented,
-    byte_pair_encode_pieces_seeded, PairRanks, Piece, RankLookup, Seed,
+    byte_pair_encode_pieces_seeded, PairRanks, Piece, RankLookup, Seed, Seeding,
 };
 use crate::core::precompiled::utf8_len;
 
@@ -23,11 +23,43 @@ impl Tokenizer {
                     PairRanks::build(
                         self.merge_ranks.as_ref().unwrap_or(&self.encoder),
                         &self.encoder,
+                        self.raw_encoder.as_ref(),
                     )
                 })
                 .as_ref(),
         )
     }
+    /// Whether chunks reach the cache and the merge as **raw** input bytes
+    /// rather than mapped into ByteLevel space.
+    ///
+    /// One decision for the whole tokenizer, deliberately: the chunk cache is
+    /// keyed by whatever bytes it is handed, and ASCII maps to itself, so a
+    /// tokenizer that fed it both spaces would mostly agree and occasionally
+    /// hand back another chunk's ids — a raw piece can spell some other piece's
+    /// ByteLevel form. Every entry point therefore asks this, and none decides
+    /// for itself.
+    ///
+    /// Requires the id-keyed table with a complete raw alphabet: the merge needs
+    /// its symbols' ids, and only that table can supply them without the
+    /// mapping. A pipeline that emits already-mapped pieces has no raw form to
+    /// offer and keeps the mapped space.
+    #[inline]
+    pub(super) fn merges_raw(&self) -> bool {
+        self.use_byte_level
+            && self.raw_encoder.is_some()
+            && self.pre_tokenizer.as_ref().is_none_or(|pt| pt.emits_raw())
+            && self.rank_lookup().by_id().is_some_and(|t| t.seeds_raw())
+    }
+
+    /// The vocabulary keyed in the space chunks arrive in.
+    #[inline]
+    pub(super) fn chunk_encoder(&self) -> &crate::core::encoder::Encoder {
+        match self.merges_raw() {
+            true => self.raw_encoder.as_ref().unwrap_or(&self.encoder),
+            false => &self.encoder,
+        }
+    }
+
     /// Run BPE on a piece, honoring a separate merge-rank map when present,
     /// and rendering any span the vocabulary could not represent through the
     /// [`ByteFallback`](super::types::ByteFallback) resolution when one is
@@ -77,13 +109,18 @@ impl Tokenizer {
         let ranks = self.rank_lookup();
 
         let Some(fallback) = fallback else {
+            let seeding = match (self.merges_raw(), char_granular) {
+                (true, _) => Seeding::RawBytes,
+                (false, true) => Seeding::Chars,
+                (false, false) => Seeding::Bytes,
+            };
             // No fallback configured: an unrepresentable span is dropped,
             // matching the prior (and still preserved) drop contract. Nothing
             // downstream needs to know *which* spans those were, so the merge
             // reports ids directly instead of building a `Vec<Piece>` to filter.
             // This is the path every ByteLevel and every tiktoken-style
             // vocabulary takes — i.e. almost all traffic.
-            byte_pair_encode_ids_seeded_into(bytes, ranks, &self.encoder, char_granular, out);
+            byte_pair_encode_ids_seeded_into(bytes, ranks, self.chunk_encoder(), seeding, out);
             return;
         };
 

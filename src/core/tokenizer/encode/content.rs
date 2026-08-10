@@ -32,7 +32,15 @@ impl Tokenizer {
                 // Splitting into a `Vec` first is what lets the pieces be shared
                 // out across threads; the streaming path below cannot, since it
                 // hands back one reused buffer.
-                let pieces = pt.split_pieces(text);
+                //
+                // Unmapped when the merge works from raw bytes — the same
+                // choice the sequential path makes below, and it has to be the
+                // same one: both feed the chunk cache, which is keyed by the
+                // bytes it is handed and cannot hold two spaces at once.
+                let pieces = match self.merges_raw() {
+                    true => pt.split_raw_pieces(text),
+                    false => pt.split_pieces(text),
+                };
                 return pieces
                     .par_iter()
                     .fold(Vec::new, |mut acc, piece| {
@@ -53,6 +61,8 @@ impl Tokenizer {
             // When the pipeline ends in ByteLevel, take the pieces unmapped and
             // let `encode_raw_chunk_into` map only the ones that need it.
             if self.use_byte_level && self.raw_encoder.is_some() && pt.emits_raw() {
+                // `scratch` is only touched when the merge still needs the
+                // ByteLevel form; a tokenizer that merges raw never fills it.
                 // Sized rather than grown from empty. It is cleared and refilled
                 // per piece, so it settles at the longest pre-token in the text
                 // — but it reaches that by doubling from zero on the first few

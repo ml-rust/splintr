@@ -174,6 +174,34 @@ impl PreTokenizer {
         self.run(text)
     }
 
+    /// [`PreTokenizer::split_pieces`] handing back pieces the ByteLevel stage has
+    /// **not** mapped, as [`PreTokenizer::for_each_raw_piece`] does — for the
+    /// caller that needs them all at once rather than streamed, because it is
+    /// about to share them out across threads.
+    ///
+    /// Callers must check [`PreTokenizer::emits_raw`] first.
+    pub(crate) fn split_raw_pieces<'a>(&self, text: &'a str) -> Vec<Cow<'a, str>> {
+        debug_assert!(
+            self.emits_raw(),
+            "split_raw_pieces requires a pipeline ending in ByteLevel"
+        );
+        // The prefix space is the one input whose pieces cannot be subslices of
+        // `text`, exactly as in `split_pieces`.
+        if self.add_prefix_space && !text.starts_with(' ') {
+            let prefixed = format!(" {text}");
+            let mut pieces = Vec::new();
+            self.for_each_raw_piece_inner(&prefixed, &mut |piece| {
+                pieces.push(Cow::Owned(piece.to_string()))
+            });
+            return pieces;
+        }
+        let mut pieces = Vec::new();
+        self.for_each_raw_piece_inner(text, &mut |piece: &'a str| {
+            pieces.push(Cow::Borrowed(piece))
+        });
+        pieces
+    }
+
     /// Run `stages` — all cutting stages — over `text`, handing each final
     /// piece to `f` as it is produced.
     ///
@@ -345,7 +373,7 @@ impl PreTokenizer {
         }
     }
 
-    fn for_each_raw_piece_inner(&self, text: &str, f: &mut impl FnMut(&str)) {
+    fn for_each_raw_piece_inner<'p>(&self, text: &'p str, f: &mut dyn FnMut(&'p str)) {
         // `emits_raw` guarantees the rewriting stage is the last one, so every
         // stage before it is a cutting stage and the walk mirrors
         // `for_each_piece_inner`'s cutting loop exactly.

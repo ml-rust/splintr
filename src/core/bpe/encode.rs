@@ -48,11 +48,29 @@ pub fn byte_pair_encode_with_ranks(
         piece,
         RankLookup::new(merge_ranks),
         id_encoder,
-        false,
+        Seeding::Bytes,
         &mut out,
     );
     out
 }
+/// What a merge starts from, and which byte space its piece is in.
+///
+/// The third case is what a ByteLevel vocabulary uses once merges are keyed by
+/// id: the merge needs its symbols' *ids*, never their surfaces, so the piece
+/// can stay in the input's own bytes and each one resolve through the alphabet
+/// it maps to. Nothing downstream can tell the difference — which is the point,
+/// since mapping a piece into ByteLevel space costs a pass, a UTF-8 validation
+/// and roughly double the bytes for every script that is not ASCII.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Seeding {
+    /// One symbol per byte of the piece.
+    Bytes,
+    /// One symbol per whole UTF-8 character.
+    Chars,
+    /// One symbol per byte of a raw, unmapped piece.
+    RawBytes,
+}
+
 /// One output of the merge phase: either a resolved token, or a run of bytes
 /// the vocabulary could not represent at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +133,10 @@ pub(crate) fn byte_pair_encode_pieces_seeded(
     with_merge_scratch(|s| {
         seed_nodes_reusing(
             piece,
-            char_granular,
+            match char_granular {
+                true => Seeding::Chars,
+                false => Seeding::Bytes,
+            },
             symbol_count(piece, char_granular),
             &mut s.nodes,
             // `Piece`-reporting callers keep the byte-keyed path, so there are
@@ -159,7 +180,7 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
     piece: &[u8],
     merge_ranks: RankLookup<'_>,
     id_encoder: &Encoder,
-    char_granular: bool,
+    seeding: Seeding,
     out: &mut Vec<u32>,
 ) {
     if piece.is_empty() {
@@ -185,18 +206,22 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
     // not tokens and have no id. The two seedings agree there — the alphabet
     // takes the lowest merge ranks, so byte seeding reassembles exactly those
     // characters before any other merge runs — which is what makes the choice
-    // free to make.
-    let granular = char_granular || merge_ranks.by_id().is_some_and(|t| t.seeds_by_char());
-    let symbols = symbol_count(piece, granular);
+    // free to make. A raw piece is already one symbol per byte and stays that
+    // way: its bytes resolve through the alphabet rather than spelling it.
+    let seeding = match seeding {
+        Seeding::Bytes if merge_ranks.by_id().is_some_and(|t| t.seeds_by_char()) => Seeding::Chars,
+        other => other,
+    };
+    let symbols = symbol_count(piece, seeding == Seeding::Chars);
     if prefers_scan(piece, symbols) {
         let mut buf = [Node::PLACEHOLDER; SCAN_SYMBOL_LIMIT];
         let nodes = &mut buf[..symbols];
-        if !seed_nodes_into(piece, granular, nodes, merge_ranks.by_id()) {
+        if !seed_nodes_into(piece, seeding, nodes, merge_ranks.by_id()) {
             return byte_pair_encode_ids_seeded_into(
                 piece,
                 merge_ranks.without_ids(),
                 id_encoder,
-                char_granular,
+                seeding,
                 out,
             );
         }
@@ -213,7 +238,7 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
         );
     } else {
         let seeded = with_merge_scratch(|s| {
-            if !seed_nodes_reusing(piece, granular, symbols, &mut s.nodes, merge_ranks.by_id()) {
+            if !seed_nodes_reusing(piece, seeding, symbols, &mut s.nodes, merge_ranks.by_id()) {
                 return false;
             }
             merge_and_collect_ids_into(
@@ -231,7 +256,7 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
                 piece,
                 merge_ranks.without_ids(),
                 id_encoder,
-                char_granular,
+                seeding,
                 out,
             );
         }
@@ -286,14 +311,14 @@ fn symbol_count(piece: &[u8], char_granular: bool) -> usize {
 /// allocation once that buffer has grown to fit one.
 fn seed_nodes_reusing(
     piece: &[u8],
-    char_granular: bool,
+    seeding: Seeding,
     symbols: usize,
     nodes: &mut Vec<Node>,
     table: Option<&PairRanks>,
 ) -> bool {
     nodes.clear();
     nodes.resize(symbols, Node::PLACEHOLDER);
-    seed_nodes_into(piece, char_granular, nodes, table)
+    seed_nodes_into(piece, seeding, nodes, table)
 }
 
 /// Seed nodes into storage the caller already has, which may be a stack
@@ -306,11 +331,11 @@ fn seed_nodes_reusing(
 /// before the merge, and on a dense script the chunk is the whole run.
 fn seed_nodes_into(
     piece: &[u8],
-    char_granular: bool,
+    seeding: Seeding,
     nodes: &mut [Node],
     table: Option<&PairRanks>,
 ) -> bool {
-    match char_granular
+    match (seeding == Seeding::Chars)
         .then(|| std::str::from_utf8(piece).ok())
         .flatten()
     {
@@ -327,11 +352,15 @@ fn seed_nodes_into(
             }
         }
         None => {
+            let raw = seeding == Seeding::RawBytes;
             for (start, node) in nodes.iter_mut().enumerate() {
                 node.start = start;
                 node.len = 1;
                 if let Some(table) = table {
-                    node.id = table.byte_id(piece[start]);
+                    node.id = match raw {
+                        true => table.raw_byte_id(piece[start]),
+                        false => table.byte_id(piece[start]),
+                    };
                     if node.id == u32::MAX {
                         return false;
                     }

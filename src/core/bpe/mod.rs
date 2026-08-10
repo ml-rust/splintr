@@ -76,7 +76,7 @@ mod tests;
 pub use encode::byte_pair_encode;
 pub(crate) use encode::{
     byte_pair_encode_ids_seeded_into, byte_pair_encode_pieces_presegmented,
-    byte_pair_encode_pieces_seeded, Piece, Seed,
+    byte_pair_encode_pieces_seeded, Piece, Seed, Seeding,
 };
 pub(crate) use ranks::{merge_ranks, BytePairRanks, PairRanks, RankLookup};
 

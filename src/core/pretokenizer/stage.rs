@@ -140,7 +140,7 @@ impl Stage {
     /// stage is the last one in the pipeline, since anything after it would
     /// otherwise be handed a piece in the wrong space; `PreTokenizer::emits_raw`
     /// is the guard, and the only caller checks it.
-    pub(super) fn split_for_each(&self, piece: &str, f: &mut impl FnMut(&str)) {
+    pub(super) fn split_for_each<'p>(&self, piece: &'p str, f: &mut dyn FnMut(&'p str)) {
         let Stage::ByteLevel { re } = self else {
             unreachable!("split_for_each is only called on a ByteLevel stage")
         };

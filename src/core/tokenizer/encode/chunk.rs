@@ -22,7 +22,7 @@ impl Tokenizer {
         // Fast path: the entire chunk is one known token. Ahead of the cache
         // deliberately — it is a single hash lookup against a map that is
         // already hot, so caching its answer would cost more than recomputing.
-        if let Some(rank) = self.encoder.get(bytes) {
+        if let Some(rank) = self.chunk_encoder().get(bytes) {
             out.push(rank);
             return;
         }
@@ -50,7 +50,7 @@ impl Tokenizer {
     /// byte-level-encoded the pieces, so we must NOT re-encode here (but
     /// `use_byte_level` stays true so `decode` still reverses the mapping).
     pub(super) fn encode_chunk_into(&self, slice: &[u8], out: &mut Vec<u32>) {
-        if self.use_byte_level && self.pre_tokenizer.is_none() {
+        if self.use_byte_level && self.pre_tokenizer.is_none() && !self.merges_raw() {
             let encoded = byte_level_encode(slice);
             self.encode_bytes_into(encoded.as_bytes(), out);
             return;
@@ -79,6 +79,14 @@ impl Tokenizer {
                 out.push(rank);
                 return;
             }
+        }
+        // The merge works from ids, so a vocabulary that can supply them for raw
+        // bytes never needs the mapping at all — not for the cache key either,
+        // which is then the input's own bytes rather than the one-to-two-byte
+        // expansion of them.
+        if self.merges_raw() {
+            self.encode_bytes_into(raw, out);
+            return;
         }
         scratch.clear();
         byte_level_encode_into(scratch, raw);

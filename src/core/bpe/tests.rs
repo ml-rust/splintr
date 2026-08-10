@@ -3,6 +3,7 @@ use crate::core::encoder::{encoder_from_owned, Encoder};
 use proptest::prelude::*;
 use rustc_hash::FxHashMap;
 
+use super::encode::Seeding;
 use super::ranks::{BytePairRanks, RankLookup};
 
 /// `byte_pair_encode_ids_seeded_into` collected, so the property below can
@@ -18,7 +19,10 @@ fn ids_seeded(
         piece,
         RankLookup::new(merge_ranks),
         id_encoder,
-        char_granular,
+        match char_granular {
+            true => Seeding::Chars,
+            false => Seeding::Bytes,
+        },
         &mut out,
     );
     out
