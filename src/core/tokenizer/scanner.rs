@@ -1195,6 +1195,41 @@ pub(super) fn deepseek_v3_pass3_spans(text: &str, out: &mut Vec<(usize, usize)>)
     while pos < len {
         let start = pos;
 
+        // The two shapes ordinary text is mostly made of, routed by their lead
+        // byte so neither pays for the branches below that cannot match them.
+        //
+        // A letter cannot open the punctuation branch, and it makes the optional
+        // prefix of the letter branch empty — so the letter run starts where it
+        // does. A space cannot open the punctuation branch either, and is
+        // exactly what that optional prefix accepts: not a newline, not a
+        // letter, not punctuation or a symbol. Both therefore reach the same
+        // span the alternation reaches by trying and failing first.
+        //
+        // The letter after a space is matched as a character, not as an ASCII
+        // byte: scripts written entirely in multi-byte letters still separate
+        // their words with ASCII spaces, and testing only for ASCII would hand
+        // them the cost of this route without the benefit.
+        let fast = match CLASS[bytes[pos] as usize] {
+            Class::Letter => Some(scan_letter_or_mark_run(text, bytes, pos, 1)),
+            Class::Space if bytes[pos] == b' ' && pos + 1 < len => {
+                let next = bytes[pos + 1];
+                if CLASS[next as usize] == Class::Letter {
+                    Some(scan_letter_or_mark_run(text, bytes, pos + 1, 1))
+                } else if next >= 0x80 {
+                    letter_or_mark_at(text, bytes, pos + 1)
+                        .map(|n| scan_letter_or_mark_run(text, bytes, pos + 1, n))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(end) = fast {
+            pos = end;
+            out.push((start, pos));
+            continue;
+        }
+
         // `[!-/:-@\[-`{-~][A-Za-z]+` — one ASCII punctuation mark followed by
         // ASCII letters.
         if bytes[pos].is_ascii_graphic()
