@@ -297,23 +297,30 @@ fn merge_by_queue(
 ) -> usize {
     let count = nodes.len();
     q.ranks.clear();
-    q.ranks.resize(count, u32::MAX);
+    q.ranks.reserve(count);
     q.merged.clear();
-    q.merged.resize(count, u32::MAX);
+    q.merged.reserve(count);
     q.cold.clear();
     q.hot.clear();
 
+    // Built by pushing rather than sized and then overwritten: every entry but
+    // the tail's is written here anyway, so filling the buffers first would
+    // write each one twice — and on a dense script the piece is a whole run.
+    //
     // `saturating_sub` because the callers guarantee a non-empty list through
     // their own guards, and this may not become an underflow if a third ever
     // appears.
     for i in 0..count.saturating_sub(1) {
         let (rank, merged) = rank_of(piece, nodes, i, i + 1, merge_ranks);
-        q.ranks[i] = rank;
-        q.merged[i] = merged;
+        q.ranks.push(rank);
+        q.merged.push(merged);
         if rank != u32::MAX {
             q.cold.push(key(rank, i));
         }
     }
+    // The tail node opens no pair.
+    q.ranks.push(u32::MAX);
+    q.merged.push(u32::MAX);
     q.cold.sort_unstable();
 
     let mut cursor = 0usize;
@@ -386,9 +393,11 @@ fn merge_by_queue(
 /// Link `nodes` into a list and run the merge loop over them, returning how
 /// many nodes are still live.
 ///
-/// `nodes` arrives with `start`/`len` set and `prev`/`next` ignored. `queue` is
-/// touched only on the heap branch; the scan branch never looks at it, so a
-/// caller that knows it is below the threshold may pass an empty one.
+/// `nodes` arrives already linked in list order — the seeding that produced them
+/// writes `prev`/`next` as it goes, which is one pass rather than a second one
+/// over the same nodes. `queue` is touched only on the heap branch; the scan
+/// branch never looks at it, so a caller that knows it is below the threshold
+/// may pass an empty one.
 fn link_and_merge(
     piece: &[u8],
     nodes: &mut [Node],
@@ -396,10 +405,11 @@ fn link_and_merge(
     queue: &mut QueueScratch,
 ) -> usize {
     let count = nodes.len();
-    for (i, node) in nodes.iter_mut().enumerate() {
-        node.prev = if i == 0 { usize::MAX } else { i - 1 };
-        node.next = if i + 1 == count { usize::MAX } else { i + 1 };
-    }
+    debug_assert!(
+        nodes.first().is_none_or(|node| node.prev == usize::MAX)
+            && nodes.last().is_none_or(|node| node.next == usize::MAX),
+        "nodes must arrive linked — see the seeding functions in `super::encode`"
+    );
 
     if prefers_scan(piece, count) {
         merge_by_scan(piece, nodes, merge_ranks)

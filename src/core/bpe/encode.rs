@@ -234,7 +234,15 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
         return with_merge_scratch(|s| {
             s.nodes.clear();
             s.nodes.reserve(piece.len());
-            walk_raw_chars(piece, table, |node| s.nodes.push(node));
+            walk_raw_chars(piece, table, |mut node| {
+                let index = s.nodes.len();
+                node.prev = index.wrapping_sub(1);
+                node.next = index + 1;
+                s.nodes.push(node);
+            });
+            if let Some(tail) = s.nodes.last_mut() {
+                tail.next = usize::MAX;
+            }
             merge_and_collect_ids_into(
                 piece,
                 &mut s.nodes,
@@ -417,9 +425,16 @@ fn seed_nodes_into(
         .flatten()
     {
         Some(text) => {
-            for (node, (start, c)) in nodes.iter_mut().zip(text.char_indices()) {
+            let count = nodes.len();
+            for (index, (node, (start, c))) in nodes.iter_mut().zip(text.char_indices()).enumerate()
+            {
                 node.start = start;
                 node.len = c.len_utf8();
+                node.prev = index.wrapping_sub(1);
+                node.next = match index + 1 == count {
+                    true => usize::MAX,
+                    false => index + 1,
+                };
                 if let Some(table) = table {
                     node.id = table.seed_id(&piece[start..start + node.len]);
                     if node.id == u32::MAX {
@@ -430,9 +445,15 @@ fn seed_nodes_into(
         }
         None => {
             let raw = seeding == Seeding::RawBytes;
+            let count = nodes.len();
             for (start, node) in nodes.iter_mut().enumerate() {
                 node.start = start;
                 node.len = 1;
+                node.prev = start.wrapping_sub(1);
+                node.next = match start + 1 == count {
+                    true => usize::MAX,
+                    false => start + 1,
+                };
                 if let Some(table) = table {
                     node.id = match raw {
                         true => table.raw_byte_id(piece[start]),
@@ -487,16 +508,21 @@ pub(crate) fn byte_pair_encode_pieces_presegmented(
         return vec![];
     }
     with_merge_scratch(|s| {
-        s.nodes.extend(seeds.iter().map(|seed| Node {
-            prev: 0,
-            next: 0,
-            start: seed.start,
-            len: seed.len,
-            // The presegmented path is byte-keyed: this seeding exists to
-            // reproduce HuggingFace's byte-fallback order, whose symbols are
-            // vocabulary *spellings* the id path has no seed table for.
-            id: u32::MAX,
-        }));
+        let count = seeds.len();
+        s.nodes
+            .extend(seeds.iter().enumerate().map(|(index, seed)| Node {
+                prev: index.wrapping_sub(1),
+                next: match index + 1 == count {
+                    true => usize::MAX,
+                    false => index + 1,
+                },
+                start: seed.start,
+                len: seed.len,
+                // The presegmented path is byte-keyed: this seeding exists to
+                // reproduce HuggingFace's byte-fallback order, whose symbols are
+                // vocabulary *spellings* the id path has no seed table for.
+                id: u32::MAX,
+            }));
         merge_and_collect(
             piece,
             &mut s.nodes,
