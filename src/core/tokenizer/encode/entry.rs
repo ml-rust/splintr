@@ -40,8 +40,8 @@ impl Tokenizer {
     /// `encode_content`.
     pub fn encode_rayon(&self, text: &str) -> Vec<u32> {
         if self.match_added_tokens {
-            AddedTokens::dispatch(&self.special_matcher, text, |gap| {
-                self.encode_content(gap, true)
+            AddedTokens::dispatch(&self.special_matcher, text, |gap, out| {
+                self.encode_content_into(gap, true, out)
             })
         } else {
             self.encode_content(text, true)
@@ -54,7 +54,9 @@ impl Tokenizer {
     /// same `AddedTokens` matcher the SentencePiece/SPM/WordPiece backends
     /// use.
     pub fn encode_with_special(&self, text: &str) -> Vec<u32> {
-        AddedTokens::dispatch(&self.special_matcher, text, |gap| self.encode_ordinary(gap))
+        AddedTokens::dispatch(&self.special_matcher, text, |gap, out| {
+            self.encode_content_into(gap, false, out)
+        })
     }
 
     /// Encode text to token IDs under an explicit [`SpecialMode`], governing
@@ -78,8 +80,8 @@ impl Tokenizer {
         if matches!(mode, SpecialMode::All) && !self.match_added_tokens {
             return Ok(self.encode_ordinary(text));
         }
-        AddedTokens::dispatch_with_mode(&self.special_matcher, text, mode, |gap| {
-            self.encode_ordinary(gap)
+        AddedTokens::dispatch_with_mode(&self.special_matcher, text, mode, |gap, out| {
+            self.encode_content_into(gap, false, out)
         })
     }
 

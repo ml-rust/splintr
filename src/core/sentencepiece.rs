@@ -317,7 +317,9 @@ impl SentencePieceTokenizer {
     /// Recognizes added tokens in the input first (when configured), matching
     /// HuggingFace.
     pub fn encode(&self, text: &str) -> Vec<u32> {
-        super::added::AddedTokens::dispatch(&self.added, text, |gap| self.encode_ordinary(gap))
+        super::added::AddedTokens::dispatch(&self.added, text, |gap, out| {
+            out.extend(self.encode_ordinary(gap))
+        })
     }
 
     /// Encode text to token IDs under an explicit [`SpecialMode`], governing
@@ -327,8 +329,8 @@ impl SentencePieceTokenizer {
     /// tokens are [`SpecialPolicy`](crate::core::SpecialPolicy)'s to add via
     /// `AnyTokenizer::encode_with`.
     pub fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
-        super::added::AddedTokens::dispatch_with_mode(&self.added, text, mode, |gap| {
-            self.encode_ordinary(gap)
+        super::added::AddedTokens::dispatch_with_mode(&self.added, text, mode, |gap, out| {
+            out.extend(self.encode_ordinary(gap))
         })
     }
 

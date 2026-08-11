@@ -14,6 +14,19 @@ impl Tokenizer {
     /// `pending_underscores` as a strictly left-to-right fold over chunks, so it
     /// is genuinely stateful and cannot be parallelized without changing output.
     pub(super) fn encode_content(&self, text: &str, parallel: bool) -> Vec<u32> {
+        let mut out = Vec::new();
+        self.encode_content_into(text, parallel, &mut out);
+        out
+    }
+
+    /// [`Tokenizer::encode_content`] appending to a buffer the caller owns.
+    ///
+    /// This is what added-token dispatch calls, once per gap between special
+    /// tokens — so on text those are dense in, a returned `Vec` per gap is an
+    /// allocation, a copy and a free for a handful of ids. The streaming
+    /// pre-tokenizer paths write straight through; the rest keep their own
+    /// buffer and are copied over, which is what they did before.
+    pub(super) fn encode_content_into(&self, text: &str, parallel: bool, out: &mut Vec<u32>) {
         // Apply the HF `normalizer` (e.g. NFC) to content before splitting. This
         // runs on content gaps (special tokens are extracted upstream), matching
         // HuggingFace's extract-then-normalize order.
@@ -41,23 +54,26 @@ impl Tokenizer {
                     true => pt.split_raw_pieces(text),
                     false => pt.split_pieces(text),
                 };
-                return pieces
-                    .par_iter()
-                    .fold(Vec::new, |mut acc, piece| {
-                        self.encode_chunk_into(piece.as_bytes(), &mut acc);
-                        acc
-                    })
-                    .reduce(Vec::new, |mut a, b| {
-                        a.extend_from_slice(&b);
-                        a
-                    });
+                out.extend(
+                    pieces
+                        .par_iter()
+                        .fold(Vec::new, |mut acc, piece| {
+                            self.encode_chunk_into(piece.as_bytes(), &mut acc);
+                            acc
+                        })
+                        .reduce(Vec::new, |mut a, b| {
+                            a.extend_from_slice(&b);
+                            a
+                        }),
+                );
+                return;
             }
 
             // One id per pre-token is the floor, so sizing from the text holds
             // the whole result without regrowing. The streaming path has no
             // piece count to size from — that was the point of not building one
             // — so it estimates from the same rule the pipeline uses.
-            let mut out = Vec::with_capacity(crate::core::pretokenizer::estimated_pieces(text));
+            out.reserve(crate::core::pretokenizer::estimated_pieces(text));
             // When the pipeline ends in ByteLevel, take the pieces unmapped and
             // let `encode_raw_chunk_into` map only the ones that need it.
             if self.use_byte_level && self.raw_encoder.is_some() && pt.emits_raw() {
@@ -70,16 +86,20 @@ impl Tokenizer {
                 // allocation plus a copy. 64 bytes covers a pre-token in every
                 // script the bundled vocabularies cover; a longer one still
                 // grows, exactly as before.
-                let mut scratch = String::with_capacity(64);
+                // Empty when the merge works from raw bytes, which never asks
+                // for the mapping: `String::new` does not allocate, and this
+                // runs once per gap.
+                let mut scratch = match self.merges_raw() {
+                    true => String::new(),
+                    false => String::with_capacity(64),
+                };
                 pt.for_each_raw_piece(text, |piece| {
-                    self.encode_raw_chunk_into(piece.as_bytes(), &mut out, &mut scratch)
+                    self.encode_raw_chunk_into(piece.as_bytes(), out, &mut scratch)
                 });
-                return out;
+                return;
             }
-            pt.for_each_piece(text, |piece| {
-                self.encode_chunk_into(piece.as_bytes(), &mut out)
-            });
-            return out;
+            pt.for_each_piece(text, |piece| self.encode_chunk_into(piece.as_bytes(), out));
+            return;
         }
 
         let text = self.prefixed(text);
@@ -94,14 +114,13 @@ impl Tokenizer {
             self.split_chunks_into(text, chunks);
 
             if chunks.is_empty() {
-                return vec![];
+                return;
             }
 
-            if self.use_metaspace_decoder {
-                self.encode_metaspace_chunks(text_bytes, chunks)
-            } else {
+            match self.use_metaspace_decoder {
+                true => out.extend(self.encode_metaspace_chunks(text_bytes, chunks)),
                 // No metaspace decoder: use original logic
-                self.map_chunks(text_bytes, chunks, parallel)
+                false => out.extend(self.map_chunks(text_bytes, chunks, parallel)),
             }
         })
     }

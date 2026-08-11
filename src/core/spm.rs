@@ -618,14 +618,14 @@ impl SpmTokenizer {
     /// ([`Tokenize::encode`]) and mode-aware ([`encode_with`](Self::encode_with))
     /// paths share this placement without either inventing an error it cannot
     /// produce.
-    fn gap_encoder(&self, prefix_spent: bool) -> impl FnMut(&str) -> Vec<u32> + '_ {
+    fn gap_encoder(&self, prefix_spent: bool) -> impl FnMut(&str, &mut Vec<u32>) + '_ {
         // Under `Once`: whichever stretch begins at byte 0 carries the prefix —
         // and when an added token begins the input instead, no stretch does.
         // `AddedTokens` never hands out an empty gap, so this cannot be spent on
         // nothing. Unused under `AfterEachSpecial`, where every gap is prefixed
         // and `standalone_prefix` is always empty.
         let mut carries_prefix = !prefix_spent;
-        move |gap: &str| {
+        move |gap: &str, out: &mut Vec<u32>| {
             let carries = match self.prefix_scheme {
                 // Every gap either begins the input or follows an added token,
                 // which is exactly llama.cpp's `is_prev_special` condition.
@@ -634,7 +634,7 @@ impl SpmTokenizer {
                 SpmPrefixScheme::Once => std::mem::take(&mut carries_prefix),
             };
             let prefix = if carries { self.prefix() } else { Prefix::None };
-            self.encode_segment(gap, prefix)
+            out.extend(self.encode_segment(gap, prefix));
         }
     }
 

@@ -380,7 +380,7 @@ impl AddedTokens {
     /// runtime assertion claiming it.
     pub fn encode_with<F>(&self, text: &str, encode_gap: F) -> Vec<u32>
     where
-        F: FnMut(&str) -> Vec<u32>,
+        F: FnMut(&str, &mut Vec<u32>),
     {
         match self.encode_matched(text, encode_gap, |_, _| Ok::<(), Infallible>(())) {
             Ok(ids) => ids,
@@ -404,10 +404,14 @@ impl AddedTokens {
         mut encode_gap: F,
     ) -> Result<Vec<u32>, PolicyError>
     where
-        F: FnMut(&str) -> Vec<u32>,
+        F: FnMut(&str, &mut Vec<u32>),
     {
         match mode {
-            SpecialMode::Ordinary => Ok(encode_gap(text)),
+            SpecialMode::Ordinary => {
+                let mut out = Vec::new();
+                encode_gap(text, &mut out);
+                Ok(out)
+            }
             SpecialMode::All => Ok(self.encode_with(text, encode_gap)),
             SpecialMode::Allow(allowed) => {
                 self.encode_matched(text, encode_gap, |matched, offset| {
@@ -448,7 +452,7 @@ impl AddedTokens {
         mut admit: A,
     ) -> Result<Vec<u32>, E>
     where
-        F: FnMut(&str) -> Vec<u32>,
+        F: FnMut(&str, &mut Vec<u32>),
         A: FnMut(&str, usize) -> Result<(), E>,
     {
         let mut out = Vec::new();
@@ -496,7 +500,7 @@ impl AddedTokens {
             // single dummy prefix on the first gap it is asked to encode, so an
             // empty one would spend it on nothing).
             if gap_end > last {
-                out.extend(encode_gap(&text[last..gap_end]));
+                encode_gap(&text[last..gap_end], &mut out);
             }
             admit(&text[m.start()..m.end()], m.start())?;
             out.push(token.id);
@@ -507,7 +511,7 @@ impl AddedTokens {
             }
         }
         if last < text.len() {
-            out.extend(encode_gap(&text[last..]));
+            encode_gap(&text[last..], &mut out);
         }
         Ok(out)
     }
@@ -517,11 +521,15 @@ impl AddedTokens {
     /// behavior), falling back to `encode_gap` when none are configured.
     pub fn dispatch<F>(added: &Option<Self>, text: &str, mut encode_gap: F) -> Vec<u32>
     where
-        F: FnMut(&str) -> Vec<u32>,
+        F: FnMut(&str, &mut Vec<u32>),
     {
         match added {
             Some(added) => added.encode_with(text, encode_gap),
-            None => encode_gap(text),
+            None => {
+                let mut out = Vec::new();
+                encode_gap(text, &mut out);
+                out
+            }
         }
     }
 
@@ -534,11 +542,15 @@ impl AddedTokens {
         mut encode_gap: F,
     ) -> Result<Vec<u32>, PolicyError>
     where
-        F: FnMut(&str) -> Vec<u32>,
+        F: FnMut(&str, &mut Vec<u32>),
     {
         match added {
             Some(added) => added.encode_with_mode(text, mode, encode_gap),
-            None => Ok(encode_gap(text)),
+            None => {
+                let mut out = Vec::new();
+                encode_gap(text, &mut out);
+                Ok(out)
+            }
         }
     }
 }
@@ -639,7 +651,9 @@ mod tests {
             .unwrap()
             .unwrap();
         // gap encoder marks any leftover text so we'd notice a bad split.
-        let ids = at.encode_with("a    b", bytes);
+        let ids = at.encode_with("a    b", |gap: &str, out: &mut Vec<u32>| {
+            out.extend(bytes(gap))
+        });
         assert_eq!(ids, vec![u32::from(b'a'), 20, u32::from(b'b')]);
     }
 
@@ -670,9 +684,11 @@ mod tests {
     fn all_mode_matches_every_configured_special() {
         let at = AddedTokens::new(&special_map()).unwrap().unwrap();
         let ids = at
-            .encode_with_mode("<|im_start|>hi<|im_end|>", &SpecialMode::All, |gap| {
-                gap.bytes().map(u32::from).collect()
-            })
+            .encode_with_mode(
+                "<|im_start|>hi<|im_end|>",
+                &SpecialMode::All,
+                |gap, out: &mut Vec<u32>| out.extend(gap.bytes().map(u32::from)),
+            )
             .unwrap();
         assert_eq!(ids, vec![100, u32::from(b'h'), u32::from(b'i'), 101]);
     }
@@ -683,9 +699,11 @@ mod tests {
         let mut allowed = rustc_hash::FxHashSet::default();
         allowed.insert("<|im_start|>".to_string());
         let ids = at
-            .encode_with_mode("<|im_start|>hi", &SpecialMode::Allow(&allowed), |gap| {
-                gap.bytes().map(u32::from).collect()
-            })
+            .encode_with_mode(
+                "<|im_start|>hi",
+                &SpecialMode::Allow(&allowed),
+                |gap, out: &mut Vec<u32>| out.extend(gap.bytes().map(u32::from)),
+            )
             .unwrap();
         assert_eq!(ids, vec![100, u32::from(b'h'), u32::from(b'i')]);
     }
@@ -698,9 +716,11 @@ mod tests {
         // its byte offset — not just any error.
         let allowed = rustc_hash::FxHashSet::default();
         let err = at
-            .encode_with_mode("hi<|im_end|>", &SpecialMode::Allow(&allowed), |gap| {
-                gap.bytes().map(u32::from).collect()
-            })
+            .encode_with_mode(
+                "hi<|im_end|>",
+                &SpecialMode::Allow(&allowed),
+                |gap, out: &mut Vec<u32>| out.extend(gap.bytes().map(u32::from)),
+            )
             .unwrap_err();
         match err {
             PolicyError::DisallowedSpecial { token, offset } => {
@@ -718,10 +738,14 @@ mod tests {
         // token's literal spelling — the matcher must not be consulted at all.
         let mut gap_calls = Vec::new();
         let ids = at
-            .encode_with_mode("<|im_start|>hi", &SpecialMode::Ordinary, |gap| {
-                gap_calls.push(gap.to_string());
-                gap.bytes().map(u32::from).collect()
-            })
+            .encode_with_mode(
+                "<|im_start|>hi",
+                &SpecialMode::Ordinary,
+                |gap, out: &mut Vec<u32>| {
+                    gap_calls.push(gap.to_string());
+                    out.extend(gap.bytes().map(u32::from));
+                },
+            )
             .unwrap();
         assert_eq!(gap_calls, vec!["<|im_start|>hi".to_string()]);
         assert_eq!(
@@ -748,10 +772,10 @@ mod tests {
 
     /// Record what the gap encoder is actually handed, so an empty or
     /// unstripped gap is visible rather than inferred from the ids.
-    fn record(calls: &mut Vec<String>) -> impl FnMut(&str) -> Vec<u32> + '_ {
-        move |gap: &str| {
+    fn record(calls: &mut Vec<String>) -> impl FnMut(&str, &mut Vec<u32>) + '_ {
+        move |gap: &str, out: &mut Vec<u32>| {
             calls.push(gap.to_string());
-            bytes(gap)
+            out.extend(bytes(gap));
         }
     }
 

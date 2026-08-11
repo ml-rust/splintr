@@ -590,8 +590,8 @@ impl WordPieceTokenizer {
     /// [`SpecialPolicy`](crate::core::SpecialPolicy)'s to add via
     /// `AnyTokenizer::encode_with`, not this method's concern.
     pub fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
-        super::added::AddedTokens::dispatch_with_mode(&self.added, text, mode, |gap| {
-            self.encode_ordinary(gap)
+        super::added::AddedTokens::dispatch_with_mode(&self.added, text, mode, |gap, out| {
+            out.extend(self.encode_ordinary(gap))
         })
     }
 }
@@ -599,7 +599,9 @@ impl WordPieceTokenizer {
 impl Tokenize for WordPieceTokenizer {
     fn encode(&self, text: &str) -> Vec<u32> {
         // Recognize added tokens in the input first (HF behavior), then WordPiece.
-        super::added::AddedTokens::dispatch(&self.added, text, |gap| self.encode_ordinary(gap))
+        super::added::AddedTokens::dispatch(&self.added, text, |gap, out| {
+            out.extend(self.encode_ordinary(gap))
+        })
     }
 
     fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
