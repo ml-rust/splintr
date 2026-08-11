@@ -14,7 +14,8 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Changed
 
-- A `split: false` metaspace vocabulary splits at marker runs where its own tokens prove no id changes: Mistral is 2x faster.
+- A `split: false` metaspace vocabulary splits at marker runs where its own tokens prove no id changes.
+- Tekken's pre-tokenizer shares the o200k scanner instead of the regex engine.
 
 ## [0.18.0] - 2026-08-11
 

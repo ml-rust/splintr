@@ -801,6 +801,27 @@ pub(super) fn qwen2_spans(text: &str, out: &mut Vec<(usize, usize)>) {
 /// uppercase head followed by a lowercase tail — which is why `XMLHttpRequest`
 /// becomes `XMLHttp` + `Request` here but stays whole under Llama 3.
 pub(super) fn o200k_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    case_family_spans(text, out, 3, true)
+}
+
+/// Splits by the Mistral V3 / Tekken pattern (Mistral NeMo, Mistral Large).
+///
+/// o200k's shape exactly, including the `/` in the punctuation tail, minus two
+/// things: the trailing English contraction on each letter branch, and digit
+/// runs — Tekken's `\p{N}` takes one digit at a time where o200k's
+/// `\p{N}{1,3}` takes up to three. Both are parameters of
+/// [`case_family_spans`] rather than a second copy of it, because the
+/// backtracking in the letter branches is the part that is easy to get subtly
+/// wrong and there should be one of it.
+pub(super) fn mistral_v3_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    case_family_spans(text, out, 1, false)
+}
+
+/// The o200k-family scan, over the two things its members differ in.
+///
+/// `digits` is how many `\p{N}` one span may take (o200k 3, Tekken 1);
+/// `contractions` whether a letter branch absorbs a trailing `'s`/`'ll`/… .
+fn case_family_spans(text: &str, out: &mut Vec<(usize, usize)>, digits: usize, contractions: bool) {
     let bytes = text.as_bytes();
     let len = bytes.len();
     let mut pos = 0usize;
@@ -808,7 +829,7 @@ pub(super) fn o200k_spans(text: &str, out: &mut Vec<(usize, usize)>) {
     while pos < len {
         let start = pos;
 
-        if let Some(end) = o200k_letter_branches(text, bytes, pos) {
+        if let Some(end) = o200k_letter_branches(text, bytes, pos, contractions) {
             pos = end;
             out.push((start, pos));
             continue;
@@ -816,7 +837,7 @@ pub(super) fn o200k_spans(text: &str, out: &mut Vec<(usize, usize)>) {
 
         if let Some(n) = number_at(text, bytes, pos) {
             pos += n;
-            for _ in 1..3 {
+            for _ in 1..digits {
                 match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
                     Some(n) => pos += n,
                     None => break,
@@ -857,7 +878,12 @@ pub(super) fn o200k_spans(text: &str, out: &mut Vec<(usize, usize)>) {
 ///
 /// Each optional prefix is greedy, so a branch is tried with the prefix before
 /// without it.
-fn o200k_letter_branches(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+fn o200k_letter_branches(
+    text: &str,
+    bytes: &[u8],
+    pos: usize,
+    contractions: bool,
+) -> Option<usize> {
     case_split_branches(
         text,
         bytes,
@@ -870,6 +896,7 @@ fn o200k_letter_branches(text: &str, bytes: &[u8], pos: usize) -> Option<usize> 
             at: lower_run_at,
             skip_ascii: skip_lower_or_ideograph,
         },
+        contractions,
     )
 }
 
@@ -884,8 +911,9 @@ fn case_split_branches(
     pos: usize,
     upper: Run,
     lower: Run,
+    contractions: bool,
 ) -> Option<usize> {
-    match ascii_case_split(bytes, pos) {
+    match ascii_case_split(bytes, pos, contractions) {
         AsciiCase::Match(end) => return Some(end),
         AsciiCase::NoMatch => return None,
         AsciiCase::Undecided => {}
@@ -896,7 +924,7 @@ fn case_split_branches(
     // Branch A, prefix first then without.
     for &q in [with_prefix, Some(pos)].iter().flatten() {
         if q < bytes.len() {
-            if let Some(end) = case_split_branch_a(text, bytes, q, upper, lower) {
+            if let Some(end) = case_split_branch_a(text, bytes, q, upper, lower, contractions) {
                 return Some(end);
             }
         }
@@ -904,7 +932,7 @@ fn case_split_branches(
     // Branch B, likewise.
     for &q in [with_prefix, Some(pos)].iter().flatten() {
         if q < bytes.len() {
-            if let Some(end) = case_split_branch_b(text, bytes, q, upper, lower) {
+            if let Some(end) = case_split_branch_b(text, bytes, q, upper, lower, contractions) {
                 return Some(end);
             }
         }
@@ -932,7 +960,7 @@ enum AsciiCase {
 }
 
 #[inline]
-fn ascii_case_split(bytes: &[u8], pos: usize) -> AsciiCase {
+fn ascii_case_split(bytes: &[u8], pos: usize, contractions: bool) -> AsciiCase {
     let Some(&first) = bytes.get(pos) else {
         return AsciiCase::Undecided;
     };
@@ -965,7 +993,10 @@ fn ascii_case_split(bytes: &[u8], pos: usize) -> AsciiCase {
     if bytes.get(i).is_some_and(|&b| b >= 0x80) {
         return AsciiCase::Undecided;
     }
-    AsciiCase::Match(i + trailing_contraction(bytes, i))
+    AsciiCase::Match(match contractions {
+        true => i + trailing_contraction(bytes, i),
+        false => i,
+    })
 }
 
 /// `U* L+` — greedy `U*` gives characters back until a lowercase-class run can
@@ -976,6 +1007,7 @@ fn case_split_branch_a(
     start: usize,
     upper: Run,
     lower: Run,
+    contractions: bool,
 ) -> Option<usize> {
     let upper_end = scan_run_of(text, bytes, start, upper);
 
@@ -985,7 +1017,10 @@ fn case_split_branch_a(
         if boundary < bytes.len() {
             if let Some(n) = (lower.at)(text, bytes, boundary) {
                 let lower_end = scan_run_of(text, bytes, boundary + n, lower);
-                return Some(lower_end + trailing_contraction(bytes, lower_end));
+                return Some(match contractions {
+                    true => lower_end + trailing_contraction(bytes, lower_end),
+                    false => lower_end,
+                });
             }
         }
         if boundary <= start {
@@ -1003,13 +1038,17 @@ fn case_split_branch_b(
     start: usize,
     upper: Run,
     lower: Run,
+    contractions: bool,
 ) -> Option<usize> {
     let upper_end = scan_run_of(text, bytes, start, upper);
     if upper_end == start {
         return None;
     }
     let lower_end = scan_run_of(text, bytes, upper_end, lower);
-    Some(lower_end + trailing_contraction(bytes, lower_end))
+    Some(match contractions {
+        true => lower_end + trailing_contraction(bytes, lower_end),
+        false => lower_end,
+    })
 }
 
 #[inline]
@@ -1170,6 +1209,7 @@ pub(super) fn kimi_spans(text: &str, out: &mut Vec<(usize, usize)>) {
                     at: kimi_lower_run_at,
                     skip_ascii: swar_skip_ascii_lower,
                 },
+                true,
             )
         {
             pos = end;
@@ -1787,6 +1827,8 @@ pub(crate) fn for_pattern(pattern: &str) -> Option<SpanScanner> {
         Some(qwen2_spans)
     } else if pattern == p::O200K_BASE_PATTERN {
         Some(o200k_spans)
+    } else if pattern == p::MISTRAL_V3_PATTERN {
+        Some(mistral_v3_spans)
     } else if pattern == p::KIMI_PATTERN {
         Some(kimi_spans)
     } else if pattern == p::GPT2_PATTERN {
@@ -1950,7 +1992,7 @@ mod tests {
     use super::*;
     use crate::core::tokenizer::patterns::{
         CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN, KIMI_PATTERN, LLAMA3_PATTERN,
-        O200K_BASE_PATTERN, QWEN2_PATTERN,
+        MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
     };
 
     type Scanner = fn(&str, &mut Vec<(usize, usize)>);
@@ -1963,6 +2005,11 @@ mod tests {
             ("qwen2", QWEN2_PATTERN, qwen2_spans as Scanner),
             ("o200k", O200K_BASE_PATTERN, o200k_spans as Scanner),
             ("kimi", KIMI_PATTERN, kimi_spans as Scanner),
+            (
+                "mistral-v3",
+                MISTRAL_V3_PATTERN,
+                mistral_v3_spans as Scanner,
+            ),
             ("gpt2", GPT2_PATTERN, gpt2_spans as Scanner),
             (
                 "deepseek-pass1",
@@ -2040,16 +2087,16 @@ mod tests {
     /// arriving with a pattern nothing here recognises should be visible
     /// immediately rather than as an unexplained encode-speed cliff.
     ///
-    /// Mistral V3 is the one stated exception: Tekken's pattern is a shape no
-    /// scanner covers yet, and it falls back to the regex engine. Mistral V1/V2
-    /// report no pattern at all. Whisper declares GPT-2's pattern, so it is
-    /// covered by [`gpt2_spans`] — as is any `tokenizer.json` whose
+    /// Every bundled vocabulary that declares a pattern now has one — Mistral
+    /// V3 was the last exception and [`mistral_v3_spans`] closed it. Mistral
+    /// V1/V2 report no pattern at all. Whisper declares GPT-2's pattern, so it
+    /// is covered by [`gpt2_spans`] — as is any `tokenizer.json` whose
     /// pre-tokenizer is a bare `ByteLevel`, since `use_regex` defaults on.
     #[test]
     fn every_bundled_vocabulary_that_should_have_a_scanner_has_one() {
         use crate::core::pretrained::{patterns, PretrainedVocab::*};
 
-        let no_scanner = [MistralV3];
+        let no_scanner: [crate::core::pretrained::PretrainedVocab; 0] = [];
         for vocab in [
             Cl100kBase, O200kBase, GptOss, Llama3, DeepseekV3, Qwen3, Glm4, KimiK2, KimiK3,
             MistralV1, MistralV2, MistralV3, WhisperV1, WhisperV2, WhisperV3,
