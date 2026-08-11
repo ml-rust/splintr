@@ -1352,6 +1352,9 @@ dependencies = [
  "splintr",
  "splintr-vocab-cl100k",
  "splintr-vocab-deepseek",
+ "splintr-vocab-gemma2",
+ "splintr-vocab-gemma3",
+ "splintr-vocab-gemma4",
  "splintr-vocab-glm",
  "splintr-vocab-kimi",
  "splintr-vocab-llama2",
@@ -1376,6 +1379,21 @@ dependencies = [
 
 [[package]]
 name = "splintr-vocab-deepseek"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
+]
+
+[[package]]
+name = "splintr-vocab-gemma2"
+version = "1.0.0"
+
+[[package]]
+name = "splintr-vocab-gemma3"
+version = "1.0.0"
+
+[[package]]
+name = "splintr-vocab-gemma4"
 version = "1.0.0"
 dependencies = [
  "splintr-vocab-pack",
@@ -1429,9 +1447,10 @@ dependencies = [
 
 [[package]]
 name = "splintr-vocab-pack"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "base64",
+ "serde_json",
 ]
 
 [[package]]

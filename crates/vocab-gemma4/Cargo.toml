@@ -1,0 +1,34 @@
+[package]
+name = "splintr-vocab-gemma4"
+version = "1.0.0"
+edition = "2021"
+description = "Bundled tokenizer vocabulary for splintr: Gemma 4."
+license = "Apache-2.0"
+repository = "https://github.com/ml-rust/splintr"
+homepage = "https://github.com/ml-rust/splintr"
+readme = "README.md"
+keywords = ["tokenizer", "bpe", "vocabulary", "splintr"]
+categories = ["text-processing"]
+# Google's `tokenizer.json`, shipped byte for byte, and the build script that
+# packs it. The two binary forms the loader reads are generated into `OUT_DIR`,
+# never shipped.
+#
+# The json rather than a derived text file, which every other vocabulary crate
+# ships: Gemma 4 needs its token ids and its merge order stated *separately*
+# (see `splintr-vocab-pack`), and the json is the only file Google publishes
+# that states both. Shipping it verbatim also means a reader can check this
+# crate against upstream with `sha256sum` and nothing else.
+include = [
+    "/src/**/*.rs",
+    "/build.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+    "/vocabs/gemma4.json",
+]
+
+[dependencies]
+
+[build-dependencies]
+# `1.1` for `pack_hf_json_into_out_dir`, which 1.0 does not have.
+splintr-vocab-pack = { path = "../vocab-pack", version = "1.1" }

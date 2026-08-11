@@ -401,6 +401,64 @@ fn walk_packed<'a>(
 /// Capped at five groups: a `u32` needs at most 32 bits, and without the cap a
 /// corrupt file of continuation bytes would shift past the width and loop to the
 /// end of the buffer rather than failing.
+/// Magic at the head of a packed merge list.
+const PACKED_MERGES_MAGIC: &[u8; 8] = b"SPLNTRM1";
+
+/// Load a packed merge list: the token ids a vocabulary merges in, in priority
+/// order.
+///
+/// # Why a vocabulary can need this at all
+///
+/// A `.tiktoken`-shaped vocabulary states one rank per token, serving as both
+/// its id and its merge priority, and [`load_packed_bpe`] is the whole of it.
+/// A HuggingFace BPE need not have those coincide. Gemma 4's do not — 465
+/// places where a later merge yields a lower id, and 514,906 merges collapsing
+/// onto 236,339 distinct tokens — and forcing them into one column mistokenizes
+/// 8.1% of real documents. Such a vocabulary ships its merge order separately,
+/// which is this.
+///
+/// # Format
+///
+/// ```text
+/// "SPLNTRM1"        magic, 8 bytes
+/// count             u32, little-endian
+/// varint(id)*       count ids, in merge-priority order
+/// ```
+///
+/// Ids rather than token bytes: every merge result is itself a vocabulary
+/// entry, so its bytes are already in the companion vocabulary. Reading them
+/// back through `pieces` is what ties the two together, and a merge id outside
+/// the vocabulary is an error rather than a skipped entry — it would mean the
+/// two files were packed from different sources.
+pub fn load_packed_merge_order<'a>(
+    data: &'a [u8],
+    pieces: &'a Decoder,
+) -> Result<Vec<&'a [u8]>, VocabError> {
+    if data.len() < 12 || &data[..8] != PACKED_MERGES_MAGIC {
+        return Err(VocabError::ParseError(
+            "not a packed merge list: bad magic".to_string(),
+        ));
+    }
+    let count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+    if count == 0 {
+        return Err(VocabError::ParseError("no merges".to_string()));
+    }
+
+    let mut merged: Vec<&[u8]> = Vec::with_capacity(count);
+    let mut pos = 12;
+    for _ in 0..count {
+        let id = read_varint(data, &mut pos)?;
+        let bytes = pieces.get(id).ok_or_else(|| {
+            VocabError::ParseError(format!(
+                "packed merge list: id {id} is not in the vocabulary — the two \
+                 were not packed from the same file"
+            ))
+        })?;
+        merged.push(bytes);
+    }
+    Ok(merged)
+}
+
 fn read_varint(data: &[u8], pos: &mut usize) -> Result<u32, VocabError> {
     let mut value: u32 = 0;
     for group in 0..5 {

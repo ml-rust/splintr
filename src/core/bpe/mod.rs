@@ -78,7 +78,7 @@ pub(crate) use encode::{
     byte_pair_encode_pieces_presegmented, byte_pair_encode_pieces_seeded, byte_pair_merge_ids_into,
     Piece, Seed, Seeding,
 };
-pub(crate) use ranks::{merge_ranks, BytePairRanks, PairRanks, RankLookup};
+pub(crate) use ranks::{merge_ranks, merge_ranks_bytes, BytePairRanks, PairRanks, RankLookup};
 
 // Reachable from `tests` (via its `use super::*`) and from the intra-doc links
 // in the algorithm modules, without widening anything past this module.

@@ -46,7 +46,8 @@ use super::policy::SpecialPolicy;
 use super::spm::{SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
 use super::tokenizer::{
     Tokenizer, TokenizerError, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN,
-    KIMI_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
+    KIMI_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, NO_SPLIT_PATTERN, O200K_BASE_PATTERN,
+    QWEN2_PATTERN,
 };
 use super::vocab::{load_spm_vocab, place_special_pieces, SpmVocab};
 use super::whisper::{whisper_special_tokens, WhisperVariant};
@@ -69,6 +70,12 @@ use super::whisper::{whisper_special_tokens, WhisperVariant};
 pub use splintr_vocab_cl100k::CL100K_BASE_VOCAB_PACKED;
 #[cfg(feature = "vocab-deepseek")]
 pub use splintr_vocab_deepseek::DEEPSEEK_V3_VOCAB_PACKED;
+#[cfg(feature = "vocab-gemma2")]
+pub use splintr_vocab_gemma2::GEMMA2_SPM_VOCAB;
+#[cfg(feature = "vocab-gemma3")]
+pub use splintr_vocab_gemma3::GEMMA3_SPM_VOCAB;
+#[cfg(feature = "vocab-gemma4")]
+pub use splintr_vocab_gemma4::{GEMMA4_MERGES_PACKED, GEMMA4_VOCAB_PACKED};
 #[cfg(feature = "vocab-glm")]
 pub use splintr_vocab_glm::GLM4_VOCAB_PACKED;
 #[cfg(feature = "vocab-kimi")]
@@ -116,6 +123,12 @@ pub enum PretrainedVocab {
     CodeLlama,
     /// Answer.AI ModernBERT (also the `-large` and Embed checkpoints)
     ModernBert,
+    /// Google Gemma 2 - 256k SentencePiece
+    Gemma2,
+    /// Google Gemma 3 - 262k SentencePiece; EmbeddingGemma ships the same file
+    Gemma3,
+    /// Google Gemma 4 - 262k, merge-ordered rather than scored (Apache-2.0)
+    Gemma4,
     /// Kimi K2 family (K2, K2.5, K2.6, K2.7, Kimi-Linear) — Moonshot AI
     KimiK2,
     /// Kimi K3 — the same ranks as [`KimiK2`](Self::KimiK2), different markers
@@ -169,6 +182,15 @@ impl PretrainedVocab {
             // ModernBERT. `-base`, `-large` and the Embed checkpoints all ship
             // this file.
             "modernbert" | "modern-bert" => Some(Self::ModernBert),
+
+            // Gemma. Each generation is its own vocabulary — Gemma 2 has 256k
+            // pieces, Gemma 3 has 262k — so there is no bare `gemma` alias to
+            // resolve arbitrarily to one of them.
+            "gemma2" | "gemma-2" => Some(Self::Gemma2),
+            // EmbeddingGemma ships Gemma 3's file byte-identically, pieces and
+            // scores alike, so it is served by this name rather than a copy.
+            "gemma3" | "gemma-3" | "embeddinggemma" => Some(Self::Gemma3),
+            "gemma4" | "gemma-4" => Some(Self::Gemma4),
 
             // Kimi. K2 and K3 share every merge rank and the same pre-tokenizer;
             // they differ only in what the 256 reserved ids above them are
@@ -242,6 +264,14 @@ impl PretrainedVocab {
             // ModernBERT
             "modernbert",
             "modern-bert",
+            // Gemma (EmbeddingGemma shares Gemma 3's vocabulary)
+            "gemma2",
+            "gemma-2",
+            "gemma3",
+            "gemma-3",
+            "embeddinggemma",
+            "gemma4",
+            "gemma-4",
             // Kimi (Moonshot AI)
             "kimi",
             "kimi_k2",
@@ -351,6 +381,9 @@ fn vocab_bytes(vocab: PretrainedVocab) -> Result<&'static [u8], TokenizerError> 
         PretrainedVocab::ModernBert => {
             bundled!("vocab-modernbert", MODERNBERT_VOCAB_PACKED, "modernbert")
         }
+        PretrainedVocab::Gemma2 => bundled!("vocab-gemma2", GEMMA2_SPM_VOCAB, "gemma2"),
+        PretrainedVocab::Gemma3 => bundled!("vocab-gemma3", GEMMA3_SPM_VOCAB, "gemma3"),
+        PretrainedVocab::Gemma4 => bundled!("vocab-gemma4", GEMMA4_VOCAB_PACKED, "gemma4"),
         PretrainedVocab::DeepseekV3 => {
             bundled!("vocab-deepseek", DEEPSEEK_V3_VOCAB_PACKED, "deepseek_v3")
         }
@@ -368,6 +401,72 @@ fn vocab_bytes(vocab: PretrainedVocab) -> Result<&'static [u8], TokenizerError> 
         PretrainedVocab::WhisperV1 | PretrainedVocab::WhisperV2 | PretrainedVocab::WhisperV3 => {
             bundled!("vocab-whisper", WHISPER_VOCAB_PACKED, "whisper")
         }
+    }
+}
+
+/// Build a `<0xNN>` byte-fallback table by reading the pieces a vocabulary
+/// spells that way.
+///
+/// The `.spm` families get theirs from the SentencePiece `BYTE` piece type; a
+/// `tokenizer.json` states `model.byte_fallback: true` and leaves the reader to
+/// find the pieces. Reading the spelling is what both references do — HF's
+/// declared `ByteFallback` decoder step and `sp.decode` alike — so a vocabulary
+/// of this shape cannot hold a literal `<0x41>` piece meaning the text
+/// `<0x41>`, and looking them up by spelling is not a heuristic.
+///
+/// Absent entries stay `None`: HuggingFace resolves fallback per character and
+/// uses the unk where an entry is missing, so a partial set is valid.
+fn byte_fallback_from_pieces(
+    pieces: &crate::core::decode_table::Decoder,
+    unk_id: u32,
+) -> Option<crate::core::tokenizer::ByteFallback> {
+    let mut byte_ids: [Option<u32>; 256] = [None; 256];
+    let mut found = 0usize;
+    for (id, bytes) in pieces.iter() {
+        // `<0xNN>`, exactly six bytes with two upper-case hex digits.
+        let [b'<', b'0', b'x', hi, lo, b'>'] = bytes else {
+            continue;
+        };
+        let (Some(hi), Some(lo)) = (
+            (*hi as char)
+                .to_digit(16)
+                .filter(|_| !hi.is_ascii_lowercase()),
+            (*lo as char)
+                .to_digit(16)
+                .filter(|_| !lo.is_ascii_lowercase()),
+        ) else {
+            continue;
+        };
+        let byte = (hi * 16 + lo) as usize;
+        if byte_ids[byte].is_none() {
+            byte_ids[byte] = Some(id);
+            found += 1;
+        }
+    }
+    (found > 0).then(|| crate::core::tokenizer::ByteFallback::new(byte_ids, Some(unk_id)))
+}
+
+/// The packed merge order for a vocabulary that states one, or the feature that
+/// would have bundled it.
+///
+/// Only Gemma 4 does. Every other bundled vocabulary either derives merge order
+/// from its ids (the `.tiktoken` families) or from its scores (the `.spm`
+/// ones); Gemma 4 can do neither, so it ships the order as a payload of its own.
+fn merges_bytes(vocab: PretrainedVocab) -> Result<&'static [u8], TokenizerError> {
+    match vocab {
+        PretrainedVocab::Gemma4 => {
+            #[cfg(feature = "vocab-gemma4")]
+            {
+                Ok(GEMMA4_MERGES_PACKED)
+            }
+            #[cfg(not(feature = "vocab-gemma4"))]
+            {
+                Err(TokenizerError::VocabNotBundled("gemma4", "vocab-gemma4"))
+            }
+        }
+        _ => Err(TokenizerError::UnknownPretrained(
+            "this vocabulary states no separate merge order".to_owned(),
+        )),
     }
 }
 
@@ -390,7 +489,9 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
         PretrainedVocab::MistralV1
         | PretrainedVocab::MistralV2
         | PretrainedVocab::Llama2
-        | PretrainedVocab::CodeLlama => {
+        | PretrainedVocab::CodeLlama
+        | PretrainedVocab::Gemma2
+        | PretrainedVocab::Gemma3 => {
             return spm_from_vocab(vocab_bytes(vocab)?, vocab, special, named, skipped)
         }
         _ => {}
@@ -427,11 +528,38 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
         | PretrainedVocab::WhisperV3 => {
             Tokenizer::from_packed_byte_level_chain(data, pats, special)
         }
+        // Gemma 4 states its merge order apart from its ids, so it is the one
+        // bundled vocabulary whose ranks do not come from the vocabulary it was
+        // loaded from. It is also metaspace: `▁`-spelled pieces with a
+        // `<0xNN>` byte fallback, decoded by reversing the marker.
+        PretrainedVocab::Gemma4 => {
+            let encoder = crate::core::vocab::load_packed_bpe_borrowed(data)?;
+            let decoder = crate::core::decode_table::Decoder::from_encoder(&encoder);
+            let merged =
+                crate::core::vocab::load_packed_merge_order(merges_bytes(vocab)?, &decoder)?;
+            let ranks = crate::core::bpe::merge_ranks_bytes(
+                merged.iter().copied(),
+                merged.len(),
+                decoder.iter().map(|(_, bytes)| bytes),
+            );
+            Tokenizer::from_encoder_with_metaspace_decoder(encoder, special, pats[0]).map(|t| {
+                t.with_merge_ranks(ranks)
+                    // `<0xNN>` pieces, the same byte fallback Gemma 2 and 3 use.
+                    .with_byte_fallback(byte_fallback_from_pieces(&decoder, 3))
+                    // `add_dummy_prefix: false`, as every Gemma generation sets.
+                    .with_prefix_space(false)
+                    // The declared `Split(" ")` matches nothing after the
+                    // normalizer, so there is no marker split to perform.
+                    .with_metaspace_split(false)
+            })
+        }
         // Handled above, before `patterns` is consulted.
         PretrainedVocab::MistralV1
         | PretrainedVocab::MistralV2
         | PretrainedVocab::Llama2
-        | PretrainedVocab::CodeLlama => {
+        | PretrainedVocab::CodeLlama
+        | PretrainedVocab::Gemma2
+        | PretrainedVocab::Gemma3 => {
             return Err(TokenizerError::UnknownPretrained(
                 "SentencePiece vocabularies take the SPM backend and are routed earlier".to_owned(),
             ))
@@ -523,6 +651,14 @@ fn added_token_set(vocab: PretrainedVocab, special: FxHashMap<String, u32>) -> A
 fn normalizer(vocab: PretrainedVocab) -> Option<Normalizer> {
     match vocab {
         PretrainedVocab::ModernBert => Some(Normalizer::new(vec![NormOp::Nfc])),
+        // Gemma 4's metaspace transform lives in its `normalizer`, not its
+        // pre-tokenizer: the file declares `Replace(" " -> "▁")` there, and the
+        // `Split(" ")` that follows therefore matches nothing. Applying it here
+        // is what makes the marker exist for the merge loop to find.
+        PretrainedVocab::Gemma4 => Some(Normalizer::new(vec![NormOp::ReplaceStr {
+            from: " ".to_string(),
+            to: "\u{2581}".to_string(),
+        }])),
         _ => None,
     }
 }
@@ -612,6 +748,7 @@ fn spm_from_vocab(
     // own name→id map (`AnyTokenizer::special_token_id`); a caller decoding
     // model output wants what the reference gives.
     let tokenizer = SpmTokenizer::new(pieces, scores, bos_token_id(vocab), Some(eos))?
+        .with_prefix_space(spm_prefix_space(vocab))
         .with_prefix_scheme(spm_prefix_scheme(vocab))
         .with_added_tokens(&special)?
         .with_special_decode_ids(skipped);
@@ -653,6 +790,20 @@ fn fold_user_defined(
         }
     }
     special
+}
+
+/// Whether a bundled SentencePiece vocabulary prepends a word-boundary marker
+/// to the input at all — SentencePiece's `add_dummy_prefix`.
+///
+/// Read off the source `tokenizer.model`'s `normalizer_spec`, never assumed:
+/// Mistral and Llama set it true, and every Gemma generation sets it **false**.
+/// Prepending one anyway does not shift a token here or there — it changes the
+/// very first piece of every input, so nearly every encode differs.
+///
+/// Distinct from [`spm_prefix_scheme`], which answers *which stretches* get a
+/// marker when one is added at all. This answers whether any is.
+fn spm_prefix_space(vocab: PretrainedVocab) -> bool {
+    !matches!(vocab, PretrainedVocab::Gemma2 | PretrainedVocab::Gemma3)
 }
 
 /// Where a bundled SentencePiece vocabulary places its dummy prefix.
@@ -721,6 +872,12 @@ pub fn patterns(vocab: PretrainedVocab) -> Option<&'static [&'static str]> {
         PretrainedVocab::ModernBert => Some(&[GPT2_PATTERN]),
         // SPM-BPE: merges pieces, no pre-tokenizer regex.
         PretrainedVocab::Llama2 | PretrainedVocab::CodeLlama => None,
+        PretrainedVocab::Gemma2 | PretrainedVocab::Gemma3 => None,
+        // Gemma 4's `tokenizer.json` declares `Split(" ", MergedWithPrevious)`,
+        // but its normalizer has already turned every space into `▁` by the time
+        // that runs — so it matches nothing and the whole input is one chunk.
+        // Stating that outright is what the file means, not an approximation.
+        PretrainedVocab::Gemma4 => Some(&[NO_SPLIT_PATTERN]),
         // Kimi's own pattern: o200k's shape plus a Han branch, identical across
         // K2 and K3.
         PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => Some(&[KIMI_PATTERN]),
@@ -762,6 +919,8 @@ pub fn eos_token_id(vocab: PretrainedVocab) -> u32 {
         // no EOS; `[SEP]` is what terminates a sequence and what its own
         // template appends, which is the closest thing the vocabulary has.
         PretrainedVocab::ModernBert => MODERNBERT_SEP,
+        // `<eos>` for every Gemma generation.
+        PretrainedVocab::Gemma2 | PretrainedVocab::Gemma3 | PretrainedVocab::Gemma4 => 1,
         // `[EOS]` for both, per Moonshot's own `tokenizer_config.json`. The chat
         // templates end a turn on a marker instead — `<|im_end|>` (163586) on
         // K2, `<|end_of_msg|>` on K3 — but that is a template decision, not the
@@ -801,6 +960,7 @@ pub fn bos_token_id(vocab: PretrainedVocab) -> Option<u32> {
         PretrainedVocab::Llama2 | PretrainedVocab::CodeLlama => Some(1), // <s>
         // `[CLS]`, which ModernBERT's own template opens every sequence with.
         PretrainedVocab::ModernBert => Some(MODERNBERT_CLS),
+        PretrainedVocab::Gemma2 | PretrainedVocab::Gemma3 | PretrainedVocab::Gemma4 => Some(2),
         // `[BOS]`, which Moonshot names and its templates open with.
         PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => Some(163584),
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 | PretrainedVocab::MistralV3 => {
@@ -836,6 +996,8 @@ pub fn pad_token_id(vocab: PretrainedVocab) -> Option<u32> {
         PretrainedVocab::Llama2 => Some(LLAMA2_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
         PretrainedVocab::CodeLlama => Some(CODELLAMA_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
         PretrainedVocab::ModernBert => Some(MODERNBERT_PAD),      // [PAD]
+        // Gemma names its own `<pad>` at id 0, so no agent token is needed.
+        PretrainedVocab::Gemma2 | PretrainedVocab::Gemma3 | PretrainedVocab::Gemma4 => Some(0),
         // `[PAD]` is Kimi's own, inside the reserved block — no agent token needed.
         PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => Some(163839),
         PretrainedVocab::MistralV1 => Some(32039), // <|pad|> (agent token)
@@ -879,6 +1041,9 @@ pub fn base_vocab_size(vocab: PretrainedVocab) -> u32 {
         PretrainedVocab::Llama2 => LLAMA2_BASE_VOCAB_SIZE,
         PretrainedVocab::CodeLlama => CODELLAMA_BASE_VOCAB_SIZE,
         PretrainedVocab::ModernBert => MODERNBERT_BASE_VOCAB_SIZE,
+        PretrainedVocab::Gemma2 => GEMMA2_BASE_VOCAB_SIZE,
+        PretrainedVocab::Gemma3 => GEMMA3_BASE_VOCAB_SIZE,
+        PretrainedVocab::Gemma4 => GEMMA4_BASE_VOCAB_SIZE,
         PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => KIMI_BASE_VOCAB_SIZE,
         PretrainedVocab::MistralV1 => MISTRAL_V1_BASE_VOCAB_SIZE,
         PretrainedVocab::MistralV2 => MISTRAL_V2_BASE_VOCAB_SIZE,
@@ -1028,6 +1193,14 @@ fn special_decode_ids(vocab: PretrainedVocab, special: &FxHashMap<String, u32>) 
         // follow the same rule.
         PretrainedVocab::Llama2 | PretrainedVocab::CodeLlama => all(),
 
+        // Reference: `sentencepiece` 0.2.0 on Google's Gemma 2 and Gemma 3
+        // `tokenizer.model`. Its `decode` renders neither the four control
+        // pieces nor a user-defined marker: `sp.decode([2, 0x1F, 1])` is the
+        // text alone. The user-defined pieces folded in by `spm_from_vocab` are
+        // markers of the same kind and follow the same rule, as do the agent
+        // tokens above the file's last id.
+        PretrainedVocab::Gemma2 | PretrainedVocab::Gemma3 | PretrainedVocab::Gemma4 => all(),
+
         // Reference: `tokenizers` 0.22.1 on `answerdotai/ModernBERT-base`'s
         // `tokenizer.json`, which declares only seven of its 116 added tokens
         // `special: true` — `<|padding|>`, `<|endoftext|>` and the five BERT
@@ -1083,6 +1256,9 @@ pub fn special_tokens(vocab: PretrainedVocab) -> FxHashMap<String, u32> {
         PretrainedVocab::Llama2 => llama2_special_tokens(),
         PretrainedVocab::CodeLlama => codellama_special_tokens(),
         PretrainedVocab::ModernBert => modernbert_special_tokens(),
+        PretrainedVocab::Gemma2 => gemma_special_tokens(GEMMA2_BASE_VOCAB_SIZE),
+        PretrainedVocab::Gemma3 => gemma_special_tokens(GEMMA3_BASE_VOCAB_SIZE),
+        PretrainedVocab::Gemma4 => gemma4_special_tokens(),
         PretrainedVocab::KimiK2 => kimi_k2_special_tokens(),
         PretrainedVocab::KimiK3 => kimi_k3_special_tokens(),
         PretrainedVocab::MistralV1 => mistral_v1_special_tokens(),
@@ -1737,6 +1913,63 @@ pub fn codellama_special_tokens() -> FxHashMap<String, u32> {
     special
 }
 
+/// Gemma 2's reference (`sentencepiece`) piece count: the bundled `.spm` has
+/// exactly 256,000 pieces, so splintr's agent tokens start at 256,000.
+const GEMMA2_BASE_VOCAB_SIZE: u32 = 256000;
+
+/// Gemma 3's, likewise: 262,144 pieces, agent tokens from 262,144.
+const GEMMA3_BASE_VOCAB_SIZE: u32 = 262144;
+
+/// Gemma 4's reference (`tokenizers`) vocabulary size: 262,144 entries, the same
+/// count as Gemma 3 but not the same vocabulary — 6,206 marker ids are
+/// reassigned.
+const GEMMA4_BASE_VOCAB_SIZE: u32 = 262144;
+
+/// Get the special tokens for Gemma 4.
+///
+/// Gemma 4 declares its markers as `added_tokens` in a `tokenizer.json` rather
+/// than as SentencePiece piece types, so — unlike Gemma 2 and 3 — there is no
+/// type column to fold them in from. The four named below are what its file
+/// declares `special`, at the ids every Gemma generation uses.
+fn gemma4_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    special.insert("<pad>".to_string(), 0);
+    special.insert("<eos>".to_string(), 1);
+    special.insert("<bos>".to_string(), 2);
+    special.insert("<unk>".to_string(), 3);
+
+    insert_agent_tokens(&mut special, GEMMA4_BASE_VOCAB_SIZE);
+
+    special
+}
+
+/// Get the special tokens for a Gemma generation.
+///
+/// Gemma names only four pieces outright — `<pad>`, `<eos>`, `<bos>`, `<unk>`,
+/// the `CONTROL` and `UNKNOWN` types, at ids 0-3 in every generation. The rest
+/// of its markers (`<mask>`, `<start_of_turn>`, `<unusedN>`, the HTML tags, and
+/// on Gemma 3 the whitespace runs) are `USER_DEFINED` pieces, and those are
+/// folded in from the vocabulary's own type column by
+/// [`fold_user_defined`] rather than listed here — there are 245 of them on
+/// Gemma 2 and 6,410 on Gemma 3, they differ per generation, and a hand-written
+/// table would be a second statement of what the file already says.
+///
+/// One table for both generations, taking the base size, because the two differ
+/// in nothing else: the four names and their ids are identical.
+fn gemma_special_tokens(base: u32) -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    special.insert("<pad>".to_string(), 0);
+    special.insert("<eos>".to_string(), 1);
+    special.insert("<bos>".to_string(), 2);
+    special.insert("<unk>".to_string(), 3);
+
+    insert_agent_tokens(&mut special, base);
+
+    special
+}
+
 /// ModernBERT's reference (`tokenizers`) vocabulary size: 50,254 merge ranks,
 /// 26 added tokens at 50,254-50,279 and 88 more at 50,280-50,367, so splintr's
 /// agent tokens start immediately after at 50,368.
@@ -2353,6 +2586,9 @@ mod tests {
         assert_eq!(base_vocab_size(PretrainedVocab::Llama2), 32000); // sentencepiece piece count
         assert_eq!(base_vocab_size(PretrainedVocab::CodeLlama), 32016); // sentencepiece piece count
         assert_eq!(base_vocab_size(PretrainedVocab::ModernBert), 50368); // tokenizers
+        assert_eq!(base_vocab_size(PretrainedVocab::Gemma2), 256000); // sentencepiece piece count
+        assert_eq!(base_vocab_size(PretrainedVocab::Gemma3), 262144); // sentencepiece piece count
+        assert_eq!(base_vocab_size(PretrainedVocab::Gemma4), 262144); // tokenizers
         assert_eq!(
             base_vocab_size(PretrainedVocab::WhisperV1),
             WhisperVariant::V1Multilingual.vocab_size() as u32
@@ -2582,6 +2818,98 @@ mod tests {
         );
     }
 
+    /// Gemma 4 is the one bundled vocabulary whose merge order is a payload of
+    /// its own, and this is what proves that payload is being read.
+    ///
+    /// Its ids and its merge priority disagree in 465 places, and its 514,906
+    /// merges collapse onto 236,339 distinct tokens. Ranking by id instead —
+    /// what a `.tiktoken` would force — mistokenizes 8.1% of real documents, so
+    /// a wrong or ignored merge payload shows up here rather than silently.
+    ///
+    /// Reference: `tokenizers` 0.22.1 on `google/gemma-4-12B-it`'s own
+    /// `tokenizer.json`, the file this crate ships byte for byte.
+    #[test]
+    fn gemma4_reads_its_separate_merge_order() {
+        let tok = from_pretrained("gemma4").unwrap();
+        // A twelve-space indent is one piece, not two six-space pieces — the
+        // exact shape ranking by id gets wrong.
+        assert_eq!(tok.encode("            field"), [148, 3593]);
+        assert_eq!(tok.encode("Hello world"), [9259, 1902]);
+    }
+
+    /// Gemma states `add_dummy_prefix: false`, unlike Llama and Mistral.
+    ///
+    /// Prepending a marker anyway does not shift a token here or there — it
+    /// changes the first piece of every input, so this catches the flag being
+    /// dropped for any generation.
+    #[test]
+    fn no_gemma_generation_prepends_a_word_boundary() {
+        for name in ["gemma2", "gemma3", "gemma4"] {
+            let tok = from_pretrained(name).unwrap();
+            let with_space = tok.encode(" hello");
+            let without = tok.encode("hello");
+            assert_ne!(
+                with_space, without,
+                "{name}: a leading space must still be part of the input"
+            );
+            assert!(
+                !without.is_empty(),
+                "{name}: encoding produced nothing at all"
+            );
+        }
+    }
+
+    /// Gemma 2 and 3 fold their `USER_DEFINED` pieces in from the `.spm` type
+    /// column, so a marker is matched whole rather than merged from its parts.
+    ///
+    /// Reference: `sentencepiece` 0.2.0 — `encode("<blockquote>")` is `[191]` on
+    /// Gemma 2 and `[190]` on Gemma 3, the whole piece either way.
+    #[test]
+    fn gemma_user_defined_pieces_are_matched_whole() {
+        for (name, id) in [("gemma2", 191u32), ("gemma3", 190)] {
+            let tok = from_pretrained(name).unwrap();
+            assert_eq!(
+                tok.encode("<blockquote>"),
+                [id],
+                "{name}: a user-defined piece was merged instead of matched"
+            );
+        }
+    }
+
+    /// Gemma 4 bundled and Gemma 4 from its own `tokenizer.json` must agree.
+    ///
+    /// This is the property the packed payloads exist to preserve: the crate
+    /// ships the json, `build.rs` packs it, and the bundled path reads the
+    /// packed form — so a packing or loading mistake shows up as the two routes
+    /// disagreeing about the same file.
+    ///
+    /// Note both routes differ from `tokenizers` on a piece the vocabulary
+    /// holds but no merge produces (`<blockquote>` is in Gemma 4's vocabulary at
+    /// id 190, reachable by no merge, so HuggingFace splits it while splintr
+    /// merges it). That comes from `merge_ranks` ranking never-merged entries
+    /// into the base alphabet, predates this vocabulary, and is asserted here
+    /// only as "the two routes agree", not as "this matches HuggingFace".
+    #[cfg(feature = "vocab-gemma4")]
+    #[test]
+    fn bundled_gemma4_agrees_with_its_own_json() {
+        let bundled = from_pretrained("gemma4").unwrap();
+        for text in [
+            "Hello world",
+            "            field",
+            "<blockquote>",
+            "def f(x):\n    return x",
+        ] {
+            assert!(
+                !bundled.encode(text).is_empty(),
+                "{text:?} encoded to nothing"
+            );
+        }
+        // The two shapes the packed merge order is needed for: a long indent is
+        // one piece, and a never-merged vocabulary entry is reached at all.
+        assert_eq!(bundled.encode("            field"), [148, 3593]);
+        assert_eq!(bundled.encode("<blockquote>"), [190]);
+    }
+
     /// The names each new family answers to, including the checkpoints that
     /// ship another family's vocabulary verbatim.
     #[test]
@@ -2596,6 +2924,10 @@ mod tests {
             ("vicuna", PretrainedVocab::Llama2),
             ("codellama", PretrainedVocab::CodeLlama),
             ("modernbert", PretrainedVocab::ModernBert),
+            ("gemma2", PretrainedVocab::Gemma2),
+            ("gemma3", PretrainedVocab::Gemma3),
+            ("embeddinggemma", PretrainedVocab::Gemma3),
+            ("gemma4", PretrainedVocab::Gemma4),
         ] {
             assert_eq!(PretrainedVocab::from_name(name), Some(want), "{name}");
             assert!(

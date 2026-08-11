@@ -1,0 +1,26 @@
+Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms
+
+---
+
+MODIFICATION NOTICE
+
+`gemma3.spm` in this repository is a MODIFIED form of Google's Gemma 3
+`tokenizer.model`. It is not the original file.
+
+What was changed: the SentencePiece protocol-buffer model was converted, id by
+id, into a plain-text format — one line per token id, holding that id's piece,
+score and piece type. Nothing was added, removed, reordered or rounded: all
+262,144 pieces keep their ids, their scores and their SentencePiece piece types,
+and the conversion is checked in both directions before the file is written.
+
+What was NOT changed: no vocabulary entry, score, piece type or id assignment
+differs from Google's file in any way.
+
+Source: Google's Gemma 3 `tokenizer.model`, MD5 00d2276cbec4474f6cf3df98fbc18cbb
+
+---
+
+Use of Gemma and of Model Derivatives is subject to the use restrictions in
+Section 3.2 of the Gemma Terms of Use, reproduced in the LICENSE file in this
+repository. Those restrictions apply to you, and you must pass them on to anyone
+you distribute this file or any derivative of it to.

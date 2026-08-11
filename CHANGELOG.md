@@ -10,7 +10,8 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Added
 
-- Five bundled vocabularies: `phi4`, `olmo2`, `llama2` (also `tinyllama`, `vicuna`), `codellama` and `modernbert`. Phi-4 and OLMo-2 ship no payload — both state cl100k_base's ranks.
+- Eight bundled vocabularies: `phi4`, `olmo2`, `llama2` (also `tinyllama`, `vicuna`), `codellama`, `modernbert`, `gemma2`, `gemma3` (also `embeddinggemma`) and `gemma4`. Phi-4 and OLMo-2 ship no payload — both state cl100k_base's ranks.
+- A packed merge-order payload, for a vocabulary whose token ids and merge priority differ. Gemma 4 is the first; a `.tiktoken` rank cannot serve as both.
 - Python: `MISTRAL_V3_PATTERN` and `GPT2_PATTERN`, the two pre-tokenizer expressions
 
 ### Fixed

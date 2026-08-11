@@ -92,6 +92,9 @@ vocabs = [
     "vocab-deepseek",
     "vocab-qwen",
     "vocab-glm",
+    "vocab-gemma2",
+    "vocab-gemma3",
+    "vocab-gemma4",
     "vocab-kimi",
     "vocab-mistral",
     "vocab-modernbert",
@@ -111,6 +114,9 @@ vocab-llama2 = ["dep:splintr-vocab-llama2"]
 vocab-deepseek = ["dep:splintr-vocab-deepseek"]
 vocab-qwen = ["dep:splintr-vocab-qwen"]
 vocab-glm = ["dep:splintr-vocab-glm"]
+vocab-gemma2 = ["dep:splintr-vocab-gemma2"]
+vocab-gemma3 = ["dep:splintr-vocab-gemma3"]
+vocab-gemma4 = ["dep:splintr-vocab-gemma4"]
 vocab-kimi = ["dep:splintr-vocab-kimi"]
 vocab-mistral = ["dep:splintr-vocab-mistral"]
 vocab-modernbert = ["dep:splintr-vocab-modernbert"]
@@ -141,6 +147,9 @@ splintr-vocab-llama2 = { path = "crates/vocab-llama2", version = "1", optional =
 splintr-vocab-deepseek = { path = "crates/vocab-deepseek", version = "1", optional = true }
 splintr-vocab-qwen = { path = "crates/vocab-qwen", version = "1", optional = true }
 splintr-vocab-glm = { path = "crates/vocab-glm", version = "1", optional = true }
+splintr-vocab-gemma2 = { path = "crates/vocab-gemma2", version = "1", optional = true }
+splintr-vocab-gemma3 = { path = "crates/vocab-gemma3", version = "1", optional = true }
+splintr-vocab-gemma4 = { path = "crates/vocab-gemma4", version = "1", optional = true }
 splintr-vocab-kimi = { path = "crates/vocab-kimi", version = "1", optional = true }
 splintr-vocab-mistral = { path = "crates/vocab-mistral", version = "1", optional = true }
 splintr-vocab-modernbert = { path = "crates/vocab-modernbert", version = "1", optional = true }

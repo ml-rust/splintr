@@ -26,29 +26,51 @@ pub(crate) fn merge_ranks<'a>(
     merged: Vec<String>,
     vocab_in_id_order: impl Iterator<Item = &'a str>,
 ) -> Encoder {
+    let bytes: Vec<&[u8]> = merged.iter().map(|s| s.as_bytes()).collect();
+    merge_ranks_bytes(
+        bytes.iter().copied(),
+        bytes.len(),
+        vocab_in_id_order.map(str::as_bytes),
+    )
+}
+
+/// [`merge_ranks`] over bytes rather than `&str`.
+///
+/// The packed path reaches the same two groups from a different direction: its
+/// merge order arrives as vocabulary ids, so the tokens are byte slices
+/// borrowed from the vocabulary rather than owned `String`s. Sharing this
+/// function is what keeps the packed and json paths from drifting into
+/// disagreeing about how a rank is assigned — a disagreement that would show up
+/// as different token ids for the same vocabulary loaded two ways.
+///
+/// `merged_len` is taken separately because the iterator is consumed twice and
+/// a `size_hint` is not a promise.
+pub(crate) fn merge_ranks_bytes<'m, 'v>(
+    merged: impl Iterator<Item = &'m [u8]> + Clone,
+    merged_len: usize,
+    vocab_in_id_order: impl Iterator<Item = &'v [u8]>,
+) -> Encoder {
     // Both sized up front and both on FxHash: this runs over a whole
     // vocabulary, where the default hasher and a table that doubles from empty
     // are each worth more than the work they serve.
-    let mut merge_set: rustc_hash::FxHashSet<&str> =
-        rustc_hash::FxHashSet::with_capacity_and_hasher(merged.len(), rustc_hash::FxBuildHasher);
-    merge_set.extend(merged.iter().map(String::as_str));
+    let mut merge_set: rustc_hash::FxHashSet<&'m [u8]> =
+        rustc_hash::FxHashSet::with_capacity_and_hasher(merged_len, rustc_hash::FxBuildHasher);
+    merge_set.extend(merged.clone());
 
     // The base alphabet adds a few hundred entries on top of the merges.
-    let mut ranks: Encoder = Encoder::with_capacity(merged.len() + 512);
+    let mut ranks: Encoder = Encoder::with_capacity(merged_len + 512);
 
     // Base alphabet first, in id order for determinism.
     for token in vocab_in_id_order.filter(|t| !merge_set.contains(t)) {
         let next = ranks.len() as u32;
-        ranks.insert_if_absent(token.as_bytes(), next);
+        ranks.insert_if_absent(token, next);
     }
 
-    // Then the merges, preserving list priority. The set borrows from
-    // `merged`, so drop it first — `merged.into_iter()` below consumes the
-    // vec it points into.
+    // Then the merges, preserving list priority.
     drop(merge_set);
     let base_count = ranks.len() as u32;
-    for (i, token) in merged.into_iter().enumerate() {
-        ranks.insert_if_absent(token.as_bytes(), base_count + i as u32);
+    for (i, token) in merged.enumerate() {
+        ranks.insert_if_absent(token, base_count + i as u32);
     }
     ranks
 }

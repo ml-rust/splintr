@@ -1,0 +1,27 @@
+[package]
+name = "splintr-vocab-gemma3"
+version = "1.0.0"
+edition = "2021"
+description = "Bundled tokenizer vocabulary for splintr: Gemma 3."
+# The Gemma Terms of Use, which is not an SPDX identifier, so it is named by
+# file rather than by `license`. Gemma 4 is Apache-2.0 and is a separate crate.
+license-file = "LICENSE"
+repository = "https://github.com/ml-rust/splintr"
+homepage = "https://github.com/ml-rust/splintr"
+readme = "README.md"
+keywords = ["tokenizer", "sentencepiece", "vocabulary", "splintr"]
+categories = ["text-processing"]
+# The `.spm` text and the licence artifacts the Gemma Terms require of anyone
+# redistributing: a copy of the agreement, and the NOTICE file carrying both
+# the required notice and the statement that this file is a converted form of
+# Google's `tokenizer.model`.
+include = [
+    "/src/**/*.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/vocabs/gemma3.spm",
+]
+
+[dependencies]
