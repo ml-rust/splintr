@@ -372,6 +372,46 @@ impl AddedTokens {
             .map(|m| self.tokens[m.pattern().as_usize()].id)
     }
 
+    /// Whether the match at `start..end` falls inside a later token's
+    /// [`lstrip`](AddedToken::lstrip) reach, which the reference resolves in the
+    /// `lstrip` token's favour.
+    ///
+    /// `lstrip` is applied to the *gap* by [`encode_matched`](Self::encode_matched),
+    /// which can only trim text no earlier match has claimed. That is enough
+    /// until a vocabulary declares whitespace runs as added tokens *and* an
+    /// `lstrip` token — ModernBERT declares 23 space runs and `[MASK]` — because
+    /// then the whitespace before the mask matches on its own and the gap is
+    /// already empty by the time the flag is consulted.
+    ///
+    /// The reference builds its matcher with the `lstrip` pattern extended
+    /// leftwards over the whitespace run, so that longer match wins the position
+    /// outright and the whitespace token never fires. Measured with `tokenizers`
+    /// 0.22.1 on `answerdotai/ModernBERT-base`: `"  [MASK]"` is `[50284]` — the
+    /// two spaces gone, not `[50276, 50284]` — and `"  \n  [MASK]"` is `[50284]`
+    /// too, the whole run absorbed across two separate whitespace matches. The
+    /// same input with a token that does *not* declare the flag keeps it:
+    /// `"  [CLS]"` is `[50276, 50281]`.
+    ///
+    /// Asked only of matches whose own text is whitespace, so the common path
+    /// pays one `is_whitespace` scan over a token that is usually a marker.
+    fn swallowed_by_lstrip(&self, text: &str, start: usize, end: usize) -> bool {
+        if !text[start..end].chars().all(char::is_whitespace) {
+            return false;
+        }
+        // Extend over the rest of the whitespace run: the reach is the run, not
+        // this match, and the run can span several whitespace matches.
+        let run_end = end + text[end..].len() - text[end..].trim_start().len();
+        self.matcher
+            .try_find(
+                Input::new(text)
+                    .span(run_end..text.len())
+                    .anchored(Anchored::Yes),
+            )
+            .ok()
+            .flatten()
+            .is_some_and(|m| self.tokens[m.pattern().as_usize()].lstrip)
+    }
+
     /// Split `text` on added tokens, emitting their ids and encoding the gaps via
     /// `encode_gap`. Equivalent to [`encode_with_mode`](Self::encode_with_mode)
     /// under [`SpecialMode::All`], which admits every match and therefore cannot
@@ -474,6 +514,11 @@ impl AddedTokens {
             // text once is the coherent reading, and it is what keeps this loop
             // from slicing a reversed range.
             if m.end() <= last {
+                continue;
+            }
+            // A later `lstrip` token's reach can cover this match entirely, in
+            // which case the reference never emits it — see `swallowed_by_lstrip`.
+            if self.swallowed_by_lstrip(text, m.start(), m.end()) {
                 continue;
             }
             let token = self.tokens[m.pattern().as_usize()];
@@ -792,6 +837,62 @@ mod tests {
         expect.push(250_001);
         expect.extend(bytes("x"));
         assert_eq!(ids, expect);
+    }
+
+    /// An `lstrip` token's reach beats a whitespace token that would otherwise
+    /// claim the same run — the case ModernBERT is the first to reach.
+    ///
+    /// `lstrip` trims the *gap*, so it can only take text no earlier match
+    /// claimed. When the whitespace before the flagged token is itself an added
+    /// token, there is no gap left to trim and the flag did nothing: `"  <mask>"`
+    /// came out as the space run followed by the mask, where the reference
+    /// emits the mask alone.
+    ///
+    /// Reference (`tokenizers` 0.22.1, `answerdotai/ModernBERT-base`, which
+    /// declares 23 literal space runs alongside an `lstrip` `[MASK]`):
+    /// `"  [MASK]"` is `[50284]`, `"  \n  [MASK]"` is `[50284]` — a run spanning
+    /// two separate whitespace matches — and `"[MASK]  [MASK]"` is
+    /// `[50284, 50284]`. The same inputs against a token *without* the flag keep
+    /// the whitespace: `"  [CLS]"` is `[50276, 50281]`.
+    #[test]
+    fn lstrip_beats_a_whitespace_token_claiming_the_same_run() {
+        let mut set = strip_set(true, false);
+        set.insert_plain("  ", 900);
+        let at = AddedTokens::new(&set).unwrap().unwrap();
+
+        // The two spaces match `"  "` on their own, and are still swallowed.
+        let mut calls = Vec::new();
+        assert_eq!(
+            at.encode_with("  <mask>", record(&mut calls)),
+            vec![250_001]
+        );
+        assert!(calls.is_empty(), "a gap was encoded: {calls:?}");
+
+        // The reach is the whole run, across two separate whitespace matches.
+        let mut calls = Vec::new();
+        assert_eq!(
+            at.encode_with("  \n  <mask>", record(&mut calls)),
+            vec![250_001]
+        );
+        assert!(calls.is_empty(), "a gap was encoded: {calls:?}");
+
+        // Trailing whitespace is not in any lstrip reach, so it still fires.
+        let mut calls = Vec::new();
+        assert_eq!(
+            at.encode_with("<mask>  ", record(&mut calls)),
+            vec![250_001, 900]
+        );
+
+        // A token without the flag leaves the whitespace token alone.
+        let mut plain = AddedTokenSet::new();
+        plain.insert_plain("<mask>", 250_001);
+        plain.insert_plain("  ", 900);
+        let at = AddedTokens::new(&plain).unwrap().unwrap();
+        let mut calls = Vec::new();
+        assert_eq!(
+            at.encode_with("  <mask>", record(&mut calls)),
+            vec![900, 250_001]
+        );
     }
 
     #[test]
