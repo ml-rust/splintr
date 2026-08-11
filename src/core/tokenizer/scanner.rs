@@ -188,6 +188,36 @@ fn swar_skip_ascii_lower(bytes: &[u8], mut pos: usize) -> usize {
     pos
 }
 
+/// Advances over ASCII whitespace eight at a time.
+///
+/// The whitespace branches are the last of every family's alternation and the
+/// one that runs longest: source code indents, and a trace or a log indents
+/// further. Walking that a byte at a time made `space_at` the costliest
+/// character predicate in the crate on agentic traces, ahead of the letter and
+/// punctuation ones it is normally dwarfed by.
+///
+/// ASCII whitespace is `\t\n\x0B\x0C\r` and the space: one contiguous range
+/// and one value.
+#[inline]
+fn swar_skip_ascii_space(bytes: &[u8], mut pos: usize) -> usize {
+    while let Some(word) = word_at(bytes, pos) {
+        if word & HIGH != 0 {
+            break;
+        }
+        let control = lanes_below(word, 0x0E) & !lanes_below(word, 0x09);
+        let space = lanes_below(word, b' ' + 1) & !lanes_below(word, b' ');
+        let out = !(control | space) & HIGH;
+        if out != 0 {
+            return pos + (out.trailing_zeros() / 8) as usize;
+        }
+        pos += 8;
+    }
+    while pos < bytes.len() && matches!(bytes[pos], 0x09..=0x0D | b' ') {
+        pos += 1;
+    }
+    pos
+}
+
 /// Advances to the first byte that is not plain ASCII.
 ///
 /// The whole point of DeepSeek's CJK/kana pass: every character it can match
@@ -591,7 +621,7 @@ enum WhitespaceOrder {
 #[inline]
 fn whitespace_span(text: &str, bytes: &[u8], pos: usize, order: WhitespaceOrder) -> (usize, usize) {
     let len = bytes.len();
-    let run_end = scan_run(text, bytes, pos, space_at);
+    let run_end = scan_run_of(text, bytes, pos, SPACE_RUN);
 
     match order {
         // `\s+$` — the whole run, when it reaches the end of the text.
@@ -1330,7 +1360,7 @@ fn deepseek_pass3_match(text: &str, bytes: &[u8], pos: usize, stop_at_cjk: bool)
         // piece, the lookahead holds, and the run is taken whole. Newlines are
         // an earlier branch and unaffected by what follows.
         if stop_at_cjk {
-            let run_end = scan_run(text, bytes, pos, space_at);
+            let run_end = scan_run_of(text, bytes, pos, SPACE_RUN);
             if run_end < len
                 && !bytes[pos..run_end]
                     .iter()
@@ -1371,6 +1401,12 @@ fn letter_or_mark_not_cjk_at(text: &str, bytes: &[u8], pos: usize) -> Option<usi
     }
     (is_letter_char(c) || is_mark_char(c)).then_some(len)
 }
+
+/// `\s`, with its ASCII members skipped in bulk.
+const SPACE_RUN: Run = Run {
+    at: space_at,
+    skip_ascii: swar_skip_ascii_space,
+};
 
 const LETTER_OR_MARK_NOT_CJK: Run = Run {
     at: letter_or_mark_not_cjk_at,
@@ -2029,6 +2065,28 @@ mod tests {
                     "{vocab:?} scanner coverage changed for {pattern}"
                 );
             }
+        }
+    }
+
+    /// The bulk whitespace skip must accept exactly the bytes `space_at` does,
+    /// or a run would end in the wrong place for one byte value — and `\x0B`
+    /// and `\x0C` are whitespace to `CLASS` while `is_ascii_whitespace` omits
+    /// the first of them, which is the kind of near-miss that would survive
+    /// every corpus.
+    #[test]
+    fn the_bulk_whitespace_skip_accepts_what_the_class_table_does() {
+        for byte in 0..=0x7Fu8 {
+            let text = String::from_utf8(vec![byte; 3]).unwrap_or_default();
+            if text.is_empty() {
+                continue;
+            }
+            let bytes = text.as_bytes();
+            let bulk = swar_skip_ascii_space(bytes, 0);
+            let want = match matches!(CLASS[byte as usize], Class::Space | Class::Newline) {
+                true => bytes.len(),
+                false => 0,
+            };
+            assert_eq!(bulk, want, "byte {byte:#04X} skipped differently");
         }
     }
 
