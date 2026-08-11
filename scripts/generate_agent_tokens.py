@@ -327,6 +327,52 @@ MISTRAL_V3_CONTROL_TOKENS = [
 #
 # Fields: (name, rust module, PyO3 struct, Python class, base id, description,
 #          native tokens, agent names the vocabulary defines itself)
+# Phi-4's named markers (100256-100351). The 88 `<|dummy_N|>` reservations that
+# fill the rest of the block are left out: they are placeholders, not names a
+# caller reaches for, and `special_token_id("<|dummy_5|>")` answers for them.
+PHI4_NATIVE_TOKENS = [
+    ("ENDOFTEXT", 100257, "End of text marker"),
+    ("FIM_PREFIX", 100258, "Fill-in-the-Middle prefix"),
+    ("FIM_MIDDLE", 100259, "Fill-in-the-Middle middle"),
+    ("FIM_SUFFIX", 100260, "Fill-in-the-Middle suffix"),
+    ("IM_START", 100264, "Native <|im_start|> - ChatML message start"),
+    ("IM_END", 100265, "Native <|im_end|> - ChatML message end"),
+    ("IM_SEP", 100266, "Native <|im_sep|> - ChatML role/content separator"),
+    ("ENDOFPROMPT", 100276, "End of prompt marker"),
+]
+
+PHI4_SKIP_TOKENS = {"IM_START", "IM_END"}
+
+# OLMo-2's markers (100256-100277), all 22 of them named.
+OLMO2_NATIVE_TOKENS = [
+    ("EXTRA_ID_0", 100256, "Reserved slot 0"),
+    ("ENDOFTEXT", 100257, "End of text marker"),
+    ("FIM_PREFIX", 100258, "Fill-in-the-Middle prefix"),
+    ("FIM_MIDDLE", 100259, "Fill-in-the-Middle middle"),
+    ("FIM_SUFFIX", 100260, "Fill-in-the-Middle suffix"),
+    ("PHONE_NUMBER", 100261, "PII placeholder |||PHONE_NUMBER|||"),
+    ("EMAIL_ADDRESS", 100262, "PII placeholder |||EMAIL_ADDRESS|||"),
+    ("IP_ADDRESS", 100263, "PII placeholder |||IP_ADDRESS|||"),
+    ("IM_START", 100264, "Native <|im_start|> - ChatML message start"),
+    ("IM_END", 100265, "Native <|im_end|> - ChatML message end"),
+    ("EXTRA_ID_1", 100266, "Reserved slot 1"),
+    ("EXTRA_ID_2", 100267, "Reserved slot 2"),
+    ("EXTRA_ID_3", 100268, "Reserved slot 3"),
+    ("EXTRA_ID_4", 100269, "Reserved slot 4"),
+    ("EXTRA_ID_5", 100270, "Reserved slot 5"),
+    ("EXTRA_ID_6", 100271, "Reserved slot 6"),
+    ("EXTRA_ID_7", 100272, "Reserved slot 7"),
+    ("EXTRA_ID_8", 100273, "Reserved slot 8"),
+    ("EXTRA_ID_9", 100274, "Reserved slot 9"),
+    ("EXTRA_ID_10", 100275, "Reserved slot 10"),
+    ("ENDOFPROMPT", 100276, "End of prompt marker"),
+    ("PAD", 100277, "Native <|pad|> - padding"),
+]
+
+# `PAD` as well as the ChatML pair: OLMo-2 names `<|pad|>` itself, so the agent
+# block's slot 39 is left reserved and the constant carries OLMo's own id.
+OLMO2_SKIP_TOKENS = {"IM_START", "IM_END", "PAD"}
+
 MODELS = [
     ("cl100k_base", "cl100k_agent_tokens", "PyCL100KAgentTokens", "CL100K_AGENT_TOKENS", 100277, "cl100k_base (GPT-4, GPT-3.5-turbo)", [], set()),
     ("o200k_base", "o200k_agent_tokens", "PyO200KAgentTokens", "O200K_AGENT_TOKENS", 200019, "o200k_base (GPT-4o)", [], set()),
@@ -340,6 +386,15 @@ MODELS = [
     ("gpt-oss", "gpt_oss_agent_tokens", "PyGptOssAgentTokens", "GPT_OSS_AGENT_TOKENS", 200019, "OpenAI gpt-oss", GPT_OSS_NATIVE_TOKENS, set()),
     ("kimi_k2", "kimi_k2_agent_tokens", "PyKimiK2AgentTokens", "KIMI_K2_AGENT_TOKENS", 163840, "Kimi K2 (K2, K2.5, K2.6, K2.7, Kimi-Linear)", KIMI_K2_NATIVE_TOKENS, KIMI_K2_SKIP_TOKENS),
     ("kimi_k3", "kimi_k3_agent_tokens", "PyKimiK3AgentTokens", "KIMI_K3_AGENT_TOKENS", 163840, "Kimi K3", KIMI_K3_NATIVE_TOKENS, KIMI_K3_SKIP_TOKENS),
+    ("phi4", "phi4_agent_tokens", "PyPhi4AgentTokens", "PHI4_AGENT_TOKENS", 100352, "Microsoft Phi-4", PHI4_NATIVE_TOKENS, PHI4_SKIP_TOKENS),
+    ("olmo2", "olmo2_agent_tokens", "PyOlmo2AgentTokens", "OLMO2_AGENT_TOKENS", 100278, "AI2 OLMo-2", OLMO2_NATIVE_TOKENS, OLMO2_SKIP_TOKENS),
+    # Llama 2 and Code Llama name only the three SentencePiece control pieces,
+    # none of which is an agent-token name, so neither carries a native table.
+    ("llama2", "llama2_agent_tokens", "PyLlama2AgentTokens", "LLAMA2_AGENT_TOKENS", 32000, "Llama 2 (also TinyLlama, Vicuna)", [], set()),
+    ("codellama", "codellama_agent_tokens", "PyCodeLlamaAgentTokens", "CODELLAMA_AGENT_TOKENS", 32016, "Code Llama", [], set()),
+    # ModernBERT's markers are `[CLS]`/`[SEP]`/`[MASK]`-style and collide with no
+    # agent name — `[PAD]` is not `<|pad|>`.
+    ("modernbert", "modernbert_agent_tokens", "PyModernBertAgentTokens", "MODERNBERT_AGENT_TOKENS", 50368, "Answer.AI ModernBERT", [], set()),
 ]
 
 # The ten categories the 54 agent tokens fall into, as (name, first offset,

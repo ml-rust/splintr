@@ -17,11 +17,16 @@ Supported tokenizers:
 - cl100k_base: GPT-4, GPT-3.5-turbo
 - o200k_base: GPT-4o
 - llama3/llama3.1/llama3.2/llama3.3: Meta Llama 3 family
+- llama2/llama-2/tinyllama/vicuna: Meta Llama 2, and the checkpoints sharing it
+- codellama/code_llama/code-llama: Meta Code Llama (Llama 2 + 16 infill pieces)
 - deepseek_v3/deepseek-v3: DeepSeek V3
 - qwen3/qwen/qwen2/qwen2.5/baichuan_m2: Qwen 2/3 (Baichuan-M2 ships it unchanged)
 - glm4/glm/glm-4/glm4.5/glm-4.5: GLM-4/4.5
 - gpt-oss/gpt_oss/o200k_harmony: OpenAI gpt-oss (o200k_base ranks + harmony tokens)
 - kimi/kimi_k2/kimi_k3: Kimi (Moonshot AI); K2 and K3 share ranks, differ in markers
+- phi4/phi-4: Microsoft Phi-4 (cl100k_base ranks under Llama 3's split)
+- olmo2/olmo-2: AI2 OLMo-2 (the same ranks and split, OLMo's markers)
+- modernbert/modern-bert: Answer.AI ModernBERT (also -large and Embed)
 - mistral_v1: Mistral 7B v0.1/v0.2, Mixtral 8x7B
 - mistral_v2: Mistral 7B v0.3, Mixtral 8x22B, Codestral
 - mistral_v3: Mistral NeMo, Large 2, Pixtral (Tekken)
@@ -178,6 +183,11 @@ from ._core import (
     MISTRAL_V1_AGENT_TOKENS,
     MISTRAL_V2_AGENT_TOKENS,
     MISTRAL_V3_AGENT_TOKENS,
+    PHI4_AGENT_TOKENS,
+    OLMO2_AGENT_TOKENS,
+    LLAMA2_AGENT_TOKENS,
+    CODELLAMA_AGENT_TOKENS,
+    MODERNBERT_AGENT_TOKENS,
 )
 
 __all__ = [
@@ -209,5 +219,10 @@ __all__ = [
     "MISTRAL_V1_AGENT_TOKENS",
     "MISTRAL_V2_AGENT_TOKENS",
     "MISTRAL_V3_AGENT_TOKENS",
+    "PHI4_AGENT_TOKENS",
+    "OLMO2_AGENT_TOKENS",
+    "LLAMA2_AGENT_TOKENS",
+    "CODELLAMA_AGENT_TOKENS",
+    "MODERNBERT_AGENT_TOKENS",
 ]
 __version__ = "0.18.0"

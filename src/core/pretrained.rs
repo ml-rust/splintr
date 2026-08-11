@@ -4,16 +4,24 @@
 //! - `cl100k_base` - OpenAI GPT-4, GPT-3.5-turbo (~100k tokens)
 //! - `o200k_base` - OpenAI GPT-4o (~200k tokens)
 //! - `llama3` - Meta Llama 3 family (~128k tokens)
+//! - `llama2` - Meta Llama 2, and TinyLlama/Vicuna, which ship its file (32k)
+//! - `codellama` - Meta Code Llama: Llama 2's 32k plus 16 infill pieces
 //! - `deepseek_v3` - DeepSeek V3/R1 (~128k tokens)
 //! - `qwen3` - Qwen 2/3 and Baichuan-M2 (~152k tokens)
 //! - `glm4` - GLM-4/4.5 (~151k tokens)
 //! - `gpt-oss` - OpenAI gpt-oss (o200k_base ranks + harmony special tokens)
+//! - `phi4` - Microsoft Phi-4 (cl100k_base ranks, Llama 3's split)
+//! - `olmo2` - AI2 OLMo-2 (the same, with OLMo's markers)
 //! - `mistral` - Mistral 7B family (~32k tokens)
+//! - `modernbert` - Answer.AI ModernBERT (~50k tokens)
 //! - `whisper` - OpenAI Whisper multilingual v1/v2/v3 (~51k tokens)
 //!
-//! Each family is behind a `vocab-*` cargo feature, all on by default; see
-//! `Cargo.toml`. Turning one off drops its embedded data from the binary, and
-//! [`from_pretrained`] then names the missing feature rather than the name.
+//! Each family is behind a `vocab-*` cargo feature; see `Cargo.toml`. Turning
+//! one off drops its data from the binary, and [`from_pretrained`] then names
+//! the missing feature rather than the name. Three of those features carry no
+//! payload of their own — `gpt-oss` states o200k_base's ranks, `phi4` and
+//! `olmo2` state cl100k_base's — so each enables the family whose ranks it
+//! shares and costs nothing beyond it.
 //!
 //! Every loader here returns an [`AnyTokenizer`], the same universal handle the
 //! HuggingFace-json and GGUF loaders return, so a consumer never has to branch
@@ -31,7 +39,9 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use super::added::{AddedToken, AddedTokenSet};
 use super::any_tokenizer::{AnyTokenizer, Backend};
+use super::normalizer::{NormOp, Normalizer};
 use super::policy::SpecialPolicy;
 use super::spm::{SpmPrefixScheme, SpmTokenizer, NEVER_MERGE};
 use super::tokenizer::{
@@ -63,10 +73,14 @@ pub use splintr_vocab_deepseek::DEEPSEEK_V3_VOCAB_PACKED;
 pub use splintr_vocab_glm::GLM4_VOCAB_PACKED;
 #[cfg(feature = "vocab-kimi")]
 pub use splintr_vocab_kimi::KIMI_VOCAB_PACKED;
+#[cfg(feature = "vocab-llama2")]
+pub use splintr_vocab_llama2::{CODELLAMA_SPM_VOCAB, LLAMA2_SPM_VOCAB};
 #[cfg(feature = "vocab-llama3")]
 pub use splintr_vocab_llama3::LLAMA3_VOCAB_PACKED;
 #[cfg(feature = "vocab-mistral")]
 pub use splintr_vocab_mistral::{MISTRAL_SPM_VOCAB, MISTRAL_V2_SPM_VOCAB, MISTRAL_V3_VOCAB_PACKED};
+#[cfg(feature = "vocab-modernbert")]
+pub use splintr_vocab_modernbert::MODERNBERT_VOCAB_PACKED;
 #[cfg(feature = "vocab-o200k")]
 pub use splintr_vocab_o200k::O200K_BASE_VOCAB_PACKED;
 #[cfg(feature = "vocab-qwen")]
@@ -91,6 +105,17 @@ pub enum PretrainedVocab {
     Glm4,
     /// OpenAI gpt-oss — o200k_base's ranks with the harmony special tokens
     GptOss,
+    /// Microsoft Phi-4 — cl100k_base's ranks under Llama 3's pre-tokenizer
+    Phi4,
+    /// AI2 OLMo-2 — the same ranks and split as [`Phi4`](Self::Phi4), different
+    /// markers
+    Olmo2,
+    /// Meta Llama 2 (and TinyLlama, Vicuna, …) - 32k SentencePiece
+    Llama2,
+    /// Meta Code Llama - Llama 2's 32k plus 16 infill pieces
+    CodeLlama,
+    /// Answer.AI ModernBERT (also the `-large` and Embed checkpoints)
+    ModernBert,
     /// Kimi K2 family (K2, K2.5, K2.6, K2.7, Kimi-Linear) — Moonshot AI
     KimiK2,
     /// Kimi K3 — the same ranks as [`KimiK2`](Self::KimiK2), different markers
@@ -127,6 +152,23 @@ impl PretrainedVocab {
             // OpenAI's open-weight models. Same ranks as o200k_base, different
             // special tokens, so it is its own name rather than an o200k alias.
             "gpt-oss" | "gpt_oss" | "o200k_harmony" => Some(Self::GptOss),
+
+            // Phi-4 and OLMo-2 also state cl100k_base's ranks — but under
+            // Llama 3's split, not cl100k's, so neither is a cl100k alias.
+            // `phi4` covers Phi-4 and Phi-4-reasoning; Phi-4-mini and the
+            // multimodal checkpoints are o200k-based and are not this name.
+            "phi4" | "phi-4" => Some(Self::Phi4),
+            "olmo2" | "olmo-2" => Some(Self::Olmo2),
+
+            // Llama 2's SentencePiece vocabulary, which TinyLlama, Vicuna,
+            // WizardLM and the rest of that generation adopted whole.
+            "llama2" | "llama-2" | "tinyllama" | "vicuna" => Some(Self::Llama2),
+            // Llama 2's 32,000 plus 16 infill pieces.
+            "codellama" | "code_llama" | "code-llama" => Some(Self::CodeLlama),
+
+            // ModernBERT. `-base`, `-large` and the Embed checkpoints all ship
+            // this file.
+            "modernbert" | "modern-bert" => Some(Self::ModernBert),
 
             // Kimi. K2 and K3 share every merge rank and the same pre-tokenizer;
             // they differ only in what the 256 reserved ids above them are
@@ -184,6 +226,22 @@ impl PretrainedVocab {
             "gpt-oss",
             "gpt_oss",
             "o200k_harmony",
+            // cl100k_base's ranks under Llama 3's split
+            "phi4",
+            "phi-4",
+            "olmo2",
+            "olmo-2",
+            // Llama 2 (TinyLlama, Vicuna share this vocabulary) and Code Llama
+            "llama2",
+            "llama-2",
+            "tinyllama",
+            "vicuna",
+            "codellama",
+            "code_llama",
+            "code-llama",
+            // ModernBERT
+            "modernbert",
+            "modern-bert",
             // Kimi (Moonshot AI)
             "kimi",
             "kimi_k2",
@@ -280,7 +338,19 @@ fn vocab_bytes(vocab: PretrainedVocab) -> Result<&'static [u8], TokenizerError> 
         // tokens, so it reads the same payload — the `vocab-gpt-oss` feature
         // enables `vocab-o200k`, which is what makes that constant exist here.
         PretrainedVocab::GptOss => bundled!("vocab-gpt-oss", O200K_BASE_VOCAB_PACKED, "gpt-oss"),
+        // Phi-4 and OLMo-2 are cl100k_base's ranks the same way — verified
+        // rank-for-rank against the shipped file, all 100,256 — so they read
+        // that payload through their own features, which enable `vocab-cl100k`.
+        PretrainedVocab::Phi4 => bundled!("vocab-phi4", CL100K_BASE_VOCAB_PACKED, "phi4"),
+        PretrainedVocab::Olmo2 => bundled!("vocab-olmo2", CL100K_BASE_VOCAB_PACKED, "olmo2"),
         PretrainedVocab::Llama3 => bundled!("vocab-llama3", LLAMA3_VOCAB_PACKED, "llama3"),
+        PretrainedVocab::Llama2 => bundled!("vocab-llama2", LLAMA2_SPM_VOCAB, "llama2"),
+        PretrainedVocab::CodeLlama => {
+            bundled!("vocab-llama2", CODELLAMA_SPM_VOCAB, "codellama")
+        }
+        PretrainedVocab::ModernBert => {
+            bundled!("vocab-modernbert", MODERNBERT_VOCAB_PACKED, "modernbert")
+        }
         PretrainedVocab::DeepseekV3 => {
             bundled!("vocab-deepseek", DEEPSEEK_V3_VOCAB_PACKED, "deepseek_v3")
         }
@@ -317,7 +387,10 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
     // Mistral V1/V2 are SentencePiece: they take the SPM-BPE backend, which has
     // no pre-tokenizer regex, and so must return before `patterns` is consulted.
     match vocab {
-        PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => {
+        PretrainedVocab::MistralV1
+        | PretrainedVocab::MistralV2
+        | PretrainedVocab::Llama2
+        | PretrainedVocab::CodeLlama => {
             return spm_from_vocab(vocab_bytes(vocab)?, vocab, special, named, skipped)
         }
         _ => {}
@@ -328,6 +401,7 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
     let pats = patterns(vocab).unwrap_or(&[]);
 
     let data = vocab_bytes(vocab)?;
+    let special = added_token_set(vocab, special);
 
     let tokenizer = match vocab {
         // Vocabularies whose vocabulary stores raw semantic bytes: the file was
@@ -336,9 +410,12 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
         PretrainedVocab::Cl100kBase
         | PretrainedVocab::O200kBase
         | PretrainedVocab::GptOss
+        | PretrainedVocab::Phi4
+        | PretrainedVocab::Olmo2
         | PretrainedVocab::Llama3
         | PretrainedVocab::Qwen3
         | PretrainedVocab::Glm4
+        | PretrainedVocab::ModernBert
         | PretrainedVocab::KimiK2
         | PretrainedVocab::KimiK3 => Tokenizer::from_packed_chain(data, pats, special),
         // Vocabularies whose vocabulary keeps the ByteLevel spelling (`Ġ` for
@@ -351,12 +428,24 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
             Tokenizer::from_packed_byte_level_chain(data, pats, special)
         }
         // Handled above, before `patterns` is consulted.
-        PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 => {
+        PretrainedVocab::MistralV1
+        | PretrainedVocab::MistralV2
+        | PretrainedVocab::Llama2
+        | PretrainedVocab::CodeLlama => {
             return Err(TokenizerError::UnknownPretrained(
-                "Mistral V1/V2 take the SPM backend and are routed earlier".to_owned(),
+                "SentencePiece vocabularies take the SPM backend and are routed earlier".to_owned(),
             ))
         }
     }?;
+
+    // The HuggingFace `normalizer`, for the one bundled vocabulary that states
+    // one. Applied before splitting, exactly as the json loader applies it, so
+    // `from_pretrained("modernbert")` and `from_json` on ModernBERT's own file
+    // agree on text that is not already normalized.
+    let tokenizer = match normalizer(vocab) {
+        Some(n) => tokenizer.with_normalizer(n),
+        None => tokenizer,
+    };
 
     // In-text special-token matching is on for every bundled vocabulary, the
     // same as the json and GGUF loaders, so `AnyTokenizer::encode` means one
@@ -369,8 +458,91 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
                 .with_added_token_matching(true)
                 .with_special_decode_ids(skipped),
         ),
-        SpecialPolicy::boundary(None, None, Some(eos_token_id(vocab)), named),
+        {
+            let (prefix, suffix) = boundary_ids(vocab);
+            SpecialPolicy::boundary(prefix, suffix, Some(eos_token_id(vocab)), named)
+        },
     ))
+}
+
+/// The added tokens a bundled vocabulary declares, carrying HuggingFace's
+/// `lstrip`/`rstrip` flags where it declares them.
+///
+/// Almost every bundled vocabulary leaves both off, which is also the only
+/// correct reading for one that has nowhere to declare them — a `.tiktoken`
+/// rank file says nothing about whitespace. Two say otherwise in their
+/// `tokenizer.json`, and the flags are not cosmetic: they decide whether the
+/// space next to a marker survives as its own token or is eaten by the marker,
+/// which is a different id sequence reaching the model.
+fn added_token_set(vocab: PretrainedVocab, special: FxHashMap<String, u32>) -> AddedTokenSet {
+    match vocab {
+        // Phi-4 declares `lstrip: true, rstrip: true` on all 96 of its added
+        // tokens, uniformly. Measured with `tokenizers` 0.22.1 on
+        // `microsoft/phi-4`: `"x <|endoftext|> y"` is `[87, 100257, 88]` — both
+        // spaces gone — where OLMo-2, same ranks and same marker id but neither
+        // flag set, keeps them: `[87, 220, 100257, 379]`.
+        PretrainedVocab::Phi4 => special
+            .into_iter()
+            .map(|(name, id)| {
+                (
+                    name,
+                    AddedToken {
+                        id,
+                        lstrip: true,
+                        rstrip: true,
+                    },
+                )
+            })
+            .collect(),
+
+        // ModernBERT declares `lstrip: true` on `[MASK]` alone, the usual BERT
+        // arrangement: `"the [MASK] sat"` must not leave a stray space token
+        // where the mask stands in for a word.
+        PretrainedVocab::ModernBert => special
+            .into_iter()
+            .map(|(name, id)| {
+                let token = AddedToken {
+                    id,
+                    lstrip: id == MODERNBERT_MASK,
+                    rstrip: false,
+                };
+                (name, token)
+            })
+            .collect(),
+
+        _ => special.into(),
+    }
+}
+
+/// The HuggingFace `normalizer` a bundled vocabulary states, if any.
+///
+/// Only ModernBERT states one. The rest of the bundled set either declares no
+/// normalizer or — like Qwen — declares `NFC` in a `tokenizer.json` that
+/// splintr does not read for the bundled path, where the vocabulary and the
+/// pattern are stated directly instead.
+fn normalizer(vocab: PretrainedVocab) -> Option<Normalizer> {
+    match vocab {
+        PretrainedVocab::ModernBert => Some(Normalizer::new(vec![NormOp::Nfc])),
+        _ => None,
+    }
+}
+
+/// The ids a bundled vocabulary wraps a single sequence in, as
+/// `(prefix, suffix)`.
+///
+/// Almost always `(None, None)`: a decoder-only vocabulary states no such
+/// template, and the chat server or trainer places BOS itself. ModernBERT is
+/// the exception, and not by preference — its `tokenizer.json` carries a
+/// `TemplateProcessing` that wraps every sequence in `[CLS]`/`[SEP]`, which
+/// `tokenizers` applies by default and which the model's pooling head depends
+/// on. Leaving it off would make `from_pretrained("modernbert")` disagree with
+/// `from_json` on the same file, and hand a classifier a sequence with no
+/// `[CLS]` to read.
+fn boundary_ids(vocab: PretrainedVocab) -> (Option<u32>, Option<u32>) {
+    match vocab {
+        PretrainedVocab::ModernBert => (Some(MODERNBERT_CLS), Some(MODERNBERT_SEP)),
+        _ => (None, None),
+    }
 }
 
 /// Build an SPM-BPE tokenizer from a bundled SentencePiece `.spm` file.
@@ -498,6 +670,17 @@ pub fn patterns(vocab: PretrainedVocab) -> Option<&'static [&'static str]> {
         PretrainedVocab::Glm4 => Some(&[LLAMA3_PATTERN]),
         // gpt-oss states o200k_base's pattern character for character.
         PretrainedVocab::GptOss => Some(&[O200K_BASE_PATTERN]),
+        // Phi-4 and OLMo-2 read cl100k_base's ranks but NOT cl100k_base's
+        // split: both `tokenizer.json`s state Llama 3's expression character
+        // for character. The two are not interchangeable — cl100k takes
+        // newlines one at a time (`\s*[\r\n]`) where Llama 3 takes the run
+        // (`\s*[\r\n]+`), so aliasing them would mistokenize every blank line.
+        PretrainedVocab::Phi4 | PretrainedVocab::Olmo2 => Some(&[LLAMA3_PATTERN]),
+        // ModernBERT declares a bare `ByteLevel` pre-tokenizer with
+        // `use_regex: true`, which is GPT-2's split.
+        PretrainedVocab::ModernBert => Some(&[GPT2_PATTERN]),
+        // SPM-BPE: merges pieces, no pre-tokenizer regex.
+        PretrainedVocab::Llama2 | PretrainedVocab::CodeLlama => None,
         // Kimi's own pattern: o200k's shape plus a Han branch, identical across
         // K2 and K3.
         PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => Some(&[KIMI_PATTERN]),
@@ -532,6 +715,13 @@ pub fn eos_token_id(vocab: PretrainedVocab) -> u32 {
         PretrainedVocab::Qwen3 => 151645,      // <|im_end|>
         PretrainedVocab::Glm4 => 151329,       // <|endoftext|>
         PretrainedVocab::GptOss => 200002,     // <|return|>
+        PretrainedVocab::Phi4 => 100257,       // <|endoftext|>
+        PretrainedVocab::Olmo2 => 100257,      // <|endoftext|>
+        PretrainedVocab::Llama2 | PretrainedVocab::CodeLlama => 2, // </s>
+        // `[SEP]`. ModernBERT is an encoder and generates nothing, so it names
+        // no EOS; `[SEP]` is what terminates a sequence and what its own
+        // template appends, which is the closest thing the vocabulary has.
+        PretrainedVocab::ModernBert => MODERNBERT_SEP,
         // `[EOS]` for both, per Moonshot's own `tokenizer_config.json`. The chat
         // templates end a turn on a marker instead — `<|im_end|>` (163586) on
         // K2, `<|end_of_msg|>` on K3 — but that is a template decision, not the
@@ -565,6 +755,12 @@ pub fn bos_token_id(vocab: PretrainedVocab) -> Option<u32> {
         // marker instead. gpt-oss names `<|startoftext|>` but the harmony
         // format opens with `<|start|>`, so it is not a BOS either.
         PretrainedVocab::Qwen3 | PretrainedVocab::Glm4 | PretrainedVocab::GptOss => None,
+        // Phi-4 and OLMo-2 name no BOS either; both open on `<|im_start|>` or
+        // on plain text.
+        PretrainedVocab::Phi4 | PretrainedVocab::Olmo2 => None,
+        PretrainedVocab::Llama2 | PretrainedVocab::CodeLlama => Some(1), // <s>
+        // `[CLS]`, which ModernBERT's own template opens every sequence with.
+        PretrainedVocab::ModernBert => Some(MODERNBERT_CLS),
         // `[BOS]`, which Moonshot names and its templates open with.
         PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => Some(163584),
         PretrainedVocab::MistralV1 | PretrainedVocab::MistralV2 | PretrainedVocab::MistralV3 => {
@@ -592,6 +788,14 @@ pub fn pad_token_id(vocab: PretrainedVocab) -> Option<u32> {
         PretrainedVocab::Qwen3 => Some(QWEN3_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
         PretrainedVocab::Glm4 => Some(GLM4_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
         PretrainedVocab::GptOss => Some(200058),     // <|pad|> (agent token)
+        // Both name a `<|pad|>` of their own inside the base block: OLMo-2 at
+        // its last id, Phi-4 not at all — Phi-4's slot is an unnamed
+        // `<|dummy_*|>`, so it takes the agent token like cl100k does.
+        PretrainedVocab::Phi4 => Some(PHI4_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
+        PretrainedVocab::Olmo2 => Some(100277),                   // <|pad|>
+        PretrainedVocab::Llama2 => Some(LLAMA2_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
+        PretrainedVocab::CodeLlama => Some(CODELLAMA_BASE_VOCAB_SIZE + 39), // <|pad|> (agent token)
+        PretrainedVocab::ModernBert => Some(MODERNBERT_PAD),      // [PAD]
         // `[PAD]` is Kimi's own, inside the reserved block — no agent token needed.
         PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => Some(163839),
         PretrainedVocab::MistralV1 => Some(32039), // <|pad|> (agent token)
@@ -630,6 +834,11 @@ pub fn base_vocab_size(vocab: PretrainedVocab) -> u32 {
         // gpt-oss's last special is `<|endofprompt|>` at 200018, the same id
         // o200k_base ends on, so the two share a base size as well as ranks.
         PretrainedVocab::GptOss => O200K_BASE_BASE_VOCAB_SIZE,
+        PretrainedVocab::Phi4 => PHI4_BASE_VOCAB_SIZE,
+        PretrainedVocab::Olmo2 => OLMO2_BASE_VOCAB_SIZE,
+        PretrainedVocab::Llama2 => LLAMA2_BASE_VOCAB_SIZE,
+        PretrainedVocab::CodeLlama => CODELLAMA_BASE_VOCAB_SIZE,
+        PretrainedVocab::ModernBert => MODERNBERT_BASE_VOCAB_SIZE,
         PretrainedVocab::KimiK2 | PretrainedVocab::KimiK3 => KIMI_BASE_VOCAB_SIZE,
         PretrainedVocab::MistralV1 => MISTRAL_V1_BASE_VOCAB_SIZE,
         PretrainedVocab::MistralV2 => MISTRAL_V2_BASE_VOCAB_SIZE,
@@ -751,6 +960,52 @@ fn special_decode_ids(vocab: PretrainedVocab, special: &FxHashMap<String, u32>) 
         // o200k_base's reference is `tiktoken`, which renders everything.
         PretrainedVocab::GptOss => all(),
 
+        // Reference: `tokenizers` 0.22.1 on `microsoft/phi-4`'s
+        // `tokenizer.json`, where all 96 added tokens are `special: true`,
+        // `<|dummy_*|>` reservations included. Note this is the other place a
+        // shared-rank family parts company with the vocabulary it shares:
+        // cl100k_base's reference is `tiktoken`, which renders everything.
+        PretrainedVocab::Phi4 => all(),
+
+        // Reference: `tokenizers` 0.22.1 on `allenai/OLMo-2-1124-7B`'s
+        // `tokenizer.json`, which is mixed. Its chat, FIM and padding markers
+        // are `special: true` and dropped; the PII placeholders and the
+        // `<|extra_id_*|>` block are `special: false` and rendered — the
+        // placeholders stand in for redacted content, which is text.
+        PretrainedVocab::Olmo2 => {
+            let rendered: FxHashSet<u32> = [100256]
+                .into_iter()
+                .chain(100261..=100263)
+                .chain(100266..=100275)
+                .collect();
+            all().difference(&rendered).copied().collect()
+        }
+
+        // Reference: `sentencepiece` 0.2.0 and `tokenizers` 0.22.1 on
+        // `codellama/CodeLlama-7b-hf`, which agree: all three added tokens are
+        // `special: true` and `decode([1, …, 2])` renders neither boundary.
+        // Agent tokens sit above the file's last id, have no reference, and
+        // follow the same rule.
+        PretrainedVocab::Llama2 | PretrainedVocab::CodeLlama => all(),
+
+        // Reference: `tokenizers` 0.22.1 on `answerdotai/ModernBERT-base`'s
+        // `tokenizer.json`, which declares only seven of its 116 added tokens
+        // `special: true` — `<|padding|>`, `<|endoftext|>` and the five BERT
+        // markers. Everything else it renders, and dropping any of it would be
+        // a bug rather than a policy: the 23 space runs *are* whitespace, and
+        // decoding indented code without them loses the indentation.
+        PretrainedVocab::ModernBert => [
+            1,
+            50279,
+            50280,
+            MODERNBERT_CLS,
+            MODERNBERT_SEP,
+            MODERNBERT_PAD,
+            50284,
+        ]
+        .into_iter()
+        .collect(),
+
         // Reference: Moonshot's `tokenization_kimi.py`, whose `decode` filters
         // `all_special_ids` out unconditionally — there is no per-token
         // `special: false` distinction to preserve, so the whole block is
@@ -783,6 +1038,11 @@ pub fn special_tokens(vocab: PretrainedVocab) -> FxHashMap<String, u32> {
         PretrainedVocab::Qwen3 => qwen3_special_tokens(),
         PretrainedVocab::Glm4 => glm4_special_tokens(),
         PretrainedVocab::GptOss => gpt_oss_special_tokens(),
+        PretrainedVocab::Phi4 => phi4_special_tokens(),
+        PretrainedVocab::Olmo2 => olmo2_special_tokens(),
+        PretrainedVocab::Llama2 => llama2_special_tokens(),
+        PretrainedVocab::CodeLlama => codellama_special_tokens(),
+        PretrainedVocab::ModernBert => modernbert_special_tokens(),
         PretrainedVocab::KimiK2 => kimi_k2_special_tokens(),
         PretrainedVocab::KimiK3 => kimi_k3_special_tokens(),
         PretrainedVocab::MistralV1 => mistral_v1_special_tokens(),
@@ -802,6 +1062,15 @@ pub fn special_tokens(vocab: PretrainedVocab) -> FxHashMap<String, u32> {
 /// `<|endofprompt|>`, where splintr's agent tokens begin. Shared with
 /// [`base_vocab_size`] so the two cannot drift apart.
 const CL100K_BASE_BASE_VOCAB_SIZE: u32 = 100277;
+
+/// How many merge ranks the shipped cl100k_base file holds — 100,256, which is
+/// where every special block over those ranks starts.
+///
+/// Not the same number as [`CL100K_BASE_BASE_VOCAB_SIZE`], which counts
+/// cl100k_base's own five markers on top. Phi-4 and OLMo-2 read the same ranks
+/// under their own, longer special blocks, so they need the rank count rather
+/// than cl100k's total.
+const CL100K_RANK_COUNT: u32 = 100256;
 
 /// o200k_base's reference (`tiktoken`) vocabulary size — one past
 /// `<|endofprompt|>`, where splintr's agent tokens begin. Shared with
@@ -1276,6 +1545,214 @@ pub fn mistral_v3_special_tokens() -> FxHashMap<String, u32> {
 
     // Agent tokens start at 131072 (after base vocab)
     insert_agent_tokens(&mut special, MISTRAL_V3_BASE_VOCAB_SIZE);
+
+    special
+}
+
+/// Phi-4's reference (`tokenizers`) vocabulary size: cl100k_base's 100,256
+/// ranks plus the 96 markers below (100,256-100,351), so splintr's agent
+/// tokens start immediately after at 100,352. Shared with [`base_vocab_size`]
+/// so the two cannot drift apart.
+const PHI4_BASE_VOCAB_SIZE: u32 = 100352;
+
+/// OLMo-2's reference (`tokenizers`) vocabulary size: the same 100,256 ranks
+/// plus 22 markers (100,256-100,277), so agent tokens start at 100,278.
+const OLMO2_BASE_VOCAB_SIZE: u32 = 100278;
+
+/// Get the special tokens for Microsoft's Phi-4.
+///
+/// The ranks are cl100k_base's, but the special block is not: cl100k_base names
+/// five tokens in 100,256-100,276 and stops, where Phi-4 fills 100,256-100,351
+/// with its own chat markers and 88 `<|dummy_N|>` reservations. Those
+/// reservations are named as Microsoft names them — they are declared in the
+/// vocabulary, so leaving them out would make those ids undecodable rather than
+/// reserved.
+pub fn phi4_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    // Phi-4's named markers. Everything else in 100,256-100,351 is a dummy.
+    for (name, id) in [
+        ("<|endoftext|>", 100257),
+        ("<|fim_prefix|>", 100258),
+        ("<|fim_middle|>", 100259),
+        ("<|fim_suffix|>", 100260),
+        ("<|im_start|>", 100264),
+        ("<|im_end|>", 100265),
+        ("<|im_sep|>", 100266),
+        ("<|endofprompt|>", 100276),
+    ] {
+        special.insert(name.to_string(), id);
+    }
+
+    // The dummies are numbered across the gaps rather than by id, so
+    // `<|dummy_0|>` is 100,256 and `<|dummy_1|>` is 100,261 — the first id
+    // after the FIM block. Counting them out is what keeps that alignment
+    // right; a formula over the id would silently renumber every one of them.
+    let mut dummy = 0;
+    for id in CL100K_RANK_COUNT..PHI4_BASE_VOCAB_SIZE {
+        if special.values().any(|&taken| taken == id) {
+            continue;
+        }
+        special.insert(format!("<|dummy_{dummy}|>"), id);
+        dummy += 1;
+    }
+
+    // Agent tokens (100352+)
+    insert_agent_tokens(&mut special, PHI4_BASE_VOCAB_SIZE);
+
+    special
+}
+
+/// Get the special tokens for AI2's OLMo-2.
+///
+/// cl100k_base's ranks again, under a third special block: OLMo-2 names its
+/// own PII placeholders (`|||PHONE_NUMBER|||` and friends, which its training
+/// pipeline substitutes) alongside the usual chat and FIM markers.
+pub fn olmo2_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    for (name, id) in [
+        ("<|extra_id_0|>", 100256),
+        ("<|endoftext|>", 100257),
+        ("<|fim_prefix|>", 100258),
+        ("<|fim_middle|>", 100259),
+        ("<|fim_suffix|>", 100260),
+        ("|||PHONE_NUMBER|||", 100261),
+        ("|||EMAIL_ADDRESS|||", 100262),
+        ("|||IP_ADDRESS|||", 100263),
+        ("<|im_start|>", 100264),
+        ("<|im_end|>", 100265),
+        ("<|extra_id_1|>", 100266),
+        ("<|extra_id_2|>", 100267),
+        ("<|extra_id_3|>", 100268),
+        ("<|extra_id_4|>", 100269),
+        ("<|extra_id_5|>", 100270),
+        ("<|extra_id_6|>", 100271),
+        ("<|extra_id_7|>", 100272),
+        ("<|extra_id_8|>", 100273),
+        ("<|extra_id_9|>", 100274),
+        ("<|extra_id_10|>", 100275),
+        ("<|endofprompt|>", 100276),
+        ("<|pad|>", 100277),
+    ] {
+        special.insert(name.to_string(), id);
+    }
+
+    // Agent tokens (100278+). `<|pad|>` is already OLMo-2's own at 100,277, so
+    // `insert_agent_tokens` leaves that name where the model put it and the
+    // agent slot at offset 39 stays an unnamed reserved id.
+    insert_agent_tokens(&mut special, OLMO2_BASE_VOCAB_SIZE);
+
+    special
+}
+
+/// Llama 2's reference (`sentencepiece`) piece count: the bundled `.spm` file
+/// has exactly 32,000 pieces (ids 0-31,999, including the 0-2 native specials
+/// below), so splintr's agent tokens start immediately after at 32,000.
+const LLAMA2_BASE_VOCAB_SIZE: u32 = 32000;
+
+/// Code Llama's piece count: Llama 2's 32,000 plus 16 infill pieces
+/// (32,000-32,015), so agent tokens start at 32,016.
+const CODELLAMA_BASE_VOCAB_SIZE: u32 = 32016;
+
+/// Get the special tokens for Llama 2 — and for TinyLlama, Vicuna and the rest
+/// of the checkpoints that adopted its vocabulary whole.
+///
+/// Llama 2 names three, all of them SentencePiece control pieces. Its chat
+/// format is built from ordinary text (`[INST]`, `<<SYS>>`) rather than from
+/// vocabulary markers, so there is nothing else here to name.
+pub fn llama2_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    // SentencePiece control pieces (0-2). They must be matched verbatim in the
+    // input: under SentencePiece a bare `<s>` is normalized to `▁<s>`, which is
+    // not a piece, and would otherwise merge into fragments instead of id 1.
+    special.insert("<unk>".to_string(), 0);
+    special.insert("<s>".to_string(), 1);
+    special.insert("</s>".to_string(), 2);
+
+    insert_agent_tokens(&mut special, LLAMA2_BASE_VOCAB_SIZE);
+
+    special
+}
+
+/// Get the special tokens for Code Llama.
+///
+/// The same three Llama 2 names. Code Llama's 16 extra pieces —
+/// `▁<PRE>`, `▁<MID>`, `▁<SUF>`, `▁<EOT>` and the fragments they are built
+/// from — are deliberately **not** here: upstream does not declare them added
+/// tokens either, and their SentencePiece scores sit far below every genuine
+/// merge, so neither tokenizer produces them from text. They are placed by id,
+/// by the caller assembling a fill-in-the-middle prompt, which is how Meta's
+/// own implementation uses them.
+pub fn codellama_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    special.insert("<unk>".to_string(), 0);
+    special.insert("<s>".to_string(), 1);
+    special.insert("</s>".to_string(), 2);
+
+    insert_agent_tokens(&mut special, CODELLAMA_BASE_VOCAB_SIZE);
+
+    special
+}
+
+/// ModernBERT's reference (`tokenizers`) vocabulary size: 50,254 merge ranks,
+/// 26 added tokens at 50,254-50,279 and 88 more at 50,280-50,367, so splintr's
+/// agent tokens start immediately after at 50,368.
+const MODERNBERT_BASE_VOCAB_SIZE: u32 = 50368;
+
+/// `[CLS]`, which ModernBERT's own template opens every sequence with.
+const MODERNBERT_CLS: u32 = 50281;
+/// `[SEP]`, which it closes every sequence with.
+const MODERNBERT_SEP: u32 = 50282;
+/// `[PAD]`.
+const MODERNBERT_PAD: u32 = 50283;
+/// `[MASK]`, the one added token ModernBERT declares `lstrip`.
+const MODERNBERT_MASK: u32 = 50284;
+
+/// Get the special tokens for Answer.AI's ModernBERT.
+///
+/// Two blocks, and the first is unusual. ModernBERT inherited OLMo's habit of
+/// declaring runs of literal spaces as added tokens — 23 of them, 24 spaces
+/// down to 2, at 50,254-50,276 — and they are load-bearing rather than
+/// decorative: indented code hits them constantly, and a `def` body indented
+/// four spaces encodes as one id through 50,274 instead of four. They are
+/// spelled literally rather than in the byte-level alphabet the merge ranks
+/// use, which is why they live here and not in the rank file.
+///
+/// The second block is the BERT furniture at 50,280-50,367, `[UNK]` through
+/// `[MASK]` followed by 83 `[unusedN]` slots — named because they are declared,
+/// so that the ids decode rather than being holes.
+pub fn modernbert_special_tokens() -> FxHashMap<String, u32> {
+    let mut special = FxHashMap::default();
+
+    // Inside the rank block: two ids the file declares added even though they
+    // carry ordinary ranks.
+    special.insert("|||IP_ADDRESS|||".to_string(), 0);
+    special.insert("<|padding|>".to_string(), 1);
+
+    // 50,254 is 24 spaces and each id after it is one space shorter, down to
+    // 50,276 at two.
+    for (offset, spaces) in (2..=24).rev().enumerate() {
+        special.insert(" ".repeat(spaces), 50254 + offset as u32);
+    }
+
+    special.insert("|||EMAIL_ADDRESS|||".to_string(), 50277);
+    special.insert("|||PHONE_NUMBER|||".to_string(), 50278);
+    special.insert("<|endoftext|>".to_string(), 50279);
+
+    special.insert("[UNK]".to_string(), 50280);
+    special.insert("[CLS]".to_string(), MODERNBERT_CLS);
+    special.insert("[SEP]".to_string(), MODERNBERT_SEP);
+    special.insert("[PAD]".to_string(), MODERNBERT_PAD);
+    special.insert("[MASK]".to_string(), MODERNBERT_MASK);
+    for n in 0..83u32 {
+        special.insert(format!("[unused{n}]"), 50285 + n);
+    }
+
+    // Agent tokens (50368+)
+    insert_agent_tokens(&mut special, MODERNBERT_BASE_VOCAB_SIZE);
 
     special
 }
@@ -1831,6 +2308,11 @@ mod tests {
         assert_eq!(base_vocab_size(PretrainedVocab::MistralV1), 32000); // sentencepiece piece count
         assert_eq!(base_vocab_size(PretrainedVocab::MistralV2), 32768); // sentencepiece piece count
         assert_eq!(base_vocab_size(PretrainedVocab::MistralV3), 131072); // tokenizers (Tekken)
+        assert_eq!(base_vocab_size(PretrainedVocab::Phi4), 100352); // tokenizers
+        assert_eq!(base_vocab_size(PretrainedVocab::Olmo2), 100278); // tokenizers
+        assert_eq!(base_vocab_size(PretrainedVocab::Llama2), 32000); // sentencepiece piece count
+        assert_eq!(base_vocab_size(PretrainedVocab::CodeLlama), 32016); // sentencepiece piece count
+        assert_eq!(base_vocab_size(PretrainedVocab::ModernBert), 50368); // tokenizers
         assert_eq!(
             base_vocab_size(PretrainedVocab::WhisperV1),
             WhisperVariant::V1Multilingual.vocab_size() as u32
@@ -1858,6 +2340,11 @@ mod tests {
             ("mistral_v1", PretrainedVocab::MistralV1),
             ("mistral_v2", PretrainedVocab::MistralV2),
             ("mistral_v3", PretrainedVocab::MistralV3),
+            ("phi4", PretrainedVocab::Phi4),
+            ("olmo2", PretrainedVocab::Olmo2),
+            ("llama2", PretrainedVocab::Llama2),
+            ("codellama", PretrainedVocab::CodeLlama),
+            ("modernbert", PretrainedVocab::ModernBert),
             ("whisper_v1", PretrainedVocab::WhisperV1),
             ("whisper_v2", PretrainedVocab::WhisperV2),
             ("whisper_v3", PretrainedVocab::WhisperV3),
@@ -1959,6 +2446,124 @@ mod tests {
         "<|summary|>",
         "<|/summary|>",
     ];
+
+    /// Three vocabularies, one rank file. Phi-4 and OLMo-2 ship no payload
+    /// because both state cl100k_base's ranks, so ordinary text has to come out
+    /// the same under all three or the sharing is wrong.
+    ///
+    /// Reference: `tiktoken` 0.8.0 for cl100k_base, `tokenizers` 0.22.1 on
+    /// `microsoft/phi-4` and `allenai/OLMo-2-1124-7B` for the other two.
+    #[test]
+    fn phi4_and_olmo2_read_cl100k_base_ranks() {
+        for (text, want) in [
+            ("def f():    pass", vec![755, 282, 4658, 262, 1522]),
+            ("a \n \n \nb", vec![64, 33006, 720, 65]),
+            ("   \n\n  x", vec![35033, 220, 865]),
+        ] {
+            for name in ["cl100k_base", "phi4", "olmo2"] {
+                let got = from_pretrained(name).unwrap().encode(text);
+                assert_eq!(got, want, "{name} on {text:?}");
+            }
+        }
+    }
+
+    /// What separates them is the special block, and Phi-4's `lstrip`/`rstrip`
+    /// flags within it.
+    ///
+    /// Reference: `tokenizers` 0.22.1. Phi-4 declares both flags on all 96 of
+    /// its added tokens, so the marker eats the spaces on either side; OLMo-2
+    /// declares neither on the same marker id, so they survive.
+    #[test]
+    fn phi4_markers_eat_their_whitespace_and_olmo2_markers_do_not() {
+        let text = "x <|endoftext|> y";
+        assert_eq!(
+            from_pretrained("phi4").unwrap().encode(text),
+            [87, 100257, 88]
+        );
+        assert_eq!(
+            from_pretrained("olmo2").unwrap().encode(text),
+            [87, 220, 100257, 379]
+        );
+
+        // And the blocks themselves differ: `<|im_start|>` is Phi-4's own at
+        // 100264 and OLMo-2's own at the same id, but the reservations around
+        // them are named differently.
+        assert_eq!(special_tokens(PretrainedVocab::Phi4)["<|dummy_5|>"], 100268);
+        assert_eq!(
+            special_tokens(PretrainedVocab::Olmo2)["|||IP_ADDRESS|||"],
+            100263
+        );
+    }
+
+    /// Code Llama extended Llama 2's SentencePiece model in place, so the two
+    /// agree on every id below 32,000.
+    ///
+    /// Reference: `sentencepiece` 0.2.0 via `LlamaTokenizer`/`CodeLlamaTokenizer`
+    /// (`use_fast=False`) on `TinyLlama/TinyLlama-1.1B-Chat-v1.0` and
+    /// `codellama/CodeLlama-7b-hf`. The *fast* tokenizers disagree with both on
+    /// where the SentencePiece dummy prefix lands after a special token, which
+    /// is why the slow one is the reference here — the same choice
+    /// [`spm_prefix_scheme`] documents for Mistral.
+    #[test]
+    fn llama2_and_code_llama_agree_below_32000() {
+        let llama2 = from_pretrained("llama2").unwrap();
+        let codellama = from_pretrained("codellama").unwrap();
+        for text in ["Hello world", "<s>hi", "def fib(n):\n    return n"] {
+            assert_eq!(llama2.encode(text), codellama.encode(text), "{text:?}");
+        }
+        assert_eq!(llama2.encode("Hello world"), [15043, 3186]);
+        assert_eq!(llama2.encode("<s>hi"), [1, 2918]);
+        assert_eq!(
+            from_pretrained("tinyllama").unwrap().encode("Hello world"),
+            [15043, 3186]
+        );
+    }
+
+    /// ModernBERT is the one bundled vocabulary that states a boundary
+    /// template, and the one that states a normalizer.
+    ///
+    /// Reference: `tokenizers` 0.22.1 on `answerdotai/ModernBERT-base` with its
+    /// own defaults — `add_special_tokens=True`, which is what applies the
+    /// `[CLS]`/`[SEP]` wrapper the model's pooling head reads.
+    #[test]
+    fn modernbert_wraps_in_cls_and_sep_and_takes_indents_whole() {
+        let tokenizer = from_pretrained("modernbert").unwrap();
+
+        // The four-space indent is one id (50274), not four space tokens: the
+        // vocabulary declares 23 space runs as added tokens.
+        assert_eq!(
+            tokenizer.encode("def f():    pass"),
+            [50281, 1545, 269, 14850, 50274, 5858, 50282]
+        );
+        // `[MASK]` declares `lstrip`, so the space before it is absorbed.
+        assert_eq!(
+            tokenizer.encode("the [MASK] sat"),
+            [50281, 783, 50284, 2206, 50282]
+        );
+    }
+
+    /// The names each new family answers to, including the checkpoints that
+    /// ship another family's vocabulary verbatim.
+    #[test]
+    fn the_bundled_families_resolve_by_every_name_they_claim() {
+        for (name, want) in [
+            ("phi4", PretrainedVocab::Phi4),
+            ("phi-4", PretrainedVocab::Phi4),
+            ("olmo2", PretrainedVocab::Olmo2),
+            ("olmo-2", PretrainedVocab::Olmo2),
+            ("llama2", PretrainedVocab::Llama2),
+            ("tinyllama", PretrainedVocab::Llama2),
+            ("vicuna", PretrainedVocab::Llama2),
+            ("codellama", PretrainedVocab::CodeLlama),
+            ("modernbert", PretrainedVocab::ModernBert),
+        ] {
+            assert_eq!(PretrainedVocab::from_name(name), Some(want), "{name}");
+            assert!(
+                PretrainedVocab::supported_names().contains(&name),
+                "{name} resolves but is not listed in supported_names"
+            );
+        }
+    }
 
     /// The subset of a vocabulary's special-token map that are agent tokens
     /// (by name), each paired with its id.

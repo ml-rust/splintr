@@ -10,11 +10,14 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Added
 
+- Five bundled vocabularies: `phi4`, `olmo2`, `llama2` (also `tinyllama`, `vicuna`), `codellama` and `modernbert`. Phi-4 and OLMo-2 ship no payload — both state cl100k_base's ranks.
 - Python: `MISTRAL_V3_PATTERN` and `GPT2_PATTERN`, the two pre-tokenizer expressions
 
 ### Fixed
 
 - `Metaspace` honours `split` and `prepend_scheme`: Mistral is byte-exact.
+- An `lstrip` added token now wins the whitespace run before it against a whitespace added token, as the reference does.
+- The `from_pretrained` doc example no longer breaks `cargo test --doc` under the `python` feature.
 
 ### Changed
 

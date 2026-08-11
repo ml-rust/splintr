@@ -52,6 +52,11 @@ mod tests {
             row!("mistral_v3", mistral_v3_agent_tokens),
             row!("kimi_k2", kimi_k2_agent_tokens),
             row!("kimi_k3", kimi_k3_agent_tokens),
+            row!("phi4", phi4_agent_tokens),
+            row!("olmo2", olmo2_agent_tokens),
+            row!("llama2", llama2_agent_tokens),
+            row!("codellama", codellama_agent_tokens),
+            row!("modernbert", modernbert_agent_tokens),
         ]
     }
 

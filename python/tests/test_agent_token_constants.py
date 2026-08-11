@@ -94,6 +94,11 @@ VOCABULARIES = [
     ("mistral_v3", "MISTRAL_V3_AGENT_TOKENS"),
     ("kimi_k2", "KIMI_K2_AGENT_TOKENS"),
     ("kimi_k3", "KIMI_K3_AGENT_TOKENS"),
+    ("phi4", "PHI4_AGENT_TOKENS"),
+    ("olmo2", "OLMO2_AGENT_TOKENS"),
+    ("llama2", "LLAMA2_AGENT_TOKENS"),
+    ("codellama", "CODELLAMA_AGENT_TOKENS"),
+    ("modernbert", "MODERNBERT_AGENT_TOKENS"),
 ]
 
 

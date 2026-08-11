@@ -1354,8 +1354,10 @@ dependencies = [
  "splintr-vocab-deepseek",
  "splintr-vocab-glm",
  "splintr-vocab-kimi",
+ "splintr-vocab-llama2",
  "splintr-vocab-llama3",
  "splintr-vocab-mistral",
+ "splintr-vocab-modernbert",
  "splintr-vocab-o200k",
  "splintr-vocab-qwen",
  "splintr-vocab-whisper",
@@ -1394,6 +1396,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "splintr-vocab-llama2"
+version = "1.0.0"
+
+[[package]]
 name = "splintr-vocab-llama3"
 version = "1.0.0"
 dependencies = [
@@ -1402,6 +1408,13 @@ dependencies = [
 
 [[package]]
 name = "splintr-vocab-mistral"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
+]
+
+[[package]]
+name = "splintr-vocab-modernbert"
 version = "1.0.0"
 dependencies = [
  "splintr-vocab-pack",

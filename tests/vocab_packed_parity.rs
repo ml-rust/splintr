@@ -23,8 +23,8 @@ use splintr::core::{load_packed_bpe, load_tiktoken_bpe};
 fn bundled() -> Vec<(&'static str, &'static str, &'static [u8])> {
     use splintr::pretrained::{
         CL100K_BASE_VOCAB_PACKED, DEEPSEEK_V3_VOCAB_PACKED, GLM4_VOCAB_PACKED, KIMI_VOCAB_PACKED,
-        LLAMA3_VOCAB_PACKED, MISTRAL_V3_VOCAB_PACKED, O200K_BASE_VOCAB_PACKED, QWEN3_VOCAB_PACKED,
-        WHISPER_VOCAB_PACKED,
+        LLAMA3_VOCAB_PACKED, MISTRAL_V3_VOCAB_PACKED, MODERNBERT_VOCAB_PACKED,
+        O200K_BASE_VOCAB_PACKED, QWEN3_VOCAB_PACKED, WHISPER_VOCAB_PACKED,
     };
     vec![
         ("cl100k", "cl100k_base", CL100K_BASE_VOCAB_PACKED),
@@ -35,6 +35,7 @@ fn bundled() -> Vec<(&'static str, &'static str, &'static [u8])> {
         ("glm", "glm4", GLM4_VOCAB_PACKED),
         ("kimi", "kimi", KIMI_VOCAB_PACKED),
         ("mistral", "mistral_v3_tekken", MISTRAL_V3_VOCAB_PACKED),
+        ("modernbert", "modernbert", MODERNBERT_VOCAB_PACKED),
         ("whisper", "whisper", WHISPER_VOCAB_PACKED),
     ]
 }
@@ -140,6 +141,51 @@ fn every_bundled_vocabulary_is_contiguous_today() {
             packed.len()
         );
     }
+}
+
+/// Llama 2's vocabulary is Code Llama's first 32,000 pieces, derived at build
+/// time rather than committed a second time.
+///
+/// Nothing about the two files makes that true by construction — the build
+/// script counts lines, and a Code Llama file that ever reordered or reweighted
+/// a piece below 32,000 would produce a silently wrong Llama 2. This is where
+/// that assumption is checked rather than trusted.
+#[test]
+fn llama2_is_code_llamas_first_32000_pieces() {
+    use splintr::pretrained::{CODELLAMA_SPM_VOCAB, LLAMA2_SPM_VOCAB};
+
+    let llama2 = std::str::from_utf8(LLAMA2_SPM_VOCAB).expect("ascii");
+    let codellama = std::str::from_utf8(CODELLAMA_SPM_VOCAB).expect("ascii");
+
+    let pieces = llama2.lines().count();
+    assert_eq!(pieces, 32_000, "llama2 has {pieces} pieces, not 32,000");
+    assert_eq!(
+        codellama.lines().count(),
+        32_016,
+        "codellama is no longer Llama 2's 32,000 plus 16 infill pieces"
+    );
+
+    for (id, (a, b)) in llama2.lines().zip(codellama.lines()).enumerate() {
+        assert_eq!(
+            a, b,
+            "id {id}: llama2 says {a:?}, codellama says {b:?} — the two have \
+             diverged and llama2 can no longer be derived from codellama"
+        );
+    }
+}
+
+/// Phi-4 and OLMo-2 ship no payload: both read cl100k_base's rank file and
+/// place their own special blocks directly above it, at 100,256.
+///
+/// That id is a property of the shipped file, not a constant either family
+/// declares, so a cl100k_base file that gained or lost a rank would move both
+/// of their special blocks on top of live ranks. It is asserted here for the
+/// same reason the derivation above is.
+#[test]
+fn cl100k_holds_exactly_the_100256_ranks_phi4_and_olmo2_build_on() {
+    let packed =
+        load_packed_bpe(splintr::pretrained::CL100K_BASE_VOCAB_PACKED).expect("cl100k packed");
+    assert_eq!(packed.len(), 100_256);
 }
 
 /// A corrupt or foreign file must be refused, not misread. The magic is the

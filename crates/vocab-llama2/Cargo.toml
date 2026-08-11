@@ -1,0 +1,27 @@
+[package]
+name = "splintr-vocab-llama2"
+version = "1.0.0"
+edition = "2021"
+description = "Bundled tokenizer vocabulary for splintr: Llama 2 and Code Llama."
+# Not an SPDX identifier, so it is named by file rather than by `license`.
+license-file = "LICENSE"
+repository = "https://github.com/ml-rust/splintr"
+homepage = "https://github.com/ml-rust/splintr"
+readme = "README.md"
+keywords = ["tokenizer", "sentencepiece", "vocabulary", "splintr"]
+categories = ["text-processing"]
+# Only Code Llama's `.spm` ships. Llama 2's is its first 32,000 lines, so the
+# build script derives it rather than committing a second copy of pieces that
+# are byte-identical — the same reason no packed binary is shipped either.
+include = [
+    "/src/**/*.rs",
+    "/build.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+    "/vocabs/codellama.spm",
+]
+
+[dependencies]
+
+[build-dependencies]

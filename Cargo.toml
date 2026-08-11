@@ -9,8 +9,8 @@
 # 0.16.0 was already refused once at 10.1 MB.
 #
 # Why per family rather than one `splintr-vocabs`: one crate holding all of
-# them ships at 9.13 MB, which leaves the same problem — no room to add Gemma
-# or Phi-4 — and still makes someone who wants cl100k download all nine. Per
+# them ships at 9.13 MB, which leaves the same problem — no room for the next
+# family — and still makes someone who wants cl100k download all of them. Per
 # family, cl100k costs 0.68 MB, every family has room to grow, and a new one is
 # a new crate rather than a squeeze.
 #
@@ -22,6 +22,12 @@
 # model. Expect to publish each once.
 [workspace]
 members = ["crates/*"]
+# Crates that live in this directory tree but are not part of the release.
+# Cargo claims every manifest under a workspace root unless told otherwise, so
+# without this the perf harness fails to build at all ("not a member ... and is
+# not excluded") and `research/` — a vendored reference copy — would be built,
+# packaged and linted alongside splintr's own code.
+exclude = [".github/rust-bench", "research"]
 
 [package]
 name = "splintr"
@@ -79,12 +85,16 @@ vocabs = [
     "vocab-cl100k",
     "vocab-o200k",
     "vocab-gpt-oss",
+    "vocab-phi4",
+    "vocab-olmo2",
     "vocab-llama3",
+    "vocab-llama2",
     "vocab-deepseek",
     "vocab-qwen",
     "vocab-glm",
     "vocab-kimi",
     "vocab-mistral",
+    "vocab-modernbert",
     "vocab-whisper",
 ]
 
@@ -97,13 +107,23 @@ vocabs = [
 vocab-cl100k = ["dep:splintr-vocab-cl100k"]
 vocab-o200k = ["dep:splintr-vocab-o200k"]
 vocab-llama3 = ["dep:splintr-vocab-llama3"]
+vocab-llama2 = ["dep:splintr-vocab-llama2"]
 vocab-deepseek = ["dep:splintr-vocab-deepseek"]
 vocab-qwen = ["dep:splintr-vocab-qwen"]
 vocab-glm = ["dep:splintr-vocab-glm"]
 vocab-kimi = ["dep:splintr-vocab-kimi"]
 vocab-mistral = ["dep:splintr-vocab-mistral"]
+vocab-modernbert = ["dep:splintr-vocab-modernbert"]
 vocab-whisper = ["dep:splintr-vocab-whisper"]
+# Three families that ship no payload of their own. gpt-oss states o200k_base's
+# ranks; Phi-4 and OLMo-2 state cl100k_base's, all 100,256 of them, verified
+# rank-for-rank. What differs is the special block above the ranks and — for
+# Phi-4 and OLMo-2 — the pre-tokenizer, which is Llama 3's rather than
+# cl100k's. So each is its own vocabulary and its own feature, costing nothing
+# beyond the family it shares data with.
 vocab-gpt-oss = ["vocab-o200k"]
+vocab-phi4 = ["vocab-cl100k"]
+vocab-olmo2 = ["vocab-cl100k"]
 
 [dependencies]
 # One vocabulary family each, enabled by the matching `vocab-*` feature. Both a
@@ -117,11 +137,13 @@ vocab-gpt-oss = ["vocab-o200k"]
 splintr-vocab-cl100k = { path = "crates/vocab-cl100k", version = "1", optional = true }
 splintr-vocab-o200k = { path = "crates/vocab-o200k", version = "1", optional = true }
 splintr-vocab-llama3 = { path = "crates/vocab-llama3", version = "1", optional = true }
+splintr-vocab-llama2 = { path = "crates/vocab-llama2", version = "1", optional = true }
 splintr-vocab-deepseek = { path = "crates/vocab-deepseek", version = "1", optional = true }
 splintr-vocab-qwen = { path = "crates/vocab-qwen", version = "1", optional = true }
 splintr-vocab-glm = { path = "crates/vocab-glm", version = "1", optional = true }
 splintr-vocab-kimi = { path = "crates/vocab-kimi", version = "1", optional = true }
 splintr-vocab-mistral = { path = "crates/vocab-mistral", version = "1", optional = true }
+splintr-vocab-modernbert = { path = "crates/vocab-modernbert", version = "1", optional = true }
 splintr-vocab-whisper = { path = "crates/vocab-whisper", version = "1", optional = true }
 
 # PCRE2 regex with JIT support (optional, for benchmarking)

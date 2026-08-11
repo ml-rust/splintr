@@ -116,8 +116,8 @@ jobs:
           # payloads are fixed, so they are published once and then skipped on
           # every release after.
           #
-          # `vocab-pack` first — the other nine build-depend on it to pack their
-          # `.tiktoken` text, so a verifying publish of any of them cannot
+          # `vocab-pack` first — the `.tiktoken` families build-depend on it to
+          # pack their text, so a verifying publish of any of them cannot
           # resolve until it is indexed.
           # `vocab-pack` appears twice — the glob catches it again — and the
           # second pass is skipped by the already-published check above.

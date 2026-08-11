@@ -94,7 +94,12 @@ Token IDs are carefully allocated to avoid conflicts with reserved ranges:
 | `cl100k_base` | 0-100,255      | 100,257-100,276       | 100,277-100,330                  | 100,331                     |
 | `o200k_base`  | 0-199,997      | 199,999-200,018       | 200,019-200,072                  | 200,073                     |
 | `gpt-oss`     | 0-199,997      | 199,998-200,018       | 200,019-200,072                  | 200,073                     |
+| `phi4`        | 0-100,255      | 100,256-100,351       | 100,352-100,405                  | 100,406                     |
+| `olmo2`       | 0-100,255      | 100,256-100,277       | 100,278-100,331                  | 100,332                     |
 | `llama3`      | 0-127,999      | 128,000-128,255       | 128,256-128,261, 128,300-128,353 | 128,354                     |
+| `llama2`      | 0-31,999       | 0-2                   | 32,000-32,053                    | 32,054                      |
+| `codellama`   | 0-32,015       | 0-2                   | 32,016-32,069                    | 32,070                      |
+| `modernbert`  | 0-50,253       | 0-1, 50,254-50,367    | 50,368-50,421                    | 50,422                      |
 | `qwen3`       | 0-151,642      | 151,643-151,668       | 151,669-151,722                  | 151,723                     |
 | `glm4`        | 0-151,328      | 151,329-151,364       | 151,365-151,418                  | 151,419                     |
 | `deepseek_v3` | 0-127,999      | 0-2, 128,798-128,814  | 128,900-128,953                  | 128,954                     |
@@ -129,6 +134,11 @@ Where each vocabulary's block begins — the other half of every id above, since
 | `gpt-oss` | 200,019 | `gpt_oss_agent_tokens` | `GPT_OSS_AGENT_TOKENS` |
 | `kimi_k2` | 163,840 | `kimi_k2_agent_tokens` | `KIMI_K2_AGENT_TOKENS` |
 | `kimi_k3` | 163,840 | `kimi_k3_agent_tokens` | `KIMI_K3_AGENT_TOKENS` |
+| `phi4` | 100,352 | `phi4_agent_tokens` | `PHI4_AGENT_TOKENS` |
+| `olmo2` | 100,278 | `olmo2_agent_tokens` | `OLMO2_AGENT_TOKENS` |
+| `llama2` | 32,000 | `llama2_agent_tokens` | `LLAMA2_AGENT_TOKENS` |
+| `codellama` | 32,016 | `codellama_agent_tokens` | `CODELLAMA_AGENT_TOKENS` |
+| `modernbert` | 50,368 | `modernbert_agent_tokens` | `MODERNBERT_AGENT_TOKENS` |
 | `whisper` | — | — | — |
 
 <!-- END GENERATED: agent-token-block-starts -->

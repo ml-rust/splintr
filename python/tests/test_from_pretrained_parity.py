@@ -27,8 +27,21 @@ ALL_NAMES = [
     "llama3.1",
     "llama3.2",
     "llama3.3",
+    "llama2",
+    "llama-2",
+    "tinyllama",
+    "vicuna",
+    "codellama",
+    "code_llama",
+    "code-llama",
     "deepseek_v3",
     "deepseek-v3",
+    "phi4",
+    "phi-4",
+    "olmo2",
+    "olmo-2",
+    "modernbert",
+    "modern-bert",
     "mistral",
     "mistral_v1",
     "mistral_v2",
@@ -45,6 +58,11 @@ MATCHED_IN_TEXT = [
     ("cl100k_base", "Hello<|endoftext|>World", [9906, 100257, 10343]),
     ("llama3", "<|begin_of_text|>hi", [128000, 6151]),
     ("whisper", "<|endoftext|>hi", [50257, 4954]),
+    # Phi-4 declares `lstrip`/`rstrip` on every added token, so the marker eats
+    # the spaces; OLMo-2 reads the same ranks and the same id and keeps them.
+    ("phi4", "x <|endoftext|> y", [87, 100257, 88]),
+    ("olmo2", "x <|endoftext|> y", [87, 220, 100257, 379]),
+    ("llama2", "<s>hi", [1, 2918]),
 ]
 
 

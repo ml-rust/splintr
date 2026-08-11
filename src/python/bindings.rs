@@ -126,7 +126,12 @@ impl PyTokenizer {
     /// - "cl100k_base" (GPT-4, GPT-3.5-turbo)
     /// - "o200k_base" (GPT-4o)
     /// - "llama3" / "llama3.1" / "llama3.2" / "llama3.3" (Meta Llama 3 family)
+    /// - "llama2" / "tinyllama" / "vicuna" (Llama 2: 32k SentencePiece)
+    /// - "codellama" (Code Llama: Llama 2's 32k plus 16 infill pieces)
     /// - "deepseek_v3" / "deepseek-v3" (DeepSeek V3)
+    /// - "phi4" (Microsoft Phi-4: cl100k_base's ranks, Llama 3's split)
+    /// - "olmo2" (AI2 OLMo-2: the same, with OLMo's markers)
+    /// - "modernbert" (Answer.AI ModernBERT, ~50k)
     /// - "mistral" / "mistral_v1" (Mistral V1: 32k SentencePiece)
     /// - "mistral_v2" (Mistral V2: 32k + control tokens)
     /// - "mistral_v3" (Mistral V3/Tekken: 131k)
@@ -141,19 +146,19 @@ impl PyTokenizer {
     ///     name: Model name (e.g., "cl100k_base", "o200k_base", "llama3", "mistral_v3")
     ///
     /// Returns:
-    ///     An `AnyTokenizer` — the same universal loaded-tokenizer handle
-    ///     `splintr.from_json` returns, for **every** bundled vocabulary. It
-    ///     carries the vocabulary's special-token policy and decode pipeline
-    ///     with it, and `.family` reports the backend it dispatched to ("BPE"
-    ///     for the byte-level vocabularies, "Spm" for the SentencePiece ones).
+    ///   An `AnyTokenizer` — the same universal loaded-tokenizer handle
+    ///   `splintr.from_json` returns, for **every** bundled vocabulary. It
+    ///   carries the vocabulary's special-token policy and decode pipeline
+    ///   with it, and `.family` reports the backend it dispatched to ("BPE"
+    ///   for the byte-level vocabularies, "Spm" for the SentencePiece ones).
     ///
-    ///     Because this delegates to the same core loader `splintr.pretrained`
-    ///     uses in Rust, a name produces the same ids on both sides of the
-    ///     binding. In particular `encode` matches special tokens spelled out
-    ///     in the text — `encode("<|begin_of_text|>hi")` is `[128000, 6151]`,
-    ///     not the marker shattered into ordinary tokens. Use
-    ///     `encode_ordinary` to refuse those matches, or
-    ///     `encode_allowed_special` to permit a named subset.
+    ///   Because this delegates to the same core loader `splintr.pretrained`
+    ///   uses in Rust, a name produces the same ids on both sides of the
+    ///   binding. In particular `encode` matches special tokens spelled out
+    ///   in the text — `encode("<|begin_of_text|>hi")` is `[128000, 6151]`,
+    ///   not the marker shattered into ordinary tokens. Use
+    ///   `encode_ordinary` to refuse those matches, or
+    ///   `encode_allowed_special` to permit a named subset.
     #[staticmethod]
     fn from_pretrained(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
         // Delegate: the per-vocabulary construction (which file, which

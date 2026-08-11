@@ -271,6 +271,11 @@ jobs:
           # every family wired to every other.
           - flags: "--no-default-features --features vocab-cl100k"
             label: one vocabulary only
+          # A family that ships no payload, enabled without the family whose
+          # ranks it reads. `vocab-phi4` has to pull `vocab-cl100k` in itself;
+          # if it ever stops doing so this is the only row that fails.
+          - flags: "--no-default-features --features vocab-phi4"
+            label: shared-payload vocabulary only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
