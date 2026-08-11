@@ -19,6 +19,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - The vocabulary probe confirms a slot on its key's hash instead of reading the key.
 - A bit per hashed pair retires the merge lookups that find nothing, without reaching the merge table.
 - The cl100k-family scanner picks its branch from the first byte's class instead of trying them in order: up to 21% fewer instructions.
+- A metaspace vocabulary whose transform sits in the normalizer cuts its one whole-document chunk at marker runs, guarding the cuts its own tokens span: Gemma up to 65% fewer instructions.
 
 ## [0.18.0] - 2026-08-11
 

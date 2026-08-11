@@ -12,6 +12,45 @@ use std::sync::{Arc, OnceLock};
 use super::backend::RegexBackend;
 use super::error::TokenizerError;
 
+/// Where a metaspace vocabulary's own tokens allow a chunk to be cut.
+///
+/// A metaspace pipeline can hand BPE a chunk spanning many words — Gemma hands
+/// it the whole document, because its `Split` pre-tokenizer looks for the space
+/// its own normalizer has already replaced. Merging that in one pass is the
+/// expensive way to reach the same answer: cutting it at the start of each `▁`
+/// run gives the words back, and the vocabulary can prove the cut changes
+/// nothing.
+///
+/// The proof is short. A cut at a run start can only change an id if some token
+/// spans it, and such a token must carry a `▁` that is neither its first
+/// character nor part of its leading run. Most metaspace vocabularies have no
+/// such token at all. Gemma has exactly one, `>▁</`, so its cuts are taken
+/// everywhere except where that token would straddle one.
+#[derive(Debug)]
+pub(super) enum RunSplit {
+    /// Not a metaspace vocabulary, or too many tokens span run starts for the
+    /// per-cut check to be worth it. Never cut.
+    Never,
+    /// Cut at every `▁`-run start no [`Guard`] forbids.
+    Allowed {
+        guards: Box<[Guard]>,
+        /// The byte immediately before a cut, for each guard — a one-byte
+        /// filter that answers "no guard can apply here" without touching the
+        /// list. All false when `guards` is empty, which is the common shape.
+        preceded_by: Box<[bool; 256]>,
+    },
+}
+
+/// One token that spans a `▁`-run start, and where.
+#[derive(Debug)]
+pub(super) struct Guard {
+    /// The token's bytes.
+    pub(super) token: Box<[u8]>,
+    /// Offset of the run start inside it: a cut at position `p` is the one this
+    /// token straddles when the token sits at `p - at`.
+    pub(super) at: usize,
+}
+
 /// How a character the BPE merge vocabulary cannot represent is rendered.
 ///
 /// HuggingFace resolves this **per character**, not through an all-or-nothing
@@ -196,12 +235,11 @@ pub struct Tokenizer {
     /// [`Tokenizer::merges_raw`], which every chunk asks and which would
     /// otherwise reach through `pair_ranks` to answer.
     pub(super) raw_space: Arc<OnceLock<bool>>,
-    /// Whether a `split: false` metaspace vocabulary can be split at marker runs
-    /// anyway without changing a single id — see
-    /// [`Tokenizer::metaspace_runs_are_boundaries`]. Proven from the vocabulary
-    /// on first use, like `pair_ranks` above, so a load that never encodes never
-    /// pays the scan.
-    pub(super) metaspace_run_split: Arc<OnceLock<bool>>,
+    /// Where a metaspace vocabulary's own tokens allow a chunk to be cut — see
+    /// [`Tokenizer::marker_run_split`]. Proven from the vocabulary on first use,
+    /// like `pair_ranks` above, so a load that never encodes never pays the
+    /// scan.
+    pub(super) metaspace_run_split: Arc<OnceLock<RunSplit>>,
     /// Behind an `Arc` so a clone — and every
     /// [`StreamingDecoder`](crate::StreamingDecoder) built from this tokenizer —
     /// shares the id→bytes table instead of copying a vocabulary-sized map.

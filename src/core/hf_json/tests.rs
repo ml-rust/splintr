@@ -328,6 +328,68 @@ fn metaspace_prefix_is_first_split_only() {
     assert_eq!(t.encode("<s>(["), vec![1, 5955]);
 }
 
+/// Gemma's shape: the metaspace transform lives in the `normalizer`, so the
+/// `Split` pre-tokenizer looks for a space that is no longer there and hands
+/// BPE the whole text as one chunk.
+///
+/// Cutting that chunk at each `▁`-run start reaches the same ids far cheaper,
+/// and this vocabulary licenses the cut: no token carries a `▁` after a
+/// non-marker character. The `AB` merge exists precisely so that a cut which
+/// was NOT free would show up — it spans the two words and must not form.
+#[test]
+fn metaspace_normalizer_chunk_is_cut_at_marker_runs() {
+    let json = r#"{
+        "added_tokens": [],
+        "normalizer": {"type": "Replace", "pattern": {"String": " "}, "content": "▁"},
+        "pre_tokenizer": {"type": "Split", "pattern": {"String": " "},
+            "behavior": "MergedWithPrevious", "invert": false},
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "▁": 10, "A": 11, "B": 12, "▁A": 13, "▁B": 14,
+                "▁▁": 15, "AB": 16},
+            "merges": [["A", "B"], ["▁", "▁"], ["▁", "A"], ["▁", "B"]]}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("the metaspace document loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    // `AB` outranks both `▁A` and `▁B`, but the cut sits between them.
+    assert_eq!(t.encode("A B"), vec![11, 14]);
+    // A run stays whole: `▁▁` is a token, so only the run's first marker cuts.
+    assert_eq!(t.encode("A  B"), vec![11, 15, 12]);
+}
+
+/// One token spanning a `▁`-run start does not cost the whole vocabulary its
+/// split — the cut is simply not taken where that token would straddle it.
+///
+/// Gemma is this case: of 262,144 tokens exactly one, `>▁</`, reaches across a
+/// run start. Here `X▁Y` plays that role, and `Y` also stands alone so the
+/// difference between taking the cut and not is visible in the ids.
+#[test]
+fn a_token_spanning_a_marker_run_guards_only_its_own_cut() {
+    let json = r#"{
+        "added_tokens": [],
+        "normalizer": {"type": "Replace", "pattern": {"String": " "}, "content": "▁"},
+        "pre_tokenizer": {"type": "Split", "pattern": {"String": " "},
+            "behavior": "MergedWithPrevious", "invert": false},
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "▁": 10, "X": 11, "Y": 12, "Z": 13,
+                "▁Y": 14, "▁Z": 15, "X▁Y": 17},
+            "merges": [["▁", "Y"], ["X", "▁Y"], ["▁", "Z"]]}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("the metaspace document loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    // Guarded: `X▁Y` spans the cut, so the cut is not taken and it forms.
+    assert_eq!(t.encode("X Y"), vec![17]);
+    // Unguarded: nothing spans this one, so the cut is free and taken.
+    assert_eq!(t.encode("X Z"), vec![11, 15]);
+}
+
 #[test]
 fn unigram_uses_viterbi_not_greedy() {
     // Tokens: "ab"(-5), "abc"(-1), "c"(-1), plus single chars. Greedy-longest at

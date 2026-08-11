@@ -1,4 +1,4 @@
-use super::super::types::Tokenizer;
+use super::super::types::{Guard, RunSplit, Tokenizer};
 
 /// SentencePiece's metaspace marker, `U+2581`. Spelled once: it is three bytes
 /// wide, and the split below steps by exactly that.
@@ -223,15 +223,23 @@ impl Tokenizer {
         text: &str,
         mut f: impl FnMut(&str),
     ) {
-        let run_starts_only = if self.metaspace_split {
-            false
-        } else if self.metaspace_runs_are_boundaries() {
-            true
-        } else {
-            if !text.is_empty() {
-                f(text);
-            }
-            return;
+        // Declared `split: true` cuts at every marker; a proven split cuts only
+        // at run starts, and only where no token spans the cut — which for most
+        // vocabularies is everywhere, so the guard check is skipped entirely
+        // rather than asked per marker.
+        let (run_starts_only, guarded) = match self.metaspace_split {
+            true => (false, None),
+            false => match self.marker_run_split() {
+                RunSplit::Never => {
+                    if !text.is_empty() {
+                        f(text);
+                    }
+                    return;
+                }
+                split @ RunSplit::Allowed { guards, .. } => {
+                    (true, (!guards.is_empty()).then_some(split))
+                }
+            },
         };
 
         let mut start = 0;
@@ -248,6 +256,11 @@ impl Tokenizer {
             if mid_run {
                 continue;
             }
+            if let Some(split) = guarded {
+                if at > 0 && !split.cuts_at(text.as_bytes(), at) {
+                    continue;
+                }
+            }
             if at > start {
                 f(&text[start..at]);
             }
@@ -258,30 +271,102 @@ impl Tokenizer {
         }
     }
 
-    /// Whether cutting a `split: false` metaspace text at the start of every
-    /// marker run yields the same ids as never cutting it at all.
+    /// Where this vocabulary's own tokens allow a chunk to be cut at the start
+    /// of a marker run. See [`RunSplit`] for why such a cut can be free.
     ///
-    /// It does when no vocabulary token carries a marker **after** a non-marker
-    /// character. A merge that spanned a run's start would have to produce a
-    /// symbol shaped `…x▁…`; if the vocabulary holds no such token, that merge
-    /// can never form, so the cut removes nothing that could have happened. Runs
-    /// themselves are left whole because `▁▁`, `▁▁▁`, … *are* tokens.
+    /// A token can only span a run start by carrying a marker that is neither
+    /// its first character nor part of its leading run — `…x▁…`. Every such
+    /// token becomes a [`Guard`]; a cut is taken unless a guard sits across it.
+    /// mistral-7b-v0.3 yields none at all (of 32,768 tokens exactly 14 hold an
+    /// interior marker and every one is a pure run), Gemma yields the single
+    /// `>▁</`.
     ///
-    /// mistral-7b-v0.3 passes: of 32,768 tokens exactly 14 hold an interior
-    /// marker and every one is a pure run. A vocabulary that fails keeps the
-    /// literal whole-text merge.
+    /// Beyond [`MAX_GUARDS`] the vocabulary is not really metaspace-shaped and
+    /// the per-cut check would cost more than the merge it saves, so nothing is
+    /// cut. A vocabulary with no marker token at all is not metaspace at all.
     ///
     /// Proven once per tokenizer, on first encode.
-    fn metaspace_runs_are_boundaries(&self) -> bool {
-        *self.metaspace_run_split.get_or_init(|| {
-            self.encoder.keys().all(|token| {
-                // Past the leading run, no marker may appear.
-                let rest = token
-                    .chunks_exact(MARKER.len())
-                    .position(|c| c != MARKER.as_bytes())
-                    .map_or(token.len(), |runs| runs * MARKER.len());
-                memchr::memmem::find(&token[rest..], MARKER.as_bytes()).is_none()
-            })
+    pub(in crate::core::tokenizer) fn marker_run_split(&self) -> &RunSplit {
+        self.metaspace_run_split.get_or_init(|| {
+            let mut guards: Vec<Guard> = Vec::new();
+            let mut marker_tokens = false;
+
+            for token in self.encoder.keys() {
+                // Past the leading run: a marker there is the token's own
+                // first character and spans nothing.
+                let mut pos = leading_run_len(token);
+                marker_tokens |= pos > 0;
+                while let Some(off) = memchr::memmem::find(&token[pos..], MARKER.as_bytes()) {
+                    if guards.len() == MAX_GUARDS {
+                        return RunSplit::Never;
+                    }
+                    let at = pos + off;
+                    guards.push(Guard {
+                        token: token.into(),
+                        at,
+                    });
+                    // Only a run's *start* is ever a cut, so step over the rest
+                    // of this one before looking for the next.
+                    pos = at + leading_run_len(&token[at..]);
+                }
+            }
+
+            if !marker_tokens {
+                return RunSplit::Never;
+            }
+            let mut preceded_by = Box::new([false; 256]);
+            for guard in &guards {
+                preceded_by[guard.token[guard.at - 1] as usize] = true;
+            }
+            RunSplit::Allowed {
+                guards: guards.into(),
+                preceded_by,
+            }
+        })
+    }
+}
+
+/// How many tokens may span a marker-run start before the cut is abandoned.
+const MAX_GUARDS: usize = 8;
+
+/// Length of the run of markers `token` opens with, in bytes.
+fn leading_run_len(token: &[u8]) -> usize {
+    let mut len = 0;
+    while token[len..].starts_with(MARKER.as_bytes()) {
+        len += MARKER.len();
+    }
+    len
+}
+
+impl RunSplit {
+    /// Whether cutting `chunk` at `pos` — the start of a marker run — leaves
+    /// every id unchanged.
+    ///
+    /// Free unless a guard token straddles the cut. The byte before the cut
+    /// answers that for almost every position without touching the list, and
+    /// for the vocabularies with no guard at all it answers it for every one.
+    #[inline]
+    pub(in crate::core::tokenizer) fn cuts_at(&self, chunk: &[u8], pos: usize) -> bool {
+        let RunSplit::Allowed {
+            guards,
+            preceded_by,
+        } = self
+        else {
+            return false;
+        };
+        // Most metaspace vocabularies hold no token that can span a cut at all,
+        // and then there is nothing to look up.
+        if guards.is_empty() {
+            return true;
+        }
+        if !preceded_by[chunk[pos - 1] as usize] {
+            return true;
+        }
+        !guards.iter().any(|guard| {
+            let Some(from) = pos.checked_sub(guard.at) else {
+                return false;
+            };
+            chunk[from..].starts_with(&guard.token)
         })
     }
 }

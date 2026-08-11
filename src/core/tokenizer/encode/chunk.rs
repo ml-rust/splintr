@@ -29,7 +29,69 @@ impl Tokenizer {
             out.push(rank);
             return;
         }
+        // A metaspace pipeline can hand this a chunk spanning many words, and
+        // merging that whole is the expensive way to the same ids — see
+        // [`RunSplit`].
+        //
+        // Only the pre-tokenizer fork asks. A `Metaspace` node cuts its own text
+        // at the same boundaries before any chunk reaches here, so asking again
+        // would rescan every word to find the cut already taken; and a
+        // ByteLevel vocabulary maps every byte into an alphabet `▁` is not in,
+        // so a marker in a chunk there is not the marker at all. What is left is
+        // the shape Gemma ships: a `Split` pre-tokenizer looking for the space
+        // its own normalizer has already replaced, which therefore splits
+        // nothing.
+        if self.pre_tokenizer.is_some()
+            && !self.use_byte_level
+            && self.split_marker_runs_into(bytes, out)
+        {
+            return;
+        }
         self.encode_unresolved_bytes_into(bytes, hash, out);
+    }
+
+    /// Cut `bytes` at every marker-run start the vocabulary proves free, encode
+    /// the pieces, and report whether any cut was made.
+    ///
+    /// `false` leaves `out` untouched and the chunk for the caller to merge
+    /// whole — either because this vocabulary licenses no cut, or because this
+    /// chunk holds none. The latter is the ordinary case once the cutting has
+    /// happened: a piece produced here opens with a marker run and carries no
+    /// further free run start.
+    fn split_marker_runs_into(&self, bytes: &[u8], out: &mut Vec<u32>) -> bool {
+        let split = self.marker_run_split();
+        if matches!(split, crate::core::tokenizer::types::RunSplit::Never) {
+            return false;
+        }
+
+        let marker = super::content::MARKER.as_bytes();
+        let mut start = 0;
+        let mut prev_end = usize::MAX;
+        for at in memchr::memmem::find_iter(bytes, marker) {
+            let mid_run = at == prev_end;
+            prev_end = at + marker.len();
+            // `at == 0` is the piece's own opening run, not a cut inside it.
+            if mid_run || at == 0 || !split.cuts_at(bytes, at) {
+                continue;
+            }
+            self.encode_piece_into(&bytes[start..at], out);
+            start = at;
+        }
+        if start == 0 {
+            return false;
+        }
+        self.encode_piece_into(&bytes[start..], out);
+        true
+    }
+
+    /// [`Tokenizer::encode_bytes_into`] for bytes already known to hold no cut,
+    /// which every piece [`Tokenizer::split_marker_runs_into`] produces is.
+    fn encode_piece_into(&self, bytes: &[u8], out: &mut Vec<u32>) {
+        let hash = crate::core::encoder::Encoder::hash_of(bytes);
+        match self.chunk_encoder().get_with_hash(bytes, hash) {
+            Some(rank) => out.push(rank),
+            None => self.encode_unresolved_bytes_into(bytes, hash, out),
+        }
     }
 
     /// [`Tokenizer::encode_bytes_into`] for a caller that has already asked the
