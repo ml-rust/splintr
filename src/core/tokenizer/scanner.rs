@@ -1419,25 +1419,13 @@ fn deepseek_v3_walk(text: &str, mut emit: impl FnMut(usize, usize)) {
             continue;
         }
 
-        // `\p{N}{1,3}` — the first pass, capped at three characters.
-        if let Some(n) = number_at(text, bytes, pos) {
-            let start = pos;
-            pos += n;
-            for _ in 1..3 {
-                match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
-                    Some(n) => pos += n,
-                    None => break,
-                }
-            }
-            if start > last {
-                emit(last, start);
-            }
-            emit(start, pos);
-            last = pos;
-            continue;
-        }
-
-        // The second pass's CJK ranges.
+        // The second pass's CJK ranges, ahead of the first pass's digits even
+        // though the passes run the other way round. The two classes are
+        // disjoint — `cjk_ranges_hold_no_digits` checks every codepoint of them
+        // — so whichever is tested first claims the same characters. Testing
+        // CJK first is what makes a run of it cheap: asking `\p{N}` about a
+        // Han character means decoding it and looking up its general category,
+        // and on CJK text that is the answer *no* for every character.
         if bytes[pos] >= 0x80 {
             let (c, l) = char_at(text, pos);
             if is_deepseek_cjk(c) {
@@ -1457,6 +1445,24 @@ fn deepseek_v3_walk(text: &str, mut emit: impl FnMut(usize, usize)) {
                 last = pos;
                 continue;
             }
+        }
+
+        // `\p{N}{1,3}` — the first pass, capped at three characters.
+        if let Some(n) = number_at(text, bytes, pos) {
+            let start = pos;
+            pos += n;
+            for _ in 1..3 {
+                match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
+                    Some(n) => pos += n,
+                    None => break,
+                }
+            }
+            if start > last {
+                emit(last, start);
+            }
+            emit(start, pos);
+            last = pos;
+            continue;
         }
 
         match deepseek_pass3_match(text, bytes, pos, true) {
@@ -1689,6 +1695,22 @@ mod fused_tests {
         ];
         for text in cases {
             assert_eq!(fused(text), staged(text), "fused walk diverged on {text:?}");
+        }
+    }
+
+    /// The fused walk tests DeepSeek's CJK ranges before its digits, which is
+    /// only the same answer if nothing is both. Checked over every codepoint of
+    /// those ranges rather than argued from what they are named.
+    #[test]
+    fn cjk_ranges_hold_no_digits() {
+        for codepoint in (0x4E00..=0x9FA5).chain(0x3040..=0x30FF) {
+            let Some(c) = char::from_u32(codepoint) else {
+                continue;
+            };
+            assert!(
+                is_deepseek_cjk(c) && !is_number_char(c),
+                "U+{codepoint:04X} is claimed by both passes, so their order matters"
+            );
         }
     }
 
