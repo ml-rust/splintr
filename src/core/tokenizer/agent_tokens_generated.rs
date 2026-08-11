@@ -2733,3 +2733,411 @@ pub mod modernbert_agent_tokens {
     pub const SUMMARY_END: u32 = 50421;
 }
 
+/// Agent tokens for Google Gemma 2.
+///
+/// The 54-token block starts at 256000. Every id here is also reachable
+/// at runtime as `from_pretrained("gemma2")?.special_token_id(name)`;
+/// these constants are the compile-time form, so a typo is a compile
+/// error rather than a `None` to unwrap.
+pub mod gemma2_agent_tokens {
+    // Conversation & Roles
+    /// System role - system instructions
+    pub const SYSTEM: u32 = 256000;
+    /// User role - user input
+    pub const USER: u32 = 256001;
+    /// Assistant role - model output
+    pub const ASSISTANT: u32 = 256002;
+    /// Start of message - ChatML wrapper
+    pub const IM_START: u32 = 256003;
+    /// End of message - ChatML wrapper
+    pub const IM_END: u32 = 256004;
+
+    // Reasoning/Thinking
+    /// Start of thinking - Chain-of-Thought
+    pub const THINK: u32 = 256005;
+    /// End of thinking
+    pub const THINK_END: u32 = 256006;
+
+    // ReAct Agent Loop
+    /// Start of plan - action planning
+    pub const PLAN: u32 = 256007;
+    /// End of plan
+    pub const PLAN_END: u32 = 256008;
+    /// Start of step - individual action step
+    pub const STEP: u32 = 256009;
+    /// End of step
+    pub const STEP_END: u32 = 256010;
+    /// Start of action - agent action
+    pub const ACT: u32 = 256011;
+    /// End of action
+    pub const ACT_END: u32 = 256012;
+    /// Start of observation - environment feedback
+    pub const OBSERVE: u32 = 256013;
+    /// End of observation
+    pub const OBSERVE_END: u32 = 256014;
+
+    // Tool/Function Calling
+    /// Start of function call - function invocation
+    pub const FUNCTION: u32 = 256015;
+    /// End of function call
+    pub const FUNCTION_END: u32 = 256016;
+    /// Start of function result - return value
+    pub const RESULT: u32 = 256017;
+    /// End of function result
+    pub const RESULT_END: u32 = 256018;
+    /// Start of error - error message
+    pub const ERROR: u32 = 256019;
+    /// End of error
+    pub const ERROR_END: u32 = 256020;
+
+    // Code Execution
+    /// Start of code - inline code execution
+    pub const CODE: u32 = 256021;
+    /// End of code
+    pub const CODE_END: u32 = 256022;
+    /// Start of output - execution output
+    pub const OUTPUT: u32 = 256023;
+    /// End of output
+    pub const OUTPUT_END: u32 = 256024;
+    /// Start of language tag - code language
+    pub const LANG: u32 = 256025;
+    /// End of language tag
+    pub const LANG_END: u32 = 256026;
+
+    // RAG & Citations
+    /// Start of context - retrieved context
+    pub const CONTEXT: u32 = 256027;
+    /// End of context
+    pub const CONTEXT_END: u32 = 256028;
+    /// Start of quote - exact citation
+    pub const QUOTE: u32 = 256029;
+    /// End of quote
+    pub const QUOTE_END: u32 = 256030;
+    /// Start of cite - citation reference
+    pub const CITE: u32 = 256031;
+    /// End of cite
+    pub const CITE_END: u32 = 256032;
+    /// Start of source - document source
+    pub const SOURCE: u32 = 256033;
+    /// End of source
+    pub const SOURCE_END: u32 = 256034;
+
+    // Memory/State Management
+    /// Start of memory - persistent memory
+    pub const MEMORY: u32 = 256035;
+    /// End of memory
+    pub const MEMORY_END: u32 = 256036;
+    /// Start of recall - memory retrieval
+    pub const RECALL: u32 = 256037;
+    /// End of recall
+    pub const RECALL_END: u32 = 256038;
+
+    // Control Tokens
+    /// Padding token
+    pub const PAD: u32 = 256039;
+    /// Stop generation token
+    pub const STOP: u32 = 256040;
+    /// Separator token
+    pub const SEP: u32 = 256041;
+
+    // Multimodal Placeholders
+    /// Start of image - image placeholder
+    pub const IMAGE: u32 = 256042;
+    /// End of image
+    pub const IMAGE_END: u32 = 256043;
+    /// Start of audio - audio placeholder
+    pub const AUDIO: u32 = 256044;
+    /// End of audio
+    pub const AUDIO_END: u32 = 256045;
+    /// Start of video - video placeholder
+    pub const VIDEO: u32 = 256046;
+    /// End of video
+    pub const VIDEO_END: u32 = 256047;
+
+    // Document Structure
+    /// Start of title - document/section title
+    pub const TITLE: u32 = 256048;
+    /// End of title
+    pub const TITLE_END: u32 = 256049;
+    /// Start of section - semantic document section
+    pub const SECTION: u32 = 256050;
+    /// End of section
+    pub const SECTION_END: u32 = 256051;
+    /// Start of summary - condensed content summary
+    pub const SUMMARY: u32 = 256052;
+    /// End of summary
+    pub const SUMMARY_END: u32 = 256053;
+}
+
+/// Agent tokens for Google Gemma 3 (also EmbeddingGemma).
+///
+/// The 54-token block starts at 262144. Every id here is also reachable
+/// at runtime as `from_pretrained("gemma3")?.special_token_id(name)`;
+/// these constants are the compile-time form, so a typo is a compile
+/// error rather than a `None` to unwrap.
+pub mod gemma3_agent_tokens {
+    // Conversation & Roles
+    /// System role - system instructions
+    pub const SYSTEM: u32 = 262144;
+    /// User role - user input
+    pub const USER: u32 = 262145;
+    /// Assistant role - model output
+    pub const ASSISTANT: u32 = 262146;
+    /// Start of message - ChatML wrapper
+    pub const IM_START: u32 = 262147;
+    /// End of message - ChatML wrapper
+    pub const IM_END: u32 = 262148;
+
+    // Reasoning/Thinking
+    /// Start of thinking - Chain-of-Thought
+    pub const THINK: u32 = 262149;
+    /// End of thinking
+    pub const THINK_END: u32 = 262150;
+
+    // ReAct Agent Loop
+    /// Start of plan - action planning
+    pub const PLAN: u32 = 262151;
+    /// End of plan
+    pub const PLAN_END: u32 = 262152;
+    /// Start of step - individual action step
+    pub const STEP: u32 = 262153;
+    /// End of step
+    pub const STEP_END: u32 = 262154;
+    /// Start of action - agent action
+    pub const ACT: u32 = 262155;
+    /// End of action
+    pub const ACT_END: u32 = 262156;
+    /// Start of observation - environment feedback
+    pub const OBSERVE: u32 = 262157;
+    /// End of observation
+    pub const OBSERVE_END: u32 = 262158;
+
+    // Tool/Function Calling
+    /// Start of function call - function invocation
+    pub const FUNCTION: u32 = 262159;
+    /// End of function call
+    pub const FUNCTION_END: u32 = 262160;
+    /// Start of function result - return value
+    pub const RESULT: u32 = 262161;
+    /// End of function result
+    pub const RESULT_END: u32 = 262162;
+    /// Start of error - error message
+    pub const ERROR: u32 = 262163;
+    /// End of error
+    pub const ERROR_END: u32 = 262164;
+
+    // Code Execution
+    /// Start of code - inline code execution
+    pub const CODE: u32 = 262165;
+    /// End of code
+    pub const CODE_END: u32 = 262166;
+    /// Start of output - execution output
+    pub const OUTPUT: u32 = 262167;
+    /// End of output
+    pub const OUTPUT_END: u32 = 262168;
+    /// Start of language tag - code language
+    pub const LANG: u32 = 262169;
+    /// End of language tag
+    pub const LANG_END: u32 = 262170;
+
+    // RAG & Citations
+    /// Start of context - retrieved context
+    pub const CONTEXT: u32 = 262171;
+    /// End of context
+    pub const CONTEXT_END: u32 = 262172;
+    /// Start of quote - exact citation
+    pub const QUOTE: u32 = 262173;
+    /// End of quote
+    pub const QUOTE_END: u32 = 262174;
+    /// Start of cite - citation reference
+    pub const CITE: u32 = 262175;
+    /// End of cite
+    pub const CITE_END: u32 = 262176;
+    /// Start of source - document source
+    pub const SOURCE: u32 = 262177;
+    /// End of source
+    pub const SOURCE_END: u32 = 262178;
+
+    // Memory/State Management
+    /// Start of memory - persistent memory
+    pub const MEMORY: u32 = 262179;
+    /// End of memory
+    pub const MEMORY_END: u32 = 262180;
+    /// Start of recall - memory retrieval
+    pub const RECALL: u32 = 262181;
+    /// End of recall
+    pub const RECALL_END: u32 = 262182;
+
+    // Control Tokens
+    /// Padding token
+    pub const PAD: u32 = 262183;
+    /// Stop generation token
+    pub const STOP: u32 = 262184;
+    /// Separator token
+    pub const SEP: u32 = 262185;
+
+    // Multimodal Placeholders
+    /// Start of image - image placeholder
+    pub const IMAGE: u32 = 262186;
+    /// End of image
+    pub const IMAGE_END: u32 = 262187;
+    /// Start of audio - audio placeholder
+    pub const AUDIO: u32 = 262188;
+    /// End of audio
+    pub const AUDIO_END: u32 = 262189;
+    /// Start of video - video placeholder
+    pub const VIDEO: u32 = 262190;
+    /// End of video
+    pub const VIDEO_END: u32 = 262191;
+
+    // Document Structure
+    /// Start of title - document/section title
+    pub const TITLE: u32 = 262192;
+    /// End of title
+    pub const TITLE_END: u32 = 262193;
+    /// Start of section - semantic document section
+    pub const SECTION: u32 = 262194;
+    /// End of section
+    pub const SECTION_END: u32 = 262195;
+    /// Start of summary - condensed content summary
+    pub const SUMMARY: u32 = 262196;
+    /// End of summary
+    pub const SUMMARY_END: u32 = 262197;
+}
+
+/// Agent tokens for Google Gemma 4.
+///
+/// The 54-token block starts at 262144. Every id here is also reachable
+/// at runtime as `from_pretrained("gemma4")?.special_token_id(name)`;
+/// these constants are the compile-time form, so a typo is a compile
+/// error rather than a `None` to unwrap.
+pub mod gemma4_agent_tokens {
+    // Conversation & Roles
+    /// System role - system instructions
+    pub const SYSTEM: u32 = 262144;
+    /// User role - user input
+    pub const USER: u32 = 262145;
+    /// Assistant role - model output
+    pub const ASSISTANT: u32 = 262146;
+    /// Start of message - ChatML wrapper
+    pub const IM_START: u32 = 262147;
+    /// End of message - ChatML wrapper
+    pub const IM_END: u32 = 262148;
+
+    // Reasoning/Thinking
+    /// Start of thinking - Chain-of-Thought
+    pub const THINK: u32 = 262149;
+    /// End of thinking
+    pub const THINK_END: u32 = 262150;
+
+    // ReAct Agent Loop
+    /// Start of plan - action planning
+    pub const PLAN: u32 = 262151;
+    /// End of plan
+    pub const PLAN_END: u32 = 262152;
+    /// Start of step - individual action step
+    pub const STEP: u32 = 262153;
+    /// End of step
+    pub const STEP_END: u32 = 262154;
+    /// Start of action - agent action
+    pub const ACT: u32 = 262155;
+    /// End of action
+    pub const ACT_END: u32 = 262156;
+    /// Start of observation - environment feedback
+    pub const OBSERVE: u32 = 262157;
+    /// End of observation
+    pub const OBSERVE_END: u32 = 262158;
+
+    // Tool/Function Calling
+    /// Start of function call - function invocation
+    pub const FUNCTION: u32 = 262159;
+    /// End of function call
+    pub const FUNCTION_END: u32 = 262160;
+    /// Start of function result - return value
+    pub const RESULT: u32 = 262161;
+    /// End of function result
+    pub const RESULT_END: u32 = 262162;
+    /// Start of error - error message
+    pub const ERROR: u32 = 262163;
+    /// End of error
+    pub const ERROR_END: u32 = 262164;
+
+    // Code Execution
+    /// Start of code - inline code execution
+    pub const CODE: u32 = 262165;
+    /// End of code
+    pub const CODE_END: u32 = 262166;
+    /// Start of output - execution output
+    pub const OUTPUT: u32 = 262167;
+    /// End of output
+    pub const OUTPUT_END: u32 = 262168;
+    /// Start of language tag - code language
+    pub const LANG: u32 = 262169;
+    /// End of language tag
+    pub const LANG_END: u32 = 262170;
+
+    // RAG & Citations
+    /// Start of context - retrieved context
+    pub const CONTEXT: u32 = 262171;
+    /// End of context
+    pub const CONTEXT_END: u32 = 262172;
+    /// Start of quote - exact citation
+    pub const QUOTE: u32 = 262173;
+    /// End of quote
+    pub const QUOTE_END: u32 = 262174;
+    /// Start of cite - citation reference
+    pub const CITE: u32 = 262175;
+    /// End of cite
+    pub const CITE_END: u32 = 262176;
+    /// Start of source - document source
+    pub const SOURCE: u32 = 262177;
+    /// End of source
+    pub const SOURCE_END: u32 = 262178;
+
+    // Memory/State Management
+    /// Start of memory - persistent memory
+    pub const MEMORY: u32 = 262179;
+    /// End of memory
+    pub const MEMORY_END: u32 = 262180;
+    /// Start of recall - memory retrieval
+    pub const RECALL: u32 = 262181;
+    /// End of recall
+    pub const RECALL_END: u32 = 262182;
+
+    // Control Tokens
+    /// Padding token
+    pub const PAD: u32 = 262183;
+    /// Stop generation token
+    pub const STOP: u32 = 262184;
+    /// Separator token
+    pub const SEP: u32 = 262185;
+
+    // Multimodal Placeholders
+    /// Start of image - image placeholder
+    pub const IMAGE: u32 = 262186;
+    /// End of image
+    pub const IMAGE_END: u32 = 262187;
+    /// Start of audio - audio placeholder
+    pub const AUDIO: u32 = 262188;
+    /// End of audio
+    pub const AUDIO_END: u32 = 262189;
+    /// Start of video - video placeholder
+    pub const VIDEO: u32 = 262190;
+    /// End of video
+    pub const VIDEO_END: u32 = 262191;
+
+    // Document Structure
+    /// Start of title - document/section title
+    pub const TITLE: u32 = 262192;
+    /// End of title
+    pub const TITLE_END: u32 = 262193;
+    /// Start of section - semantic document section
+    pub const SECTION: u32 = 262194;
+    /// End of section
+    pub const SECTION_END: u32 = 262195;
+    /// Start of summary - condensed content summary
+    pub const SUMMARY: u32 = 262196;
+    /// End of summary
+    pub const SUMMARY_END: u32 = 262197;
+}
+

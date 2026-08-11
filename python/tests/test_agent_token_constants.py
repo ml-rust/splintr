@@ -99,6 +99,9 @@ VOCABULARIES = [
     ("llama2", "LLAMA2_AGENT_TOKENS"),
     ("codellama", "CODELLAMA_AGENT_TOKENS"),
     ("modernbert", "MODERNBERT_AGENT_TOKENS"),
+    ("gemma2", "GEMMA2_AGENT_TOKENS"),
+    ("gemma3", "GEMMA3_AGENT_TOKENS"),
+    ("gemma4", "GEMMA4_AGENT_TOKENS"),
 ]
 
 

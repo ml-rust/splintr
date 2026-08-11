@@ -395,6 +395,14 @@ MODELS = [
     # ModernBERT's markers are `[CLS]`/`[SEP]`/`[MASK]`-style and collide with no
     # agent name — `[PAD]` is not `<|pad|>`.
     ("modernbert", "modernbert_agent_tokens", "PyModernBertAgentTokens", "MODERNBERT_AGENT_TOKENS", 50368, "Answer.AI ModernBERT", [], set()),
+    # Every Gemma names only the four SentencePiece control pieces — `<pad>`,
+    # `<eos>`, `<bos>`, `<unk>` at ids 0-3 — and none of them is an agent-token
+    # name (`<pad>` is not `<|pad|>`), so none carries a native table and none
+    # skips an offset. Gemma 3 and Gemma 4 share a block start because they are
+    # the same size, not the same vocabulary.
+    ("gemma2", "gemma2_agent_tokens", "PyGemma2AgentTokens", "GEMMA2_AGENT_TOKENS", 256000, "Google Gemma 2", [], set()),
+    ("gemma3", "gemma3_agent_tokens", "PyGemma3AgentTokens", "GEMMA3_AGENT_TOKENS", 262144, "Google Gemma 3 (also EmbeddingGemma)", [], set()),
+    ("gemma4", "gemma4_agent_tokens", "PyGemma4AgentTokens", "GEMMA4_AGENT_TOKENS", 262144, "Google Gemma 4", [], set()),
 ]
 
 # The ten categories the 54 agent tokens fall into, as (name, first offset,

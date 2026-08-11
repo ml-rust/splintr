@@ -108,6 +108,9 @@ Token IDs are carefully allocated to avoid conflicts with reserved ranges:
 | `mistral_v3`  | 0-131,071      | 0-9                   | 131,072-131,125                  | 131,126                     |
 | `kimi_k2`     | 0-163,583      | 163,584-163,839       | 163,840-163,893                  | 163,894 |
 | `kimi_k3`     | 0-163,583      | 163,584-163,839       | 163,840-163,893                  | 163,894 |
+| `gemma2`      | 0-255,999      | 0-3                   | 256,000-256,053                  | 256,054                     |
+| `gemma3`      | 0-262,143      | 0-3                   | 262,144-262,197                  | 262,198                     |
+| `gemma4`      | 0-262,143      | 0-3                   | 262,144-262,197                  | 262,198                     |
 | `whisper`     | 0-50,256       | 50,257-51,864 (v1/v2) | none                             | 51,865 (v1/v2), 51,866 (v3) |
 
 Every vocabulary above except Whisper carries exactly 54 agent tokens — all 54 names resolve on all of them. Where they _come from_ is what varies:
@@ -139,6 +142,9 @@ Where each vocabulary's block begins — the other half of every id above, since
 | `llama2` | 32,000 | `llama2_agent_tokens` | `LLAMA2_AGENT_TOKENS` |
 | `codellama` | 32,016 | `codellama_agent_tokens` | `CODELLAMA_AGENT_TOKENS` |
 | `modernbert` | 50,368 | `modernbert_agent_tokens` | `MODERNBERT_AGENT_TOKENS` |
+| `gemma2` | 256,000 | `gemma2_agent_tokens` | `GEMMA2_AGENT_TOKENS` |
+| `gemma3` | 262,144 | `gemma3_agent_tokens` | `GEMMA3_AGENT_TOKENS` |
+| `gemma4` | 262,144 | `gemma4_agent_tokens` | `GEMMA4_AGENT_TOKENS` |
 | `whisper` | — | — | — |
 
 <!-- END GENERATED: agent-token-block-starts -->
@@ -1255,7 +1261,7 @@ fn extract_thinking(tokens: &[u32]) -> Option<(usize, usize)> {
 
 One frozen constants class per bundled vocabulary that carries agent tokens, so an id can be named instead of written out: `CL100K_AGENT_TOKENS.THINK` rather than the literal `100282`, or a `special_token_id("<|think|>")` call that returns `Optional[int]` and has to be checked. They are class attributes, so they cost nothing at runtime and a typo is an `AttributeError` at the call site rather than a wrong id flowing into a prompt.
 
-Ten classes, covering every bundled vocabulary except Whisper (which carries no agent tokens):
+One class per bundled vocabulary that carries agent tokens — every one except Whisper:
 
 | Vocabulary    | Class                      | Agent block starts at |
 | ------------- | -------------------------- | --------------------- |

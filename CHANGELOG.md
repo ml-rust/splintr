@@ -13,6 +13,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - Eight bundled vocabularies: `phi4`, `olmo2`, `llama2` (also `tinyllama`, `vicuna`), `codellama`, `modernbert`, `gemma2`, `gemma3` (also `embeddinggemma`) and `gemma4`. Phi-4 and OLMo-2 ship no payload — both state cl100k_base's ranks.
 - A packed merge-order payload, for a vocabulary whose token ids and merge priority differ. Gemma 4 is the first; a `.tiktoken` rank cannot serve as both.
 - `.mbpe`, a text format stating a BPE vocabulary and its merge order — including each rule's operand split, which is what separates an entry BPE builds from one it can never reach. Specified in `docs/mbpe.md`.
+- Agent-token constants for Gemma 2, 3 and 4 — `gemma2_agent_tokens` and friends in Rust, `GEMMA2_AGENT_TOKENS` and friends in Python. The vocabularies already carried all 54; only the named constants and the tables in `docs/special_tokens.md` were missing.
 - Python: `MISTRAL_V3_PATTERN` and `GPT2_PATTERN`, the two pre-tokenizer expressions
 
 ### Fixed

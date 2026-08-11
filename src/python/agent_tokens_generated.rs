@@ -4557,6 +4557,714 @@ impl PyModernBertAgentTokens {
 
 }
 
+/// Google Gemma 2 Agent Token IDs (256000-256053)
+///
+/// Access agent token IDs for Google Gemma 2.
+///
+/// # Examples
+///
+/// ```python
+/// from splintr import Tokenizer, GEMMA2_AGENT_TOKENS
+///
+/// tokenizer = Tokenizer.from_pretrained("gemma2")
+/// system_id = GEMMA2_AGENT_TOKENS.SYSTEM  # 256000
+/// think_id = GEMMA2_AGENT_TOKENS.THINK   # 256005
+///
+/// text = "<|system|>You are a helpful assistant"
+/// tokens = tokenizer.encode_with_special(text)
+/// assert GEMMA2_AGENT_TOKENS.SYSTEM in tokens
+/// ```
+#[pyclass(name = "GEMMA2_AGENT_TOKENS", frozen)]
+pub struct PyGemma2AgentTokens;
+
+#[pymethods]
+impl PyGemma2AgentTokens {
+    // =========================================================================
+    // Conversation & Roles (256000-256004)
+    // =========================================================================
+
+    /// System role - system instructions (256000)
+    #[classattr]
+    const SYSTEM: u32 = 256000;
+    /// User role - user input (256001)
+    #[classattr]
+    const USER: u32 = 256001;
+    /// Assistant role - model output (256002)
+    #[classattr]
+    const ASSISTANT: u32 = 256002;
+    /// Start of message - ChatML wrapper (256003)
+    #[classattr]
+    const IM_START: u32 = 256003;
+    /// End of message - ChatML wrapper (256004)
+    #[classattr]
+    const IM_END: u32 = 256004;
+
+    // =========================================================================
+    // Reasoning/Thinking (256005-256006)
+    // =========================================================================
+
+    /// Start of thinking - Chain-of-Thought (256005)
+    #[classattr]
+    const THINK: u32 = 256005;
+    /// End of thinking (256006)
+    #[classattr]
+    const THINK_END: u32 = 256006;
+
+    // =========================================================================
+    // ReAct Agent Loop (256007-256014)
+    // =========================================================================
+
+    /// Start of plan - action planning (256007)
+    #[classattr]
+    const PLAN: u32 = 256007;
+    /// End of plan (256008)
+    #[classattr]
+    const PLAN_END: u32 = 256008;
+    /// Start of step - individual action step (256009)
+    #[classattr]
+    const STEP: u32 = 256009;
+    /// End of step (256010)
+    #[classattr]
+    const STEP_END: u32 = 256010;
+    /// Start of action - agent action (256011)
+    #[classattr]
+    const ACT: u32 = 256011;
+    /// End of action (256012)
+    #[classattr]
+    const ACT_END: u32 = 256012;
+    /// Start of observation - environment feedback (256013)
+    #[classattr]
+    const OBSERVE: u32 = 256013;
+    /// End of observation (256014)
+    #[classattr]
+    const OBSERVE_END: u32 = 256014;
+
+    // =========================================================================
+    // Tool/Function Calling (256015-256020)
+    // =========================================================================
+
+    /// Start of function call - function invocation (256015)
+    #[classattr]
+    const FUNCTION: u32 = 256015;
+    /// End of function call (256016)
+    #[classattr]
+    const FUNCTION_END: u32 = 256016;
+    /// Start of function result - return value (256017)
+    #[classattr]
+    const RESULT: u32 = 256017;
+    /// End of function result (256018)
+    #[classattr]
+    const RESULT_END: u32 = 256018;
+    /// Start of error - error message (256019)
+    #[classattr]
+    const ERROR: u32 = 256019;
+    /// End of error (256020)
+    #[classattr]
+    const ERROR_END: u32 = 256020;
+
+    // =========================================================================
+    // Code Execution (256021-256026)
+    // =========================================================================
+
+    /// Start of code - inline code execution (256021)
+    #[classattr]
+    const CODE: u32 = 256021;
+    /// End of code (256022)
+    #[classattr]
+    const CODE_END: u32 = 256022;
+    /// Start of output - execution output (256023)
+    #[classattr]
+    const OUTPUT: u32 = 256023;
+    /// End of output (256024)
+    #[classattr]
+    const OUTPUT_END: u32 = 256024;
+    /// Start of language tag - code language (256025)
+    #[classattr]
+    const LANG: u32 = 256025;
+    /// End of language tag (256026)
+    #[classattr]
+    const LANG_END: u32 = 256026;
+
+    // =========================================================================
+    // RAG & Citations (256027-256034)
+    // =========================================================================
+
+    /// Start of context - retrieved context (256027)
+    #[classattr]
+    const CONTEXT: u32 = 256027;
+    /// End of context (256028)
+    #[classattr]
+    const CONTEXT_END: u32 = 256028;
+    /// Start of quote - exact citation (256029)
+    #[classattr]
+    const QUOTE: u32 = 256029;
+    /// End of quote (256030)
+    #[classattr]
+    const QUOTE_END: u32 = 256030;
+    /// Start of cite - citation reference (256031)
+    #[classattr]
+    const CITE: u32 = 256031;
+    /// End of cite (256032)
+    #[classattr]
+    const CITE_END: u32 = 256032;
+    /// Start of source - document source (256033)
+    #[classattr]
+    const SOURCE: u32 = 256033;
+    /// End of source (256034)
+    #[classattr]
+    const SOURCE_END: u32 = 256034;
+
+    // =========================================================================
+    // Memory/State Management (256035-256038)
+    // =========================================================================
+
+    /// Start of memory - persistent memory (256035)
+    #[classattr]
+    const MEMORY: u32 = 256035;
+    /// End of memory (256036)
+    #[classattr]
+    const MEMORY_END: u32 = 256036;
+    /// Start of recall - memory retrieval (256037)
+    #[classattr]
+    const RECALL: u32 = 256037;
+    /// End of recall (256038)
+    #[classattr]
+    const RECALL_END: u32 = 256038;
+
+    // =========================================================================
+    // Control Tokens (256039-256041)
+    // =========================================================================
+
+    /// Padding token (256039)
+    #[classattr]
+    const PAD: u32 = 256039;
+    /// Stop generation token (256040)
+    #[classattr]
+    const STOP: u32 = 256040;
+    /// Separator token (256041)
+    #[classattr]
+    const SEP: u32 = 256041;
+
+    // =========================================================================
+    // Multimodal Placeholders (256042-256047)
+    // =========================================================================
+
+    /// Start of image - image placeholder (256042)
+    #[classattr]
+    const IMAGE: u32 = 256042;
+    /// End of image (256043)
+    #[classattr]
+    const IMAGE_END: u32 = 256043;
+    /// Start of audio - audio placeholder (256044)
+    #[classattr]
+    const AUDIO: u32 = 256044;
+    /// End of audio (256045)
+    #[classattr]
+    const AUDIO_END: u32 = 256045;
+    /// Start of video - video placeholder (256046)
+    #[classattr]
+    const VIDEO: u32 = 256046;
+    /// End of video (256047)
+    #[classattr]
+    const VIDEO_END: u32 = 256047;
+
+    // =========================================================================
+    // Document Structure (256048-256053)
+    // =========================================================================
+
+    /// Start of title - document/section title (256048)
+    #[classattr]
+    const TITLE: u32 = 256048;
+    /// End of title (256049)
+    #[classattr]
+    const TITLE_END: u32 = 256049;
+    /// Start of section - semantic document section (256050)
+    #[classattr]
+    const SECTION: u32 = 256050;
+    /// End of section (256051)
+    #[classattr]
+    const SECTION_END: u32 = 256051;
+    /// Start of summary - condensed content summary (256052)
+    #[classattr]
+    const SUMMARY: u32 = 256052;
+    /// End of summary (256053)
+    #[classattr]
+    const SUMMARY_END: u32 = 256053;
+
+}
+
+/// Google Gemma 3 (also EmbeddingGemma) Agent Token IDs (262144-262197)
+///
+/// Access agent token IDs for Google Gemma 3 (also EmbeddingGemma).
+///
+/// # Examples
+///
+/// ```python
+/// from splintr import Tokenizer, GEMMA3_AGENT_TOKENS
+///
+/// tokenizer = Tokenizer.from_pretrained("gemma3")
+/// system_id = GEMMA3_AGENT_TOKENS.SYSTEM  # 262144
+/// think_id = GEMMA3_AGENT_TOKENS.THINK   # 262149
+///
+/// text = "<|system|>You are a helpful assistant"
+/// tokens = tokenizer.encode_with_special(text)
+/// assert GEMMA3_AGENT_TOKENS.SYSTEM in tokens
+/// ```
+#[pyclass(name = "GEMMA3_AGENT_TOKENS", frozen)]
+pub struct PyGemma3AgentTokens;
+
+#[pymethods]
+impl PyGemma3AgentTokens {
+    // =========================================================================
+    // Conversation & Roles (262144-262148)
+    // =========================================================================
+
+    /// System role - system instructions (262144)
+    #[classattr]
+    const SYSTEM: u32 = 262144;
+    /// User role - user input (262145)
+    #[classattr]
+    const USER: u32 = 262145;
+    /// Assistant role - model output (262146)
+    #[classattr]
+    const ASSISTANT: u32 = 262146;
+    /// Start of message - ChatML wrapper (262147)
+    #[classattr]
+    const IM_START: u32 = 262147;
+    /// End of message - ChatML wrapper (262148)
+    #[classattr]
+    const IM_END: u32 = 262148;
+
+    // =========================================================================
+    // Reasoning/Thinking (262149-262150)
+    // =========================================================================
+
+    /// Start of thinking - Chain-of-Thought (262149)
+    #[classattr]
+    const THINK: u32 = 262149;
+    /// End of thinking (262150)
+    #[classattr]
+    const THINK_END: u32 = 262150;
+
+    // =========================================================================
+    // ReAct Agent Loop (262151-262158)
+    // =========================================================================
+
+    /// Start of plan - action planning (262151)
+    #[classattr]
+    const PLAN: u32 = 262151;
+    /// End of plan (262152)
+    #[classattr]
+    const PLAN_END: u32 = 262152;
+    /// Start of step - individual action step (262153)
+    #[classattr]
+    const STEP: u32 = 262153;
+    /// End of step (262154)
+    #[classattr]
+    const STEP_END: u32 = 262154;
+    /// Start of action - agent action (262155)
+    #[classattr]
+    const ACT: u32 = 262155;
+    /// End of action (262156)
+    #[classattr]
+    const ACT_END: u32 = 262156;
+    /// Start of observation - environment feedback (262157)
+    #[classattr]
+    const OBSERVE: u32 = 262157;
+    /// End of observation (262158)
+    #[classattr]
+    const OBSERVE_END: u32 = 262158;
+
+    // =========================================================================
+    // Tool/Function Calling (262159-262164)
+    // =========================================================================
+
+    /// Start of function call - function invocation (262159)
+    #[classattr]
+    const FUNCTION: u32 = 262159;
+    /// End of function call (262160)
+    #[classattr]
+    const FUNCTION_END: u32 = 262160;
+    /// Start of function result - return value (262161)
+    #[classattr]
+    const RESULT: u32 = 262161;
+    /// End of function result (262162)
+    #[classattr]
+    const RESULT_END: u32 = 262162;
+    /// Start of error - error message (262163)
+    #[classattr]
+    const ERROR: u32 = 262163;
+    /// End of error (262164)
+    #[classattr]
+    const ERROR_END: u32 = 262164;
+
+    // =========================================================================
+    // Code Execution (262165-262170)
+    // =========================================================================
+
+    /// Start of code - inline code execution (262165)
+    #[classattr]
+    const CODE: u32 = 262165;
+    /// End of code (262166)
+    #[classattr]
+    const CODE_END: u32 = 262166;
+    /// Start of output - execution output (262167)
+    #[classattr]
+    const OUTPUT: u32 = 262167;
+    /// End of output (262168)
+    #[classattr]
+    const OUTPUT_END: u32 = 262168;
+    /// Start of language tag - code language (262169)
+    #[classattr]
+    const LANG: u32 = 262169;
+    /// End of language tag (262170)
+    #[classattr]
+    const LANG_END: u32 = 262170;
+
+    // =========================================================================
+    // RAG & Citations (262171-262178)
+    // =========================================================================
+
+    /// Start of context - retrieved context (262171)
+    #[classattr]
+    const CONTEXT: u32 = 262171;
+    /// End of context (262172)
+    #[classattr]
+    const CONTEXT_END: u32 = 262172;
+    /// Start of quote - exact citation (262173)
+    #[classattr]
+    const QUOTE: u32 = 262173;
+    /// End of quote (262174)
+    #[classattr]
+    const QUOTE_END: u32 = 262174;
+    /// Start of cite - citation reference (262175)
+    #[classattr]
+    const CITE: u32 = 262175;
+    /// End of cite (262176)
+    #[classattr]
+    const CITE_END: u32 = 262176;
+    /// Start of source - document source (262177)
+    #[classattr]
+    const SOURCE: u32 = 262177;
+    /// End of source (262178)
+    #[classattr]
+    const SOURCE_END: u32 = 262178;
+
+    // =========================================================================
+    // Memory/State Management (262179-262182)
+    // =========================================================================
+
+    /// Start of memory - persistent memory (262179)
+    #[classattr]
+    const MEMORY: u32 = 262179;
+    /// End of memory (262180)
+    #[classattr]
+    const MEMORY_END: u32 = 262180;
+    /// Start of recall - memory retrieval (262181)
+    #[classattr]
+    const RECALL: u32 = 262181;
+    /// End of recall (262182)
+    #[classattr]
+    const RECALL_END: u32 = 262182;
+
+    // =========================================================================
+    // Control Tokens (262183-262185)
+    // =========================================================================
+
+    /// Padding token (262183)
+    #[classattr]
+    const PAD: u32 = 262183;
+    /// Stop generation token (262184)
+    #[classattr]
+    const STOP: u32 = 262184;
+    /// Separator token (262185)
+    #[classattr]
+    const SEP: u32 = 262185;
+
+    // =========================================================================
+    // Multimodal Placeholders (262186-262191)
+    // =========================================================================
+
+    /// Start of image - image placeholder (262186)
+    #[classattr]
+    const IMAGE: u32 = 262186;
+    /// End of image (262187)
+    #[classattr]
+    const IMAGE_END: u32 = 262187;
+    /// Start of audio - audio placeholder (262188)
+    #[classattr]
+    const AUDIO: u32 = 262188;
+    /// End of audio (262189)
+    #[classattr]
+    const AUDIO_END: u32 = 262189;
+    /// Start of video - video placeholder (262190)
+    #[classattr]
+    const VIDEO: u32 = 262190;
+    /// End of video (262191)
+    #[classattr]
+    const VIDEO_END: u32 = 262191;
+
+    // =========================================================================
+    // Document Structure (262192-262197)
+    // =========================================================================
+
+    /// Start of title - document/section title (262192)
+    #[classattr]
+    const TITLE: u32 = 262192;
+    /// End of title (262193)
+    #[classattr]
+    const TITLE_END: u32 = 262193;
+    /// Start of section - semantic document section (262194)
+    #[classattr]
+    const SECTION: u32 = 262194;
+    /// End of section (262195)
+    #[classattr]
+    const SECTION_END: u32 = 262195;
+    /// Start of summary - condensed content summary (262196)
+    #[classattr]
+    const SUMMARY: u32 = 262196;
+    /// End of summary (262197)
+    #[classattr]
+    const SUMMARY_END: u32 = 262197;
+
+}
+
+/// Google Gemma 4 Agent Token IDs (262144-262197)
+///
+/// Access agent token IDs for Google Gemma 4.
+///
+/// # Examples
+///
+/// ```python
+/// from splintr import Tokenizer, GEMMA4_AGENT_TOKENS
+///
+/// tokenizer = Tokenizer.from_pretrained("gemma4")
+/// system_id = GEMMA4_AGENT_TOKENS.SYSTEM  # 262144
+/// think_id = GEMMA4_AGENT_TOKENS.THINK   # 262149
+///
+/// text = "<|system|>You are a helpful assistant"
+/// tokens = tokenizer.encode_with_special(text)
+/// assert GEMMA4_AGENT_TOKENS.SYSTEM in tokens
+/// ```
+#[pyclass(name = "GEMMA4_AGENT_TOKENS", frozen)]
+pub struct PyGemma4AgentTokens;
+
+#[pymethods]
+impl PyGemma4AgentTokens {
+    // =========================================================================
+    // Conversation & Roles (262144-262148)
+    // =========================================================================
+
+    /// System role - system instructions (262144)
+    #[classattr]
+    const SYSTEM: u32 = 262144;
+    /// User role - user input (262145)
+    #[classattr]
+    const USER: u32 = 262145;
+    /// Assistant role - model output (262146)
+    #[classattr]
+    const ASSISTANT: u32 = 262146;
+    /// Start of message - ChatML wrapper (262147)
+    #[classattr]
+    const IM_START: u32 = 262147;
+    /// End of message - ChatML wrapper (262148)
+    #[classattr]
+    const IM_END: u32 = 262148;
+
+    // =========================================================================
+    // Reasoning/Thinking (262149-262150)
+    // =========================================================================
+
+    /// Start of thinking - Chain-of-Thought (262149)
+    #[classattr]
+    const THINK: u32 = 262149;
+    /// End of thinking (262150)
+    #[classattr]
+    const THINK_END: u32 = 262150;
+
+    // =========================================================================
+    // ReAct Agent Loop (262151-262158)
+    // =========================================================================
+
+    /// Start of plan - action planning (262151)
+    #[classattr]
+    const PLAN: u32 = 262151;
+    /// End of plan (262152)
+    #[classattr]
+    const PLAN_END: u32 = 262152;
+    /// Start of step - individual action step (262153)
+    #[classattr]
+    const STEP: u32 = 262153;
+    /// End of step (262154)
+    #[classattr]
+    const STEP_END: u32 = 262154;
+    /// Start of action - agent action (262155)
+    #[classattr]
+    const ACT: u32 = 262155;
+    /// End of action (262156)
+    #[classattr]
+    const ACT_END: u32 = 262156;
+    /// Start of observation - environment feedback (262157)
+    #[classattr]
+    const OBSERVE: u32 = 262157;
+    /// End of observation (262158)
+    #[classattr]
+    const OBSERVE_END: u32 = 262158;
+
+    // =========================================================================
+    // Tool/Function Calling (262159-262164)
+    // =========================================================================
+
+    /// Start of function call - function invocation (262159)
+    #[classattr]
+    const FUNCTION: u32 = 262159;
+    /// End of function call (262160)
+    #[classattr]
+    const FUNCTION_END: u32 = 262160;
+    /// Start of function result - return value (262161)
+    #[classattr]
+    const RESULT: u32 = 262161;
+    /// End of function result (262162)
+    #[classattr]
+    const RESULT_END: u32 = 262162;
+    /// Start of error - error message (262163)
+    #[classattr]
+    const ERROR: u32 = 262163;
+    /// End of error (262164)
+    #[classattr]
+    const ERROR_END: u32 = 262164;
+
+    // =========================================================================
+    // Code Execution (262165-262170)
+    // =========================================================================
+
+    /// Start of code - inline code execution (262165)
+    #[classattr]
+    const CODE: u32 = 262165;
+    /// End of code (262166)
+    #[classattr]
+    const CODE_END: u32 = 262166;
+    /// Start of output - execution output (262167)
+    #[classattr]
+    const OUTPUT: u32 = 262167;
+    /// End of output (262168)
+    #[classattr]
+    const OUTPUT_END: u32 = 262168;
+    /// Start of language tag - code language (262169)
+    #[classattr]
+    const LANG: u32 = 262169;
+    /// End of language tag (262170)
+    #[classattr]
+    const LANG_END: u32 = 262170;
+
+    // =========================================================================
+    // RAG & Citations (262171-262178)
+    // =========================================================================
+
+    /// Start of context - retrieved context (262171)
+    #[classattr]
+    const CONTEXT: u32 = 262171;
+    /// End of context (262172)
+    #[classattr]
+    const CONTEXT_END: u32 = 262172;
+    /// Start of quote - exact citation (262173)
+    #[classattr]
+    const QUOTE: u32 = 262173;
+    /// End of quote (262174)
+    #[classattr]
+    const QUOTE_END: u32 = 262174;
+    /// Start of cite - citation reference (262175)
+    #[classattr]
+    const CITE: u32 = 262175;
+    /// End of cite (262176)
+    #[classattr]
+    const CITE_END: u32 = 262176;
+    /// Start of source - document source (262177)
+    #[classattr]
+    const SOURCE: u32 = 262177;
+    /// End of source (262178)
+    #[classattr]
+    const SOURCE_END: u32 = 262178;
+
+    // =========================================================================
+    // Memory/State Management (262179-262182)
+    // =========================================================================
+
+    /// Start of memory - persistent memory (262179)
+    #[classattr]
+    const MEMORY: u32 = 262179;
+    /// End of memory (262180)
+    #[classattr]
+    const MEMORY_END: u32 = 262180;
+    /// Start of recall - memory retrieval (262181)
+    #[classattr]
+    const RECALL: u32 = 262181;
+    /// End of recall (262182)
+    #[classattr]
+    const RECALL_END: u32 = 262182;
+
+    // =========================================================================
+    // Control Tokens (262183-262185)
+    // =========================================================================
+
+    /// Padding token (262183)
+    #[classattr]
+    const PAD: u32 = 262183;
+    /// Stop generation token (262184)
+    #[classattr]
+    const STOP: u32 = 262184;
+    /// Separator token (262185)
+    #[classattr]
+    const SEP: u32 = 262185;
+
+    // =========================================================================
+    // Multimodal Placeholders (262186-262191)
+    // =========================================================================
+
+    /// Start of image - image placeholder (262186)
+    #[classattr]
+    const IMAGE: u32 = 262186;
+    /// End of image (262187)
+    #[classattr]
+    const IMAGE_END: u32 = 262187;
+    /// Start of audio - audio placeholder (262188)
+    #[classattr]
+    const AUDIO: u32 = 262188;
+    /// End of audio (262189)
+    #[classattr]
+    const AUDIO_END: u32 = 262189;
+    /// Start of video - video placeholder (262190)
+    #[classattr]
+    const VIDEO: u32 = 262190;
+    /// End of video (262191)
+    #[classattr]
+    const VIDEO_END: u32 = 262191;
+
+    // =========================================================================
+    // Document Structure (262192-262197)
+    // =========================================================================
+
+    /// Start of title - document/section title (262192)
+    #[classattr]
+    const TITLE: u32 = 262192;
+    /// End of title (262193)
+    #[classattr]
+    const TITLE_END: u32 = 262193;
+    /// Start of section - semantic document section (262194)
+    #[classattr]
+    const SECTION: u32 = 262194;
+    /// End of section (262195)
+    #[classattr]
+    const SECTION_END: u32 = 262195;
+    /// Start of summary - condensed content summary (262196)
+    #[classattr]
+    const SUMMARY: u32 = 262196;
+    /// End of summary (262197)
+    #[classattr]
+    const SUMMARY_END: u32 = 262197;
+
+}
+
 /// Register all agent token classes with the Python module.
 pub fn register_agent_tokens(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCL100KAgentTokens>()?;
@@ -4576,6 +5284,9 @@ pub fn register_agent_tokens(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLlama2AgentTokens>()?;
     m.add_class::<PyCodeLlamaAgentTokens>()?;
     m.add_class::<PyModernBertAgentTokens>()?;
+    m.add_class::<PyGemma2AgentTokens>()?;
+    m.add_class::<PyGemma3AgentTokens>()?;
+    m.add_class::<PyGemma4AgentTokens>()?;
     Ok(())
 }
 

@@ -57,7 +57,47 @@ mod tests {
             row!("llama2", llama2_agent_tokens),
             row!("codellama", codellama_agent_tokens),
             row!("modernbert", modernbert_agent_tokens),
+            row!("gemma2", gemma2_agent_tokens),
+            row!("gemma3", gemma3_agent_tokens),
+            row!("gemma4", gemma4_agent_tokens),
         ]
+    }
+
+    /// Every bundled vocabulary that carries agent tokens has a module here.
+    ///
+    /// The three Gemma vocabularies were bundled with working agent tokens and
+    /// no module for a whole release: `insert_agent_tokens` gave each of them
+    /// all 54, while the generator — which produces these constants, the Python
+    /// `*_AGENT_TOKENS` classes and the tables in `docs/special_tokens.md` — had
+    /// never heard of them. Nothing failed, because nothing asked. This asks.
+    ///
+    /// The vocabulary set comes from [`PretrainedVocab::supported_names`] rather
+    /// than a list written here, because a list written here is exactly what was
+    /// already silently incomplete. A family reachable by no name is a family no
+    /// caller can load.
+    #[test]
+    fn every_vocabulary_with_agent_tokens_has_a_module() {
+        let covered: Vec<PretrainedVocab> = samples()
+            .into_iter()
+            .map(|(name, _)| PretrainedVocab::from_name(name).expect("row names a vocabulary"))
+            .collect();
+
+        for name in PretrainedVocab::supported_names() {
+            let vocab = PretrainedVocab::from_name(name).expect("a supported name resolves");
+            if covered.contains(&vocab) {
+                continue;
+            }
+            // Not covered: the only legitimate reason is carrying no agent
+            // tokens at all, which is Whisper and is pinned just below.
+            let tokenizer = from_pretrained(name).expect("bundled vocabulary loads");
+            assert_eq!(
+                tokenizer.special_token_id("<|think|>"),
+                None,
+                "{name} carries agent tokens but has no module in \
+                 agent_tokens_generated.rs — add it to MODELS in \
+                 scripts/generate_agent_tokens.py and regenerate"
+            );
+        }
     }
 
     /// Every generated constant must equal the id its tokenizer resolves that
