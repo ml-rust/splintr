@@ -1572,6 +1572,18 @@ fn is_deepseek_cjk(c: char) -> bool {
 /// Appends the pre-token spans of `text` as `(start, end)` byte offsets.
 pub(crate) type SpanScanner = fn(&str, &mut Vec<(usize, usize)>);
 
+/// Hands each pre-token of `text` to a sink as it is found, storing nothing.
+pub(crate) type PieceScanner = for<'p> fn(&'p str, &mut dyn FnMut(&'p str));
+
+/// The streaming scanner for `pattern`, for the callers that only walk the
+/// pieces once and would otherwise buffer every one of them first.
+pub(crate) fn streaming_for_pattern(pattern: &str) -> Option<PieceScanner> {
+    match pattern == crate::core::tokenizer::patterns::GPT2_PATTERN {
+        true => Some(gpt2_for_each),
+        false => None,
+    }
+}
+
 /// One of GPT-2's contractions at `pos`, and its length.
 ///
 /// Case-**sensitive**, unlike every other family here: GPT-2 writes them as
@@ -1608,6 +1620,41 @@ fn gpt2_contraction_len(bytes: &[u8], pos: usize) -> Option<usize> {
 /// Also what Whisper's `tokenizer.json` declares, and what any file with a bare
 /// `ByteLevel` pre-tokenizer gets, since `use_regex` defaults to true.
 pub(super) fn gpt2_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    gpt2_walk(text, |start, end| out.push((start, end)));
+}
+
+/// [`gpt2_spans`] handing each piece to `out` as it is found, rather than
+/// filling a span buffer the caller then walks.
+///
+/// GPT-2's pipeline is a single stage handed the *whole text*, so that buffer
+/// holds every pre-token in the input at once — a million spans and sixteen
+/// megabytes of writes on a five-megabyte document, none of which outlives the
+/// walk that produced it. Streaming is the same partition with nothing stored:
+/// the gap handling below is `Behavior::Isolated`'s, which is the behavior every
+/// caller of this asks for.
+pub(crate) fn gpt2_for_each<'p>(text: &'p str, out: &mut dyn FnMut(&'p str)) {
+    let mut last = 0usize;
+    gpt2_walk(text, |start, end| {
+        if start > last {
+            if let Some(gap) = text.get(last..start) {
+                out(gap);
+            }
+        }
+        if end > start {
+            if let Some(piece) = text.get(start..end) {
+                out(piece);
+            }
+        }
+        last = end;
+    });
+    if last < text.len() {
+        if let Some(gap) = text.get(last..) {
+            out(gap);
+        }
+    }
+}
+
+fn gpt2_walk(text: &str, mut emit: impl FnMut(usize, usize)) {
     let bytes = text.as_bytes();
     let len = bytes.len();
     let mut pos = 0usize;
@@ -1617,7 +1664,7 @@ pub(super) fn gpt2_spans(text: &str, out: &mut Vec<(usize, usize)>) {
 
         if let Some(n) = gpt2_contraction_len(bytes, pos) {
             pos += n;
-            out.push((start, pos));
+            emit(start, pos);
             continue;
         }
 
@@ -1628,23 +1675,45 @@ pub(super) fn gpt2_spans(text: &str, out: &mut Vec<(usize, usize)>) {
             _ => pos,
         };
         if after_space < len {
+            // Which of the three ` ?…+` branches can match is decided by the
+            // first character's class, so it is looked up once and dispatched
+            // on — rather than asked again by each branch in turn, which is
+            // three table lookups to reach the punctuation branch that most
+            // code and markup takes.
+            let (letter, digit, punct) = match CLASS[bytes[after_space] as usize] {
+                Class::Letter => (true, false, false),
+                Class::Digit => (false, true, false),
+                Class::Punct => (false, false, true),
+                Class::Space | Class::Newline => (false, false, false),
+                // Non-ASCII: decoded once here instead of once per branch.
+                Class::Lead => {
+                    let (c, _) = char_at(text, after_space);
+                    match (is_letter_char(c), is_number_char(c)) {
+                        (true, _) => (true, false, false),
+                        (_, true) => (false, true, false),
+                        _ => (false, false, !c.is_whitespace()),
+                    }
+                }
+            };
+
             // ` ?\p{L}+`
-            if let Some(n) = letter_at(text, bytes, after_space) {
+            if letter {
+                let n = letter_at(text, bytes, after_space).unwrap_or(1);
                 pos = scan_letters(text, bytes, after_space + n);
-                out.push((start, pos));
+                emit(start, pos);
                 continue;
             }
             // ` ?\p{N}+` — unbounded, so a run of digits is one piece however
             // long it is.
-            if number_at(text, bytes, after_space).is_some() {
+            if digit {
                 pos = scan_run(text, bytes, after_space, number_at);
-                out.push((start, pos));
+                emit(start, pos);
                 continue;
             }
             // ` ?[^\s\p{L}\p{N}]+`
-            if punct_at(text, bytes, after_space).is_some() {
+            if punct {
                 pos = scan_run(text, bytes, after_space, punct_at);
-                out.push((start, pos));
+                emit(start, pos);
                 continue;
             }
         }
@@ -1652,7 +1721,7 @@ pub(super) fn gpt2_spans(text: &str, out: &mut Vec<(usize, usize)>) {
         if space_at(text, bytes, pos).is_some() {
             let (s, e) = whitespace_span(text, bytes, pos, WhitespaceOrder::Plain);
             pos = e;
-            out.push((s, e));
+            emit(s, e);
             continue;
         }
 

@@ -24,6 +24,15 @@ pub(super) fn split_regex<'p>(
     invert: bool,
     out: &mut dyn FnMut(&'p str),
 ) {
+    // `Isolated` keeps every segment, so a streaming matcher can hand them over
+    // one at a time and the span buffer is never needed. That buffer holds a
+    // whole stage's output at once, and GPT-2's first stage is handed the entire
+    // text.
+    if behavior == Behavior::Isolated {
+        if let Some(stream) = matcher.stream() {
+            return stream(piece, out);
+        }
+    }
     crate::core::scratch::with_spans(|matches| {
         split_regex_spans(piece, matcher, behavior, invert, out, matches)
     })

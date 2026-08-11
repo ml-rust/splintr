@@ -11,7 +11,14 @@ use crate::core::byte_level::{byte_level_encode, byte_level_encode_into};
 /// only ever helped `from_pretrained`.
 pub(super) enum SplitMatcher {
     Regex(Box<regexr::Regex>),
-    Scanner(crate::core::tokenizer::scanner::SpanScanner),
+    Scanner {
+        spans: crate::core::tokenizer::scanner::SpanScanner,
+        /// The same partition, streamed. Present only where the scanner has a
+        /// streaming form, and only usable for `Isolated` splits — the one
+        /// behavior that keeps every segment, so nothing has to be held back to
+        /// decide what to emit.
+        stream: Option<crate::core::tokenizer::scanner::PieceScanner>,
+    },
 }
 
 impl SplitMatcher {
@@ -22,17 +29,28 @@ impl SplitMatcher {
     /// expression gets it on the same terms.
     pub(super) fn compile(pattern: &str) -> Result<Self, crate::core::tokenizer::TokenizerError> {
         match crate::core::tokenizer::scanner::for_pattern(pattern) {
-            Some(scan) => Ok(SplitMatcher::Scanner(scan)),
+            Some(spans) => Ok(SplitMatcher::Scanner {
+                spans,
+                stream: crate::core::tokenizer::scanner::streaming_for_pattern(pattern),
+            }),
             None => Ok(SplitMatcher::Regex(Box::new(
                 regexr::RegexBuilder::new(pattern).jit(true).build()?,
             ))),
         }
     }
 
+    /// This matcher's streaming form, when it has one.
+    pub(super) fn stream(&self) -> Option<crate::core::tokenizer::scanner::PieceScanner> {
+        match self {
+            SplitMatcher::Scanner { stream, .. } => *stream,
+            SplitMatcher::Regex(_) => None,
+        }
+    }
+
     /// Appends this matcher's spans over `piece`.
     pub(super) fn matches(&self, piece: &str, out: &mut Vec<(usize, usize)>) {
         match self {
-            SplitMatcher::Scanner(scan) => scan(piece, out),
+            SplitMatcher::Scanner { spans, .. } => spans(piece, out),
             SplitMatcher::Regex(re) => {
                 out.extend(re.find_iter(piece).map(|m| (m.start(), m.end())))
             }

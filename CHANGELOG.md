@@ -10,29 +10,27 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Fixed
 
-- `WhitespaceSplit`/`Whitespace` in front of `Metaspace` now drops the whitespace it splits on, instead of adding a spurious `▁` per run. T5 was wrong wherever a double space or newline appeared.
+- `WhitespaceSplit`/`Whitespace` in front of `Metaspace` drops the whitespace it splits on instead of adding a spurious `▁` per run.
 - WordPiece and the `Lowercase` normalizer lowercase per character, as HuggingFace does: word-final `Σ` is `σ`, not `ς`.
-- BERT's `clean_text` keeps unassigned (`Cn`) codepoints, so a word carrying one becomes `[UNK]` as in the reference.
+- BERT's `clean_text` keeps unassigned (`Cn`) codepoints, so a word carrying one becomes `[UNK]`.
 - A `Precompiled` charsmap from a `tokenizer.json` is read as `spm_precompiled` reads it, via the new `CharsmapDialect`; the sentencepiece reading stays the default and serves the GGUF path.
-- DeepSeek's CJK pre-tokenizer pass reaches its scanner when loaded from a `tokenizer.json`, which spells the character class with the characters themselves rather than `\u{...}` escapes; it had been falling back to the regex engine.
+- DeepSeek's CJK pre-tokenizer pass reaches its scanner when loaded from a `tokenizer.json`, which spells the character class literally rather than with `\u{...}` escapes.
 
 ### Changed
 
 - Bundled vocabularies are no longer default features; enable `vocabs`, or the `vocab-*` families needed. The Python wheel is unaffected — `python` pulls them in.
-- WordPiece matches through a byte trie instead of re-hashing every candidate subword, cleans and folds in a single pass that decides ASCII by table, streams borrowed words rather than allocating one per word, and caches the words it has segmented.
-- Unigram's lattice finds each position's candidate pieces by walking that same trie instead of re-hashing a growing prefix, caches the segments it has resolved, and keeps its buffers across words. Its vocabulary is an `FxHashMap`, as every other vocabulary in the crate already was.
-- Unigram's metaspace stage streams borrowed words and segments through one reused buffer, finds its markers by byte scan rather than the general substring searcher, and asks the cache about a word before copying it to prepend a marker.
-- A `Precompiled` charsmap resolves each ASCII byte at construction and copies runs of untouched ASCII wholesale, so grapheme segmentation only runs over text that needs clustering.
-- The byte trie behind WordPiece and Unigram is a double array: a transition is an XOR and a compare rather than a search over the node's fan-out. Vocabulary loading costs a few milliseconds more.
-- Merge selection splits its queue — initial pairs sorted once, only merge-created pairs heaped — and picks its strategy per script as well as per length. The long-piece merge path reuses per-thread buffers instead of allocating per piece.
-- The chunk cache is 16-way set-associative, probed by a one-byte tag per slot (eight lanes per `u64`), gives long chunks as many slots as short ones, overwrites their buffers in place, and returns a one-token chunk with a push rather than a length-driven copy.
-- The pre-tokenizer's span scratch is one buffer per nesting depth, so a chained pre-tokenizer's later stages reuse a buffer instead of allocating one per piece.
-- Added-token matching finds its candidate positions by scanning for the bytes its tokens actually open with, and rejects a candidate on the second byte, instead of relying on the automaton's own prefilter. DeepSeek's `｜` shares a lead byte with the fullwidth comma, so Chinese text was entering the automaton tens of thousands of times per megabyte.
-- Merges are ranked by the ids of the pair being merged rather than by the bytes it concatenates to, so a merge costs the same whatever its operands have grown to. A ByteLevel vocabulary therefore merges and caches chunks in the input's own bytes, never mapping them into ByteLevel space, and starts from whole characters wherever the vocabulary proves that is the same computation — a character qualifies when no token in the vocabulary can take a piece of it before it is whole. Non-Latin scripts gain most; Latin ones were already served by the byte-keyed tables.
-- The vocabulary lookup hashes without the length prefix `Hash for [u8]` prepends, and compares a short key at a constant length rather than through a `memcmp` call. The chunk cache is keyed on that same hash, so a chunk is hashed once for both.
-- GPT-2's pre-tokenizer pattern is split by a direct scanner rather than by the regex engine, which had to reach for its lookaround backend to handle `\s+(?!\S)`. Whisper declares the same pattern, as does any `tokenizer.json` whose pre-tokenizer is a bare `ByteLevel`.
+- GPT-2's pre-tokenizer uses a direct scanner instead of the regex engine, and so does Whisper's and any bare `ByteLevel` one.
+- DeepSeek's three `Split` passes are recognised as one composition and walked once instead of run in sequence.
+- Merges are ranked by the ids of the pair rather than by the bytes it concatenates to. A ByteLevel vocabulary merges and caches chunks in the input's own bytes, and starts from whole characters where the vocabulary proves that is the same computation.
+- WordPiece and Unigram match through a shared double-array byte trie instead of re-hashing candidates, stream borrowed words, and cache what they have segmented. Vocabulary loading costs a few milliseconds more.
+- Unigram's metaspace stage streams through one reused buffer and finds its markers by byte scan.
+- A `Precompiled` charsmap copies runs of untouched ASCII wholesale, so grapheme segmentation only runs over text that needs it.
+- Merge selection splits its queue — initial pairs sorted once, only merge-created pairs heaped — and picks its strategy per script as well as per length.
+- The chunk cache is 16-way set-associative, probed by a one-byte tag per slot, and gives long chunks as many slots as short ones.
+- Added-token matching scans for the bytes its tokens actually open with instead of relying on the automaton's own prefilter.
+- The vocabulary lookup hashes without the length prefix `Hash for [u8]` prepends, and the chunk cache is keyed on the same hash.
 - The case-split pre-tokenizers skip runs of CJK ideographs from their lead byte instead of decoding each character.
-- DeepSeek's three `Split` passes are recognised as one composition and walked once, streaming their pieces, rather than run in sequence with each re-splitting what the one before it produced. The walk routes each position straight to the branch that can match it and skips ASCII letter runs eight bytes at a time.
+- The pre-tokenizer's span scratch is one buffer per nesting depth.
 
 ## [0.17.0] - 2026-08-10
 
