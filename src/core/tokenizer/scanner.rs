@@ -692,74 +692,135 @@ fn family_spans(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
     let len = bytes.len();
     let mut pos = 0usize;
 
+    // The alternation is ordered, but its branches are near-disjoint in their
+    // *first* character, so the winning branch is decided by that character's
+    // class and the trials in between are all foregone conclusions. Dispatching
+    // on the class instead pays for one table lookup per pre-token rather than
+    // a chain of probes that each re-read the same byte: a leading ASCII letter
+    // can never open the contraction branch, and a leading digit can never be
+    // the optional `[^\r\n\p{L}\p{N}]?` prefix.
+    //
+    // Every arm below reproduces the trials the ordered walk would have run
+    // from that class, including the ones it would have skipped — the tests at
+    // the bottom of this file diff the result against the compiled expression,
+    // which is the definition of correctness.
     while pos < len {
         let start = pos;
+        let byte = bytes[pos];
 
-        // Contractions. cl100k writes this as `'(?i:[sdmt]|ll|ve|re)` and
-        // Llama 3 as `(?i:'s|'t|…)`; the accepted set is the same.
-        if let Some(n) = contraction_len(bytes, pos) {
-            pos += n;
-            out.push((start, pos));
-            continue;
-        }
-
-        // `[^\r\n\p{L}\p{N}]?\p{L}+` — the optional prefix is any single
-        // character that is not CR, LF, a letter or a digit, so a space and a
-        // punctuation mark both qualify: " word" and "!word" are each one token.
-        // It is only taken when a letter run actually follows.
-        if let Some(n) = letter_at(text, bytes, pos) {
-            pos = scan_letters(text, bytes, pos + n);
-            out.push((start, pos));
-            continue;
-        }
-        if let Some(prefix) = prefix_len(text, bytes, pos) {
-            if let Some(n) = pos
-                .checked_add(prefix)
-                .filter(|&p| p < len)
-                .and_then(|p| letter_at(text, bytes, p))
-            {
-                pos = scan_letters(text, bytes, pos + prefix + n);
-                out.push((start, pos));
-                continue;
+        match CLASS[byte as usize] {
+            // `\p{L}+` with no prefix.
+            Class::Letter => {
+                pos = scan_letters(text, bytes, pos + 1);
             }
-        }
 
-        // `\p{N}{1,n}` — no leading space, unlike the letter branch.
-        if let Some(n) = number_at(text, bytes, pos) {
-            pos += n;
-            for _ in 1..scheme.max_digits {
-                match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
-                    Some(n) => pos += n,
-                    None => break,
+            // `\p{N}{1,n}`, never prefixed.
+            Class::Digit => {
+                pos += 1;
+                for _ in 1..scheme.max_digits {
+                    match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
+                        Some(n) => pos += n,
+                        None => break,
+                    }
                 }
             }
-            out.push((start, pos));
-            continue;
-        }
 
-        // ` ?[^\s\p{L}\p{N}]+[\r\n]*`
-        let after_space = if bytes[pos] == b' ' { pos + 1 } else { pos };
-        if after_space < len && punct_at(text, bytes, after_space).is_some() {
-            pos = scan_run(text, bytes, after_space, punct_at);
-            while pos < len && (bytes[pos] == b'\r' || bytes[pos] == b'\n') {
-                pos += 1;
+            // A contraction, a prefixed letter run (`"!word"`), or a
+            // punctuation run — in the expression's own order.
+            Class::Punct => {
+                if let Some(n) = contraction_len(bytes, pos) {
+                    pos += n;
+                } else if let Some(n) = prefixed_letters(text, bytes, pos + 1, len) {
+                    pos = n;
+                } else {
+                    pos = punct_run(text, bytes, pos, len);
+                }
             }
-            out.push((start, pos));
-            continue;
+
+            // Whitespace other than CR/LF is a valid prefix, so ` word` and
+            // `\tword` are each one piece; a space also prefixes a punctuation
+            // run. Anything else is the whitespace branch.
+            Class::Space => {
+                if let Some(n) = prefixed_letters(text, bytes, pos + 1, len) {
+                    pos = n;
+                } else if byte == b' ' && pos + 1 < len && punct_at(text, bytes, pos + 1).is_some()
+                {
+                    pos = punct_run(text, bytes, pos + 1, len);
+                } else {
+                    let (s, e) = whitespace_span(text, bytes, pos, scheme.whitespace);
+                    pos = e;
+                    out.push((s, e));
+                    continue;
+                }
+            }
+
+            // CR and LF are excluded from the prefix class, so a newline only
+            // ever opens the whitespace branch.
+            Class::Newline => {
+                let (s, e) = whitespace_span(text, bytes, pos, scheme.whitespace);
+                pos = e;
+                out.push((s, e));
+                continue;
+            }
+
+            // Outside ASCII the class table cannot answer anything, so decode
+            // once here and let every branch below test the character rather
+            // than decoding it again per trial. A script written entirely in
+            // one of these — Cyrillic, Greek, Thai, Han — opens every pre-token
+            // this way.
+            Class::Lead => {
+                let (c, l) = char_at(text, pos);
+                if is_letter_char(c) {
+                    pos = scan_letters(text, bytes, pos + l);
+                } else if is_number_char(c) {
+                    pos += l;
+                    for _ in 1..scheme.max_digits {
+                        match (pos < len).then(|| number_at(text, bytes, pos)).flatten() {
+                            Some(n) => pos += n,
+                            None => break,
+                        }
+                    }
+                } else if let Some(n) = prefixed_letters(text, bytes, pos + l, len) {
+                    pos = n;
+                } else if !c.is_whitespace() {
+                    // Neither letter, digit nor whitespace is what
+                    // `[^\s\p{L}\p{N}]` asks for, so the run opens here.
+                    pos = punct_run(text, bytes, pos, len);
+                } else {
+                    let (s, e) = whitespace_span(text, bytes, pos, scheme.whitespace);
+                    pos = e;
+                    out.push((s, e));
+                    continue;
+                }
+            }
         }
 
-        if space_at(text, bytes, pos).is_some() {
-            let (s, e) = whitespace_span(text, bytes, pos, scheme.whitespace);
-            pos = e;
-            out.push((s, e));
-            continue;
-        }
-
-        // No branch matches here, which the engine handles by trying the next
-        // position. Nothing is emitted.
-        let (_, l) = char_at(text, pos);
-        pos += l;
+        out.push((start, pos));
     }
+}
+
+/// End of the `\p{L}+` run at `pos`, when one starts there.
+///
+/// The caller has already consumed the optional `[^\r\n\p{L}\p{N}]?` prefix and
+/// established that it qualifies; this is the `\p{L}+` the branch needs to see
+/// before it can win at all.
+#[inline]
+fn prefixed_letters(text: &str, bytes: &[u8], pos: usize, len: usize) -> Option<usize> {
+    if pos >= len {
+        return None;
+    }
+    let n = letter_at(text, bytes, pos)?;
+    Some(scan_letters(text, bytes, pos + n))
+}
+
+/// End of `[^\s\p{L}\p{N}]+[\r\n]*` starting at `pos`, which must open the run.
+#[inline]
+fn punct_run(text: &str, bytes: &[u8], pos: usize, len: usize) -> usize {
+    let mut end = scan_run(text, bytes, pos, punct_at);
+    while end < len && (bytes[end] == b'\r' || bytes[end] == b'\n') {
+        end += 1;
+    }
+    end
 }
 
 /// `[^\r\n\p{L}\p{N}]?` — length of the optional prefix character at `pos`.
@@ -878,6 +939,13 @@ fn case_family_spans(text: &str, out: &mut Vec<(usize, usize)>, digits: usize, c
 ///
 /// Each optional prefix is greedy, so a branch is tried with the prefix before
 /// without it.
+///
+/// `inline(always)` here and on what it calls is load-bearing, not decoration:
+/// the whole chain down to [`ascii_case_split`] has to land inside
+/// [`case_family_spans`]'s loop. It used to, by inference — until [`family_spans`]
+/// grew and the shared budget pushed it out, which cost this scanner 17% more
+/// instructions on every corpus without a line of its own code changing.
+#[inline(always)]
 fn o200k_letter_branches(
     text: &str,
     bytes: &[u8],
@@ -905,6 +973,7 @@ fn o200k_letter_branches(
 /// o200k and Kimi share this shape and differ only in the two classes: Kimi
 /// subtracts `\p{Han}` from both. Passing them in keeps one implementation of
 /// the backtracking, which is the part that is easy to get subtly wrong.
+#[inline(always)]
 fn case_split_branches(
     text: &str,
     bytes: &[u8],
@@ -959,7 +1028,7 @@ enum AsciiCase {
     Undecided,
 }
 
-#[inline]
+#[inline(always)]
 fn ascii_case_split(bytes: &[u8], pos: usize, contractions: bool) -> AsciiCase {
     let Some(&first) = bytes.get(pos) else {
         return AsciiCase::Undecided;
