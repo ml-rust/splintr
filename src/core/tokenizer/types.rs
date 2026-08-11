@@ -196,6 +196,12 @@ pub struct Tokenizer {
     /// [`Tokenizer::merges_raw`], which every chunk asks and which would
     /// otherwise reach through `pair_ranks` to answer.
     pub(super) raw_space: Arc<OnceLock<bool>>,
+    /// Whether a `split: false` metaspace vocabulary can be split at marker runs
+    /// anyway without changing a single id — see
+    /// [`Tokenizer::metaspace_runs_are_boundaries`]. Proven from the vocabulary
+    /// on first use, like `pair_ranks` above, so a load that never encodes never
+    /// pays the scan.
+    pub(super) metaspace_run_split: Arc<OnceLock<bool>>,
     /// Behind an `Arc` so a clone — and every
     /// [`StreamingDecoder`](crate::StreamingDecoder) built from this tokenizer —
     /// shares the id→bytes table instead of copying a vocabulary-sized map.
@@ -294,6 +300,7 @@ impl Clone for Tokenizer {
             byte_pair_ranks: Arc::clone(&self.byte_pair_ranks),
             pair_ranks: Arc::clone(&self.pair_ranks),
             raw_space: Arc::clone(&self.raw_space),
+            metaspace_run_split: Arc::clone(&self.metaspace_run_split),
             // Immutable once built, so the clone shares the table rather than
             // duplicating it (the same reasoning as the compiled regex above).
             decoder: Arc::clone(&self.decoder),

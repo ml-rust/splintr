@@ -10,7 +10,11 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Fixed
 
-- `Metaspace` honours `split` and `prepend_scheme`: Mistral is byte-exact, and 2.8x faster.
+- `Metaspace` honours `split` and `prepend_scheme`: Mistral is byte-exact.
+
+### Changed
+
+- A `split: false` metaspace vocabulary splits at marker runs where its own tokens prove no id changes: Mistral is 2x faster.
 
 ## [0.18.0] - 2026-08-11
 

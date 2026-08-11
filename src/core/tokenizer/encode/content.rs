@@ -1,4 +1,8 @@
 use super::super::types::Tokenizer;
+
+/// SentencePiece's metaspace marker, `U+2581`. Spelled once: it is three bytes
+/// wide, and the split below steps by exactly that.
+pub(in crate::core::tokenizer) const MARKER: &str = "▁";
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 
@@ -170,16 +174,33 @@ impl Tokenizer {
         is_first: bool,
         out: &mut String,
     ) {
-        out.reserve(text.len() + 3);
-        for ch in text.chars() {
-            match ch {
-                ' ' => out.push('▁'),
-                _ => out.push(ch),
-            }
+        // Every space grows by two bytes, so a text that is all spaces triples.
+        // Sizing for the text plus a marker covers ordinary prose in one
+        // allocation and leaves the pathological case to grow, which is what a
+        // per-thread buffer settles into anyway.
+        out.reserve(text.len() + MARKER.len());
+
+        // The prefix is decided from the INPUT rather than inserted into the
+        // finished buffer: `String::insert(0, ..)` shifts every byte already
+        // written, which on a whole document is a memmove the size of the
+        // document. `out` starts with the marker exactly when the text starts
+        // with a space (which becomes one) or with a marker already.
+        if self.add_prefix_space && is_first && !text.starts_with(' ') && !text.starts_with(MARKER)
+        {
+            out.push_str(MARKER);
         }
-        if self.add_prefix_space && is_first && !out.starts_with('▁') {
-            out.insert(0, '▁');
+
+        // Copy the runs between spaces wholesale. Pushing one `char` at a time
+        // re-encodes every character of the document through `char::encode_utf8`
+        // for the one byte value that changes.
+        let bytes = text.as_bytes();
+        let mut start = 0;
+        for at in memchr::memchr_iter(b' ', bytes) {
+            out.push_str(&text[start..at]);
+            out.push_str(MARKER);
+            start = at + 1;
         }
+        out.push_str(&text[start..]);
     }
 
     /// Run `f` on every piece a `Metaspace` node splits its (already
@@ -192,22 +213,41 @@ impl Tokenizer {
     /// With `split: true` it is HuggingFace's `MergedWithNext` split on the
     /// replacement, so each `▁` opens a piece and carries into the word behind
     /// it. Text before the first `▁` is a piece of its own.
+    ///
+    /// The `split: false` case still cuts when
+    /// [`metaspace_runs_are_boundaries`](Self::metaspace_runs_are_boundaries)
+    /// proves the cuts change nothing — at the start of each marker RUN, never
+    /// inside one, which is the weaker split that proof licenses.
     pub(in crate::core::tokenizer) fn for_each_metaspace_piece(
         &self,
         text: &str,
         mut f: impl FnMut(&str),
     ) {
-        if !self.metaspace_split {
+        let run_starts_only = if self.metaspace_split {
+            false
+        } else if self.metaspace_runs_are_boundaries() {
+            true
+        } else {
             if !text.is_empty() {
                 f(text);
             }
             return;
-        }
+        };
+
         let mut start = 0;
+        let mut prev_end = usize::MAX;
         // `match_indices` rather than `split`: the delimiter stays with the
         // piece that follows it, so the boundaries are what is wanted, not the
         // fragments between them.
-        for (at, _) in text.match_indices('▁') {
+        for (at, _) in text.match_indices(MARKER) {
+            // A marker directly behind this one means we are mid-run, and a run
+            // may merge into a `▁▁`-style token — so only its first marker is a
+            // boundary when the split was proven rather than declared.
+            let mid_run = run_starts_only && at == prev_end;
+            prev_end = at + MARKER.len();
+            if mid_run {
+                continue;
+            }
             if at > start {
                 f(&text[start..at]);
             }
@@ -216,5 +256,32 @@ impl Tokenizer {
         if start < text.len() {
             f(&text[start..]);
         }
+    }
+
+    /// Whether cutting a `split: false` metaspace text at the start of every
+    /// marker run yields the same ids as never cutting it at all.
+    ///
+    /// It does when no vocabulary token carries a marker **after** a non-marker
+    /// character. A merge that spanned a run's start would have to produce a
+    /// symbol shaped `…x▁…`; if the vocabulary holds no such token, that merge
+    /// can never form, so the cut removes nothing that could have happened. Runs
+    /// themselves are left whole because `▁▁`, `▁▁▁`, … *are* tokens.
+    ///
+    /// mistral-7b-v0.3 passes: of 32,768 tokens exactly 14 hold an interior
+    /// marker and every one is a pure run. A vocabulary that fails keeps the
+    /// literal whole-text merge.
+    ///
+    /// Proven once per tokenizer, on first encode.
+    fn metaspace_runs_are_boundaries(&self) -> bool {
+        *self.metaspace_run_split.get_or_init(|| {
+            self.encoder.keys().all(|token| {
+                // Past the leading run, no marker may appear.
+                let rest = token
+                    .chunks_exact(MARKER.len())
+                    .position(|c| c != MARKER.as_bytes())
+                    .map_or(token.len(), |runs| runs * MARKER.len());
+                memchr::memmem::find(&token[rest..], MARKER.as_bytes()).is_none()
+            })
+        })
     }
 }
