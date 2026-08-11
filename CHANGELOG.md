@@ -19,6 +19,8 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - `Metaspace` honours `split` and `prepend_scheme`: Mistral is byte-exact.
 - An `lstrip` added token now wins the whitespace run before it against a whitespace added token, as the reference does.
 - `USER_DEFINED` SentencePiece pieces are matched verbatim instead of merged, which needs the piece type the `.spm` format now carries.
+- A vocabulary entry no merge can reach is no longer encodable: the whole-chunk lookup answered `<blockquote>` with one id where merging the same bytes gives three. 6,298 entries in Gemma 4, and it applies to `tokenizer.json` too, except under `ignore_merges`. Decoding is unchanged.
+- `model.end_of_word_suffix` is honoured instead of ignored: CLIP encodes `hello` as `hello</w>`, not the mid-word `hello`. 4,005/4,005 cases match `tokenizers`.
 - The `from_pretrained` doc example no longer breaks `cargo test --doc` under the `python` feature.
 
 ### Changed

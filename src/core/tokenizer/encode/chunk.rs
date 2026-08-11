@@ -19,6 +19,20 @@ impl Tokenizer {
     /// the whole-chunk hit pushes one id, a cache hit copies from under the
     /// shard lock, and the merge writes its output in place.
     pub(super) fn encode_bytes_into(&self, bytes: &[u8], out: &mut Vec<u32>) {
+        // A word-final marker changes the very first question below — what the
+        // vocabulary is asked about is the word plus its suffix — so it is
+        // answered before any of this, not inside the merge. By the time BPE
+        // runs, a chunk already in the vocabulary has been emitted whole, and
+        // that whole is the *unsuffixed* spelling, which no complete word can be.
+        if let Some(suffix) = self.end_of_word_suffix.as_deref() {
+            return self.encode_suffixed_bytes_into(bytes, suffix, out);
+        }
+        self.encode_unsuffixed_bytes_into(bytes, out)
+    }
+
+    /// [`Tokenizer::encode_bytes_into`] for the vocabularies that mark no word
+    /// end, which is every one but CLIP's.
+    pub(super) fn encode_unsuffixed_bytes_into(&self, bytes: &[u8], out: &mut Vec<u32>) {
         // One hash of the chunk serves every question asked about it: the
         // vocabulary and the cache are keyed on the same one.
         let hash = crate::core::encoder::Encoder::hash_of(bytes);
@@ -144,6 +158,16 @@ impl Tokenizer {
         out: &mut Vec<u32>,
         scratch: &mut String,
     ) {
+        // Every probe below asks the vocabulary about the chunk as it stands,
+        // and a word-final marker makes that the wrong question — see
+        // [`Tokenizer::encode_suffixed_bytes_into`]. Such a vocabulary also
+        // never merges raw (`merges_raw` requires the suffix to be absent), so
+        // the mapping this skips to is the one it would have taken anyway.
+        if self.end_of_word_suffix.is_some() {
+            scratch.clear();
+            byte_level_encode_into(scratch, raw);
+            return self.encode_bytes_into(scratch.as_bytes(), out);
+        }
         // Short chunks are answered by an index rather than a hash and a probe.
         if let Some(id) = self.short_chunk_id(raw) {
             out.push(id);

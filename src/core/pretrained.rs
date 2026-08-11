@@ -533,19 +533,31 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
         // loaded from. It is also metaspace: `▁`-spelled pieces with a
         // `<0xNN>` byte fallback, decoded by reversing the marker.
         PretrainedVocab::Gemma4 => {
-            let encoder = crate::core::vocab::load_packed_bpe_borrowed(data)?;
-            let decoder = crate::core::decode_table::Decoder::from_encoder(&encoder);
-            let merged =
-                crate::core::vocab::load_packed_merge_order(merges_bytes(vocab)?, &decoder)?;
+            // The decode table comes from the packed bytes rather than from the
+            // encoder, because the two no longer hold the same set: 20,522 of
+            // Gemma 4's entries are reachable by no merge, and while every one
+            // must still decode, encoding into one would answer `<blockquote>`
+            // with a single id where BPE gives three.
+            let decoder = crate::core::vocab::decoder_from_packed(data)?;
+            let rules =
+                crate::core::vocab::load_packed_merge_rules(merges_bytes(vocab)?, &decoder)?;
+            let encoder = crate::core::vocab::load_packed_bpe_without(
+                data,
+                &crate::core::vocab::orphan_ids(&decoder, &rules),
+            )?;
             let ranks = crate::core::bpe::merge_ranks_bytes(
-                merged.iter().copied(),
-                merged.len(),
+                rules.iter().map(|rule| rule.result),
+                rules.len(),
                 decoder.iter().map(|(_, bytes)| bytes),
             );
+            let byte_fallback = byte_fallback_from_pieces(&decoder, 3);
             Tokenizer::from_encoder_with_metaspace_decoder(encoder, special, pats[0]).map(|t| {
                 t.with_merge_ranks(ranks)
+                    // The encode table is missing the unreachable entries; the
+                    // decode table must not be.
+                    .with_decode_table(decoder)
                     // `<0xNN>` pieces, the same byte fallback Gemma 2 and 3 use.
-                    .with_byte_fallback(byte_fallback_from_pieces(&decoder, 3))
+                    .with_byte_fallback(byte_fallback)
                     // `add_dummy_prefix: false`, as every Gemma generation sets.
                     .with_prefix_space(false)
                     // The declared `Split(" ")` matches nothing after the
@@ -2883,12 +2895,15 @@ mod tests {
     /// packed form — so a packing or loading mistake shows up as the two routes
     /// disagreeing about the same file.
     ///
-    /// Note both routes differ from `tokenizers` on a piece the vocabulary
-    /// holds but no merge produces (`<blockquote>` is in Gemma 4's vocabulary at
-    /// id 190, reachable by no merge, so HuggingFace splits it while splintr
-    /// merges it). That comes from `merge_ranks` ranking never-merged entries
-    /// into the base alphabet, predates this vocabulary, and is asserted here
-    /// only as "the two routes agree", not as "this matches HuggingFace".
+    /// `<blockquote>` is the case that pins the unreachable-entry rule. It sits
+    /// in Gemma 4's vocabulary at id 190, no merge produces it and no merge
+    /// builds from it, and no split of it is a pair of vocabulary entries — so
+    /// BPE cannot assemble it and `tokenizers` answers with three ids. Answering
+    /// with 190 means the whole-chunk lookup emitted a token merging the same
+    /// bytes could never produce. Both ids spell the same text, which is the one
+    /// disagreement a tokenizer must not have.
+    ///
+    /// The ids below are `tokenizers`' own, measured, not derived from splintr.
     #[cfg(feature = "vocab-gemma4")]
     #[test]
     fn bundled_gemma4_agrees_with_its_own_json() {
@@ -2904,10 +2919,13 @@ mod tests {
                 "{text:?} encoded to nothing"
             );
         }
-        // The two shapes the packed merge order is needed for: a long indent is
-        // one piece, and a never-merged vocabulary entry is reached at all.
+        // The shape the packed merge order is needed for: a long indent is one
+        // piece rather than several shorter runs.
         assert_eq!(bundled.encode("            field"), [148, 3593]);
-        assert_eq!(bundled.encode("<blockquote>"), [190]);
+        // Unreachable by any merge, so it is spelled out rather than looked up.
+        assert_eq!(bundled.encode("<blockquote>"), [236820, 37548, 236813]);
+        // Still decodable: only the encode table drops it.
+        assert_eq!(bundled.decode(&[190]).unwrap(), "<blockquote>");
     }
 
     /// The names each new family answers to, including the checkpoints that

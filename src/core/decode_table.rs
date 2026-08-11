@@ -71,6 +71,21 @@ impl DecodeTable {
         (token_count.saturating_mul(4).saturating_add(4096)).min(u32::MAX as usize) as u32
     }
 
+    /// An empty table sized for `tokens` entries.
+    ///
+    /// For a caller that inserts directly rather than going through an
+    /// `Encoder` — see `vocab::decoder_from_packed`. Sizing the dense half up
+    /// front is the whole point: inserting in id order into a table that grows
+    /// on demand reallocates it repeatedly.
+    pub fn with_capacity(tokens: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(tokens * 8),
+            dense: vec![Span::ABSENT; tokens.min(Self::dense_limit(tokens) as usize)],
+            sparse: FxHashMap::default(),
+            count: 0,
+        }
+    }
+
     /// Build the table from an encoder, copying each token's bytes once.
     pub fn from_encoder(encoder: &Encoder) -> Self {
         let total: usize = encoder.keys().map(|key| key.len()).sum();

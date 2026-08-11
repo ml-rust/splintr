@@ -39,7 +39,7 @@
 //! - `o200k_base.tiktoken`: ~200k tokens for GPT-4o
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use thiserror::Error;
 
 use super::decode_table::Decoder;
@@ -317,7 +317,7 @@ const PACKED_MAGIC: &[u8; 8] = b"SPLNTRV1";
 /// instead of refusing it.
 pub fn load_packed_bpe(data: &[u8]) -> Result<Encoder, VocabError> {
     let count = packed_header(data)?;
-    packed_into_arena(data, count)
+    packed_into_arena(data, count, &FxHashSet::default())
 }
 
 /// Load a packed vocabulary **without copying any token bytes**.
@@ -335,7 +335,33 @@ pub fn load_packed_bpe(data: &[u8]) -> Result<Encoder, VocabError> {
 /// contiguous bytes anywhere until something decodes them.
 pub fn load_packed_bpe_borrowed(data: &'static [u8]) -> Result<Encoder, VocabError> {
     let count = packed_header(data)?;
-    packed_into_arena(data, count)
+    packed_into_arena(data, count, &FxHashSet::default())
+}
+
+/// Load a packed vocabulary, leaving `skip` out of the encode table.
+///
+/// For a vocabulary whose merge list proves some entries unreachable — see
+/// [`orphan_ids`]. Decoding still needs them, so build the decode table with
+/// [`decoder_from_packed`], which omits nothing.
+pub fn load_packed_bpe_without(
+    data: &'static [u8],
+    skip: &FxHashSet<u32>,
+) -> Result<Encoder, VocabError> {
+    let count = packed_header(data)?;
+    packed_into_arena(data, count, skip)
+}
+
+/// Build a decode table directly from packed bytes.
+///
+/// Every id the vocabulary states, including ones the encode table declines.
+/// Going through an `Encoder` first would build a hash table this never
+/// consults, and — once the encode table starts omitting entries — would give a
+/// decoder that cannot spell them.
+pub fn decoder_from_packed(data: &[u8]) -> Result<Decoder, VocabError> {
+    let count = packed_header(data)?;
+    let mut decoder = Decoder::with_capacity(count);
+    walk_packed(data, count, |token, id| decoder.insert(id, token))?;
+    Ok(decoder)
 }
 
 /// Build an encoder whose arena *is* the packed buffer.
@@ -344,10 +370,17 @@ pub fn load_packed_bpe_borrowed(data: &'static [u8]) -> Result<Encoder, VocabErr
 /// one copy of the whole buffer and records where each token is, rather than
 /// copying tokens out one at a time. The framing bytes between tokens ride
 /// along unused — a few hundred KB against 100k-200k separate copies.
-fn packed_into_arena(data: &[u8], count: usize) -> Result<Encoder, VocabError> {
-    let mut encoder = Encoder::with_arena(data.to_vec(), count);
+fn packed_into_arena(
+    data: &[u8],
+    count: usize,
+    skip: &FxHashSet<u32>,
+) -> Result<Encoder, VocabError> {
+    let mut encoder = Encoder::with_arena(data.to_vec(), count - skip.len().min(count));
     let base = data.as_ptr() as usize;
     walk_packed(data, count, |token, rank| {
+        if skip.contains(&rank) {
+            return;
+        }
         let offset = (token.as_ptr() as usize - base) as u32;
         encoder.insert_span(offset, token.len() as u32, rank);
     })?;
@@ -396,13 +429,25 @@ fn walk_packed<'a>(
     Ok(())
 }
 
-/// Read one unsigned LEB128 varint, advancing `pos`.
-///
-/// Capped at five groups: a `u32` needs at most 32 bits, and without the cap a
-/// corrupt file of continuation bytes would shift past the width and loop to the
-/// end of the buffer rather than failing.
 /// Magic at the head of a packed merge list.
 const PACKED_MERGES_MAGIC: &[u8; 8] = b"SPLNTRM1";
+
+/// One merge rule: what it produces, and where its two operands meet.
+#[derive(Clone, Copy, Debug)]
+pub struct MergeRule<'a> {
+    /// The token the merge produces. Always a vocabulary entry.
+    pub result: &'a [u8],
+    /// Byte length of the left operand, so the pair is `result[..split]` and
+    /// `result[split..]`. Never 0 and never `result.len()`.
+    pub split: usize,
+}
+
+impl<'a> MergeRule<'a> {
+    /// The two tokens this rule joins.
+    pub fn operands(&self) -> (&'a [u8], &'a [u8]) {
+        self.result.split_at(self.split)
+    }
+}
 
 /// Load a packed merge list: the token ids a vocabulary merges in, in priority
 /// order.
@@ -420,9 +465,9 @@ const PACKED_MERGES_MAGIC: &[u8; 8] = b"SPLNTRM1";
 /// # Format
 ///
 /// ```text
-/// "SPLNTRM1"        magic, 8 bytes
-/// count             u32, little-endian
-/// varint(id)*       count ids, in merge-priority order
+/// "SPLNTRM1"                 magic, 8 bytes
+/// count                      u32, little-endian
+/// (varint(id) varint(split))* count rules, in merge-priority order
 /// ```
 ///
 /// Ids rather than token bytes: every merge result is itself a vocabulary
@@ -430,10 +475,16 @@ const PACKED_MERGES_MAGIC: &[u8; 8] = b"SPLNTRM1";
 /// back through `pieces` is what ties the two together, and a merge id outside
 /// the vocabulary is an error rather than a skipped entry — it would mean the
 /// two files were packed from different sources.
-pub fn load_packed_merge_order<'a>(
+///
+/// `split` records where the rule's two operands met. It is not needed to rank
+/// the merges — the order alone does that — but it is the only way to tell a
+/// vocabulary entry that merges build FROM (an atom) from one that no merge
+/// touches at all (an orphan), which [`orphan_ids`] needs and encoding
+/// correctness depends on.
+pub fn load_packed_merge_rules<'a>(
     data: &'a [u8],
     pieces: &'a Decoder,
-) -> Result<Vec<&'a [u8]>, VocabError> {
+) -> Result<Vec<MergeRule<'a>>, VocabError> {
     if data.len() < 12 || &data[..8] != PACKED_MERGES_MAGIC {
         return Err(VocabError::ParseError(
             "not a packed merge list: bad magic".to_string(),
@@ -444,19 +495,93 @@ pub fn load_packed_merge_order<'a>(
         return Err(VocabError::ParseError("no merges".to_string()));
     }
 
-    let mut merged: Vec<&[u8]> = Vec::with_capacity(count);
+    let mut rules: Vec<MergeRule<'_>> = Vec::with_capacity(count);
     let mut pos = 12;
     for _ in 0..count {
         let id = read_varint(data, &mut pos)?;
-        let bytes = pieces.get(id).ok_or_else(|| {
+        let split = read_varint(data, &mut pos)? as usize;
+        let result = pieces.get(id).ok_or_else(|| {
             VocabError::ParseError(format!(
                 "packed merge list: id {id} is not in the vocabulary — the two \
                  were not packed from the same file"
             ))
         })?;
-        merged.push(bytes);
+        if split == 0 || split >= result.len() {
+            return Err(VocabError::ParseError(format!(
+                "packed merge list: id {id} splits at {split}, which leaves an \
+                 empty half of a {}-byte token",
+                result.len()
+            )));
+        }
+        rules.push(MergeRule { result, split });
     }
-    Ok(merged)
+    Ok(rules)
+}
+
+/// The ids no merge can produce and no merge builds from.
+///
+/// BPE reaches a token in exactly two ways: it is the result of some merge, or
+/// it is an operand that seeding starts from. An entry that is neither is
+/// unreachable — correct BPE will never emit it, whatever the input.
+///
+/// Unreachable entries are not a defect in the vocabulary; they are reserved
+/// ids, markers a caller may emit deliberately, and pieces the trainer kept out
+/// of the merge table on purpose. Gemma 4 has 20,522 of them, `<blockquote>`
+/// and `<unused0>` among them. Decoding must still spell every one.
+///
+/// What must not happen is *encoding* into one. The whole-chunk fast path — ask
+/// the vocabulary whether the entire chunk is a token before merging — answers
+/// `<blockquote>` with a single id where BPE, given the same bytes, produces
+/// three. Both are ids for the same text, which is precisely the disagreement a
+/// tokenizer cannot have. So the encode table is built without them, and this
+/// is the set it leaves out.
+///
+/// Two kinds of entry are never returned, however few merges mention them:
+///
+/// - **one symbol**. A merge joins two non-empty tokens, so anything BPE could
+///   wrongly merge into is at least two symbols, and seeding must keep every
+///   one-symbol spelling it might start from.
+/// - **`<0xNN>` byte-fallback pieces**. Six characters and often named by no
+///   merge at all, but reachable — byte fallback spells a raw byte as one, and
+///   dropping them leaves a vocabulary that cannot encode the bytes it declares
+///   a fallback for. Recognized by shape rather than by the model's
+///   `byte_fallback` flag: keeping an entry encodable is the safe direction,
+///   since the failure this guards against is a merge that should not happen,
+///   never one that should.
+pub fn orphan_ids(pieces: &Decoder, rules: &[MergeRule<'_>]) -> FxHashSet<u32> {
+    let mut reachable: FxHashSet<&[u8]> = FxHashSet::default();
+    reachable.reserve(rules.len() * 2);
+    for rule in rules {
+        let (left, right) = rule.operands();
+        reachable.insert(rule.result);
+        reachable.insert(left);
+        reachable.insert(right);
+    }
+    pieces
+        .iter()
+        .filter(|(_, bytes)| {
+            !reachable.contains(*bytes)
+                && !is_byte_fallback_piece(bytes)
+                && bytes.iter().filter(|b| !is_utf8_tail(**b)).count() > 1
+        })
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Is this the `<0xNN>` spelling SentencePiece gives a raw byte?
+pub(crate) fn is_byte_fallback_piece(token: &[u8]) -> bool {
+    token.len() == 6
+        && token.starts_with(b"<0x")
+        && token[5] == b'>'
+        && token[3..5].iter().all(u8::is_ascii_hexdigit)
+}
+
+/// Is this a UTF-8 continuation byte? Used to count characters without decoding:
+/// a token's symbol count is its non-continuation bytes, and invalid UTF-8 —
+/// which a byte-level vocabulary is full of — counts every byte, which is the
+/// conservative answer.
+fn is_utf8_tail(byte: u8) -> bool {
+    byte & 0xC0 == 0x80
 }
 
 fn read_varint(data: &[u8], pos: &mut usize) -> Result<u32, VocabError> {

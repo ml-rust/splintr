@@ -1,6 +1,6 @@
 //! Construction: parse a `tokenizer.json` into an [`AnyTokenizer`].
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
@@ -10,6 +10,7 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use super::super::byte_level::byte_level_decode;
+use super::super::decode_table::Decoder;
 use super::super::normalizer::Normalizer;
 use super::super::sentencepiece::SentencePieceTokenizer;
 use super::super::tokenizer::Tokenizer;
@@ -53,18 +54,21 @@ impl<'de: 'a, 'a> Deserialize<'de> for CowStr<'a> {
     }
 }
 
-/// `model.merges` as the concatenated token each entry produces.
+/// `model.merges` as the token each entry produces, with where its halves met.
 ///
-/// An entry is `["a", "b"]` or the string `"a b"`, and only `a ++ b` is ever
-/// wanted, so the halves are joined as they are read. Parsing into
-/// `Vec<Value>` first cost an array `Value` and two `String`s per merge —
-/// three allocations each, over as many entries as the vocabulary has tokens.
-struct MergeList(Vec<String>);
+/// An entry is `["a", "b"]` or the string `"a b"`. The halves are joined as
+/// they are read — parsing into `Vec<Value>` first cost an array `Value` and
+/// two `String`s per merge, three allocations each over as many entries as the
+/// vocabulary has tokens — and the left half's length rides along so the pair
+/// is still recoverable from the join. That is what separates a vocabulary
+/// entry merges are built FROM from one no merge mentions; see
+/// `vocab::orphan_ids`.
+struct MergeList(Vec<(String, usize)>);
 
 impl<'de> Deserialize<'de> for MergeList {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        /// One entry, joined on the spot.
-        struct Merged(Option<String>);
+        /// One entry, joined on the spot, with the left half's byte length.
+        struct Merged(Option<(String, usize)>);
 
         impl<'de> Deserialize<'de> for Merged {
             fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
@@ -80,11 +84,13 @@ impl<'de> Deserialize<'de> for MergeList {
                         // A third element means this is not a merge pair.
                         let extra = seq.next_element::<serde::de::IgnoredAny>()?.is_some();
                         Ok(Merged(match (a, b, extra) {
-                            (Some(a), Some(b), false) => {
+                            // An empty half names no token, so it is not a pair.
+                            (Some(a), Some(b), false) if !a.0.is_empty() && !b.0.is_empty() => {
                                 let mut s = String::with_capacity(a.0.len() + b.0.len());
                                 s.push_str(&a.0);
                                 s.push_str(&b.0);
-                                Some(s)
+                                let split = a.0.len();
+                                Some((s, split))
                             }
                             _ => None,
                         }))
@@ -92,7 +98,13 @@ impl<'de> Deserialize<'de> for MergeList {
                     /// `"a b"`: byte-level tokens spell a real space as `Ġ`, so
                     /// the first literal space is the separator.
                     fn visit_str<E>(self, v: &str) -> Result<Merged, E> {
-                        Ok(Merged(Some(v.replacen(' ', "", 1))))
+                        let Some(split) = v.find(' ') else {
+                            return Ok(Merged(None));
+                        };
+                        if split == 0 || split + 1 == v.len() {
+                            return Ok(Merged(None));
+                        }
+                        Ok(Merged(Some((v.replacen(' ', "", 1), split))))
                     }
                 }
                 de.deserialize_any(V)
@@ -272,8 +284,52 @@ fn build_bpe(
     let pre = parse_pre_tokenizer(root.get("pre_tokenizer"));
     let specials = parse_special_tokens(root);
 
+    // Parsed before the encode tables are filled, because which entries belong
+    // in them depends on it: an entry no merge names is unreachable, and
+    // encoding into one contradicts what merging the same bytes produces.
+    let merge_rules = parse_merge_rules(merges);
+    // `ignore_merges` declares the whole-chunk lookup to BE the semantics: a
+    // pre-token found in the vocabulary is emitted whole and the merges are not
+    // consulted. Under it an entry no merge can produce is still reachable —
+    // `tokenizers` emits it — so nothing is unreachable and nothing is dropped.
+    // Llama 3, SmolLM 3, gpt-oss and GLM-4.5 set it; none of them has such an
+    // entry, so the two have never yet met, which is exactly why the flag is
+    // read here rather than assumed absent.
+    let ignore_merges = model
+        .get("ignore_merges")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    // `continuing_subword_prefix` marks every symbol of a word except the
+    // first, which changes what BPE starts from just as decisively as the
+    // end-of-word suffix does. Nothing here implements it, and a vocabulary
+    // that sets it would tokenize plausibly and wrongly — the failure mode that
+    // silently-ignored model fields keep producing — so it is refused. Empty is
+    // the same as absent: CLIP declares `""`, meaning no prefix.
+    if let Some(prefix) = model
+        .get("continuing_subword_prefix")
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty())
+    {
+        return Err(HfJsonError::UnsupportedModelField(format!(
+            "model.continuing_subword_prefix = {prefix:?}"
+        )));
+    }
+    // `end_of_word_suffix` marks the last symbol of a word, which changes what
+    // BPE starts from — and therefore which entries it can reach. Empty is the
+    // same as absent, which is how every non-CLIP file in the corpus spells it.
+    let suffix = model
+        .get("end_of_word_suffix")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+
+    let unreachable = match &merge_rules {
+        Some(rules) if !ignore_merges => unreachable_tokens(rules, vocab, suffix),
+        _ => FxHashSet::default(),
+    };
+
     let mut encoder: Encoder = Encoder::default();
-    encoder.reserve(vocab.len());
+    encoder.reserve(vocab.len() - unreachable.len().min(vocab.len()));
     // `encoder` keyed by the raw bytes each token stands for, filled from the
     // same decode the byte-level validation below already performs. Building it
     // in a second pass cost 11-14% of load; here it is the difference between
@@ -327,8 +383,16 @@ fn build_bpe(
                 if pre.byte_level {
                     match byte_level_decode(token) {
                         None => return Err(HfJsonError::InvalidByteLevel(token.to_string())),
+                        // Validated either way — an entry that fails to
+                        // byte-level-decode is a corrupt vocabulary whether or
+                        // not merges can reach it — but an unreachable one is
+                        // not recorded, because this table is an encode path
+                        // too and would reintroduce exactly what the encoder
+                        // above declines.
                         Some(raw) => {
-                            raw_encoder.insert(&raw, id);
+                            if !unreachable.contains(token) {
+                                raw_encoder.insert(&raw, id);
+                            }
                         }
                     }
                 }
@@ -341,13 +405,30 @@ fn build_bpe(
         // the id→bytes table, and both the built-in byte-level decode and the
         // declared `ByteLevel` decoder pass a non-byte-level token through
         // unchanged, so the id renders as the literal string it was declared as.
+        if unreachable.contains(token) {
+            continue;
+        }
         encoder.insert(token.as_bytes(), id);
     }
 
     // Merge priority comes from the `merges` list, which is independent of token
     // id (RoBERTa orders them differently from GPT-2). Build a bytes→merge-rank
     // map so BPE merges in the correct order regardless of id assignment.
-    let merge_ranks = parse_merge_ranks(merges, vocab);
+    let merge_ranks = match &merge_rules {
+        Some(rules) => parse_merge_ranks(rules, vocab),
+        None => None,
+    };
+
+    // Every id the file states, including the ones the encode tables declined.
+    // Built only when something was declined: otherwise the encoder covers the
+    // same set and the table the tokenizer derives from it is already right.
+    let full_decoder = (!unreachable.is_empty()).then(|| {
+        let mut decoder = Decoder::with_capacity(vocab.len());
+        for (token, id) in vocab {
+            decoder.insert(*id, token.as_bytes());
+        }
+        decoder
+    });
 
     // Use the multi-stage pre-tokenizer engine when the json declares a pipeline
     // (Digits/Punctuation/Sequence/Split/…). It emits already byte-level-encoded
@@ -493,11 +574,16 @@ fn build_bpe(
     // HuggingFace recognizes added tokens in the input during encoding, and drops
     // the special ones on decode. The `normalizer` (e.g. NFC for Qwen/GPT-NeoX)
     // applies to content before splitting.
+    let tok = match full_decoder {
+        Some(decoder) => tok.with_decode_table(decoder),
+        None => tok,
+    };
     let tok = tok
         .with_added_token_matching(true)
         .with_special_decode_ids(parse_special_decode_ids(root))
         .with_normalizer(Normalizer::new(parse_norm_ops(root.get("normalizer"))?))
-        .with_byte_fallback(byte_fallback);
+        .with_byte_fallback(byte_fallback)
+        .with_end_of_word_suffix(suffix);
     Ok(Backend::Bpe(tok))
 }
 
@@ -516,10 +602,8 @@ fn build_bpe(
 ///
 /// A merge entry is either `[a, b]` or the string `"a b"`. Returns `None` when
 /// there is no usable merges list (then BPE uses tiktoken-style id-as-rank).
-fn parse_merge_ranks(merges: Option<&RawValue>, vocab: &[(Cow<'_, str>, u32)]) -> Option<Encoder> {
-    // Ordered list of merged tokens (and the set, to identify base tokens).
-    let MergeList(merged) = serde_json::from_str(merges?.get()).ok()?;
-    if merged.is_empty() {
+fn parse_merge_ranks(rules: &[(String, usize)], vocab: &[(Cow<'_, str>, u32)]) -> Option<Encoder> {
+    if rules.is_empty() {
         return None;
     }
 
@@ -528,9 +612,71 @@ fn parse_merge_ranks(merges: Option<&RawValue>, vocab: &[(Cow<'_, str>, u32)]) -
     base.sort_by_key(|&(_, id)| id);
 
     Some(super::super::bpe::merge_ranks(
-        merged,
+        rules.iter().map(|(merged, _)| merged.clone()).collect(),
         base.iter().map(|(k, _)| *k),
     ))
+}
+
+/// Read `model.merges` into `(result, split)` rules, or `None` when the file
+/// has no usable list (then BPE falls back to tiktoken-style id-as-rank).
+fn parse_merge_rules(merges: Option<&RawValue>) -> Option<Vec<(String, usize)>> {
+    let MergeList(rules) = serde_json::from_str(merges?.get()).ok()?;
+    (!rules.is_empty()).then_some(rules)
+}
+
+/// The vocabulary entries BPE can neither produce nor build from.
+///
+/// The json counterpart of `vocab::orphan_ids`, and the same rule: an entry is
+/// unreachable when no merge names it as a result or an operand. Such an entry
+/// must not be encodable — a whole-chunk lookup would answer with one id where
+/// merging the same bytes gives several — while still decoding, which is why
+/// only the encode tables drop it.
+///
+/// Single-symbol entries are never unreachable: a merge joins two non-empty
+/// tokens, so nothing shorter than two symbols can be merged into, and seeding
+/// must keep every one-symbol spelling it might start from. Neither are `<0xNN>`
+/// byte-fallback pieces, which are six characters and frequently named by no
+/// merge, yet are exactly how a raw byte is spelled.
+///
+/// `suffix` widens what counts as one symbol. A model declaring
+/// `end_of_word_suffix` seeds the last character of every word as that character
+/// *plus* the marker, so `1</w>` is a seed spelling exactly as `1` is — CLIP
+/// names 139 of its 256 marked characters in no merge at all, and dropping those
+/// would lose the id for every one-character word spelled with them.
+fn unreachable_tokens<'v>(
+    rules: &[(String, usize)],
+    vocab: &'v [(Cow<'v, str>, u32)],
+    suffix: Option<&str>,
+) -> FxHashSet<&'v str> {
+    let mut reachable: FxHashSet<&str> = FxHashSet::default();
+    reachable.reserve(rules.len() * 2);
+    for (merged, split) in rules {
+        reachable.insert(merged.as_str());
+        reachable.insert(&merged[..*split]);
+        reachable.insert(&merged[*split..]);
+    }
+    vocab
+        .iter()
+        .map(|(token, _)| token.as_ref())
+        .filter(|token| {
+            !is_seed_spelling(token, suffix)
+                && !reachable.contains(token)
+                && !super::super::vocab::is_byte_fallback_piece(token.as_bytes())
+        })
+        .collect()
+}
+
+/// Whether `token` is something BPE seeds a word from, and so can never be
+/// unreachable however the merge list names it: one character, or — under
+/// `end_of_word_suffix` — one character carrying the marker.
+fn is_seed_spelling(token: &str, suffix: Option<&str>) -> bool {
+    let bare = match suffix {
+        Some(suffix) => token.strip_suffix(suffix).unwrap_or(token),
+        None => token,
+    };
+    // One character, and not the empty string the marker alone would leave.
+    let mut chars = bare.chars();
+    chars.next().is_some() && chars.next().is_none()
 }
 
 fn build_unigram(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {

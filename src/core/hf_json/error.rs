@@ -26,6 +26,11 @@ pub enum HfJsonError {
     UnsupportedPreTokenizer(String),
     #[error("vocab entry `{0}` is not valid byte-level encoding")]
     InvalidByteLevel(String),
+    /// A declared `model` field that changes tokenization and is not
+    /// implemented. Refused rather than ignored: ignoring it produces plausible
+    /// wrong ids, which is worse than not loading.
+    #[error("unsupported model field: {0}")]
+    UnsupportedModelField(String),
     #[error(
         "added token `{content}` is listed in model.vocab with id {vocab_id} but in added_tokens with id {added_id}"
     )]

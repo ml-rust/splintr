@@ -4,6 +4,7 @@ use super::error::TokenizerError;
 use super::types::{ByteFallback, Tokenizer};
 use crate::core::added::{AddedTokenSet, AddedTokens};
 use crate::core::bpe::BytePairRanks;
+use crate::core::decode_table::Decoder;
 use crate::core::encoder::{encoder_from_owned, Encoder};
 use crate::core::vocab::{
     build_decoder, load_packed_bpe_borrowed, load_tiktoken_bpe, load_tiktoken_bpe_file,
@@ -288,6 +289,7 @@ impl Tokenizer {
             use_jit: true,
             use_pcre2: false,
             byte_fallback: None,
+            end_of_word_suffix: None,
         })
     }
 
@@ -310,6 +312,20 @@ impl Tokenizer {
         if self.use_byte_level {
             self.raw_encoder = Some(raw_encoder);
         }
+        self
+    }
+
+    /// Replace the id → bytes table with one covering ids the encode table
+    /// deliberately omits.
+    ///
+    /// The two tables are normally the same vocabulary read in both directions,
+    /// which is why the decode table is derived from the encoder. They part
+    /// company when a vocabulary states entries BPE can never produce: those
+    /// must not be *encodable* — encoding into one contradicts what merging the
+    /// same bytes gives — but every id a caller may hold must still *decode*.
+    /// See `vocab::orphan_ids`.
+    pub fn with_decode_table(mut self, decoder: Decoder) -> Self {
+        self.decoder = Arc::new(decoder);
         self
     }
 
@@ -665,6 +681,7 @@ impl Tokenizer {
             use_jit: true,
             use_pcre2: false,
             byte_fallback: None,
+            end_of_word_suffix: None,
         })
     }
 
@@ -689,6 +706,16 @@ impl Tokenizer {
     /// `build_bpe` in `src/core/hf_json/loader.rs`, which skips the call).
     pub fn with_byte_fallback(mut self, byte_fallback: Option<ByteFallback>) -> Self {
         self.byte_fallback = byte_fallback;
+        self
+    }
+
+    /// Attach `model.end_of_word_suffix`, the marker appended to the last symbol
+    /// of every word before merging (CLIP's `</w>`).
+    ///
+    /// An empty suffix is `None`: a BPE model that declares `""` declares no
+    /// suffix, which is how every non-CLIP file in the corpus spells its absence.
+    pub(crate) fn with_end_of_word_suffix(mut self, suffix: Option<&str>) -> Self {
+        self.end_of_word_suffix = suffix.filter(|s| !s.is_empty()).map(Arc::from);
         self
     }
 

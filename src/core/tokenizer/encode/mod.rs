@@ -11,6 +11,9 @@
 //!   cache, and the sequential/parallel map over a text's chunks.
 //! - [`content`] — the whole-content pipeline that drives the fork between the
 //!   pre-tokenizer engine, the metaspace fold and the plain chunk map.
+//! - [`suffix`] — the same, for a vocabulary that marks the end of a word
+//!   (`model.end_of_word_suffix`), where the merge starts from a different
+//!   symbol set and the whole-chunk lookup asks a different question.
 //! - [`entry`] — the public `encode*` surface, and the special-token handling
 //!   that wraps the content pipeline.
 //!
@@ -21,3 +24,4 @@ mod content;
 mod entry;
 mod merge;
 mod prepare;
+mod suffix;

@@ -132,6 +132,16 @@ TARGETS: tuple[tuple[str, str, str, str], ...] = (
     ("mistral-7b-v0.3", "json", "mistral-7b-v0.3/tokenizer.json", ""),
     ("whisper-tiny", "json", "whisper-tiny/tokenizer.json", ""),
     ("whisper-tiny.en", "json", "whisper-tiny.en/tokenizer.json", ""),
+    # The only published BPE in the survey that declares
+    # `model.end_of_word_suffix`, and so the only live check on the word-final
+    # marker (`tests/hf_json_bpe_suffix.rs` is the CI-side one, over a synthetic
+    # document).
+    (
+        "CLIP-ViT-H-14",
+        "json",
+        "tokenizer-survey/laion_CLIP-ViT-H-14-laion2B-s32B-b79K.json",
+        "",
+    ),
     # Bundled SentencePiece vocabularies against the `tokenizer.model` that
     # defines each. `mistral-7b-awq-int4` publishes the V1 32,000-piece model
     # and `mistral-7b-v0.3` the V2 32,768-piece one; both pairings are gated

@@ -549,3 +549,97 @@ pub(crate) fn byte_pair_encode_pieces_presegmented(
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::bpe::ranks::BytePairRanks;
+
+    /// A caller-supplied segmentation still merges, and merges across a symbol
+    /// whose surface is longer than one byte — which is the whole reason the
+    /// entry point exists (a `<0xNN>` spelling for the byte-fallback order, a
+    /// marked word-final character for `end_of_word_suffix`).
+    #[test]
+    fn a_supplied_segmentation_merges_over_multi_byte_symbols() {
+        let ranks: Encoder = [
+            (b"he".as_slice(), 0u32),
+            (b"hel".as_slice(), 1),
+            (b"hell".as_slice(), 2),
+            (b"hello</w>".as_slice(), 3),
+        ]
+        .into_iter()
+        .collect();
+        let ids: Encoder = [
+            (b"h".as_slice(), 10u32),
+            (b"e".as_slice(), 11),
+            (b"l".as_slice(), 12),
+            (b"o</w>".as_slice(), 13),
+            (b"he".as_slice(), 14),
+            (b"hel".as_slice(), 15),
+            (b"hell".as_slice(), 16),
+            (b"hello</w>".as_slice(), 17),
+        ]
+        .into_iter()
+        .collect();
+        let pairs = BytePairRanks::build(&ranks);
+
+        // `hello</w>`: one symbol per character, the last carrying the marker.
+        let buf = b"hello</w>";
+        let mut seeds: Vec<Seed> = (0..5)
+            .map(|start| Seed {
+                start,
+                len: 1,
+                id: None,
+            })
+            .collect();
+        seeds[4].len = 5;
+
+        let out = byte_pair_encode_pieces_presegmented(
+            buf,
+            &seeds,
+            RankLookup::with_pairs(&ranks, &pairs),
+            &ids,
+        );
+        assert_eq!(out, vec![Piece::Token(17)]);
+    }
+
+    /// A seed no merge absorbs keeps the id the caller resolved it to, and one
+    /// the vocabulary cannot resolve is reported as a span rather than dropped.
+    #[test]
+    fn an_unabsorbed_seed_keeps_its_own_id() {
+        let ranks: Encoder = Encoder::default();
+        let ids: Encoder = [(b"b".as_slice(), 5u32)].into_iter().collect();
+        let pairs = BytePairRanks::build(&ranks);
+        let seeds = [
+            Seed {
+                start: 0,
+                len: 1,
+                id: Some(99),
+            },
+            Seed {
+                start: 1,
+                len: 1,
+                id: None,
+            },
+            Seed {
+                start: 2,
+                len: 1,
+                id: None,
+            },
+        ];
+        let out = byte_pair_encode_pieces_presegmented(
+            b"abz",
+            &seeds,
+            RankLookup::with_pairs(&ranks, &pairs),
+            &ids,
+        );
+        assert_eq!(
+            out,
+            vec![
+                Piece::Token(99),
+                Piece::Token(5),
+                Piece::Unresolved { start: 2, len: 1 },
+            ]
+        );
+    }
+}

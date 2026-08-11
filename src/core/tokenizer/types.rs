@@ -313,6 +313,18 @@ pub struct Tokenizer {
     /// the vocabulary declares no byte fallback — every ByteLevel BPE model,
     /// which has full alphabet coverage and needs none.
     pub(super) byte_fallback: Option<ByteFallback>,
+    /// `model.end_of_word_suffix`: the marker a BPE model appends to the LAST
+    /// symbol of every word before merging, so a word-final piece is a different
+    /// vocabulary entry from the same piece mid-word.
+    ///
+    /// CLIP's `</w>` is the only one in the surveyed corpus. It changes what BPE
+    /// starts from, and therefore what the whole-chunk lookup may answer: `hello`
+    /// is `hello</w>` (3306) there, never `hello` (12887), which is a *mid-word*
+    /// spelling no complete word can reach. See
+    /// [`Tokenizer::encode_suffixed_bytes_into`].
+    ///
+    /// Behind an `Arc` so a clone shares it; immutable once built.
+    pub(super) end_of_word_suffix: Option<Arc<str>>,
 }
 
 impl Clone for Tokenizer {
@@ -366,6 +378,7 @@ impl Clone for Tokenizer {
             use_jit: self.use_jit,
             use_pcre2: self.use_pcre2,
             byte_fallback: self.byte_fallback.clone(),
+            end_of_word_suffix: self.end_of_word_suffix.clone(),
         }
     }
 }

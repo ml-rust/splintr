@@ -12,7 +12,7 @@ impl Tokenizer {
     /// (tiktoken-style vocabularies, where a token's id *is* its rank), fronted
     /// by the two-byte index built from whichever of the two that was.
     #[inline]
-    fn rank_lookup(&self) -> RankLookup<'_> {
+    pub(super) fn rank_lookup(&self) -> RankLookup<'_> {
         RankLookup::with_pairs(
             self.merge_ranks.as_ref().unwrap_or(&self.encoder),
             &self.byte_pair_ranks,
@@ -44,12 +44,18 @@ impl Tokenizer {
     /// mapping. A pipeline that emits already-mapped pieces has no raw form to
     /// offer and keeps the mapped space.
     ///
+    /// A vocabulary that marks the end of a word is excluded outright: its merge
+    /// list is keyed by spellings that include the marker, and the marked buffer
+    /// those are matched against is built in the mapped space (see
+    /// [`Tokenizer::encode_suffixed_bytes_into`]).
+    ///
     /// Answered once and remembered: every chunk asks, and the question reaches
     /// through the lazily-built id table to do it.
     #[inline]
     pub(super) fn merges_raw(&self) -> bool {
         *self.raw_space.get_or_init(|| {
-            self.use_byte_level
+            self.end_of_word_suffix.is_none()
+                && self.use_byte_level
                 && self.raw_encoder.is_some()
                 && self.pre_tokenizer.as_ref().is_none_or(|pt| pt.emits_raw())
                 && self.rank_lookup().by_id().is_some_and(|t| t.seeds_raw())

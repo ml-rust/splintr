@@ -45,6 +45,33 @@ use base64::Engine;
 pub const MAGIC: &[u8; 8] = b"SPLNTRV1";
 
 /// Magic at the head of every packed merge list.
+///
+/// ```text
+/// "SPLNTRM1"                 magic, 8 bytes
+/// count                      u32, little-endian
+/// (varint(id) varint(split))* count rules, in merge-priority order
+/// ```
+///
+/// `id` is the vocabulary id of what the merge produces; `split` is the byte
+/// length of its left half, so the rule's two operands are `result[..split]`
+/// and `result[split..]`.
+///
+/// Storing the split rather than only the result is what lets a reader classify
+/// every vocabulary entry:
+///
+/// - a **merge result** — BPE can produce it;
+/// - an **atom** — never a result, but an operand of some merge, so BPE builds
+///   from it (the byte alphabet, `<0xNN>` byte-fallback pieces, CLIP's `x</w>`
+///   end-of-word forms);
+/// - an **orphan** — neither. BPE can never produce it and nothing is built
+///   from it, yet it holds an id. Gemma 4 has 20,522, of which 6,298 are longer
+///   than one character.
+///
+/// That last class is why the split is worth its bytes. A tokenizer that
+/// answers a whole chunk from the vocabulary before merging — the standard fast
+/// path — will emit an orphan that no correct BPE can reach, which is a wrong
+/// id rather than a slow one. Only the operand set separates orphans from
+/// atoms, and only the rules carry it.
 pub const MERGES_MAGIC: &[u8; 8] = b"SPLNTRM1";
 
 /// Pack `.tiktoken` text into the binary form.
@@ -176,27 +203,39 @@ pub fn pack_hf_json(json: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
 
     let by_token: std::collections::HashMap<&str, u32> = entries.into_iter().collect();
     let mut seen = std::collections::HashSet::with_capacity(merges.len());
-    let mut ids = Vec::with_capacity(merges.len());
+    // (result id, byte length of the left half). The split is what makes the
+    // rule recoverable rather than just its outcome: `result[..split]` and
+    // `result[split..]` are the two operands, and an operand is how a reader
+    // tells an ATOM — a vocabulary entry that merges are built FROM — apart from
+    // an entry no merge touches at all. See the format note on `MERGES_MAGIC`.
+    let mut rules: Vec<(u32, usize)> = Vec::with_capacity(merges.len());
     let mut joined = String::new();
     for (i, entry) in merges.iter().enumerate() {
         joined.clear();
-        match entry {
+        let split = match entry {
             serde_json::Value::String(s) => {
                 let (a, b) = s
                     .split_once(' ')
                     .ok_or_else(|| format!("merge {i}: no space between the pair"))?;
                 joined.push_str(a);
                 joined.push_str(b);
+                a.len()
             }
             serde_json::Value::Array(pair) if pair.len() == 2 => {
-                for half in pair {
-                    joined.push_str(
-                        half.as_str()
-                            .ok_or_else(|| format!("merge {i}: half is not a string"))?,
-                    );
-                }
+                let a = pair[0]
+                    .as_str()
+                    .ok_or_else(|| format!("merge {i}: half is not a string"))?;
+                let b = pair[1]
+                    .as_str()
+                    .ok_or_else(|| format!("merge {i}: half is not a string"))?;
+                joined.push_str(a);
+                joined.push_str(b);
+                a.len()
             }
             _ => return Err(format!("merge {i}: neither \"a b\" nor [\"a\", \"b\"]")),
+        };
+        if split == 0 || split >= joined.len() {
+            return Err(format!("merge {i}: an empty half"));
         }
         // A merge whose result is not itself a vocabulary entry can never be
         // performed, so it carries no rank and is dropped rather than given one.
@@ -204,18 +243,19 @@ pub fn pack_hf_json(json: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
             continue;
         };
         if seen.insert(id) {
-            ids.push(id);
+            rules.push((id, split));
         }
     }
 
-    if ids.is_empty() {
+    if rules.is_empty() {
         return Err("no merges".to_string());
     }
-    let mut packed_merges = Vec::with_capacity(MERGES_MAGIC.len() + 4 + ids.len() * 3);
+    let mut packed_merges = Vec::with_capacity(MERGES_MAGIC.len() + 4 + rules.len() * 4);
     packed_merges.extend_from_slice(MERGES_MAGIC);
-    packed_merges.extend_from_slice(&(ids.len() as u32).to_le_bytes());
-    for id in ids {
+    packed_merges.extend_from_slice(&(rules.len() as u32).to_le_bytes());
+    for (id, split) in rules {
         write_varint(&mut packed_merges, id as u64);
+        write_varint(&mut packed_merges, split as u64);
     }
 
     Ok((packed, packed_merges))
@@ -295,7 +335,27 @@ mod tests {
         // "a b" -> ab (id 2), "ab a" -> aba (id 3), and the repeated "a b" is
         // dropped: its rank is already fixed by the first occurrence.
         assert_eq!(&merges[8..12], &2u32.to_le_bytes());
-        assert_eq!(&merges[12..], &[2, 3]);
+        // Each rule is `id split`: "a"+"b" -> id 2 splitting after 1 byte,
+        // "ab"+"a" -> id 3 splitting after 2.
+        assert_eq!(&merges[12..], &[2, 1, 3, 2]);
+    }
+
+    /// The split is the left half's length, so a reader can recover the pair a
+    /// rule joined rather than only the token it produced. Without it there is
+    /// no way to tell a vocabulary entry that merges build FROM from one that no
+    /// merge touches, and the second kind must not be encodable.
+    #[test]
+    fn a_merge_records_where_its_halves_met() {
+        let json = r#"{"model":{"vocab":{"a":0,"bc":1,"abc":2},"merges":["a bc"]}}"#;
+        let (_, merges) = pack_hf_json(json.as_bytes()).expect("packs");
+        assert_eq!(&merges[12..], &[2, 1]);
+    }
+
+    /// A pair with an empty half names no two tokens, so it is not a rule.
+    #[test]
+    fn a_merge_with_an_empty_half_is_an_error() {
+        let json = r#"{"model":{"vocab":{"a":0,"ab":1},"merges":[["a",""]]}}"#;
+        assert!(pack_hf_json(json.as_bytes()).is_err());
     }
 
     /// Both spellings the `tokenizers` versions emit mean the same pair.
@@ -328,6 +388,6 @@ mod tests {
         let json = r#"{"model":{"vocab":{"a":0,"b":1,"ab":2},"merges":["a a","a b"]}}"#;
         let (_, merges) = pack_hf_json(json.as_bytes()).expect("packs");
         assert_eq!(&merges[8..12], &1u32.to_le_bytes());
-        assert_eq!(&merges[12..], &[2]);
+        assert_eq!(&merges[12..], &[2, 1]);
     }
 }
