@@ -95,11 +95,18 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(python::base_vocab_size, m)?)?;
     // Register all agent token classes (auto-generated from scripts/generate_agent_tokens.py)
     python::register_agent_tokens(m)?;
+    // The pre-tokenizer expression each rank-file vocabulary is defined by.
+    // `Tokenizer(path, pattern)` needs one, and a caller with a `.tiktoken`
+    // file has no other way to obtain the right one: transcribing it by hand
+    // silently tokenizes a different vocabulary, and nothing about the output
+    // says so. Every constant the Rust crate exports is here for that reason.
     m.add("CL100K_BASE_PATTERN", CL100K_BASE_PATTERN)?;
     m.add("O200K_BASE_PATTERN", O200K_BASE_PATTERN)?;
     m.add("LLAMA3_PATTERN", LLAMA3_PATTERN)?;
     m.add("QWEN2_PATTERN", QWEN2_PATTERN)?;
     m.add("KIMI_PATTERN", KIMI_PATTERN)?;
+    m.add("MISTRAL_V3_PATTERN", MISTRAL_V3_PATTERN)?;
+    m.add("GPT2_PATTERN", GPT2_PATTERN)?;
     // Whether the optional `pcre2` regex backend was compiled in. Exposed so a
     // caller (or a test) can query the capability directly instead of inferring
     // it from an error message, which would silently start reporting "absent"

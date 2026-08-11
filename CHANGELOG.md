@@ -8,6 +8,10 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ## [Unreleased]
 
+### Added
+
+- Python: `MISTRAL_V3_PATTERN` and `GPT2_PATTERN`, the two pre-tokenizer expressions
+
 ### Fixed
 
 - `Metaspace` honours `split` and `prepend_scheme`: Mistral is byte-exact.
