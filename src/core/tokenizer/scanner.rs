@@ -1825,41 +1825,51 @@ fn gpt2_walk(text: &str, mut emit: impl FnMut(usize, usize)) {
             // on — rather than asked again by each branch in turn, which is
             // three table lookups to reach the punctuation branch that most
             // code and markup takes.
-            let (letter, digit, punct) = match CLASS[bytes[after_space] as usize] {
-                Class::Letter => (true, false, false),
-                Class::Digit => (false, true, false),
-                Class::Punct => (false, false, true),
-                Class::Space | Class::Newline => (false, false, false),
+            //
+            // Each arm acts rather than reporting: the class already gives the
+            // character's length (one byte, or what the decode below returned),
+            // so the run scan starts *past* the character that chose the branch
+            // instead of asking the branch's own predicate about it again.
+            match CLASS[bytes[after_space] as usize] {
+                // ` ?\p{L}+`
+                Class::Letter => {
+                    pos = scan_letters(text, bytes, after_space + 1);
+                    emit(start, pos);
+                    continue;
+                }
+                // ` ?\p{N}+` — unbounded, so a run of digits is one piece
+                // however long it is.
+                Class::Digit => {
+                    pos = scan_run(text, bytes, after_space + 1, number_at);
+                    emit(start, pos);
+                    continue;
+                }
+                // ` ?[^\s\p{L}\p{N}]+`
+                Class::Punct => {
+                    pos = scan_run(text, bytes, after_space + 1, punct_at);
+                    emit(start, pos);
+                    continue;
+                }
+                Class::Space | Class::Newline => {}
                 // Non-ASCII: decoded once here instead of once per branch.
                 Class::Lead => {
-                    let (c, _) = char_at(text, after_space);
-                    match (is_letter_char(c), is_number_char(c)) {
-                        (true, _) => (true, false, false),
-                        (_, true) => (false, true, false),
-                        _ => (false, false, !c.is_whitespace()),
+                    let (c, l) = char_at(text, after_space);
+                    if is_letter_char(c) {
+                        pos = scan_letters(text, bytes, after_space + l);
+                        emit(start, pos);
+                        continue;
+                    }
+                    if is_number_char(c) {
+                        pos = scan_run(text, bytes, after_space + l, number_at);
+                        emit(start, pos);
+                        continue;
+                    }
+                    if !c.is_whitespace() {
+                        pos = scan_run(text, bytes, after_space + l, punct_at);
+                        emit(start, pos);
+                        continue;
                     }
                 }
-            };
-
-            // ` ?\p{L}+`
-            if letter {
-                let n = letter_at(text, bytes, after_space).unwrap_or(1);
-                pos = scan_letters(text, bytes, after_space + n);
-                emit(start, pos);
-                continue;
-            }
-            // ` ?\p{N}+` — unbounded, so a run of digits is one piece however
-            // long it is.
-            if digit {
-                pos = scan_run(text, bytes, after_space, number_at);
-                emit(start, pos);
-                continue;
-            }
-            // ` ?[^\s\p{L}\p{N}]+`
-            if punct {
-                pos = scan_run(text, bytes, after_space, punct_at);
-                emit(start, pos);
-                continue;
             }
         }
 
