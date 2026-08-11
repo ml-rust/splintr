@@ -82,6 +82,11 @@ impl Tokenizer {
         out: &mut Vec<u32>,
         scratch: &mut String,
     ) {
+        // Short chunks are answered by an index rather than a hash and a probe.
+        if let Some(id) = self.short_chunk_id(raw) {
+            out.push(id);
+            return;
+        }
         let hash = crate::core::encoder::Encoder::hash_of(raw);
         if let Some(raw_encoder) = &self.raw_encoder {
             if let Some(rank) = raw_encoder.get_with_hash(raw, hash) {

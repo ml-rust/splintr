@@ -278,6 +278,9 @@ pub(crate) struct PairRanks {
     /// merged without ever entering ByteLevel space: the merge only ever needs
     /// its symbols' ids, and this supplies them from the input bytes directly.
     raw_byte_ids: Option<Box<[u32; 256]>>,
+    /// Id of every two-raw-byte token, indexed directly, alongside
+    /// [`Self::raw_byte_ids`] for one.
+    raw_pair_ids: Option<Box<[u32]>>,
     /// Id per character a merge may start from already assembled, indexed by
     /// codepoint — see [`CharSeeds`] and [`PairRanks::char_seeds`].
     char_seeds: Option<CharSeeds>,
@@ -303,6 +306,24 @@ impl PairRanks {
             [byte] => self.byte_ids[*byte as usize],
             [hi, lo] => self.pair_byte_ids[(*hi as usize) << 8 | *lo as usize],
             _ => self.symbol_ids.get(bytes),
+        }
+    }
+
+    /// The id of a one- or two-byte raw chunk, or `u32::MAX`.
+    ///
+    /// A whole-chunk vocabulary answer without hashing or probing: a third of
+    /// the pre-tokens in source code are a single byte and half of those in
+    /// agentic traces are two or fewer, and asking a 1 MB open-addressed table
+    /// about them costs a hash and a cache miss to learn what an index knows.
+    #[inline]
+    pub(crate) fn raw_chunk_id(&self, bytes: &[u8]) -> u32 {
+        match *bytes {
+            [byte] => self.raw_byte_id(byte),
+            [hi, lo] => match &self.raw_pair_ids {
+                Some(ids) => ids[(hi as usize) << 8 | lo as usize],
+                None => u32::MAX,
+            },
+            _ => u32::MAX,
         }
     }
 
@@ -429,6 +450,15 @@ impl PairRanks {
             // alphabet does not cover, and falling back mid-piece would mean
             // merging raw bytes against a map keyed in ByteLevel space.
             char_seeds: None,
+            raw_pair_ids: raw_encoder.map(|raw| {
+                let mut ids = vec![u32::MAX; 256 * 256].into_boxed_slice();
+                for (key, id) in raw {
+                    if let [hi, lo] = key {
+                        ids[(*hi as usize) << 8 | *lo as usize] = id;
+                    }
+                }
+                ids
+            }),
             raw_byte_ids: raw_encoder.and_then(|raw| {
                 let mut ids = Box::new([u32::MAX; 256]);
                 for (byte, slot) in ids.iter_mut().enumerate() {

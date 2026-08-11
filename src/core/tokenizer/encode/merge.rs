@@ -56,6 +56,19 @@ impl Tokenizer {
         })
     }
 
+    /// The id of a chunk short enough for the id tables to answer directly, when
+    /// this tokenizer merges raw.
+    #[inline]
+    pub(super) fn short_chunk_id(&self, raw: &[u8]) -> Option<u32> {
+        if raw.len() > 2 || !self.merges_raw() {
+            return None;
+        }
+        match self.pair_ranks.get()?.as_ref()?.raw_chunk_id(raw) {
+            u32::MAX => None,
+            id => Some(id),
+        }
+    }
+
     /// The vocabulary keyed in the space chunks arrive in.
     #[inline]
     pub(super) fn chunk_encoder(&self) -> &crate::core::encoder::Encoder {
