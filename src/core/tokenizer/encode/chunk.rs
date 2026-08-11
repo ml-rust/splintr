@@ -110,14 +110,6 @@ impl Tokenizer {
         self.encode_bytes_into(scratch.as_bytes(), out);
     }
 
-    /// [`Tokenizer::encode_bytes_into`] as a standalone call, for the few
-    /// callers that genuinely need an owned vector of one chunk's ids.
-    pub(super) fn encode_bytes_with_cache(&self, bytes: &[u8]) -> Vec<u32> {
-        let mut out = Vec::new();
-        self.encode_bytes_into(bytes, &mut out);
-        out
-    }
-
     /// Map each `(start, end)` chunk span over `text_bytes` through
     /// [`Tokenizer::encode_chunk_into`] and concatenate the results, in
     /// parallel via rayon when `parallel` is true and the `rayon` feature is

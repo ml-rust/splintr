@@ -237,6 +237,14 @@ pub struct Tokenizer {
     /// [`crate::core::sentencepiece::SentencePieceTokenizer`] or
     /// [`crate::core::spm::SpmTokenizer`].
     pub(super) use_metaspace_decoder: bool,
+    /// `Metaspace.split`: whether the node splits its input on the replacement
+    /// character, or hands the model one piece covering the whole text.
+    ///
+    /// HuggingFace defaults it to true, and so does this. Mistral's
+    /// `tokenizer.json` sets it to false, which is not a performance hint — with
+    /// no split, a merge may cross what would otherwise be a piece boundary, and
+    /// the ids genuinely differ.
+    pub(super) metaspace_split: bool,
     /// Prepend a space to input before tokenizing (HF ByteLevel `add_prefix_space`).
     pub(super) add_prefix_space: bool,
     /// Optional multi-stage pre-tokenizer pipeline (HF `pre_tokenizer` graphs
@@ -303,6 +311,7 @@ impl Clone for Tokenizer {
             chunk_cache,
             use_byte_level: self.use_byte_level,
             use_metaspace_decoder: self.use_metaspace_decoder,
+            metaspace_split: self.metaspace_split,
             add_prefix_space: self.add_prefix_space,
             pre_tokenizer: self.pre_tokenizer.clone(),
             match_added_tokens: self.match_added_tokens,

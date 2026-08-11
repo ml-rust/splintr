@@ -487,6 +487,7 @@ fn build_bpe(
             // vocab actually needs (`prepend_scheme: "first"` resolves
             // `add_prefix_space` to `true`).
             t.with_prefix_space(pre.add_prefix_space)
+                .with_metaspace_split(pre.metaspace_split)
         }
     };
     // HuggingFace recognizes added tokens in the input during encoding, and drops

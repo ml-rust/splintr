@@ -15,7 +15,7 @@ impl Tokenizer {
     /// is genuinely stateful and cannot be parallelized without changing output.
     pub(super) fn encode_content(&self, text: &str, parallel: bool) -> Vec<u32> {
         let mut out = Vec::new();
-        self.encode_content_into(text, parallel, &mut out);
+        self.encode_content_into(text, parallel, true, &mut out);
         out
     }
 
@@ -26,7 +26,20 @@ impl Tokenizer {
     /// allocation, a copy and a free for a handful of ids. The streaming
     /// pre-tokenizer paths write straight through; the rest keep their own
     /// buffer and are copied over, which is what they did before.
-    pub(super) fn encode_content_into(&self, text: &str, parallel: bool, out: &mut Vec<u32>) {
+    ///
+    /// `is_first` says whether this gap opens the input, which `Metaspace`'s
+    /// `prepend_scheme: "first"` needs and nothing else reads: HuggingFace
+    /// prepends the replacement to the sequence's first split only, so a gap
+    /// that follows an added token does not get one. A gap that follows an added
+    /// token is never the first split, and neither is anything after it — which
+    /// is exactly what the pointer test at the call sites reports.
+    pub(super) fn encode_content_into(
+        &self,
+        text: &str,
+        parallel: bool,
+        is_first: bool,
+        out: &mut Vec<u32>,
+    ) {
         // Apply the HF `normalizer` (e.g. NFC) to content before splitting. This
         // runs on content gaps (special tokens are extracted upstream), matching
         // HuggingFace's extract-then-normalize order.
@@ -102,6 +115,15 @@ impl Tokenizer {
             return;
         }
 
+        if self.use_metaspace_decoder {
+            return crate::core::scratch::with_text(|buf| {
+                self.metaspace_transform_at(text, is_first, buf);
+                self.for_each_metaspace_piece(buf, |piece| {
+                    self.encode_chunk_into(piece.as_bytes(), out)
+                });
+            });
+        }
+
         let text = self.prefixed(text);
         let text = text.as_ref();
         let text_bytes = text.as_bytes();
@@ -117,70 +139,82 @@ impl Tokenizer {
                 return;
             }
 
-            match self.use_metaspace_decoder {
-                true => out.extend(self.encode_metaspace_chunks(text_bytes, chunks)),
-                // No metaspace decoder: use original logic
-                false => out.extend(self.map_chunks(text_bytes, chunks, parallel)),
-            }
+            out.extend(self.map_chunks(text_bytes, chunks, parallel));
         })
     }
 
-    /// Metaspace-decoder chunk fold: spaces accumulate into `▁` prefixes for
-    /// the next word (may merge into `▁▁▁`-style runs), non-space whitespace
-    /// is encoded as its own byte token, and words are encoded together with
-    /// any accumulated `▁` prefix. Always sequential — see
-    /// [`Tokenizer::encode_content`] for why.
-    fn encode_metaspace_chunks(&self, text_bytes: &[u8], chunks: &[(usize, usize)]) -> Vec<u32> {
-        let mut results = Vec::new();
-        let mut pending_underscores = 0usize; // Count of ▁ to prepend to next word
+    /// Write `text` as HuggingFace's `Metaspace` node leaves it: every **space**
+    /// (U+0020, and nothing else that is whitespace) becomes `▁`, then a leading
+    /// `▁` is prepended unless the result already opens with one.
+    ///
+    /// Both halves are literal readings of `Metaspace::pre_tokenize`, and both
+    /// matter. Replacing anything wider than a space would eat a tab or a
+    /// newline the vocabulary spells with its own byte token; guarding the
+    /// prepend on the *replaced* text rather than the input is what makes
+    /// `" a"` and `"▁a"` agree, while `"\ta"` still takes the prefix.
+    pub(in crate::core::tokenizer) fn metaspace_transform(&self, text: &str, out: &mut String) {
+        self.metaspace_transform_at(text, true, out)
+    }
 
-        for &(start, end) in chunks.iter() {
-            let slice = &text_bytes[start..end];
-
-            if slice.is_empty() {
-                continue;
-            }
-
-            if slice[0].is_ascii_whitespace() {
-                // Whitespace chunk - process each character
-                for &b in slice {
-                    if b == b' ' {
-                        // Space → accumulate ▁ for next word
-                        pending_underscores += 1;
-                    } else {
-                        // Non-space whitespace (newline, tab, etc.)
-                        // First, emit any accumulated ▁ characters
-                        if pending_underscores > 0 {
-                            let underscores = "▁".repeat(pending_underscores);
-                            results.extend(self.encode_bytes_with_cache(underscores.as_bytes()));
-                            pending_underscores = 0;
-                        }
-                        // Encode the non-space whitespace as a byte
-                        results.extend(self.encode_bytes_with_cache(&[b]));
-                    }
-                }
-            } else {
-                // Word chunk - prepend accumulated ▁ characters and encode together
-                if pending_underscores > 0 {
-                    let mut with_prefix = Vec::with_capacity(pending_underscores * 3 + slice.len());
-                    for _ in 0..pending_underscores {
-                        with_prefix.extend_from_slice("▁".as_bytes());
-                    }
-                    with_prefix.extend_from_slice(slice);
-                    results.extend(self.encode_bytes_with_cache(&with_prefix));
-                    pending_underscores = 0;
-                } else {
-                    results.extend(self.encode_bytes_with_cache(slice));
-                }
+    /// [`Tokenizer::metaspace_transform`] told whether this text opens the
+    /// sequence.
+    ///
+    /// `prepend_scheme: "first"` — every metaspace vocabulary here — prepends to
+    /// the first split and no other, so a content gap that follows an added
+    /// token is transformed without a prefix. Measured on mistral-7b-v0.3:
+    /// `"([0-5]"` is `['▁(', '[', …]` while `"<s>([0-5]"` is `['<s>', '([', …]`,
+    /// which is a different first token, not merely a missing one.
+    pub(in crate::core::tokenizer) fn metaspace_transform_at(
+        &self,
+        text: &str,
+        is_first: bool,
+        out: &mut String,
+    ) {
+        out.reserve(text.len() + 3);
+        for ch in text.chars() {
+            match ch {
+                ' ' => out.push('▁'),
+                _ => out.push(ch),
             }
         }
-
-        // Handle trailing underscores (spaces at end of text)
-        if pending_underscores > 0 {
-            let underscores = "▁".repeat(pending_underscores);
-            results.extend(self.encode_bytes_with_cache(underscores.as_bytes()));
+        if self.add_prefix_space && is_first && !out.starts_with('▁') {
+            out.insert(0, '▁');
         }
+    }
 
-        results
+    /// Run `f` on every piece a `Metaspace` node splits its (already
+    /// transformed) text into.
+    ///
+    /// With `split: false` that is the whole text, once — which is the shape
+    /// Mistral ships, and the reason this cannot be a whitespace regex: a merge
+    /// there may legitimately span what looks like a word boundary.
+    ///
+    /// With `split: true` it is HuggingFace's `MergedWithNext` split on the
+    /// replacement, so each `▁` opens a piece and carries into the word behind
+    /// it. Text before the first `▁` is a piece of its own.
+    pub(in crate::core::tokenizer) fn for_each_metaspace_piece(
+        &self,
+        text: &str,
+        mut f: impl FnMut(&str),
+    ) {
+        if !self.metaspace_split {
+            if !text.is_empty() {
+                f(text);
+            }
+            return;
+        }
+        let mut start = 0;
+        // `match_indices` rather than `split`: the delimiter stays with the
+        // piece that follows it, so the boundaries are what is wanted, not the
+        // fragments between them.
+        for (at, _) in text.match_indices('▁') {
+            if at > start {
+                f(&text[start..at]);
+            }
+            start = at;
+        }
+        if start < text.len() {
+            f(&text[start..]);
+        }
     }
 }

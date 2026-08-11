@@ -23,6 +23,9 @@ thread_local! {
     /// Reused by [`with_spans`], one buffer per nesting depth. `const` init so
     /// the first access on a thread is not a lazy-initialization check.
     static SPANS: RefCell<Vec<Vec<(usize, usize)>>> = const { RefCell::new(Vec::new()) };
+
+    /// Reused by [`with_text`], on the same stack discipline as `SPANS`.
+    static TEXT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Run `f` with a cleared span buffer that survives between calls on this
@@ -56,6 +59,26 @@ pub(crate) fn with_spans<R>(f: impl FnOnce(&mut Vec<(usize, usize)>) -> R) -> R 
     buf.clear();
     let result = f(&mut buf);
     SPANS.with(|stack| {
+        if let Ok(mut stack) = stack.try_borrow_mut() {
+            stack.push(buf);
+        }
+    });
+    result
+}
+
+/// [`with_spans`] for a `String` — the metaspace fork rewrites a whole content
+/// gap into one before splitting it, which is an allocation per `encode` that
+/// this buffer turns into one per thread.
+///
+/// Owned text, not borrowed pieces, so the module's no-`unsafe` rule is not at
+/// stake here: nothing in the buffer points at the caller's input.
+pub(crate) fn with_text<R>(f: impl FnOnce(&mut String) -> R) -> R {
+    let mut buf = TEXT
+        .with(|stack| stack.borrow_mut().pop())
+        .unwrap_or_default();
+    buf.clear();
+    let result = f(&mut buf);
+    TEXT.with(|stack| {
         if let Ok(mut stack) = stack.try_borrow_mut() {
             stack.push(buf);
         }

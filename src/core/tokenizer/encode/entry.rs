@@ -41,7 +41,7 @@ impl Tokenizer {
     pub fn encode_rayon(&self, text: &str) -> Vec<u32> {
         if self.match_added_tokens {
             AddedTokens::dispatch(&self.special_matcher, text, |gap, out| {
-                self.encode_content_into(gap, true, out)
+                self.encode_content_into(gap, true, opens_input(text, gap), out)
             })
         } else {
             self.encode_content(text, true)
@@ -55,7 +55,7 @@ impl Tokenizer {
     /// use.
     pub fn encode_with_special(&self, text: &str) -> Vec<u32> {
         AddedTokens::dispatch(&self.special_matcher, text, |gap, out| {
-            self.encode_content_into(gap, false, out)
+            self.encode_content_into(gap, false, opens_input(text, gap), out)
         })
     }
 
@@ -81,7 +81,7 @@ impl Tokenizer {
             return Ok(self.encode_ordinary(text));
         }
         AddedTokens::dispatch_with_mode(&self.special_matcher, text, mode, |gap, out| {
-            self.encode_content_into(gap, false, out)
+            self.encode_content_into(gap, false, opens_input(text, gap), out)
         })
     }
 
@@ -99,4 +99,21 @@ impl Tokenizer {
     pub fn encode_batch_with_special(&self, texts: &[String]) -> Vec<Vec<u32>> {
         batch::map(texts, String::len, |text| self.encode_with_special(text))
     }
+}
+
+/// Whether `gap` is the split that opens `text`.
+///
+/// Added-token dispatch hands out gaps as subslices of the input, so the one
+/// starting at its first byte is the sequence's first split and every other is
+/// not — including the gap that follows a leading added token, which is the
+/// case that distinguishes this from "the first gap the closure sees".
+///
+/// Only `Metaspace`'s `prepend_scheme: "first"` reads it; see
+/// `Tokenizer::metaspace_transform_at`. Pinned by
+/// `metaspace_prefix_is_first_split_only` in the tokenizer tests, so a gap that
+/// ever stopped borrowing from the input would fail loudly rather than silently
+/// move a token id.
+#[inline]
+fn opens_input(text: &str, gap: &str) -> bool {
+    std::ptr::eq(text.as_ptr(), gap.as_ptr())
 }

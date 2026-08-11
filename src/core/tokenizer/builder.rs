@@ -277,6 +277,7 @@ impl Tokenizer {
             chunk_cache,
             use_byte_level,
             use_metaspace_decoder,
+            metaspace_split: true,
             add_prefix_space: false,
             pre_tokenizer: None,
             match_added_tokens: false,
@@ -652,6 +653,7 @@ impl Tokenizer {
             chunk_cache,
             use_byte_level: false,
             use_metaspace_decoder: true,
+            metaspace_split: true,
             add_prefix_space: false,
             pre_tokenizer: None,
             match_added_tokens: false,
@@ -662,6 +664,16 @@ impl Tokenizer {
             use_pcre2: false,
             byte_fallback: None,
         })
+    }
+
+    /// Set `Metaspace.split`, which decides whether the metaspace fork splits a
+    /// content gap on `▁` or hands the model the whole thing as one piece.
+    ///
+    /// Only meaningful on a tokenizer built for the metaspace fork; every other
+    /// path ignores it. Defaults to true, as HuggingFace's node does.
+    pub fn with_metaspace_split(mut self, split: bool) -> Self {
+        self.metaspace_split = split;
+        self
     }
 
     /// Attach the [`ByteFallback`] resolution, so a BPE piece the merge cannot

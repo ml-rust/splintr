@@ -24,6 +24,11 @@ pub(super) struct PreTokenization {
     /// Prepend a space to the input (ByteLevel/Metaspace `add_prefix_space`, or
     /// Metaspace `prepend_scheme` != "never").
     pub add_prefix_space: bool,
+    /// `Metaspace.split`, defaulting to true as HuggingFace's node does. False
+    /// on Mistral's `tokenizer.json`, where the model sees the whole text as one
+    /// piece and merges may cross what would otherwise be word boundaries.
+    /// Meaningless unless `metaspace`.
+    pub metaspace_split: bool,
     /// Whether `pattern` was settled by the file rather than guessed — either a
     /// concrete splitter was recognized (ByteLevel/Metaspace/Split), or the
     /// declared pipeline holds no stages at all and the answer is therefore
@@ -76,46 +81,50 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
     // A `"pre_tokenizer": null` member is the same thing as no member at all —
     // both deserialize to `Option<PreTokenizerWrapper>::None` in `tokenizers`.
     let pre = pre.filter(|v| !v.is_null());
-    let mut byte_level = false;
-    let mut split_regex: Option<String> = None;
-    let mut metaspace = false;
-    // None until a ByteLevel/Metaspace node sets it; defaulted at the end.
-    let mut add_prefix_space: Option<bool> = None;
-    // Pre-tokenizer types we neither parse nor handle implicitly via a backend.
-    let mut unknown: Vec<String> = Vec::new();
-    // Non-`Sequence` nodes seen anywhere in the tree, recognized or not. Zero of
-    // them is the declared-and-empty case; a `Sequence` is a container and never
-    // counts itself.
-    let mut stages = 0usize;
 
-    fn walk(
-        v: &Value,
-        byte_level: &mut bool,
-        split_regex: &mut Option<String>,
-        metaspace: &mut bool,
-        add_prefix_space: &mut Option<bool>,
-        unknown: &mut Vec<String>,
-        stages: &mut usize,
-    ) {
+    /// State threaded through [`walk`], a struct rather than a pile of `&mut`
+    /// arguments for the same reason [`BertNormWalk`] is one: the fields are
+    /// only interpretable together, and the walk recurses.
+    struct Walk {
+        byte_level: bool,
+        split_regex: Option<String>,
+        metaspace: bool,
+        /// None until a ByteLevel/Metaspace node sets it; defaulted by the caller.
+        add_prefix_space: Option<bool>,
+        /// HuggingFace's `Metaspace` defaults `split` to true.
+        metaspace_split: bool,
+        /// Pre-tokenizer types neither parsed here nor handled implicitly by a
+        /// backend.
+        unknown: Vec<String>,
+        /// Non-`Sequence` nodes seen anywhere in the tree, recognized or not.
+        /// Zero of them is the declared-and-empty case; a `Sequence` is a
+        /// container and never counts itself.
+        stages: usize,
+    }
+
+    fn walk(v: &Value, w: &mut Walk) {
         let ty = v.get("type").and_then(Value::as_str);
         if ty != Some("Sequence") {
-            *stages += 1;
+            w.stages += 1;
         }
         match ty {
             Some("ByteLevel") => {
-                *byte_level = true;
+                w.byte_level = true;
                 if let Some(b) = v.get("add_prefix_space").and_then(Value::as_bool) {
-                    *add_prefix_space = Some(b);
+                    w.add_prefix_space = Some(b);
                 }
             }
             Some("Metaspace") => {
-                *metaspace = true;
+                w.metaspace = true;
                 // Newer configs use `prepend_scheme` ("always"/"first"/"never");
                 // older ones use `add_prefix_space`.
                 if let Some(scheme) = v.get("prepend_scheme").and_then(Value::as_str) {
-                    *add_prefix_space = Some(scheme != "never");
+                    w.add_prefix_space = Some(scheme != "never");
                 } else if let Some(b) = v.get("add_prefix_space").and_then(Value::as_bool) {
-                    *add_prefix_space = Some(b);
+                    w.add_prefix_space = Some(b);
+                }
+                if let Some(b) = v.get("split").and_then(Value::as_bool) {
+                    w.metaspace_split = b;
                 }
             }
             Some("Split") => {
@@ -128,15 +137,15 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
                         .or_else(|| p.get("String").and_then(Value::as_str))
                 }) {
                     Some(re) => {
-                        if split_regex.is_none() {
-                            *split_regex = Some(re.to_string());
+                        if w.split_regex.is_none() {
+                            w.split_regex = Some(re.to_string());
                         }
                     }
                     // A `Split` with no usable `pattern` splits nothing and is
                     // not a file `tokenizers` will even load (measured: `missing
                     // field 'pattern'`), so it is a shape to refuse, not to
                     // silently replace with the GPT-2 default.
-                    None => unknown.push("Split (no pattern)".to_string()),
+                    None => w.unknown.push("Split (no pattern)".to_string()),
                 }
             }
             // Whitespace-only splitters are subsumed by both our SentencePiece
@@ -145,43 +154,45 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
             Some("Sequence") => {
                 if let Some(list) = v.get("pretokenizers").and_then(Value::as_array) {
                     for item in list {
-                        walk(
-                            item,
-                            byte_level,
-                            split_regex,
-                            metaspace,
-                            add_prefix_space,
-                            unknown,
-                            stages,
-                        );
+                        walk(item, w);
                     }
                 } else {
                     // A `Sequence` with no `pretokenizers` key is not an empty
                     // pipeline, it is an unreadable one (measured: `missing
                     // field 'pretokenizers'`). Count it so it cannot pass for
                     // declared-and-empty, and flag it so the guard fires.
-                    *stages += 1;
-                    unknown.push("Sequence (no pretokenizers)".to_string());
+                    w.stages += 1;
+                    w.unknown.push("Sequence (no pretokenizers)".to_string());
                 }
             }
-            Some(other) => unknown.push(other.to_string()),
+            Some(other) => w.unknown.push(other.to_string()),
             // No `type` at all: `tokenizers` refuses such a file outright
             // (measured), so this is an unreadable node rather than an inert one.
-            None => unknown.push("(no type)".to_string()),
+            None => w.unknown.push("(no type)".to_string()),
         }
     }
 
+    let mut w = Walk {
+        byte_level: false,
+        split_regex: None,
+        metaspace: false,
+        add_prefix_space: None,
+        metaspace_split: true,
+        unknown: Vec::new(),
+        stages: 0,
+    };
     if let Some(pre) = pre {
-        walk(
-            pre,
-            &mut byte_level,
-            &mut split_regex,
-            &mut metaspace,
-            &mut add_prefix_space,
-            &mut unknown,
-            &mut stages,
-        );
+        walk(pre, &mut w);
     }
+    let Walk {
+        byte_level,
+        split_regex,
+        metaspace,
+        add_prefix_space,
+        metaspace_split,
+        unknown,
+        stages,
+    } = w;
 
     // `stages == 0` covers both "no pre_tokenizer member" (the walk never ran)
     // and "a declared pipeline with nothing in it" — HuggingFace treats them
@@ -202,6 +213,7 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
         // ByteLevel/Metaspace default `add_prefix_space` to true in HF when the
         // field is absent; real configs set it explicitly.
         add_prefix_space: add_prefix_space.unwrap_or(metaspace || byte_level),
+        metaspace_split,
         anchored: byte_level || metaspace || split_regex.is_some() || stages == 0,
         unknown,
     }

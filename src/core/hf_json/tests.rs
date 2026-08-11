@@ -261,6 +261,73 @@ fn bpe_metaspace_prepends_before_leading_non_space_whitespace() {
     assert_eq!(t.encode("a "), vec![1032, 29473]);
 }
 
+/// `Metaspace.split: false` hands the model the whole text as one piece, and
+/// only a **space** becomes `▁` — a `\s`-shaped split would cut the piece at a
+/// no-break space and shatter it into byte fallbacks.
+///
+/// Ids are mistral-7b-v0.3's, measured against `tokenizers` 0.22.1:
+///
+/// | text | ids | tokens |
+/// |---|---|---|
+/// | `"\u{a0}"` | `[29473, 29768]` | `▁`, `\xa0` |
+/// | `"\u{a0} A"` | `[29473, 29768, 1098]` | `▁`, `\xa0`, `▁A` |
+/// | `"X\u{a0} A"` | `[2268, 29768, 1098]` | `▁X`, `\xa0`, `▁A` |
+///
+/// Before the split flag was read, all three byte-fell-back the `\xa0`
+/// (`<0xC2>`, `<0xA0>`) or emitted a raw `<0x20>` for the space after it.
+#[test]
+fn metaspace_split_false_keeps_one_piece_across_non_space_whitespace() {
+    let json = r#"{
+        "added_tokens": [],
+        "pre_tokenizer": {"type": "Metaspace", "replacement": "▁",
+            "prepend_scheme": "first", "split": false},
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "▁": 29473, " ": 29768, "A": 29509,
+                "▁A": 1098, "X": 29510, "▁X": 2268,
+                "<0xC2>": 965, "<0xA0>": 931, "<0x20>": 803},
+            "merges": [["▁", "A"], ["▁", "X"]]}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("the metaspace document loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    assert_eq!(t.encode("\u{a0}"), vec![29473, 29768]);
+    assert_eq!(t.encode("\u{a0} A"), vec![29473, 29768, 1098]);
+    assert_eq!(t.encode("X\u{a0} A"), vec![2268, 29768, 1098]);
+}
+
+/// `prepend_scheme: "first"` prepends to the sequence's FIRST split, so a
+/// content gap that follows an added token gets no `▁` — which changes the
+/// first token rather than merely dropping one.
+///
+/// Measured on mistral-7b-v0.3 with `add_special_tokens=False`: `"([0-5]"` is
+/// `['▁(', '[', …]` and `"<s>([0-5]"` is `['<s>', '([', …]`.
+#[test]
+fn metaspace_prefix_is_first_split_only() {
+    let json = r#"{
+        "added_tokens": [{"id": 1, "content": "<s>", "special": true,
+            "lstrip": false, "rstrip": false, "single_word": false, "normalized": false}],
+        "pre_tokenizer": {"type": "Metaspace", "replacement": "▁",
+            "prepend_scheme": "first", "split": false},
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "<s>": 1, "▁": 29473, "(": 29572, "[": 29560,
+                "▁(": 1093, "([": 5955},
+            "merges": [["▁", "("], ["(", "["]]}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("the metaspace document loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    // First split: the prefix applies and `▁(` wins the lower-ranked merge.
+    assert_eq!(t.encode("(["), vec![1093, 29560]);
+    // After an added token: no prefix, so `([` is the merge that can run.
+    assert_eq!(t.encode("<s>(["), vec![1, 5955]);
+}
+
 #[test]
 fn unigram_uses_viterbi_not_greedy() {
     // Tokens: "ab"(-5), "abc"(-1), "c"(-1), plus single chars. Greedy-longest at

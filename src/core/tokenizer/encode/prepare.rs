@@ -168,6 +168,16 @@ impl Tokenizer {
                 .collect();
         }
 
+        // The metaspace fork rewrites before it splits, so its pieces are spans
+        // of the transformed text and not of `text` — reported here in that
+        // form, which is the one the merge loop is handed and the one the
+        // reference's own `Metaspace` node reports.
+        if self.use_metaspace_decoder {
+            let mut pieces = Vec::new();
+            self.for_each_pre_token(text, |piece| pieces.push(piece.to_owned()));
+            return pieces;
+        }
+
         let text = self.prefixed(text);
         self.split_chunks(&text)
             .into_iter()
@@ -200,6 +210,13 @@ impl Tokenizer {
                 pt.for_each_piece(text, |piece| f(piece));
             }
             return;
+        }
+
+        if self.use_metaspace_decoder {
+            return crate::core::scratch::with_text(|buf| {
+                self.metaspace_transform(text, buf);
+                self.for_each_metaspace_piece(buf, f);
+            });
         }
 
         let text = self.prefixed(text);
