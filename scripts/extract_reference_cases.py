@@ -144,7 +144,7 @@ bundled `whisper.tiktoken` is the *multilingual* vocabulary and pairs with
 ids. `src/core/pretrained.rs` says the same thing in prose: the English-only
 checkpoints "use a different base BPE and are not bundled".
 
-Point 2 needs care because `vocabs/*.tiktoken` is not one
+Point 2 needs care because a bundled `.tiktoken` is not one
 format: whether a bundled vocabulary loads through
 `Tokenizer::from_bytes_chain` (raw semantic bytes per line -- `cl100k_base`,
 `o200k_base`, `llama3`) or `Tokenizer::from_bytes_byte_level_chain`
@@ -213,10 +213,22 @@ from pathlib import Path
 
 from reference_corpus import REFERENCE_CORPUS
 
-# The repository root, so `--vocab` never needs the caller to know where
-# `vocabs/` lives relative to their current directory.
+# The repository root, so `--vocab` never needs the caller to know where a
+# vocabulary lives relative to their current directory.
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VOCABS_DIR = REPO_ROOT / "vocabs"
+
+
+def vocab_file(filename: str) -> Path:
+    """Locate a bundled vocabulary by filename.
+
+    Each family is its own published crate under `crates/vocab-*`, so there is
+    no single directory to join onto any more. Globbing keeps callers naming
+    the file and nothing else, which is what they knew before the split.
+    """
+    matches = sorted(REPO_ROOT.glob(f"crates/vocab-*/vocabs/{filename}"))
+    if not matches:
+        raise SystemExit(f"no bundled vocabulary named {filename}")
+    return matches[0]
 
 # Bundled vocabulary name (every alias `PretrainedVocab::from_name` accepts,
 # `src/core/pretrained.rs`) -> (`.tiktoken` filename, byte_level).
@@ -755,7 +767,7 @@ def run_hf(vocab: str, reference_json: Path) -> tuple[dict[str, object], list[di
             f"({', '.join(sorted(TIKTOKEN_VOCABS))}); {vocab!r} is not one of them"
         )
     tiktoken_filename, byte_level = entry
-    tiktoken_path = VOCABS_DIR / tiktoken_filename
+    tiktoken_path = vocab_file(tiktoken_filename)
     if not tiktoken_path.exists():
         sys.exit(f"error: {tiktoken_path} does not exist -- is the repo layout intact?")
     if not reference_json.exists():
@@ -797,7 +809,7 @@ def run_spm(vocab: str, reference_model: Path) -> tuple[dict[str, object], list[
             f"error: --reference-spm is for the .spm-backed bundled vocabularies "
             f"({', '.join(sorted(SPM_VOCABS))}); {vocab!r} is not one of them"
         )
-    spm_path = VOCABS_DIR / spm_filename
+    spm_path = vocab_file(spm_filename)
     if not spm_path.exists():
         sys.exit(f"error: {spm_path} does not exist -- is the repo layout intact?")
     if not reference_model.exists():
@@ -866,7 +878,7 @@ def run_tiktoken_ranks(
     if entry is None:
         sys.exit(f"error: {vocab!r} is not a bundled .tiktoken vocabulary")
     bundled_filename, _byte_level = entry
-    bundled_path = VOCABS_DIR / bundled_filename
+    bundled_path = vocab_file(bundled_filename)
     if not bundled_path.exists():
         sys.exit(f"error: {bundled_path} does not exist -- is the repo layout intact?")
     if not ranks_path.is_file():
@@ -942,7 +954,7 @@ def run_tiktoken(vocab: str, encoding_name: str) -> tuple[dict[str, object], lis
             f"({', '.join(sorted(TIKTOKEN_PACKAGE_VOCABS))}); {vocab!r} is not one of them"
         )
     tiktoken_filename, byte_level = entry
-    tiktoken_path = VOCABS_DIR / tiktoken_filename
+    tiktoken_path = vocab_file(tiktoken_filename)
     if not tiktoken_path.exists():
         sys.exit(f"error: {tiktoken_path} does not exist -- is the repo layout intact?")
 

@@ -1350,10 +1350,89 @@ dependencies = [
  "serde",
  "serde_json",
  "splintr",
+ "splintr-vocab-cl100k",
+ "splintr-vocab-deepseek",
+ "splintr-vocab-glm",
+ "splintr-vocab-kimi",
+ "splintr-vocab-llama3",
+ "splintr-vocab-mistral",
+ "splintr-vocab-o200k",
+ "splintr-vocab-qwen",
+ "splintr-vocab-whisper",
  "thiserror",
  "unicode-general-category",
  "unicode-normalization",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "splintr-vocab-cl100k"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
+]
+
+[[package]]
+name = "splintr-vocab-deepseek"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
+]
+
+[[package]]
+name = "splintr-vocab-glm"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
+]
+
+[[package]]
+name = "splintr-vocab-kimi"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
+]
+
+[[package]]
+name = "splintr-vocab-llama3"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
+]
+
+[[package]]
+name = "splintr-vocab-mistral"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
+]
+
+[[package]]
+name = "splintr-vocab-o200k"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
+]
+
+[[package]]
+name = "splintr-vocab-pack"
+version = "1.0.0"
+dependencies = [
+ "base64",
+]
+
+[[package]]
+name = "splintr-vocab-qwen"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
+]
+
+[[package]]
+name = "splintr-vocab-whisper"
+version = "1.0.0"
+dependencies = [
+ "splintr-vocab-pack",
 ]
 
 [[package]]

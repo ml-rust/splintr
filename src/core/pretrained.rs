@@ -41,68 +41,38 @@ use super::tokenizer::{
 use super::vocab::{load_spm_vocab, place_special_pieces};
 use super::whisper::{whisper_special_tokens, WhisperVariant};
 
-// Embed vocabulary files at compile time.
+// Re-export each family's payload from its own data crate.
 //
-// Each is behind its family's `vocab-*` feature, all of which are on by
-// default. The feature gates the *payload* only — `PretrainedVocab` and every
-// metadata accessor below stay present either way, so a build without a family
-// still answers what its EOS id or base vocabulary size is, and `from_vocab`
-// reports the missing feature by name instead of failing as "unknown".
+// The bytes used to be `include_bytes!` right here, which put every vocabulary
+// inside the splintr package whether a consumer wanted one or not — 9.13 MB of
+// a 9.14 MB download, against a 10 MB crates.io ceiling that left no room to
+// bundle another family. They are now one `splintr-vocab-*` crate per family,
+// and the `vocab-*` feature that used to gate an `include_bytes!` gates the
+// dependency instead. The constants keep their names and their paths, so this
+// is invisible to anything that reads them.
+//
+// The gate is still on the payload only — `PretrainedVocab` and every metadata
+// accessor below stay present either way, so a build without a family still
+// answers what its EOS id or base vocabulary size is, and `from_vocab` reports
+// the missing feature by name instead of failing as "unknown".
 #[cfg(feature = "vocab-cl100k")]
-pub const CL100K_BASE_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/cl100k_base.splv");
-#[cfg(feature = "vocab-o200k")]
-pub const O200K_BASE_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/o200k_base.splv");
-#[cfg(feature = "vocab-llama3")]
-pub const LLAMA3_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/llama3.splv");
+pub use splintr_vocab_cl100k::CL100K_BASE_VOCAB_PACKED;
 #[cfg(feature = "vocab-deepseek")]
-pub const DEEPSEEK_V3_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/deepseek_v3.splv");
-
-/// Qwen 2/3 vocabulary (151,643 tokens, byte-level BPE stored as raw bytes).
-///
-/// Also Baichuan-M2's: that checkpoint ships Qwen's tokenizer verbatim, all
-/// 151,643 ids identical, so it is served by this file rather than a copy.
-#[cfg(feature = "vocab-qwen")]
-pub const QWEN3_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/qwen3.splv");
-
-/// GLM-4/4.5 vocabulary (151,329 tokens, byte-level BPE stored as raw bytes).
+pub use splintr_vocab_deepseek::DEEPSEEK_V3_VOCAB_PACKED;
 #[cfg(feature = "vocab-glm")]
-pub const GLM4_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/glm4.splv");
-
-/// Kimi vocabulary (163,584 merge ranks, byte-level BPE stored as raw bytes).
-///
-/// Moonshot's own `tiktoken.model`, unmodified — it is already in this format.
-/// Byte-identical across Kimi K2, K2.5, K2.6, K2.7, K3, Kimi-Linear and Kimi-VL,
-/// so one payload serves the whole family. Only the 256-slot special block above
-/// it differs between K2 and K3, which is why they are separate variants.
+pub use splintr_vocab_glm::GLM4_VOCAB_PACKED;
 #[cfg(feature = "vocab-kimi")]
-pub const KIMI_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/kimi.splv");
-
-/// Mistral V1 SentencePiece vocabulary (32,000 pieces with their scores).
-///
-/// Extracted straight from `tokenizer.model` by `scripts/extract_spm_vocab.py`,
-/// so pieces keep their SentencePiece spelling (`<0x41>`, `▁▁`) and every score
-/// survives — including the `-1e9` "never merge" sentinel on the 15 whitespace
-/// runs, which the `.tiktoken` form of this vocabulary silently inverted into a
-/// *preferred* merge.
+pub use splintr_vocab_kimi::KIMI_VOCAB_PACKED;
+#[cfg(feature = "vocab-llama3")]
+pub use splintr_vocab_llama3::LLAMA3_VOCAB_PACKED;
 #[cfg(feature = "vocab-mistral")]
-pub const MISTRAL_SPM_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral.spm");
-
-/// Mistral V2 SentencePiece vocabulary (32,768 pieces with their scores).
-#[cfg(feature = "vocab-mistral")]
-pub const MISTRAL_V2_SPM_VOCAB: &[u8] = include_bytes!("../../vocabs/mistral_v2.spm");
-
-/// Mistral V3/Tekken vocabulary file (Tiktoken-based, ~131k tokens).
-#[cfg(feature = "vocab-mistral")]
-pub const MISTRAL_V3_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/mistral_v3_tekken.splv");
-
-/// Whisper base BPE vocabulary (GPT-2 byte-level, 50,257 tokens).
-///
-/// Shared by every multilingual variant (v1/v2/v3) — they differ only in the
-/// programmatically-generated special tokens. The English-only checkpoints use
-/// a different base BPE and are not bundled; load those via
-/// [`crate::from_json_path`].
+pub use splintr_vocab_mistral::{MISTRAL_SPM_VOCAB, MISTRAL_V2_SPM_VOCAB, MISTRAL_V3_VOCAB_PACKED};
+#[cfg(feature = "vocab-o200k")]
+pub use splintr_vocab_o200k::O200K_BASE_VOCAB_PACKED;
+#[cfg(feature = "vocab-qwen")]
+pub use splintr_vocab_qwen::QWEN3_VOCAB_PACKED;
 #[cfg(feature = "vocab-whisper")]
-pub const WHISPER_VOCAB_PACKED: &[u8] = include_bytes!("../../vocabs/whisper.splv");
+pub use splintr_vocab_whisper::WHISPER_VOCAB_PACKED;
 
 /// Supported pretrained vocabulary types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

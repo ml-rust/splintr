@@ -121,9 +121,11 @@ if [[ -f "$CARGO_TOML" ]]; then
         exit 1
     fi
     echo "  Updated $CARGO_TOML -> $CARGO_VERSION"
+
 else
     echo "  Warning: $CARGO_TOML not found"
 fi
+
 
 # Update pyproject.toml - only update version in [project] section
 if [[ -f "$PYPROJECT_TOML" ]]; then

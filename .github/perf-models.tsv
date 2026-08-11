@@ -3,7 +3,7 @@
 # harness or the Python harness, so all three read this file.
 #
 # name      what the report calls it.
-# ranks     basename in `vocabs/` of the `.tiktoken` rank file this vocabulary
+# ranks     basename of the `.tiktoken` rank file this vocabulary
 #           publishes, or `-`. The rank-file family reads what splintr bundles,
 #           so the bytes under every engine are provably the ones it ships.
 # json      URL of a HuggingFace `tokenizer.json`, or `-` when the model

@@ -63,10 +63,14 @@ jobs:
       ref: ${{ inputs.tag }}
 
   # ── crates.io ─────────────────────────────────────────────────────────────
-  # splintr is a single leaf crate — no publish-order tiers. A verifying publish
-  # (no --no-verify) is the strongest guarantee the uploaded tarball builds from
-  # a clean checkout, and it is the only thing that proves the explicit
-  # `include` list in Cargo.toml carried every vocabulary `include_bytes!` needs.
+  # Two tiers, and the order is not optional: splintr depends on the
+  # `splintr-vocab-*` data crates by `version`, so a verifying publish of
+  # splintr cannot resolve until every one of them is on the registry. They
+  # have no dependencies of their own, so they go first, in any order.
+  #
+  # A verifying publish (no --no-verify) is the strongest guarantee the uploaded
+  # tarball builds from a clean checkout, and it is the only thing that proves
+  # each `include` list carried the payload its `include_bytes!` needs.
   #
   # PREREQUISITE: `regexr` 0.1.5, the version Cargo.toml requires, must already
   # be on crates.io. It is resolved locally only through a gitignored
@@ -102,10 +106,39 @@ jobs:
           is_published() {
             curl -sf \
               -H "User-Agent: splintr-ci (github.com/ml-rust/splintr)" \
-              "https://crates.io/api/v1/crates/splintr/$1" > /dev/null 2>&1
+              "https://crates.io/api/v1/crates/$1/$2" > /dev/null 2>&1
           }
 
-          if is_published "$VERSION"; then
+          # Data crates first. Skipping the ones already indexed is what makes
+          # a re-run after a partial failure safe, and what lets a release that
+          # changes no vocabulary cost nothing here.
+          # Each data crate carries its own version, not splintr's: the
+          # payloads are fixed, so they are published once and then skipped on
+          # every release after.
+          #
+          # `vocab-pack` first — the other nine build-depend on it to pack their
+          # `.tiktoken` text, so a verifying publish of any of them cannot
+          # resolve until it is indexed.
+          # `vocab-pack` appears twice — the glob catches it again — and the
+          # second pass is skipped by the already-published check above.
+          for manifest in crates/vocab-pack/Cargo.toml crates/vocab-*/Cargo.toml; do
+            name=$(sed -n 's/^name = "\(.*\)"/\1/p' "$manifest" | head -1)
+            ver=$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)
+            if is_published "$name" "$ver"; then
+              echo "$name@$ver already published — skipping"
+              continue
+            fi
+            echo "Publishing $name@$ver..."
+            cargo publish --allow-dirty --manifest-path "$manifest"
+            # crates.io indexes asynchronously, and splintr's own publish
+            # resolves these from the index — not from the workspace.
+            for _ in $(seq 1 30); do
+              is_published "$name" "$ver" && break
+              sleep 5
+            done
+          done
+
+          if is_published "splintr" "$VERSION"; then
             echo "splintr@$VERSION already published — skipping"
             exit 0
           fi

@@ -23,7 +23,7 @@ Usage:
     python3 scripts/extract_gguf_vocab.py <file.gguf|dir> [...] --out-dir DIR
 
 With `--tiktoken-dir DIR` the same vocabulary is ALSO rendered in the tiktoken
-text format splintr's byte-level loader reads (`vocabs/*.tiktoken`):
+text format splintr's byte-level loader reads (`crates/vocab-*/vocabs/*.tiktoken`):
 one `base64(token_bytes) rank` line per token, in id order, rank == token id.
 That rendering exists so the byte-level BPE path can be pointed at a GGUF
 `model=llama` vocabulary and scored against the same llama.cpp fixtures as the

@@ -1,0 +1,15 @@
+[package]
+name = "splintr-vocab-pack"
+version = "1.0.0"
+edition = "2021"
+description = "Build-time packer for splintr's bundled vocabularies: `.tiktoken` text to the binary form the loader mmaps."
+license = "MIT"
+repository = "https://github.com/ml-rust/splintr"
+homepage = "https://github.com/ml-rust/splintr"
+readme = "README.md"
+keywords = ["tokenizer", "bpe", "vocabulary", "splintr"]
+categories = ["text-processing"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE"]
+
+[dependencies]
+base64 = "0.22"

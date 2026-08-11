@@ -35,7 +35,7 @@ Usage
 -----
     python scripts/extract_spm_vocab.py \
         --model /path/to/tokenizer.model \
-        --output vocabs/mistral.spm [--verify]
+        --output crates/vocab-mistral/vocabs/mistral.spm [--verify]
 """
 
 import argparse

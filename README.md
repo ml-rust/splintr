@@ -233,7 +233,7 @@ tok = Tokenizer("vocab.tiktoken", CL100K_BASE_PATTERN)
 tok = Tokenizer("vocab.tiktoken", CL100K_BASE_PATTERN, {"<|endoftext|>": 100257})
 ```
 
-A `.tiktoken` file is `base64(token bytes) rank` per line and carries nothing else — no pattern, no special tokens, no decoder chain — so you supply the pattern and any special tokens. That is the whole difference from routes 1 and 2, which read those from the vocabulary itself, and the reason this one returns a `Tokenizer` rather than an `AnyTokenizer`. Ids are identical: loading `vocabs/cl100k_base.tiktoken` this way encodes exactly as `from_pretrained("cl100k_base")` does. In Rust: `Tokenizer::from_file(path, pattern, special_tokens)`, or `from_bytes` for a vocabulary you already hold.
+A `.tiktoken` file is `base64(token bytes) rank` per line and carries nothing else — no pattern, no special tokens, no decoder chain — so you supply the pattern and any special tokens. That is the whole difference from routes 1 and 2, which read those from the vocabulary itself, and the reason this one returns a `Tokenizer` rather than an `AnyTokenizer`. Ids are identical: loading `crates/vocab-cl100k/vocabs/cl100k_base.tiktoken` this way encodes exactly as `from_pretrained("cl100k_base")` does. In Rust: `Tokenizer::from_file(path, pattern, special_tokens)`, or `from_bytes` for a vocabulary you already hold.
 
 ### 4. A GGUF vocabulary (Rust only)
 
@@ -339,3 +339,6 @@ If you use Splintr in your research, please cite:
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+The bundled vocabularies are not splintr's and keep the licence of the model
+they came from — see [LICENSE-OTHERS](LICENSE-OTHERS).

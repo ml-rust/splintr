@@ -1,3 +1,28 @@
+# The vocabulary payloads live in `crates/`, one published crate per family,
+# rather than in this package. This is the only place that reasoning is
+# written down; the data crates themselves are a doc line and an
+# `include_bytes!` each.
+#
+# Why not here: they total 9.13 MB compressed and this package was 9.14 MB, of
+# which 0.53 MB was code. Every consumer paid for every vocabulary, and 0.18.0
+# sat under a 10 MB crates.io ceiling with no room to bundle another family —
+# 0.16.0 was already refused once at 10.1 MB.
+#
+# Why per family rather than one `splintr-vocabs`: one crate holding all of
+# them ships at 9.13 MB, which leaves the same problem — no room to add Gemma
+# or Phi-4 — and still makes someone who wants cl100k download all nine. Per
+# family, cl100k costs 0.68 MB, every family has room to grow, and a new one is
+# a new crate rather than a squeeze.
+#
+# Each ships the `.tiktoken` text it was given and packs it into the binary form
+# the loader reads in its build script, so nothing here or there is an opaque
+# committed blob, and the two forms cannot disagree.
+#
+# These payloads never change: a vocabulary is a fixed artifact of a released
+# model. Expect to publish each once.
+[workspace]
+members = ["crates/*"]
+
 [package]
 name = "splintr"
 version = "0.18.0"
@@ -10,14 +35,13 @@ readme = "README.md"
 keywords = ["tokenizer", "bpe", "sentencepiece", "wordpiece", "llm"]
 categories = ["text-processing", "encoding"]
 # Everything shipped to crates.io, listed explicitly rather than left to
-# "whatever is not gitignored". `vocabs/` is mandatory: `src/core/pretrained.rs`
-# embeds those files with `include_bytes!`, so a published crate missing them
-# fails to compile on the consumer's machine. `tests/` and `examples/` are
-# carried too (184 KB against a 20 MB payload) so a vendored copy stays
-# verifiable. The Python packaging tree, benchmarks, scripts and docs are not
-# the crate's business and stay out. `benches/` is the exception among those: it
-# is declared as a `[[bench]]` target below, so a package without it fails to
-# verify.
+# "whatever is not gitignored". No vocabulary payload is here — each family is
+# its own `splintr-vocab-*` crate, pulled in only by the feature that needs it,
+# which is what keeps this package a few hundred KB. `tests/` and `examples/` are
+# carried too so a vendored copy stays verifiable. The Python packaging tree,
+# benchmarks, scripts and docs are not the crate's business and stay out.
+# `benches/` is the exception among those: it is declared as a `[[bench]]`
+# target below, so a package without it fails to verify.
 # Paths are anchored with a leading `/`: these are gitignore-style globs, so a
 # bare `README.md` matches that name at ANY depth and would drag in a vendored
 # third party's README and LICENSE from `research/`.
@@ -26,17 +50,11 @@ include = [
     "/tests/**/*.rs",
     "/examples/**/*.rs",
     "/benches/**/*.rs",
-    # The packed form, not the `.tiktoken` text it is generated from: base64
-    # plus decimal ranks made the crate 10.1 MiB against a 10 MiB crates.io
-    # limit, and 0.16.0 was refused. `scripts/pack_vocabs.py` writes these and
-    # `tests/vocab_packed_parity.rs` gates them against the text files, which
-    # stay in the repo as the interchange format `Tokenizer::from_file` reads.
-    "/vocabs/*.splv",
-    "/vocabs/*.spm",
     "/Cargo.toml",
     "/README.md",
     "/CHANGELOG.md",
     "/LICENSE",
+    "/LICENSE-OTHERS",
 ]
 
 [lib]
@@ -44,10 +62,10 @@ name = "splintr"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# No bundled vocabulary by default: the set is ~20 MB of `include_bytes!`, and
-# a consumer loading their own `tokenizer.json`/GGUF should not carry it. Opt in
-# with `vocabs`, or the `vocab-*` families needed; `from_pretrained` still
-# compiles either way and names the missing feature.
+# No bundled vocabulary by default: a consumer loading their own
+# `tokenizer.json`/GGUF should not download one. Opt in with `vocabs`, or the
+# `vocab-*` families needed; `from_pretrained` still compiles either way and
+# names the missing feature.
 default = ["rayon", "regexr-jit"]
 # A Python user cannot enable a cargo feature, so the wheel carries the whole
 # set. Declared here rather than in `[tool.maturin] features` so it survives
@@ -70,25 +88,42 @@ vocabs = [
     "vocab-whisper",
 ]
 
-# One feature per bundled vocabulary family. Each gates only the `include_bytes!`
-# payload and its loader arm — `PretrainedVocab` and every metadata accessor
-# (eos id, base vocabulary size, pre-tokenizer pattern) stay present, so a build
-# without a family still answers questions about it and `from_pretrained`
-# reports which feature is missing instead of "unknown vocabulary".
-vocab-cl100k = []
-vocab-o200k = []
-vocab-llama3 = []
-vocab-deepseek = []
-vocab-qwen = []
-vocab-glm = []
-vocab-kimi = []
-vocab-mistral = []
-vocab-whisper = []
-# gpt-oss is o200k_base's ranks with OpenAI's harmony special tokens — it is an
-# alias, not a payload, so it carries no data of its own.
+# One feature per bundled vocabulary family, each pulling in that family's data
+# crate. The gate is on the payload only — `PretrainedVocab` and every metadata
+# accessor (eos id, base vocabulary size, pre-tokenizer pattern) stay present,
+# so a build without a family still answers questions about it and
+# `from_pretrained` reports which feature is missing instead of "unknown
+# vocabulary".
+vocab-cl100k = ["dep:splintr-vocab-cl100k"]
+vocab-o200k = ["dep:splintr-vocab-o200k"]
+vocab-llama3 = ["dep:splintr-vocab-llama3"]
+vocab-deepseek = ["dep:splintr-vocab-deepseek"]
+vocab-qwen = ["dep:splintr-vocab-qwen"]
+vocab-glm = ["dep:splintr-vocab-glm"]
+vocab-kimi = ["dep:splintr-vocab-kimi"]
+vocab-mistral = ["dep:splintr-vocab-mistral"]
+vocab-whisper = ["dep:splintr-vocab-whisper"]
 vocab-gpt-oss = ["vocab-o200k"]
 
 [dependencies]
+# One vocabulary family each, enabled by the matching `vocab-*` feature. Both a
+# `path` and a `version`: the path is what the workspace builds against, and the
+# version is what `cargo publish` rewrites the dependency to, so a released
+# splintr resolves them from crates.io.
+#
+# Versioned `1` and independently of splintr, because the contents are fixed —
+# a vocabulary is an artifact of a released model. Bumping them in step would
+# mean republishing nine identical payloads on every splintr release.
+splintr-vocab-cl100k = { path = "crates/vocab-cl100k", version = "1", optional = true }
+splintr-vocab-o200k = { path = "crates/vocab-o200k", version = "1", optional = true }
+splintr-vocab-llama3 = { path = "crates/vocab-llama3", version = "1", optional = true }
+splintr-vocab-deepseek = { path = "crates/vocab-deepseek", version = "1", optional = true }
+splintr-vocab-qwen = { path = "crates/vocab-qwen", version = "1", optional = true }
+splintr-vocab-glm = { path = "crates/vocab-glm", version = "1", optional = true }
+splintr-vocab-kimi = { path = "crates/vocab-kimi", version = "1", optional = true }
+splintr-vocab-mistral = { path = "crates/vocab-mistral", version = "1", optional = true }
+splintr-vocab-whisper = { path = "crates/vocab-whisper", version = "1", optional = true }
+
 # PCRE2 regex with JIT support (optional, for benchmarking)
 pcre2 = { version = "0.2", optional = true }
 # Rayon for internal parallelism

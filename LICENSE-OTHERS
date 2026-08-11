@@ -1,0 +1,78 @@
+Third-party licences
+====================
+
+splintr's own code is MIT (see LICENSE). This file covers what splintr
+redistributes but did not write: the bundled tokenizer vocabularies.
+
+Each vocabulary is a separate crate under `crates/vocab-*`, carrying the
+vocabulary's own licence text in its own LICENSE file and its provenance in its
+README. That per-crate copy is the one that travels with the data; this file is
+the index.
+
+None of these is a model. A vocabulary is the list of byte strings and merge
+ranks a tokenizer splits text on — repository data, not weights. Where an
+upstream project licenses code and weights separately (DeepSeek does), it is the
+code licence that applies.
+
+Every family is also loadable from its own `tokenizer.json` at runtime, via
+`from_json_path`, which redistributes nothing.
+
+  crate                    vocabulary            source                                    licence
+  ---------------------------------------------------------------------------------------------------------------
+  splintr-vocab-cl100k     cl100k_base           OpenAI tiktoken encodings                 MIT
+  splintr-vocab-o200k      o200k_base            OpenAI tiktoken encodings                 MIT
+  splintr-vocab-whisper    Whisper               openai/whisper-large-v3                   Apache-2.0
+  splintr-vocab-qwen       Qwen 2/3              Qwen/Qwen3-8B                             Apache-2.0
+  splintr-vocab-mistral    Mistral V1/V2/V3      mistralai/Mistral-7B-Instruct-v0.3,       Apache-2.0
+                                                 mistralai/Mistral-Nemo-Instruct-2407
+  splintr-vocab-deepseek   DeepSeek V3           deepseek-ai/DeepSeek-V3                   MIT (LICENSE-CODE)
+  splintr-vocab-glm        GLM-4/4.5             zai-org/GLM-4.5                           MIT
+  splintr-vocab-kimi       Kimi K2/K3            moonshotai/Kimi-K2-Instruct               Modified MIT
+  splintr-vocab-llama3     Llama 3/3.1/3.2/3.3   meta-llama/Llama-3.1                      Llama 3.1 Community
+
+
+Conditions beyond MIT and Apache-2.0
+------------------------------------
+
+Two of these carry terms that do not stop at attribution. They are reproduced
+here so they are visible before the dependency is added, not so they are
+accepted on anyone's behalf.
+
+Llama 3 — Llama 3.1 Community License
+  Llama 3.1 is licensed under the Llama 3.1 Community License, Copyright (c)
+  Meta Platforms, Inc. All Rights Reserved. The full agreement is in
+  `crates/vocab-llama3/LICENSE`.
+
+  Redistributing the vocabulary carries the agreement with it, which is why the
+  crate ships it. The agreement's other duties fall on what a licensee *does*
+  with the materials rather than on shipping this file: displaying "Built with
+  Llama" and prefixing a model's name with "Llama" apply to an AI model created
+  or improved with them, and Meta requires a separate licence above 700 million
+  monthly active users. Meta's Acceptable Use Policy applies throughout.
+
+Kimi — Modified MIT
+  MIT plus one clause: a commercial product above 100 million monthly active
+  users or $20 million monthly revenue must display "Kimi K2" in its user
+  interface. Full text in `crates/vocab-kimi/LICENSE`.
+
+
+Notes on provenance
+-------------------
+
+OpenAI (cl100k_base, o200k_base)
+  Published by OpenAI at
+  https://openaipublic.blob.core.windows.net/encodings/<name>.tiktoken. These
+  rank files are not in the openai/tiktoken repository, and OpenAI states no
+  licence for them separately; the MIT licence reproduced in the crates is
+  tiktoken's own. The same files are redistributed on the same footing by the
+  `tiktoken-rs` and `bpe-openai` crates.
+
+DeepSeek V3
+  Licensed as code (LICENSE-CODE, MIT, reproduced in the crate) and weights
+  (a separate Model Agreement). The tokenizer is repository code.
+
+GLM-4/4.5
+  The HuggingFace model card declares `license: mit` and the repository carries
+  no licence file; the project's GitHub repository carries Apache-2.0. Both
+  permit redistribution with notice. The discrepancy is recorded rather than
+  resolved on their behalf.

@@ -153,10 +153,16 @@ jobs:
           retention-days: 14
 
   # ── crates.io dry run ─────────────────────────────────────────────────────
-  # The crate publishes from source, so the thing that can fail at release time
-  # is packaging: the explicit `include` list in Cargo.toml omitting a vocab
-  # file, or the packaged tree not building from a clean checkout. Both are
+  # The crates publish from source, so the thing that can fail at release time
+  # is packaging: an `include` list omitting the payload its `include_bytes!`
+  # needs, or the packaged tree not building from a clean checkout. Both are
   # caught here, before anything is uploaded anywhere.
+  #
+  # `--workspace` covers splintr and all nine `splintr-vocab-*` crates, and is
+  # what makes the first release possible at all: splintr depends on them by
+  # version, so packaging it alone cannot resolve until they are on the
+  # registry, while packaging them together lets each resolve against the
+  # sibling being packaged beside it.
   package-crate:
     name: Package crate (dry run)
     needs: [validate-version, ci]
@@ -175,7 +181,7 @@ jobs:
         run: bash scripts/update_version.sh "${{ github.ref_name }}"
 
       - name: cargo package
-        run: cargo package --allow-dirty
+        run: cargo package --workspace --allow-dirty
 
   # ── Instructions ──────────────────────────────────────────────────────────
   summary:

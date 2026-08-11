@@ -18,6 +18,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Changed
 
+- Bundled vocabularies moved to one `splintr-vocab-*` crate per family, pulled in by the `vocab-*` feature that needs it. Enabling one family downloads that family. Feature names and the `*_VOCAB_PACKED` constants are unchanged.
 - A `split: false` metaspace vocabulary splits at marker runs where its own tokens prove no id changes.
 - Tekken's pre-tokenizer shares the o200k scanner instead of the regex engine.
 - The vocabulary probe confirms a slot on its key's hash instead of reading the key.

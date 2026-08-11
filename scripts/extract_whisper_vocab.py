@@ -77,7 +77,7 @@ def main() -> None:
                         help="HF model id to pull tokenizer.json from (default: openai/whisper-large-v3)")
     parser.add_argument("--tokenizer-json", default=None,
                         help="Local tokenizer.json path (skips download)")
-    parser.add_argument("--output", default="vocabs/whisper.tiktoken",
+    parser.add_argument("--output", default="crates/vocab-whisper/vocabs/whisper.tiktoken",
                         help="Output path for vocab file")
     args = parser.parse_args()
 

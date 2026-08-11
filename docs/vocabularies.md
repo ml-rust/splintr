@@ -83,7 +83,7 @@ The split regex, byte-level flag, merge order, normalizer (including SentencePie
 
 ## Loading a raw `.tiktoken` file
 
-A `.tiktoken` file is `base64(token bytes) rank`, one per line — the format OpenAI publishes ranks in, and the format `vocabs/*.tiktoken` uses. It carries the merge ranks and nothing else: no pre-tokenizer pattern, no special tokens, no decoder chain. So those are arguments rather than file contents:
+A `.tiktoken` file is `base64(token bytes) rank`, one per line — the format OpenAI publishes ranks in, and the format `crates/vocab-*/vocabs/*.tiktoken` uses. It carries the merge ranks and nothing else: no pre-tokenizer pattern, no special tokens, no decoder chain. So those are arguments rather than file contents:
 
 ```python
 from splintr import Tokenizer, CL100K_BASE_PATTERN
@@ -99,7 +99,7 @@ let tokenizer = Tokenizer::from_file("vocab.tiktoken", CL100K_BASE_PATTERN, spec
 let tokenizer = Tokenizer::from_bytes(&data, CL100K_BASE_PATTERN, special)?;
 ```
 
-This is the one loader that returns the concrete `Tokenizer` rather than an `AnyTokenizer`: with no `model.type` to read there is no backend to dispatch on, and a `.tiktoken` vocabulary is always byte-level BPE. Ids are unaffected by the route — loading `vocabs/cl100k_base.tiktoken` this way encodes exactly as `from_pretrained("cl100k_base")` does.
+This is the one loader that returns the concrete `Tokenizer` rather than an `AnyTokenizer`: with no `model.type` to read there is no backend to dispatch on, and a `.tiktoken` vocabulary is always byte-level BPE. Ids are unaffected by the route — loading `crates/vocab-cl100k/vocabs/cl100k_base.tiktoken` this way encodes exactly as `from_pretrained("cl100k_base")` does.
 
 Use it when you have ranks and no `tokenizer.json`: OpenAI's published rank files, a vocabulary you extracted yourself (`scripts/extract_byte_level_vocab.py` writes this format), or one you are iterating on before it has a HuggingFace config. If you *do* have a `tokenizer.json`, prefer `from_json` — it reads the pattern, special tokens and decoder from the file instead of asking you to restate them correctly.
 

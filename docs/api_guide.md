@@ -82,7 +82,7 @@ tokenizer = Tokenizer(
 
 A `.tiktoken` file is `base64(token bytes) rank` per line and states nothing else — no pre-tokenizer pattern, no special tokens, no decoder chain — so `pattern` is required and `special_tokens` is yours to supply. This is the one loader that returns the concrete `Tokenizer` rather than an [`AnyTokenizer`](#anytokenizer): with no `model.type` to read there is no backend to dispatch on, and it is always byte-level BPE.
 
-Ids are the same as any other route to the same vocabulary — loading `vocabs/cl100k_base.tiktoken` this way encodes identically to `from_pretrained("cl100k_base")`. In Rust: `Tokenizer::from_file(vocab_path, pattern, special_tokens)`, or `Tokenizer::from_bytes(&data, pattern, special_tokens)` for a vocabulary already in memory.
+Ids are the same as any other route to the same vocabulary — loading `crates/vocab-cl100k/vocabs/cl100k_base.tiktoken` this way encodes identically to `from_pretrained("cl100k_base")`. In Rust: `Tokenizer::from_file(vocab_path, pattern, special_tokens)`, or `Tokenizer::from_bytes(&data, pattern, special_tokens)` for a vocabulary already in memory.
 
 ### Encoding Methods
 

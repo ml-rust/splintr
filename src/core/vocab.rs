@@ -204,7 +204,11 @@ pub fn load_tiktoken_bpe(data: &[u8]) -> Result<FxHashMap<Vec<u8>, u32>, VocabEr
 /// of misreading it.
 const PACKED_MAGIC: &[u8; 8] = b"SPLNTRV1";
 
-/// Load a BPE vocabulary from the packed form `scripts/pack_vocabs.py` writes.
+/// Load a BPE vocabulary from the packed form `splintr-vocab-pack` writes.
+///
+/// Each `splintr-vocab-*` crate ships its `.tiktoken` text and packs it in its
+/// build script, so this reads something derived at compile time rather than a
+/// binary committed to the repository. The format is documented on that crate.
 ///
 /// # Format
 ///

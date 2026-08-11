@@ -6,7 +6,7 @@ HuggingFace file does not store the raw bytes: a ByteLevel tokenizer maps every
 byte to a printable character first, so `" the"` is stored as `"Ġthe"`. This
 script inverts that mapping, which is what makes the result loadable by
 `Tokenizer::from_bytes_chain` with no byte-level stage — the same shape as
-`vocabs/llama3.tiktoken`.
+`crates/vocab-llama3/vocabs/llama3.tiktoken`.
 
 Only the base vocabulary is written. `added_tokens` are special tokens and
 belong in `pretrained.rs`, where they are placed above the base vocabulary so no

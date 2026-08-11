@@ -1,0 +1,27 @@
+[package]
+name = "splintr-vocab-deepseek"
+version = "1.0.0"
+edition = "2021"
+description = "Bundled tokenizer vocabulary for splintr: DeepSeek V3 and R1."
+license = "MIT"
+repository = "https://github.com/ml-rust/splintr"
+homepage = "https://github.com/ml-rust/splintr"
+readme = "README.md"
+keywords = ["tokenizer", "bpe", "vocabulary", "splintr"]
+categories = ["text-processing"]
+# The `.tiktoken` text and the build script that packs it. The binary form
+# the loader reads is generated into `OUT_DIR`, never shipped: a committed
+# blob is a second copy of the same ranks and nothing a reader can check.
+include = [
+    "/src/**/*.rs",
+    "/build.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+    "/vocabs/deepseek_v3.tiktoken",
+]
+
+[dependencies]
+
+[build-dependencies]
+splintr-vocab-pack = { path = "../vocab-pack", version = "1" }

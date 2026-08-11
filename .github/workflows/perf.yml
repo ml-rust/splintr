@@ -155,7 +155,9 @@ jobs:
           python .github/scripts/perf_models.py fetch models
           mkdir -p ranks
           python .github/scripts/perf_models.py fields ranks \
-            | grep -v '^-$' | while read -r r; do cp "vocabs/$r.tiktoken" "ranks/"; done
+            | grep -v '^-$' | while read -r r; do
+                cp "$(ls crates/vocab-*/vocabs/$r.tiktoken)" "ranks/"
+              done
           python .github/scripts/build_corpus.py corpora $CORPORA
           echo "MODELS=$(ls models | wc -l | tr -d ' ') vocabularies, $(ls corpora | wc -l | tr -d ' ') corpora" >> "$GITHUB_ENV"
 

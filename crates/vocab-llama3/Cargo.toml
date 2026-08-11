@@ -1,0 +1,27 @@
+[package]
+name = "splintr-vocab-llama3"
+version = "1.0.0"
+edition = "2021"
+description = "Bundled tokenizer vocabulary for splintr: Meta Llama 3, 3.1, 3.2 and 3.3."
+license-file = "LICENSE"
+repository = "https://github.com/ml-rust/splintr"
+homepage = "https://github.com/ml-rust/splintr"
+readme = "README.md"
+keywords = ["tokenizer", "bpe", "vocabulary", "splintr"]
+categories = ["text-processing"]
+# The `.tiktoken` text and the build script that packs it. The binary form
+# the loader reads is generated into `OUT_DIR`, never shipped: a committed
+# blob is a second copy of the same ranks and nothing a reader can check.
+include = [
+    "/src/**/*.rs",
+    "/build.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+    "/vocabs/llama3.tiktoken",
+]
+
+[dependencies]
+
+[build-dependencies]
+splintr-vocab-pack = { path = "../vocab-pack", version = "1" }

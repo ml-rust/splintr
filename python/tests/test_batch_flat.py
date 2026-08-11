@@ -40,7 +40,7 @@ def tokenizers():
     """Both classes that expose the flat form, reached the two different ways."""
     return {
         "AnyTokenizer": Tokenizer.from_pretrained("cl100k_base"),
-        "Tokenizer": Tokenizer("vocabs/cl100k_base.tiktoken", CL100K_BASE_PATTERN),
+        "Tokenizer": Tokenizer("crates/vocab-cl100k/vocabs/cl100k_base.tiktoken", CL100K_BASE_PATTERN),
     }
 
 

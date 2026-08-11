@@ -1,68 +1,71 @@
 //! The packed vocabularies must say exactly what the `.tiktoken` files say.
 //!
-//! `vocabs/*.splv` is what the published crate embeds; `vocabs/*.tiktoken` is
-//! the text form `Tokenizer::from_file` reads, that `docs/vocabularies.md`
-//! documents, and that the perf workflow hands to tiktoken-rs and gigatoken so
-//! every engine is measured on identical ranks. Two files carrying the same
-//! ranks is a duplicated source of truth, and this is what makes the
-//! duplication safe: regenerate one without the other and these tests fail.
+//! Each `splintr-vocab-*` crate ships its `.tiktoken` text and packs it into the
+//! binary form at build time, so the two cannot drift the way two committed
+//! files could. What can still go wrong is the build script packing a different
+//! file from the one that ships — a stale `OUT_DIR`, a renamed stem, a crate
+//! wired to its neighbour's payload — and none of that is a build error. It
+//! shows up here.
 //!
-//! Run `python scripts/pack_vocabs.py` to bring them back into agreement.
-//!
-//! The text files are not shipped in the crate, so this is a repository test —
-//! it reads `vocabs/` relative to `CARGO_MANIFEST_DIR`.
+//! The text files are shipped but not embedded, so this is a repository test:
+//! it reads them relative to `CARGO_MANIFEST_DIR` and compares against the
+//! constants the data crates actually expose.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use splintr::core::{load_packed_bpe, load_tiktoken_bpe};
 
-/// Every bundled rank file, by stem. Kept explicit rather than globbed: a
-/// vocabulary added to `vocabs/` but not to `pretrained.rs` should show up as a
-/// missing entry here, not be silently skipped.
-const VOCABS: &[&str] = &[
-    "cl100k_base",
-    "o200k_base",
-    "llama3",
-    "deepseek_v3",
-    "qwen3",
-    "glm4",
-    "kimi",
-    "mistral_v3_tekken",
-    "whisper",
-];
-
-fn vocab_path(stem: &str, ext: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("vocabs")
-        .join(format!("{stem}.{ext}"))
+/// Every bundled rank file, as `(data crate, stem, the constant it exposes)`.
+/// Kept explicit rather than globbed: a vocabulary added to a crate but not to
+/// `pretrained.rs` should show up as a missing entry here, not be silently
+/// skipped.
+fn bundled() -> Vec<(&'static str, &'static str, &'static [u8])> {
+    use splintr::pretrained::{
+        CL100K_BASE_VOCAB_PACKED, DEEPSEEK_V3_VOCAB_PACKED, GLM4_VOCAB_PACKED, KIMI_VOCAB_PACKED,
+        LLAMA3_VOCAB_PACKED, MISTRAL_V3_VOCAB_PACKED, O200K_BASE_VOCAB_PACKED, QWEN3_VOCAB_PACKED,
+        WHISPER_VOCAB_PACKED,
+    };
+    vec![
+        ("cl100k", "cl100k_base", CL100K_BASE_VOCAB_PACKED),
+        ("o200k", "o200k_base", O200K_BASE_VOCAB_PACKED),
+        ("llama3", "llama3", LLAMA3_VOCAB_PACKED),
+        ("deepseek", "deepseek_v3", DEEPSEEK_V3_VOCAB_PACKED),
+        ("qwen", "qwen3", QWEN3_VOCAB_PACKED),
+        ("glm", "glm4", GLM4_VOCAB_PACKED),
+        ("kimi", "kimi", KIMI_VOCAB_PACKED),
+        ("mistral", "mistral_v3_tekken", MISTRAL_V3_VOCAB_PACKED),
+        ("whisper", "whisper", WHISPER_VOCAB_PACKED),
+    ]
 }
 
-fn read(stem: &str, ext: &str) -> Vec<u8> {
-    let path = vocab_path(stem, ext);
+fn text_of(family: &str, stem: &str) -> Vec<u8> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("crates")
+        .join(format!("vocab-{family}"))
+        .join("vocabs")
+        .join(format!("{stem}.tiktoken"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 #[test]
 fn packed_matches_text_for_every_vocabulary() {
-    for stem in VOCABS {
-        let text = load_tiktoken_bpe(&read(stem, "tiktoken"))
+    for (family, stem, packed_bytes) in bundled() {
+        let text = load_tiktoken_bpe(&text_of(family, stem))
             .unwrap_or_else(|e| panic!("{stem}.tiktoken: {e}"));
-        let packed =
-            load_packed_bpe(&read(stem, "splv")).unwrap_or_else(|e| panic!("{stem}.splv: {e}"));
+        let packed = load_packed_bpe(packed_bytes).unwrap_or_else(|e| panic!("{stem} packed: {e}"));
 
         assert_eq!(
             text.len(),
             packed.len(),
-            "{stem}: {} tokens in text, {} in packed — regenerate with \
-             `python scripts/pack_vocabs.py`",
+            "{stem}: {} tokens in the shipped text, {} in what the build script packed",
             text.len(),
             packed.len()
         );
 
         // Compared entry by entry rather than by whole-map equality so a
         // mismatch names the token, which is the difference between "these
-        // files disagree" and a diagnosis.
+        // disagree" and a diagnosis.
         for (token, rank) in &text {
             match packed.get(token.as_slice()) {
                 Some(packed_rank) => assert_eq!(
@@ -80,7 +83,8 @@ fn packed_matches_text_for_every_vocabulary() {
 /// the text parser, so it must survive packing too.
 #[test]
 fn the_empty_token_survives_packing() {
-    let packed = load_packed_bpe(&read("whisper", "splv")).expect("whisper.splv");
+    let packed =
+        load_packed_bpe(splintr::pretrained::WHISPER_VOCAB_PACKED).expect("whisper packed");
     assert_eq!(
         packed.get(b"".as_slice()),
         Some(50256),
@@ -125,8 +129,8 @@ fn a_gap_in_the_rank_space_is_preserved() {
 /// gap, this fails and the note in the previous test stops being hypothetical.
 #[test]
 fn every_bundled_vocabulary_is_contiguous_today() {
-    for stem in VOCABS {
-        let packed = load_packed_bpe(&read(stem, "splv")).unwrap_or_else(|e| panic!("{stem}: {e}"));
+    for (_, stem, packed_bytes) in bundled() {
+        let packed = load_packed_bpe(packed_bytes).unwrap_or_else(|e| panic!("{stem}: {e}"));
         let max = packed.values().max().expect("non-empty");
         assert_eq!(
             packed.len() as u32,
@@ -142,7 +146,7 @@ fn every_bundled_vocabulary_is_contiguous_today() {
 /// only thing standing between "wrong format" and a map built from noise.
 #[test]
 fn a_non_packed_file_is_rejected() {
-    let text = read("cl100k_base", "tiktoken");
+    let text = text_of("cl100k", "cl100k_base");
     assert!(
         load_packed_bpe(&text).is_err(),
         "the text form was accepted as packed"

@@ -34,7 +34,7 @@ Documentation = "https://github.com/ml-rust/splintr#readme"
 python-source = "python"
 # The sdist's Rust half is drawn from `cargo package`, whose file list is now
 # the explicit `include` in Cargo.toml -- and that list deliberately omits
-# `python/`, since the vocabularies moved out to a top-level `vocabs/` and the
+# `python/`, since the vocabularies moved out to their own crates and the
 # crate has no other business there. Name the pure-Python half here so the
 # sdist carries it regardless, rather than relying on `python-source` being
 # swept in by some other path.

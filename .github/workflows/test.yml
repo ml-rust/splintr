@@ -108,13 +108,13 @@ jobs:
           diff -u src/python/agent_tokens_generated.rs /tmp/agent_tokens_py.rs
 
       - name: Clippy (all targets, all features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       # Warnings are denied because the failures that matter here are silent: a
       # link to a crate-private item renders as plain text rather than erroring,
       # so the published docs lose it and nothing reports why.
       - name: Build docs
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -265,6 +265,12 @@ jobs:
             label: pcre2
           - flags: "--all-features"
             label: all features
+          # One bundled family on its own, which is the shape that proves the
+          # `vocab-*` features still gate their data crate independently — the
+          # combined `vocabs` and `--all-features` rows would both pass with
+          # every family wired to every other.
+          - flags: "--no-default-features --features vocab-cl100k"
+            label: one vocabulary only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
