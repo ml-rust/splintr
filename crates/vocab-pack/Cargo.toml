@@ -9,7 +9,9 @@ homepage = "https://github.com/ml-rust/splintr"
 readme = "README.md"
 keywords = ["tokenizer", "bpe", "vocabulary", "splintr"]
 categories = ["text-processing"]
-include = ["/src/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE"]
+# `examples/` ships too: `mbpe_from_json` is the reference writer for the
+# `.mbpe` format, and the README tells readers to run it.
+include = ["/src/**/*.rs", "/examples/**/*.rs", "/Cargo.toml", "/README.md", "/LICENSE"]
 
 [dependencies]
 base64 = "0.22"
