@@ -32,13 +32,18 @@ splintr = { path = "../.." }
 # gigatoken they do not ship; it stays in the Python suite, where its own wheel
 # is what runs.
 #
-# OpenAI's tiktoken publishes no crate either — `tiktoken-rs` is a community
-# crate vendoring its core BPE code, included on the strength of its usage
-# rather than as an OpenAI distribution.
+# `tiktoken-rs` and `bpe-openai` were here and are not any more. Both read only
+# the OpenAI rank files: `bpe-openai` has no loader at all and carries cl100k
+# and o200k compiled in, and `tiktoken-rs` builds from any rank file and then
+# panics encoding with the ones whose bytes it cannot all look up (Tekken,
+# Whisper). Across the manifest that made them two mostly-empty columns.
+# `tokie` and `kitoken` replace them: both claim the whole model set rather
+# than the OpenAI corner of it, so they can be held to the reference on every
+# row instead of the easy ones.
 tokenizers = "0.23"
-tiktoken-rs = "0.12"
 riptoken = "0.3"
-bpe-openai = "0.3"
+kitoken = "0.11"
+tokie = { version = "0.1", default-features = false }
 basetenkenizer = "0.2"
 rayon = "1"
 rustc-hash = "2"

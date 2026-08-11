@@ -1,0 +1,45 @@
+# Vocabularies the perf workflow measures. One line here is one family in the
+# report — adding a model must not need a change to the workflow, the Rust
+# harness or the Python harness, so all three read this file.
+#
+# name      what the report calls it.
+# ranks     basename in `vocabs/` of the `.tiktoken` rank file this vocabulary
+#           publishes, or `-`. The rank-file family reads what splintr bundles,
+#           so the bytes under every engine are provably the ones it ships.
+# json      URL of a HuggingFace `tokenizer.json`, or `-` when the model
+#           publishes none (Kimi) or bundles ranks only.
+# pattern   splintr's own name for the pre-tokenizer expression the rank file is
+#           defined by. Required with `ranks`, meaningless without it — a
+#           `tokenizer.json` carries its own. Both harnesses resolve this to
+#           splintr's exported constant rather than to a transcription, because
+#           a hand-typed pattern benchmarks a different pre-tokenizer for every
+#           engine at once and parity cannot catch it: they all agree on the
+#           wrong answer.
+# giga      gigatoken's own name for the scheme, or `-` to leave it out of the
+#           rank-file row. Never inferred from the file name: gigatoken looks
+#           the scheme up by name and an unrecognised one mistokenizes rather
+#           than failing.
+#
+# Most `tokenizer.json`s come from `hf-internal-testing/tokenizers-test-data`,
+# the same repo the upstream `tokenizers` benchmark reads, so a row here is
+# comparable with a row there. The two OpenAI vocabularies are not in it and
+# come from Xenova's mirrors instead.
+#
+# name	ranks	json	pattern	giga
+cl100k	cl100k_base	https://huggingface.co/Xenova/gpt-4/resolve/main/tokenizer.json	CL100K_BASE_PATTERN	cl100k
+o200k	o200k_base	https://huggingface.co/Xenova/gpt-4o/resolve/main/tokenizer.json	O200K_BASE_PATTERN	o200k
+qwen3	qwen3	https://huggingface.co/Qwen/Qwen3-8B/resolve/main/tokenizer.json	QWEN2_PATTERN	qwen2
+kimi	kimi	-	KIMI_PATTERN	kimi
+llama3	llama3	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/llama-3-tokenizer.json	LLAMA3_PATTERN	-
+glm	glm4	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/glm-5.2.json	LLAMA3_PATTERN	-
+tekken	mistral_v3_tekken	-	MISTRAL_V3_PATTERN	-
+whisper	whisper	-	GPT2_PATTERN	-
+gpt2	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/gpt2.json	-	-
+gpt-oss	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/gpt-oss.json	-	-
+deepseek	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/deepseek-v4.json	-	-
+gemma	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/gemma-4.json	-	-
+mistral-small	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/mistral-small-4.json	-	-
+llama2	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/llama-2.json	-	-
+t5	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/t5-base.json	-	-
+albert	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/albert-base-v1-tokenizer.json	-	-
+bert	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/bert-base-uncased.json	-	-

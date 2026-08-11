@@ -32,24 +32,19 @@ run-name: >-
 # versions. Manual only — it is a decision tool and a regression check, not
 # something to run on every push.
 #
-# Suites are grouped by **how the vocabulary is loaded**, so every row compares
-# the same input through the same kind of entry point — apples to apples:
+# **Which vocabularies are measured is `.github/perf-models.tsv`, not this
+# file.** Adding a family is one line there; nothing here, in the Rust harness
+# or in the Python harness needs to change. That file also explains the two
+# loader families every row belongs to:
 #
-#   *-ranks   every engine reads the SAME `.tiktoken` rank file plus that
-#             vocabulary's pre-tokenizer expression. This is the path
-#             `gigatoken` is fastest on and the only form `tiktoken` reads, so
-#             it is the only way to have all three in one row.
-#             splintr `Tokenizer(path, pattern)` · tiktoken `Encoding(ranks,
-#             pat_str)` · gigatoken `from_tiktoken(path, scheme)`
+#   *-ranks   every engine reads the same `.tiktoken` rank file plus that
+#             vocabulary's pre-tokenizer expression — the only form `tiktoken`
+#             reads, so the only way to have it in a row.
+#   *-json    every engine reads the same HuggingFace `tokenizer.json`.
 #
-#   *-json    every engine reads the SAME HuggingFace `tokenizer.json`.
-#             `tiktoken` cannot appear here: it has no JSON loader at all.
-#             splintr `from_json` · HuggingFace `tokenizers` · gigatoken
-#             `from_json`
-#
-# A vocabulary appears in a family only where every engine in it can genuinely
-# load that form. Kimi has no `tokenizer.json` published at all, so it is
-# ranks-only; GLM has no named gigatoken rank scheme, so it is json-only.
+# A vocabulary appears in a family only where it publishes that form, and an
+# engine appears in a row only where it can load it; anything else is a `—`
+# cell and a line in "could not load", never a slow result.
 #
 # Batch is reported on two axes for the same reason. The *list* axis has every
 # engine return `list[list[int]]`; the *flat* axis is only for the engines that
@@ -93,6 +88,25 @@ on:
         description: "interleaved rounds"
         default: "3"
         type: string
+      corpora:
+        # One corpus reports one script's cost and hides every other. The same
+        # scanner change measured -17% on English and -2.5% on Chinese, because
+        # ASCII is skipped eight bytes at a time and Han one character at a
+        # time; a run that only saw English would have called that a uniform
+        # win. The default spans Latin prose, Han, Cyrillic, an Indic
+        # abugida, source code and agent traces — the axes that actually move
+        # the number. Any name under `fixtures/lang` or `fixtures/modalities`
+        # in `hf-internal-testing/tokenizers-test-data` is valid.
+        #
+        # Four, not every script there is: the run costs a fixed amount per
+        # corpus, and these four already span the axes that move the number —
+        # ASCII skipped eight bytes at a time, Han a character at a time, an
+        # abugida whose marks defeat both, and source code where punctuation
+        # runs dominate. Add `rus_Cyrl`, `agentic_swe`, `math_latex` or any
+        # other name when a change looks script-specific.
+        description: "space-separated corpora for the Rust suite"
+        default: "eng_Latn cmn_Hani hin_Deva code_mixed"
+        type: string
 
 jobs:
   # One job per OS, running both suites. They were two jobs — python and rust,
@@ -117,6 +131,7 @@ jobs:
       TIKTOKEN: ${{ inputs.tiktoken }}
       GIGATOKEN: ${{ inputs.gigatoken }}
       ROUNDS: ${{ inputs.rounds }}
+      CORPORA: ${{ inputs.corpora }}
     steps:
       - uses: actions/checkout@v7
 
@@ -134,35 +149,17 @@ jobs:
           echo "HW=$cpu, ${cores} cores, $(python -c 'import platform;print(platform.platform())')" \
             >> "$GITHUB_ENV"
 
-      - name: Fetch vocabularies
+      - name: Fetch the vocabularies and corpora
         run: |
-          curl -sSfL -o qwen3.json \
-            https://huggingface.co/Qwen/Qwen3-8B/resolve/main/tokenizer.json
-          curl -sSfL -o glm4.json \
-            https://huggingface.co/zai-org/GLM-4.5/resolve/main/tokenizer.json
-          # The rank-file family reads the vocabularies splintr bundles, so the
-          # bytes under all three engines are provably the ones it ships.
-          for f in cl100k:cl100k_base o200k:o200k_base qwen3:qwen3 kimi:kimi; do
-            cp "vocabs/${f#*:}.tiktoken" "${f%%:*}.tiktoken"
-          done
-          # The OpenAI vocabularies as `tokenizer.json`, so every engine can load
-          # the same file. `tiktoken` keeps its own loader in its own suites; it
-          # has no way to read one of these.
-          curl -sSfL -o cl100k.json \
-            https://huggingface.co/Xenova/gpt-4/resolve/main/tokenizer.json
-          curl -sSfL -o o200k.json \
-            https://huggingface.co/Xenova/gpt-4o/resolve/main/tokenizer.json
-
-      - name: Fetch a prose corpus for the Rust suite
-        run: |
-          # Real prose, not repeated seed sentences: splintr keeps an LRU chunk
-          # cache, and a corpus built by repetition would measure the cache
-          # rather than the tokenizer. The vocabularies are already in place
-          # from the step above.
-          pip -q install pyarrow
-          curl -sSfL -o wikitext.parquet \
-            https://huggingface.co/datasets/Salesforce/wikitext/resolve/main/wikitext-103-raw-v1/train-00000-of-00002.parquet
-          python .github/scripts/build_corpus.py wikitext.parquet corpus.txt "${CORPUS_MB:-120}"
+          # Every `tokenizer.json` in the manifest, and the rank files splintr
+          # bundles — the rank family reads ours, so the bytes under every
+          # engine are provably the ones it ships.
+          python .github/scripts/perf_models.py fetch models
+          mkdir -p ranks
+          python .github/scripts/perf_models.py fields ranks \
+            | grep -v '^-$' | while read -r r; do cp "vocabs/$r.tiktoken" "ranks/"; done
+          python .github/scripts/build_corpus.py corpora $CORPORA
+          echo "MODELS=$(ls models | wc -l | tr -d ' ') vocabularies, $(ls corpora | wc -l | tr -d ' ') corpora" >> "$GITHUB_ENV"
 
       - name: Benchmark (Rust)
         run: |
@@ -181,23 +178,49 @@ jobs:
           fi
           cd .github/rust-bench && cargo build --release && cd -
           BIN=.github/rust-bench/target/release/rust-bench
-          # `-` says the vocabulary publishes no `tokenizer.json` — true of
-          # Kimi. The harness then records that once, instead of three json
-          # engines each reporting a fake I/O error, which reads like a failure.
-          for v in cl100k o200k qwen3; do
-            "$BIN" "$v" "$v.tiktoken" "$v.json" corpus.txt >> rust.jsonl
-          done
-          "$BIN" kimi kimi.tiktoken - corpus.txt >> rust.jsonl
+          # One invocation per manifest row, every corpus in each. `-` says the
+          # vocabulary publishes no rank file, or no `tokenizer.json`; the
+          # harness records that once, instead of every engine in the absent
+          # family reporting a fake I/O error, which reads like a failure.
+          CORPUS_PATHS=$(for c in $CORPORA; do echo -n "corpora/$c.txt "; done)
+          # One vocabulary must not cost the run every vocabulary after it.
+          # `rust-bench` already demotes an engine that cannot load or that
+          # panics into its own "could not load" row, so reaching here means
+          # the harness itself died — and the honest report of that is one
+          # named failure plus every other family's numbers, not an empty
+          # summary. The step still fails at the end, so it cannot pass
+          # unnoticed.
+          python .github/scripts/perf_models.py fields name ranks pattern \
+          | while IFS=$'\t' read -r name ranks pattern; do
+              json="models/$name.json"
+              [ -f "$json" ] || json="-"
+              [ "$ranks" = "-" ] || ranks="ranks/$ranks.tiktoken"
+              [ "$ranks" = "-" ] && [ "$json" = "-" ] && continue
+              "$BIN" "$name" "$ranks" "$json" "$pattern" $CORPUS_PATHS >> "rust-$name.jsonl" \
+                || echo "$name" >> rust-failed.txt
+              # Only a complete document is folded in: a harness killed midway
+              # leaves a truncated JSON object the report cannot parse.
+              if [ -s "rust-$name.jsonl" ] && ! grep -q "^$name$" rust-failed.txt 2>/dev/null; then
+                cat "rust-$name.jsonl" >> rust.jsonl
+              fi
+              rm -f "rust-$name.jsonl"
+            done
+          if [ -f rust-failed.txt ]; then
+            echo "RUST_FAILED=$(paste -sd, rust-failed.txt)" >> "$GITHUB_ENV"
+          fi
 
       - name: Report (Rust)
         run: |
           python .github/scripts/rust_report.py \
             --title "splintr in Rust — ${{ matrix.os }} — ${GITHUB_SHA:0:7}" \
-            --note "$HW" \
+            --note "$HW — $MODELS" \
             --note "$(cd .github/rust-bench && cargo tree --depth 1 2>/dev/null | sed -n 's/^[^ ]* //p' | sed 's/^/    /')" \
             --note "Each family sizes its corpus from its slowest engine, so every engine in a table sees the same input." \
             --note "$RUST_PROVENANCE" \
+            ${RUST_FAILED:+--note "> **The harness died on these vocabularies and they are missing from every table below: $RUST_FAILED.** Every other vocabulary still ran."} \
             < rust.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
+          # Reported first, then failed — a crash must not be a green run.
+          [ -z "$RUST_FAILED" ]
 
       - uses: actions/upload-artifact@v7
         with:
@@ -259,113 +282,101 @@ jobs:
 
       - name: Check the engines agree before timing them
         run: |
-          check() { "./venv-$1/bin/python" .github/scripts/perf_bench.py "$2" "$3" x "$4" --check > "ids-$5.json"; }
+          mkdir -p ids
+          # splintr must load everything in the manifest — a vocabulary it
+          # cannot read is a bug in splintr, and the run should stop. A rival
+          # that cannot is a fact about the rival: it is recorded and its row
+          # is left out, exactly as the Rust suite does.
+          # `<engine>__<vocabulary>__<family>`, which is what `perf_check.py`
+          # groups on. The suite is `<vocabulary>-<family>` and a vocabulary may
+          # itself contain a hyphen (`gpt-oss`), so the family is taken from the
+          # last one and the name from everything before it.
+          check() {
+            tag="ids/$3__${2%-*}__${2##*-}"
+            if "./venv-$1/bin/python" .github/scripts/perf_bench.py "$2" "$3" x "$4" \
+                 --check > "$tag.json" 2> "$tag.err"; then
+              rm -f "$tag.err"
+            else
+              rm -f "$tag.json"
+              [ "$1" = splintr ] && { cat "$tag.err"; exit 1; }
+              mv "$tag.err" "$tag.fail"
+            fi
+          }
 
-          # Native loaders, against tiktoken.
           # A wrong pattern in perf_bench's table does not fail parity — every
           # engine is handed the same string, so they agree with each other
           # while all three tokenize the wrong vocabulary. Check it against
           # splintr's own constants first.
           ./venv-splintr/bin/python .github/scripts/perf_bench.py --verify-patterns
 
-          # Same rank file, three engines.
-          for f in cl100k o200k qwen3 kimi; do
-            check splintr    "$f-ranks" splintr    "ranks:$f.tiktoken" "s-$f-r"
-            check tiktoken   "$f-ranks" tiktoken   "ranks:$f.tiktoken" "t-$f-r"
-            if [ -n "$GIGATOKEN" ]; then
-              check gigatoken "$f-ranks" gigatoken "ranks:$f.tiktoken" "g-$f-r"
-            fi
-          done
+          python .github/scripts/perf_models.py fields name ranks json giga \
+          | while IFS=$'\t' read -r name ranks json giga; do
+              if [ "$ranks" != "-" ]; then
+                check splintr  "$name-ranks" splintr  "ranks:ranks/$ranks.tiktoken"
+                check tiktoken "$name-ranks" tiktoken "ranks:ranks/$ranks.tiktoken"
+                if [ -n "$GIGATOKEN" ] && [ "$giga" != "-" ]; then
+                  check gigatoken "$name-ranks" gigatoken "ranks:ranks/$ranks.tiktoken"
+                fi
+              fi
+              if [ -f "models/$name.json" ]; then
+                check splintr    "$name-json" splintr    "models/$name.json"
+                check tokenizers "$name-json" tokenizers "models/$name.json"
+                if [ -n "$GIGATOKEN" ]; then
+                  check gigatoken "$name-json" gigatoken "models/$name.json"
+                fi
+              fi
+            done
 
-          # Same tokenizer.json, three engines.
-          for f in cl100k o200k qwen3 glm4; do
-            check splintr    "$f-json" splintr    "$f.json" "s-$f-j"
-            check tokenizers "$f-json" tokenizers "$f.json" "h-$f-j"
-            if [ -n "$GIGATOKEN" ]; then
-              check gigatoken "$f-json" gigatoken "$f.json" "g-$f-j"
-            fi
-          done
-
-          python - <<'PY' >> "$GITHUB_ENV"
-          import json, os, sys
-          def load(path):
-              d = json.load(open(path))
-              return d["ids"], d["batch_ids"]
-          def same(a, b):
-              return load(a) == load(b)
-          giga = os.environ.get("GIGATOKEN")
-          checks = {}
-          for f in ("cl100k", "o200k", "qwen3", "kimi"):
-              checks[f"{f}-ranks: splintr == tiktoken"] = same(f"ids-s-{f}-r.json", f"ids-t-{f}-r.json")
-              if giga:
-                  checks[f"{f}-ranks: splintr == gigatoken"] = same(f"ids-s-{f}-r.json", f"ids-g-{f}-r.json")
-          for f in ("cl100k", "o200k", "qwen3", "glm4"):
-              checks[f"{f}-json: splintr == tokenizers"] = same(f"ids-s-{f}-j.json", f"ids-h-{f}-j.json")
-              if giga:
-                  checks[f"{f}-json: splintr == gigatoken"] = same(f"ids-s-{f}-j.json", f"ids-g-{f}-j.json")
-          # An engine that disagrees with itself invalidates its own row
-          # before any cross-engine comparison is worth reading.
-          #
-          # `check()` wrote these as ids-<engine>-<vocabulary>-<loader>.json.
-          # Spell that back out rather than printing the path: these lines sit
-          # in the public run summary next to the cross-engine ones above, and
-          # "ids-g-cl100k-j.json" names a temp file the reader never saw.
-          import glob, re
-          ENGINES = {"s": "splintr", "t": "tiktoken", "g": "gigatoken", "h": "tokenizers"}
-          LOADERS = {"r": "ranks", "j": "json"}
-          for path in sorted(glob.glob("ids-*.json")):
-              ids, batch_ids = load(path)
-              m = re.fullmatch(r"ids-(\w)-(.+)-(\w)\.json", path)
-              if m and m[1] in ENGINES and m[3] in LOADERS:
-                  label = f"{m[2]}-{LOADERS[m[3]]}: {ENGINES[m[1]]} batch == single"
-              else:
-                  # An unrecognised name still gets checked, just not renamed.
-                  label = f"{path}: batch == single"
-              checks[label] = ids == batch_ids
-          print("PARITY<<EOF")
-          for name, ok in checks.items():
-              print(f"- {name}: {'yes' if ok else 'NO'}")
-          print("EOF")
           # Timing engines that disagree is not a comparison.
-          sys.exit(0 if all(checks.values()) else 1)
-          PY
+          python .github/scripts/perf_check.py ids
 
       - name: Benchmark (Python)
         run: |
-          run() { "./venv-$1/bin/python" .github/scripts/perf_bench.py "$2" "$3" "$4" "$5" >> rounds.jsonl; }
+          # A rival that failed the load check above has no ids file, so it is
+          # not timed either — the report shows `—` for it rather than a
+          # number nobody can reproduce.
+          ran() { [ -f "ids/$1__${2%-*}__${2##*-}.json" ]; }
+          run() {
+            ran "$3" "$2" || return 0
+            "./venv-$1/bin/python" .github/scripts/perf_bench.py "$2" "$3" "$4" "$5" >> rounds.jsonl
+          }
           # Interleaved rather than engine-by-engine: a runner that slows down
           # partway through then penalises whichever engine happened to be last.
           for r in $(seq 1 "${ROUNDS:-3}"); do
-            for f in cl100k o200k qwen3 kimi; do
-              if [ -n "$SPLINTR_BASELINE" ]; then
-                run baseline "$f-ranks" splintr "splintr $SPLINTR_BASELINE" "ranks:$f.tiktoken"
-              fi
-              run splintr  "$f-ranks" splintr  "splintr"  "ranks:$f.tiktoken"
-              run tiktoken "$f-ranks" tiktoken "tiktoken" "ranks:$f.tiktoken"
-              if [ -n "$GIGATOKEN" ]; then
-                run gigatoken "$f-ranks" gigatoken "gigatoken" "ranks:$f.tiktoken"
-              fi
-            done
-
-            for f in cl100k o200k qwen3 glm4; do
-              if [ -n "$SPLINTR_BASELINE" ]; then
-                run baseline "$f-json" splintr "splintr $SPLINTR_BASELINE" "$f.json"
-              fi
-              run splintr    "$f-json" splintr    "splintr"       "$f.json"
-              run tokenizers "$f-json" tokenizers "HF tokenizers" "$f.json"
-              if [ -n "$GIGATOKEN" ]; then
-                run gigatoken "$f-json" gigatoken "gigatoken" "$f.json"
-              fi
-            done
+            python .github/scripts/perf_models.py fields name ranks json giga \
+            | while IFS=$'\t' read -r name ranks json giga; do
+                if [ "$ranks" != "-" ]; then
+                  spec="ranks:ranks/$ranks.tiktoken"
+                  if [ -n "$SPLINTR_BASELINE" ]; then
+                    run baseline "$name-ranks" splintr "splintr $SPLINTR_BASELINE" "$spec"
+                  fi
+                  run splintr  "$name-ranks" splintr  "splintr"  "$spec"
+                  run tiktoken "$name-ranks" tiktoken "tiktoken" "$spec"
+                  if [ -n "$GIGATOKEN" ] && [ "$giga" != "-" ]; then
+                    run gigatoken "$name-ranks" gigatoken "gigatoken" "$spec"
+                  fi
+                fi
+                if [ -f "models/$name.json" ]; then
+                  spec="models/$name.json"
+                  if [ -n "$SPLINTR_BASELINE" ]; then
+                    run baseline "$name-json" splintr "splintr $SPLINTR_BASELINE" "$spec"
+                  fi
+                  run splintr    "$name-json" splintr    "splintr"       "$spec"
+                  run tokenizers "$name-json" tokenizers "HF tokenizers" "$spec"
+                  if [ -n "$GIGATOKEN" ]; then
+                    run gigatoken "$name-json" gigatoken "gigatoken" "$spec"
+                  fi
+                fi
+              done
           done
 
       - name: Report (Python)
         run: |
           python .github/scripts/perf_report.py \
             --title "splintr through the Python API — ${{ matrix.os }} — ${GITHUB_SHA:0:7}" \
-            --note "$HW" \
+            --note "$HW — $MODELS" \
             --note "$(printf '%s' "$VERSIONS" | sed 's/^/    /')" \
-            --note "Output parity:"$'\n'"$PARITY" \
+            --note "Output parity: $PARITY" \
             --note "Medians of ${ROUNDS:-3} interleaved rounds. Lower is better for latency; the last column is how many times better the first engine is." \
             < rounds.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
 

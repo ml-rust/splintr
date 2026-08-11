@@ -1,45 +1,70 @@
-"""Extract WikiText-103 documents into a flat corpus file.
+"""Fetch the benchmark corpora, one file per script or modality.
 
-The Rust benchmark needs *real prose*, not repeated seed sentences: splintr
-keeps an LRU chunk cache, so a corpus built by repetition would hand it a
-near-100% hit rate and stop measuring the tokenizer at all. WikiText is used for
-the same reason gigatoken's own benchmark uses OpenWebText — it is the shape of
-text these tokenizers actually meet.
+    build_corpus.py <out-dir> <corpus>...
 
-    build_corpus.py <parquet> <out> [max_mb]
+The corpora are `hf-internal-testing/tokenizers-test-data`, which is what the
+upstream `tokenizers` benchmark reads — a row here is therefore comparable with
+a row there, which a corpus of our own choosing could never be.
 
-Documents are separated by a NUL line, which cannot occur in the text itself.
+Why several rather than one. A tokenizer's cost is not one number: the same
+change measured -17% on English and -2.5% on Chinese, because a scanner walks
+ASCII eight bytes at a time and Han one character at a time, and because the
+merge loop dominates where the whole-word vocabulary hit does not. A single
+English corpus reports the first number and hides the second, so a regression
+confined to CJK — or a win confined to it — is invisible. Each corpus is
+measured and reported separately for that reason, and never averaged into one.
+
+Each fixture is one long text; the harness wants documents. Splitting at line
+boundaries into chunks of roughly `DOC_BYTES` gives both the parallel path
+something to distribute and the chunk cache a realistic hit rate — a corpus
+built by repeating a seed sentence would measure the cache instead of the
+tokenizer, and one giant document would leave every thread but one idle.
 """
 
+import os
 import sys
+import urllib.request
 
-import pyarrow.parquet as pq
+BASE = "https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/fixtures"
+# Which subdirectory each corpus lives under. Languages are ISO 639-3 plus a
+# script tag; everything else is a modality.
+LANGS = {
+    "amh_Ethi", "arb_Arab", "ben_Beng", "cmn_Hani", "ell_Grek", "eng_Latn",
+    "heb_Hebr", "hin_Deva", "jpn_Jpan", "kat_Geor", "kor_Hang", "rus_Cyrl",
+    "tam_Taml", "tha_Thai",
+}
+DOC_BYTES = 8 << 10
 
-src, out = sys.argv[1], sys.argv[2]
-max_bytes = int(float(sys.argv[3]) * 1e6) if len(sys.argv) > 3 else None
 
-lines = pq.read_table(src, columns=["text"]).column("text").to_pylist()
-
-# A WikiText article starts with a level-1 heading (" = Title = "), which is the
-# only reliable document boundary in the flat line stream.
-docs, current = [], []
-for line in lines:
-    if line.startswith(" = ") and not line.startswith(" = = ") and current:
+def documents(text):
+    """`text` cut at line boundaries into chunks of about `DOC_BYTES`."""
+    docs, current, size = [], [], 0
+    for line in text.splitlines(keepends=True):
+        current.append(line)
+        size += len(line)
+        if size >= DOC_BYTES:
+            docs.append("".join(current))
+            current, size = [], 0
+    if current:
         docs.append("".join(current))
-        current = []
-    current.append(line)
-if current:
-    docs.append("".join(current))
+    return docs
 
-docs = [d for d in docs if len(d) > 200]
 
-total, kept = 0, []
-for doc in docs:
-    if max_bytes and total >= max_bytes:
-        break
-    kept.append(doc)
-    total += len(doc.encode())
+def main(argv):
+    out_dir, names = argv[0], argv[1:]
+    os.makedirs(out_dir, exist_ok=True)
+    for name in names:
+        dest = os.path.join(out_dir, f"{name}.txt")
+        if os.path.exists(dest):
+            continue
+        kind = "lang" if name in LANGS else "modalities"
+        with urllib.request.urlopen(f"{BASE}/{kind}/{name}.txt") as r:
+            text = r.read().decode("utf-8", "replace")
+        docs = documents(text)
+        with open(dest, "w") as f:
+            f.write("\n\x00\n".join(docs))
+        print(f"{name}: {len(docs):,} documents, {len(text) / 1e6:.1f} MB", file=sys.stderr)
 
-with open(out, "w") as f:
-    f.write("\n\x00\n".join(kept))
-print(f"{len(kept):,} documents, {total / 1e6:.1f} MB", file=sys.stderr)
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

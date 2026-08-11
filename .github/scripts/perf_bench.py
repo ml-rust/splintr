@@ -99,32 +99,52 @@ def megabytes(texts):
 # --- engines ----------------------------------------------------------------
 
 
-# Pre-tokenizer patterns for suites whose vocabulary is published as bare
-# tiktoken ranks, keyed by suite name. Transcribed from the model repo's own
-# tokenizer script, which is what makes the reference a reference.
+# The pre-tokenizer expression each rank-file suite is defined by, keyed by
+# **splintr's own name for it** — the name `.github/perf-models.tsv` records
+# against each vocabulary. Keyed that way rather than by vocabulary so that a
+# new family reusing an existing expression (glm reuses Llama 3's) is one line
+# in the manifest and nothing here.
+#
+# These are `splintr`'s constants, copied out verbatim — a hand-typed cl100k
+# pattern here silently benchmarked a *different* pre-tokenizer for all three
+# engines at once, which parity could not catch because they all agreed on the
+# wrong answer, and which only showed up as splintr mysteriously losing its
+# scanner. `--verify-patterns` re-checks every entry against those constants;
+# the workflow runs it before timing.
+#
+# They cannot simply be imported: the other engines run in their own venvs,
+# which do not have splintr installed.
+RANK_FILE_PATTERNS = {
+    'CL100K_BASE_PATTERN': "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s+$|\\s*[\\r\\n]|\\s+(?!\\S)|\\s",
+    'O200K_BASE_PATTERN': "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    'QWEN2_PATTERN': "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    'LLAMA3_PATTERN': "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    'MISTRAL_V3_PATTERN': "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    'GPT2_PATTERN': "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+",
+    'KIMI_PATTERN': "[\\p{Han}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+}
+
+
 def _vocab_of(suite):
     """The vocabulary a suite name refers to, dropping the `-json`/`-ranks` family."""
     return (suite or "").rsplit("-", 1)[0] if (suite or "").endswith(("-json", "-ranks")) else suite
 
 
-# The pre-tokenizer expression each rank-file suite is defined by, keyed by
-# vocabulary.
-#
-# These are `splintr`'s own constants, copied out verbatim rather than
-# transcribed — a hand-typed cl100k pattern here silently benchmarked a
-# *different* pre-tokenizer for all three engines at once, which parity could
-# not catch because they all agreed on the wrong answer, and which only showed
-# up as splintr mysteriously losing its scanner. `--verify-patterns` re-checks
-# this table against those constants; the workflow runs it before timing.
-#
-# They cannot simply be imported: the other engines run in their own venvs,
-# which do not have splintr installed.
-RANK_FILE_PATTERNS = {
-    'cl100k': "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s+$|\\s*[\\r\\n]|\\s+(?!\\S)|\\s",
-    'o200k': "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
-    'qwen3': "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
-    'kimi': "[\\p{Han}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
-}
+def _pattern_of(suite):
+    """The transcribed expression for a rank-file suite, via the manifest.
+
+    The manifest is the one place that says which expression a vocabulary is
+    defined by; looking it up here means a new rank family needs no edit to
+    this file unless it also brings a new expression.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import perf_models
+
+    vocab = _vocab_of(suite)
+    for model in perf_models.models():
+        if model["name"] == vocab:
+            return RANK_FILE_PATTERNS.get(model["pattern"])
+    return None
 
 
 # gigatoken's own name for each suite's pre-tokenization scheme, for the
@@ -163,7 +183,7 @@ def load_engine(engine, spec, suite=None):
         import splintr
 
         if spec.startswith("ranks:"):
-            pattern = RANK_FILE_PATTERNS.get(_vocab_of(suite))
+            pattern = _pattern_of(suite)
             if pattern is None:
                 raise SystemExit(f"no pre-tokenizer pattern recorded for suite {suite!r}")
             tok = splintr.Tokenizer(spec[len("ranks:") :], pattern)
@@ -261,7 +281,7 @@ def load_engine(engine, spec, suite=None):
             from tiktoken.load import load_tiktoken_bpe
 
             path = spec[len("ranks:") :]
-            pattern = RANK_FILE_PATTERNS.get(_vocab_of(suite))
+            pattern = _pattern_of(suite)
             if pattern is None:
                 raise SystemExit(f"no pre-tokenizer pattern recorded for suite {suite!r}")
             enc = tiktoken.Encoding(
@@ -328,24 +348,26 @@ def verify_patterns():
     """
     import splintr
 
-    expected = {
-        "cl100k": splintr.CL100K_BASE_PATTERN,
-        "o200k": splintr.O200K_BASE_PATTERN,
-        "qwen3": splintr.QWEN2_PATTERN,
-        "kimi": splintr.KIMI_PATTERN,
-    }
-    bad = 0
-    for vocab, want in expected.items():
-        got = RANK_FILE_PATTERNS.get(vocab)
+    # Every entry is checked, by asking the module for the constant of that
+    # name. Naming them individually let the table grow entries nothing
+    # verified — which is exactly the state a transcription must never be
+    # allowed to reach.
+    bad, checked = 0, 0
+    for name, got in RANK_FILE_PATTERNS.items():
+        want = getattr(splintr, name, None)
+        if want is None:
+            print(f"note: splintr exports no {name} to check against", file=sys.stderr)
+            continue
+        checked += 1
         if got != want:
             bad += 1
-            print(f"MISMATCH {vocab}:\n  splintr: {want!r}\n  table:   {got!r}", file=sys.stderr)
-    missing = set(RANK_FILE_PATTERNS) - set(expected)
-    if missing:
-        print(f"note: no splintr constant to check for {sorted(missing)}", file=sys.stderr)
+            print(f"MISMATCH {name}:\n  splintr: {want!r}\n  table:   {got!r}", file=sys.stderr)
+    unchecked = len(RANK_FILE_PATTERNS) - checked
     if bad:
         sys.exit(f"{bad} pattern(s) differ from splintr's constants")
-    print(f"ok    {len(expected)} rank-file patterns match splintr's constants")
+    if unchecked:
+        sys.exit(f"{unchecked} pattern(s) have no splintr constant to check against")
+    print(f"ok    {checked} rank-file patterns match splintr's constants")
 
 
 def main():
