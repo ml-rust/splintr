@@ -254,6 +254,16 @@ pub(crate) struct PairRanks {
     /// largest single group of lookups, and the one whose operands repeat most
     /// across pieces and so stay resident.
     dense: Box<[u32]>,
+    /// One bit per hashed pair, set for every pair the sparse table holds.
+    ///
+    /// A merge asks about every adjacent pair of a piece, and on a run of Han
+    /// characters almost none of them merge — each of those questions otherwise
+    /// costs a probe into a table too large to stay resident (llama-3 ships
+    /// 280,147 merges). Eight bits per pair keeps this at a fraction of that
+    /// size, so a clear bit retires the question against a resident line. A set
+    /// bit means "maybe", and the probe still decides.
+    absent: Box<[u64]>,
+    absent_mask: usize,
     /// Merge priority per token id, when the model orders its merges
     /// independently of its ids. `None` for tiktoken-style vocabularies, where a
     /// token's id *is* its rank and the indirection would be an identity.
@@ -437,9 +447,15 @@ impl PairRanks {
 
         // Half full at most: linear probing degrades sharply past that.
         let capacity = (pairs.len() * 2).next_power_of_two().max(16);
+        // Eight bits per sparse pair: a twelfth of the false-positive rate a
+        // one-bit-per-pair filter would give, for a table that still fits many
+        // times over inside the one it is shielding.
+        let filter_bits = (pairs.len() * 8).next_power_of_two().max(64);
         let mut table = Self {
             slots: vec![Self::EMPTY; capacity].into_boxed_slice(),
             mask: capacity - 1,
+            absent: vec![0u64; filter_bits / 64].into_boxed_slice(),
+            absent_mask: filter_bits - 1,
             dense: vec![u32::MAX; (DENSE_IDS * DENSE_IDS) as usize].into_boxed_slice(),
             rank_by_id: None,
             byte_ids: Box::new([u32::MAX; 256]),
@@ -473,6 +489,8 @@ impl PairRanks {
                 table.dense[(left * DENSE_IDS as u64 + right) as usize] = merged;
                 continue;
             }
+            let bit = Self::filter_bit(key, table.absent_mask);
+            table.absent[bit >> 6] |= 1 << (bit & 63);
             let mut slot = table.slot_of(key);
             // A duplicate key cannot occur: a pair of ids determines the bytes
             // it concatenates to, which the map holds at most once.
@@ -611,6 +629,15 @@ impl PairRanks {
         (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & self.mask
     }
 
+    /// Which bit of [`Self::absent`] stands for `key`.
+    ///
+    /// A different mix from [`Self::slot_of`], so a pair that collides in the
+    /// filter is not thereby the one it would collide with in the table.
+    #[inline]
+    fn filter_bit(key: u64, mask: usize) -> usize {
+        (key.wrapping_mul(0xD6E8_FEB8_6659_FD93) >> 24) as usize & mask
+    }
+
     /// The id the pair merges to, or `u32::MAX` when it does not merge.
     #[inline]
     fn merged(&self, left: u32, right: u32) -> u32 {
@@ -618,6 +645,12 @@ impl PairRanks {
             return self.dense[(left * DENSE_IDS + right) as usize];
         }
         let key = Self::pack(left, right);
+        // Most pairs of a Han run merge to nothing at all, and the filter says
+        // so without touching the sparse table.
+        let bit = Self::filter_bit(key, self.absent_mask);
+        if self.absent[bit >> 6] & (1 << (bit & 63)) == 0 {
+            return u32::MAX;
+        }
         let mut slot = self.slot_of(key);
         loop {
             let entry = self.slots[slot];
