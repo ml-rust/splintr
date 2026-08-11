@@ -12,6 +12,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 - Eight bundled vocabularies: `phi4`, `olmo2`, `llama2` (also `tinyllama`, `vicuna`), `codellama`, `modernbert`, `gemma2`, `gemma3` (also `embeddinggemma`) and `gemma4`. Phi-4 and OLMo-2 ship no payload — both state cl100k_base's ranks.
 - A packed merge-order payload, for a vocabulary whose token ids and merge priority differ. Gemma 4 is the first; a `.tiktoken` rank cannot serve as both.
+- `.mbpe`, a text format stating a BPE vocabulary and its merge order — including each rule's operand split, which is what separates an entry BPE builds from one it can never reach. Specified in `docs/mbpe.md`.
 - Python: `MISTRAL_V3_PATTERN` and `GPT2_PATTERN`, the two pre-tokenizer expressions
 
 ### Fixed
@@ -26,6 +27,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 ### Changed
 
 - `.spm` gains a piece-type column and `load_spm_vocab` returns `SpmVocab`; two-column files still load, read as `NORMAL`.
+- `splintr-vocab-gemma4` ships an `.mbpe` instead of Google's `tokenizer.json`, packing to byte-identical binaries: the crate goes from 5.2 MB to 1.9 MB.
 - Bundled vocabularies moved to one `splintr-vocab-*` crate per family, pulled in by the `vocab-*` feature that needs it. Enabling one family downloads that family. Feature names and the `*_VOCAB_PACKED` constants are unchanged.
 - A `split: false` metaspace vocabulary splits at marker runs where its own tokens prove no id changes.
 - Tekken's pre-tokenizer shares the o200k scanner instead of the regex engine.

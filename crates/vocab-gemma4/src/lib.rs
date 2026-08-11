@@ -1,8 +1,9 @@
 //! Gemma 4.
 //!
-//! Extracted from `google/gemma-4-12B-it` on HuggingFace, whose `tokenizer.json`
-//! this crate ships byte for byte. The vocabulary is upstream's and keeps
-//! upstream's licence — Apache-2.0, see this crate's `README.md` and `LICENSE`.
+//! Extracted from `google/gemma-4-12B-it` on HuggingFace and converted into the
+//! plain-text `.mbpe` format this crate ships, which packs to byte-identical
+//! binaries. The vocabulary is upstream's and keeps upstream's licence —
+//! Apache-2.0, see this crate's `README.md` and `LICENSE`.
 //!
 //! Data only. [`splintr`](https://docs.rs/splintr) re-exports these constants
 //! under its `vocab-gemma` feature, which is the way to reach them.

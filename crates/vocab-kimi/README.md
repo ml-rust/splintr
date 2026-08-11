@@ -2,11 +2,8 @@
 
 Moonshot Kimi K2 and K3.
 
-Data only — the packed bytes of one vocabulary family, with nothing that
-interprets them. Use [`splintr`](https://crates.io/crates/splintr) with its
-`vocab-kimi` feature; that is what re-exports these constants and can load them.
+Data only — the packed bytes of one vocabulary family, with nothing that interprets them. Use [`splintr`](https://crates.io/crates/splintr) with its `vocab-kimi` feature; that is what re-exports these constants and can load them.
 
 ## Provenance
 
-Extracted from `moonshotai/Kimi-K2-Instruct` on HuggingFace. The vocabulary is upstream's, not splintr's, and
-keeps upstream's licence — see `LICENSE`.
+Extracted from `moonshotai/Kimi-K2-Instruct` on HuggingFace. The vocabulary is upstream's, not splintr's, and keeps upstream's licence — see `LICENSE`.
