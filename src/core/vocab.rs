@@ -45,6 +45,29 @@ use thiserror::Error;
 use super::decode_table::Decoder;
 use super::encoder::Encoder;
 
+/// `USER_DEFINED` in SentencePiece's `ModelProto.SentencePiece.Type` enum.
+///
+/// The only type the loader has to act on. `NORMAL` merges, `CONTROL` is
+/// unreachable from text, `BYTE` is reached through byte fallback and `UNKNOWN`
+/// through the unk id — none of which needs a flag here.
+const USER_DEFINED_PIECE_TYPE: u32 = 4;
+
+/// A SentencePiece vocabulary as [`load_spm_vocab`] returns it: one entry per
+/// id, in id order.
+///
+/// Three parallel vectors rather than one vector of structs, because every
+/// consumer wants a whole column — `SpmTokenizer` indexes scores by id in its
+/// merge loop, and the pieces go to the decode table untouched.
+#[derive(Debug, Clone)]
+pub struct SpmVocab {
+    /// SentencePiece's own `id_to_piece`, keeping `<0x41>` and `▁` spellings.
+    pub pieces: Vec<String>,
+    /// `get_score`, which is what merge order is decided by.
+    pub scores: Vec<f32>,
+    /// Whether each piece is `USER_DEFINED` — matched verbatim, never merged.
+    pub user_defined: Vec<bool>,
+}
+
 /// Type alias for encoder/decoder pair returned by `load_tiktoken_bpe_with_decoder`.
 pub type EncoderDecoderPair = (FxHashMap<Vec<u8>, u32>, FxHashMap<u32, Vec<u8>>);
 
@@ -74,6 +97,8 @@ pub enum VocabError {
     },
     #[error("SentencePiece score for id {id} is not a number: {value:?}")]
     SpmScore { id: u32, value: String },
+    #[error("SentencePiece piece type for id {id} is not a number: {value:?}")]
+    SpmPieceType { id: u32, value: String },
     #[error("SentencePiece piece for id {id} is not valid UTF-8")]
     SpmNonUtf8 { id: u32 },
 }
@@ -85,7 +110,7 @@ pub enum VocabError {
 /// One line per token id, **in ascending id order with no gaps**:
 ///
 /// ```text
-/// <base64 of the piece, UTF-8 encoded> <score>
+/// <base64 of the piece, UTF-8 encoded> <score> <type>
 /// ```
 ///
 /// The id is the line's position, so it cannot be non-monotonic or duplicated
@@ -93,6 +118,24 @@ pub enum VocabError {
 /// piece is SentencePiece's own `id_to_piece`, so byte fallback keeps its real
 /// `<0x41>` spelling instead of being reconstructed from a run of raw bytes,
 /// and the `▁` word-boundary runs keep theirs.
+///
+/// The type is SentencePiece's own piece-type enum, and the returned
+/// `user_defined` flags are the one thing a caller cannot work out for itself.
+/// `USER_DEFINED` pieces are matched **verbatim before merging** and are never
+/// merge candidates; `CONTROL` pieces are never matched from text at all. Both
+/// score `0.0`, and both are spelled `<...>`, so neither the score nor the
+/// spelling separates them — measured with `sentencepiece` 0.2.0 on Gemma 2,
+/// `encode("<blockquote>")` (USER_DEFINED) is `[191]` while `encode("<pad>")`
+/// (CONTROL) is `[235322, 8939, 235313]`, the piece shattered. Dropping the
+/// distinction shatters every user-defined piece: Gemma 2 mistokenizes 3.2% of
+/// real documents and Gemma 3 6.3%, because both declare HTML markers
+/// (`<blockquote>`, `<table>`, …) and Gemma 3 declares its whitespace runs too.
+///
+/// A **two-column line carries no type** and is read as `NORMAL`. That is what
+/// every `.spm` written before the type column meant implicitly, and it is
+/// correct for those files precisely because none of them declares a
+/// `USER_DEFINED` piece — Mistral V1/V2 and Llama 2 / Code Llama are
+/// `NORMAL`/`CONTROL`/`BYTE`/`UNKNOWN` only.
 ///
 /// # Why not `.tiktoken`
 ///
@@ -109,10 +152,12 @@ pub enum VocabError {
 /// # Errors
 ///
 /// Returns [`VocabError`] when the data is empty, a line has no separator, a
-/// piece is not valid base64 or not valid UTF-8, or a score does not parse.
-pub fn load_spm_vocab(data: &[u8]) -> Result<(Vec<String>, Vec<f32>), VocabError> {
+/// piece is not valid base64 or not valid UTF-8, or a score or type does not
+/// parse.
+pub fn load_spm_vocab(data: &[u8]) -> Result<SpmVocab, VocabError> {
     let mut pieces = Vec::new();
     let mut scores = Vec::new();
+    let mut user_defined = Vec::new();
 
     for line in data.split(|&b| b == b'\n') {
         // Tolerate a trailing newline and CRLF line endings; a blank line
@@ -126,13 +171,20 @@ pub fn load_spm_vocab(data: &[u8]) -> Result<(Vec<String>, Vec<f32>), VocabError
         }
         let id = pieces.len() as u32;
 
+        // Split left-to-right: base64 never contains a space, and neither a
+        // score nor a type does, so the first space ends the piece and an
+        // optional second ends the score. Splitting from the right instead
+        // would read the type as the score on a three-column line.
         let space = line
             .iter()
-            .rposition(|&b| b == b' ')
+            .position(|&b| b == b' ')
             .ok_or(VocabError::SpmMissingScore { id })?;
-        let (Some(piece_b64), Some(score_bytes)) = (line.get(..space), line.get(space + 1..))
-        else {
+        let (Some(piece_b64), Some(rest)) = (line.get(..space), line.get(space + 1..)) else {
             return Err(VocabError::SpmMissingScore { id });
+        };
+        let (score_bytes, type_bytes) = match rest.iter().position(|&b| b == b' ') {
+            Some(at) => (&rest[..at], Some(&rest[at + 1..])),
+            None => (rest, None),
         };
 
         let bytes = STANDARD
@@ -151,14 +203,39 @@ pub fn load_spm_vocab(data: &[u8]) -> Result<(Vec<String>, Vec<f32>), VocabError
             value: score_str.to_string(),
         })?;
 
+        // Absent (a two-column legacy line) reads as NORMAL, i.e. not
+        // user-defined — see this function's docs for why that is safe for the
+        // files written before the column existed.
+        let is_user_defined = match type_bytes {
+            Some(bytes) => {
+                let text = std::str::from_utf8(bytes)
+                    .map_err(|_| VocabError::SpmPieceType {
+                        id,
+                        value: String::from_utf8_lossy(bytes).into_owned(),
+                    })?
+                    .trim();
+                let value: u32 = text.parse().map_err(|_| VocabError::SpmPieceType {
+                    id,
+                    value: text.to_string(),
+                })?;
+                value == USER_DEFINED_PIECE_TYPE
+            }
+            None => false,
+        };
+
         pieces.push(piece);
         scores.push(score);
+        user_defined.push(is_user_defined);
     }
 
     if pieces.is_empty() {
         return Err(VocabError::EmptyVocab);
     }
-    Ok((pieces, scores))
+    Ok(SpmVocab {
+        pieces,
+        scores,
+        user_defined,
+    })
 }
 
 /// Load a tiktoken BPE vocabulary from raw bytes.
@@ -505,6 +582,57 @@ mod tests {
         out
     }
 
+    /// A three-column blob, i.e. one carrying SentencePiece piece types.
+    fn spm_typed_blob(entries: &[(&str, &str, u32)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (piece, score, kind) in entries {
+            out.extend_from_slice(STANDARD.encode(piece.as_bytes()).as_bytes());
+            out.extend_from_slice(format!(" {score} {kind}\n").as_bytes());
+        }
+        out
+    }
+
+    /// `USER_DEFINED` is the one piece type the loader has to surface, and it
+    /// is separable from `CONTROL` only by the type column.
+    ///
+    /// Both score `0.0` and both are spelled `<...>`, yet SentencePiece matches
+    /// one from text and never the other. Measured with `sentencepiece` 0.2.0 on
+    /// Gemma 2: `encode("<blockquote>")` (USER_DEFINED, id 191) is `[191]`,
+    /// while `encode("<pad>")` (CONTROL, id 0) is `[235322, 8939, 235313]` —
+    /// the piece shattered into `<` + `pad` + `>`.
+    #[test]
+    fn spm_vocab_separates_user_defined_from_control() {
+        let data = spm_typed_blob(&[
+            ("<pad>", "0.0", 3),        // CONTROL
+            ("<unk>", "0.0", 2),        // UNKNOWN
+            ("<0x41>", "0.0", 6),       // BYTE
+            ("<blockquote>", "0.0", 4), // USER_DEFINED
+            ("▁the", "-31.0", 1),       // NORMAL
+        ]);
+        let v = load_spm_vocab(&data).unwrap();
+        assert_eq!(v.pieces.len(), 5);
+        assert_eq!(
+            v.user_defined,
+            vec![false, false, false, true, false],
+            "only the USER_DEFINED piece may be flagged — CONTROL and BYTE \
+             score 0.0 as well and are spelled the same way"
+        );
+        // The type column must not be mistaken for the score.
+        assert_eq!(v.scores, vec![0.0, 0.0, 0.0, 0.0, -31.0]);
+    }
+
+    /// A type that is not a number is an error, not a silent `NORMAL`: reading
+    /// it as normal would put a user-defined piece back into the merge loop,
+    /// which is exactly the failure the column exists to prevent.
+    #[test]
+    fn spm_vocab_rejects_an_unparseable_piece_type() {
+        let data = b"PHBhZD4= 0.0 control\n".to_vec();
+        assert!(matches!(
+            load_spm_vocab(&data),
+            Err(VocabError::SpmPieceType { id: 0, .. })
+        ));
+    }
+
     /// The point of the format: pieces arrive spelled exactly as SentencePiece
     /// spells them — byte fallback as `<0xNN>`, word boundaries as `▁` — and the
     /// scores arrive alongside them instead of being inferred from id order.
@@ -516,10 +644,12 @@ mod tests {
             ("▁the", "-31.0"),
             ("▁▁", "-1000000000.0"),
         ]);
-        let (pieces, scores) = load_spm_vocab(&data).unwrap();
+        let v = load_spm_vocab(&data).unwrap();
 
-        assert_eq!(pieces, vec!["<unk>", "<0x41>", "▁the", "▁▁"]);
-        assert_eq!(scores, vec![0.0, 0.0, -31.0, -1e9]);
+        assert_eq!(v.pieces, vec!["<unk>", "<0x41>", "▁the", "▁▁"]);
+        assert_eq!(v.scores, vec![0.0, 0.0, -31.0, -1e9]);
+        // Two-column lines carry no type, so nothing is user-defined.
+        assert_eq!(v.user_defined, vec![false; 4]);
     }
 
     /// The `-1e9` "never merge" sentinel is the whole reason scores are stored:
@@ -527,7 +657,7 @@ mod tests {
     #[test]
     fn spm_vocab_parses_the_never_merge_sentinel_exactly() {
         let data = spm_blob(&[("▁", "-1000000000.0")]);
-        let (_, scores) = load_spm_vocab(&data).unwrap();
+        let scores = load_spm_vocab(&data).unwrap().scores;
         assert_eq!(scores.first().copied(), Some(-1e9f32));
         assert_eq!(
             scores.first().map(|s| s.to_bits()),
@@ -541,13 +671,12 @@ mod tests {
     fn spm_vocab_ignores_blank_and_carriage_return_line_endings() {
         let mut data = spm_blob(&[("a", "-1.0"), ("b", "-2.0")]);
         data.extend_from_slice(b"\n");
-        let (pieces, _) = load_spm_vocab(&data).unwrap();
-        assert_eq!(pieces, vec!["a", "b"]);
+        assert_eq!(load_spm_vocab(&data).unwrap().pieces, vec!["a", "b"]);
 
         let crlf = b"YQ== -1.0\r\nYg== -2.0\r\n";
-        let (pieces, scores) = load_spm_vocab(crlf).unwrap();
-        assert_eq!(pieces, vec!["a", "b"]);
-        assert_eq!(scores, vec![-1.0, -2.0]);
+        let v = load_spm_vocab(crlf).unwrap();
+        assert_eq!(v.pieces, vec!["a", "b"]);
+        assert_eq!(v.scores, vec![-1.0, -2.0]);
     }
 
     /// A line without a separator has no score, and inventing one would put a

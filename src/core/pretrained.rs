@@ -48,7 +48,7 @@ use super::tokenizer::{
     Tokenizer, TokenizerError, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN,
     KIMI_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
 };
-use super::vocab::{load_spm_vocab, place_special_pieces};
+use super::vocab::{load_spm_vocab, place_special_pieces, SpmVocab};
 use super::whisper::{whisper_special_tokens, WhisperVariant};
 
 // Re-export each family's payload from its own data crate.
@@ -574,7 +574,14 @@ fn spm_from_vocab(
     named: FxHashMap<String, u32>,
     skipped: FxHashSet<u32>,
 ) -> Result<AnyTokenizer, TokenizerError> {
-    let (mut pieces, mut scores) = load_spm_vocab(data)?;
+    let SpmVocab {
+        mut pieces,
+        mut scores,
+        user_defined,
+    } = load_spm_vocab(data)?;
+
+    let special = fold_user_defined(&pieces, &user_defined, special);
+
     // Agent tokens live above the vocabulary file's last id; give them slots so
     // they decode and count towards `vocab_size`, not just match on encode.
     place_special_pieces(&mut pieces, &special)?;
@@ -613,6 +620,39 @@ fn spm_from_vocab(
         Backend::Spm(tokenizer),
         SpecialPolicy::boundary(None, None, Some(eos), named),
     ))
+}
+
+/// Add every `USER_DEFINED` piece to a vocabulary's added-token map.
+///
+/// SentencePiece matches these verbatim *before* merging — they are never merge
+/// candidates — so they belong with the added tokens rather than in the merge
+/// loop. Folding them into `special` puts them on the one path
+/// [`spm_from_vocab`] already sets up for markers.
+///
+/// Which pieces those are cannot be worked out here: a `USER_DEFINED` and a
+/// `CONTROL` piece both score `0.0`, and `CONTROL` must **not** match from text;
+/// `<blockquote>`, `<pad>` and `<0x41>` are all `<...>`-shaped and all three are
+/// different types. It comes from the `.spm` file's type column, which is why
+/// that column exists.
+///
+/// Measured with `sentencepiece` 0.2.0 over 1,380 real corpus documents:
+/// without this, Gemma 2 mistokenizes 77 of them (5.6%) and Gemma 3 152
+/// (11.0%), shattering `<blockquote>` into `<` + `blockquote` + `>` and
+/// Gemma 3's whitespace runs into shorter ones. With it, both are exact.
+///
+/// The vocabulary's own table wins a collision, the rule agent tokens follow
+/// too — `special` is written first and `or_insert` leaves it alone.
+fn fold_user_defined(
+    pieces: &[String],
+    user_defined: &[bool],
+    mut special: FxHashMap<String, u32>,
+) -> FxHashMap<String, u32> {
+    for (id, piece) in pieces.iter().enumerate() {
+        if user_defined.get(id).copied().unwrap_or(false) {
+            special.entry(piece.clone()).or_insert(id as u32);
+        }
+    }
+    special
 }
 
 /// Where a bundled SentencePiece vocabulary places its dummy prefix.
@@ -1885,7 +1925,7 @@ mod tests {
     /// currently happens to produce.
     #[cfg(feature = "vocab-mistral")]
     fn spm_piece_id(vocab_data: &[u8], piece: &str) -> u32 {
-        let (pieces, _) = load_spm_vocab(vocab_data).expect("vocabulary loads");
+        let pieces = load_spm_vocab(vocab_data).expect("vocabulary loads").pieces;
         let id = pieces
             .iter()
             .position(|p| p == piece)
@@ -2563,6 +2603,51 @@ mod tests {
                 "{name} resolves but is not listed in supported_names"
             );
         }
+    }
+
+    /// `USER_DEFINED` pieces join the added tokens; nothing else does.
+    ///
+    /// The distinction is the whole reason the `.spm` type column exists —
+    /// `CONTROL` and `BYTE` pieces score `0.0` and are spelled `<...>` exactly
+    /// like the user-defined ones, and neither may be matched from text.
+    /// Reference: `sentencepiece` 0.2.0 on Gemma 2, where
+    /// `encode("<blockquote>")` (USER_DEFINED) is `[191]` while
+    /// `encode("<pad>")` (CONTROL) is `[235322, 8939, 235313]`.
+    #[test]
+    fn only_user_defined_pieces_join_the_added_tokens() {
+        let pieces: Vec<String> = ["<pad>", "<0x41>", "<blockquote>", "▁the"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let flags = [false, false, true, false];
+
+        let folded = fold_user_defined(&pieces, &flags, FxHashMap::default());
+        assert_eq!(folded.len(), 1);
+        assert_eq!(folded.get("<blockquote>"), Some(&2));
+    }
+
+    /// A vocabulary's own table outranks the piece list, the same rule agent
+    /// tokens follow — otherwise a hand-stated marker id would be silently
+    /// replaced by the piece's position.
+    #[test]
+    fn the_vocabularys_own_table_wins_over_a_user_defined_piece() {
+        let pieces: Vec<String> = ["a", "<mask>"].iter().map(|s| s.to_string()).collect();
+        let flags = [false, true];
+        let mut stated = FxHashMap::default();
+        stated.insert("<mask>".to_string(), 9999);
+
+        let folded = fold_user_defined(&pieces, &flags, stated);
+        assert_eq!(folded.get("<mask>"), Some(&9999));
+    }
+
+    /// A shorter flag vector must not panic or mis-flag: a `.spm` written
+    /// before the type column carries no flags at all, and every piece in it is
+    /// read as not user-defined.
+    #[test]
+    fn a_vocabulary_without_type_information_folds_nothing() {
+        let pieces: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let folded = fold_user_defined(&pieces, &[], FxHashMap::default());
+        assert!(folded.is_empty());
     }
 
     /// The subset of a vocabulary's special-token map that are agent tokens

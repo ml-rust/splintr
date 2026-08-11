@@ -17,10 +17,12 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 - `Metaspace` honours `split` and `prepend_scheme`: Mistral is byte-exact.
 - An `lstrip` added token now wins the whitespace run before it against a whitespace added token, as the reference does.
+- `USER_DEFINED` SentencePiece pieces are matched verbatim instead of merged, which needs the piece type the `.spm` format now carries.
 - The `from_pretrained` doc example no longer breaks `cargo test --doc` under the `python` feature.
 
 ### Changed
 
+- `.spm` gains a piece-type column and `load_spm_vocab` returns `SpmVocab`; two-column files still load, read as `NORMAL`.
 - Bundled vocabularies moved to one `splintr-vocab-*` crate per family, pulled in by the `vocab-*` feature that needs it. Enabling one family downloads that family. Feature names and the `*_VOCAB_PACKED` constants are unchanged.
 - A `split: false` metaspace vocabulary splits at marker runs where its own tokens prove no id changes.
 - Tekken's pre-tokenizer shares the o200k scanner instead of the regex engine.
