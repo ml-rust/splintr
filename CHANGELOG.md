@@ -16,6 +16,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 - A `split: false` metaspace vocabulary splits at marker runs where its own tokens prove no id changes.
 - Tekken's pre-tokenizer shares the o200k scanner instead of the regex engine.
+- The vocabulary probe confirms a slot on its key's hash instead of reading the key.
 
 ## [0.18.0] - 2026-08-11
 
