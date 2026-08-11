@@ -6,4 +6,4 @@ Data only — the packed bytes of one vocabulary family, with nothing that inter
 
 ## Provenance
 
-Extracted from `zai-org/GLM-4.5` on HuggingFace. The vocabulary is upstream's, not splintr's, and keeps upstream's licence — declared in `Cargo.toml`.
+Extracted from `zai-org/GLM-4.5` on HuggingFace. The vocabulary is upstream's, not splintr's, and keeps upstream's licence — MIT, as the model repository declares. See `LICENSE`, which also records that upstream publishes no notice file of its own.

@@ -17,6 +17,7 @@ include = [
     "/build.rs",
     "/Cargo.toml",
     "/README.md",
+    "/LICENSE",
     "/vocabs/glm4.tiktoken",
 ]
 
