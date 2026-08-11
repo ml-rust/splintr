@@ -205,6 +205,28 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
         return;
     }
 
+    byte_pair_merge_ids_into(piece, merge_ranks, id_encoder, seeding, out)
+}
+
+/// [`byte_pair_encode_ids_seeded_into`] for a caller that has already asked the
+/// vocabulary whether the whole piece is one token, and been told no.
+///
+/// The encode path asks that of every chunk before it reaches here — it is how a
+/// chunk avoids the merge entirely — and asking again would hash and probe the
+/// same bytes against the same map a second time. A one-byte piece the
+/// vocabulary does not have produces nothing, which is what the caller's own
+/// miss already established.
+pub(crate) fn byte_pair_merge_ids_into(
+    piece: &[u8],
+    merge_ranks: RankLookup<'_>,
+    id_encoder: &Encoder,
+    seeding: Seeding,
+    out: &mut Vec<u32>,
+) {
+    if piece.len() <= 1 {
+        return;
+    }
+
     // Merging by id needs an id for every symbol the merge starts from, which
     // may mean seeding at a different granularity: a ByteLevel vocabulary's
     // alphabet is its characters, so the individual bytes of a two-byte one are
@@ -258,7 +280,7 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
         let mut buf = [Node::PLACEHOLDER; SCAN_SYMBOL_LIMIT];
         let nodes = &mut buf[..symbols];
         if !seed_nodes_into(piece, seeding, nodes, merge_ranks.by_id()) {
-            return byte_pair_encode_ids_seeded_into(
+            return byte_pair_merge_ids_into(
                 piece,
                 merge_ranks.without_ids(),
                 id_encoder,
@@ -293,13 +315,7 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
             true
         });
         if !seeded {
-            byte_pair_encode_ids_seeded_into(
-                piece,
-                merge_ranks.without_ids(),
-                id_encoder,
-                seeding,
-                out,
-            );
+            byte_pair_merge_ids_into(piece, merge_ranks.without_ids(), id_encoder, seeding, out);
         }
     }
 }

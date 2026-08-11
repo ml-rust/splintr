@@ -3,7 +3,7 @@ use crate::core::encoder::{encoder_from_owned, Encoder};
 use proptest::prelude::*;
 use rustc_hash::FxHashMap;
 
-use super::encode::Seeding;
+use super::encode::{byte_pair_encode_ids_seeded_into, Seeding};
 use super::ranks::{BytePairRanks, RankLookup};
 
 /// `byte_pair_encode_ids_seeded_into` collected, so the property below can

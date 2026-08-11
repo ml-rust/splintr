@@ -1,7 +1,7 @@
 use super::super::types::{ByteFallback, Tokenizer};
 use crate::core::bpe::{
-    byte_pair_encode_ids_seeded_into, byte_pair_encode_pieces_presegmented,
-    byte_pair_encode_pieces_seeded, PairRanks, Piece, RankLookup, Seed, Seeding,
+    byte_pair_encode_pieces_presegmented, byte_pair_encode_pieces_seeded, byte_pair_merge_ids_into,
+    PairRanks, Piece, RankLookup, Seed, Seeding,
 };
 use crate::core::precompiled::utf8_len;
 
@@ -128,7 +128,7 @@ impl Tokenizer {
             // reports ids directly instead of building a `Vec<Piece>` to filter.
             // This is the path every ByteLevel and every tiktoken-style
             // vocabulary takes — i.e. almost all traffic.
-            byte_pair_encode_ids_seeded_into(bytes, ranks, self.chunk_encoder(), seeding, out);
+            byte_pair_merge_ids_into(bytes, ranks, self.chunk_encoder(), seeding, out);
             return;
         };
 
