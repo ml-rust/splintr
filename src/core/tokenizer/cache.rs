@@ -46,8 +46,6 @@
 //! slots are two `Vec` headers, which is not a price worth optimising against
 //! model weights.
 
-use rustc_hash::FxHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::RwLock;
 
 /// Number of independently-locked shards.
@@ -222,9 +220,11 @@ impl ChunkCache {
     /// compute it once: a miss walks this cache twice, a failed
     /// [`Self::extend_into`] then a [`Self::put`].
     pub(crate) fn shard_hash(key: &[u8]) -> u64 {
-        let mut hasher = FxHasher::default();
-        key.hash(&mut hasher);
-        hasher.finish()
+        // The same hash the vocabulary is keyed on, so a caller asking both
+        // about one chunk — which the encode path does for every chunk — hashes
+        // it once. A key is its own bytes, so the length `Hash for [u8]` would
+        // prefix adds nothing to distinguish one from another.
+        crate::core::encoder::Encoder::hash_of(key)
     }
 
     /// The shard a hash belongs to, and the slot within it. Which *tier* that

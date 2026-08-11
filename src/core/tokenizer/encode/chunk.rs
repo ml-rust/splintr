@@ -19,14 +19,17 @@ impl Tokenizer {
     /// the whole-chunk hit pushes one id, a cache hit copies from under the
     /// shard lock, and the merge writes its output in place.
     pub(super) fn encode_bytes_into(&self, bytes: &[u8], out: &mut Vec<u32>) {
+        // One hash of the chunk serves every question asked about it: the
+        // vocabulary and the cache are keyed on the same one.
+        let hash = crate::core::encoder::Encoder::hash_of(bytes);
         // Fast path: the entire chunk is one known token. Ahead of the cache
         // deliberately — it is a single hash lookup against a map that is
         // already hot, so caching its answer would cost more than recomputing.
-        if let Some(rank) = self.chunk_encoder().get(bytes) {
+        if let Some(rank) = self.chunk_encoder().get_with_hash(bytes, hash) {
             out.push(rank);
             return;
         }
-        self.encode_unresolved_bytes_into(bytes, out);
+        self.encode_unresolved_bytes_into(bytes, hash, out);
     }
 
     /// [`Tokenizer::encode_bytes_into`] for a caller that has already asked the
@@ -34,12 +37,8 @@ impl Tokenizer {
     ///
     /// Split out because in raw space that question is asked against the very
     /// map this would ask again — the two used to be different maps in different
-    /// spaces, and are now one.
-    fn encode_unresolved_bytes_into(&self, bytes: &[u8], out: &mut Vec<u32>) {
-        // Hashed once for both the lookup and the insert that follows it: a
-        // miss visits the cache twice, and the shard hash is the same both
-        // times.
-        let hash = super::super::cache::ChunkCache::shard_hash(bytes);
+    /// spaces, and are now one. `hash` is that question's hash, reused here.
+    fn encode_unresolved_bytes_into(&self, bytes: &[u8], hash: u64, out: &mut Vec<u32>) {
         if self.chunk_cache.extend_into(hash, bytes, out) {
             return;
         }
@@ -83,8 +82,9 @@ impl Tokenizer {
         out: &mut Vec<u32>,
         scratch: &mut String,
     ) {
+        let hash = crate::core::encoder::Encoder::hash_of(raw);
         if let Some(raw_encoder) = &self.raw_encoder {
-            if let Some(rank) = raw_encoder.get(raw) {
+            if let Some(rank) = raw_encoder.get_with_hash(raw, hash) {
                 out.push(rank);
                 return;
             }
@@ -95,8 +95,9 @@ impl Tokenizer {
         // expansion of them.
         if self.merges_raw() {
             // The whole-chunk question was just asked, against the same map
-            // `encode_bytes_into` would ask — so go straight past it.
-            self.encode_unresolved_bytes_into(raw, out);
+            // `encode_bytes_into` would ask — so go straight past it, hash and
+            // all.
+            self.encode_unresolved_bytes_into(raw, hash, out);
             return;
         }
         scratch.clear();

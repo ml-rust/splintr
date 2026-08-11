@@ -154,6 +154,11 @@ impl Encoder {
     /// an entry's length is compared separately, so two keys of different
     /// lengths are already told apart without it.
     #[inline]
+    pub fn hash_of(key: &[u8]) -> u64 {
+        Self::hash(key)
+    }
+
+    #[inline]
     fn hash(key: &[u8]) -> u64 {
         let mut hasher = FxHasher::default();
         hasher.write(key);
@@ -215,8 +220,19 @@ impl Encoder {
     /// The id `key` maps to, if the vocabulary holds it.
     #[inline]
     pub fn get(&self, key: &[u8]) -> Option<u32> {
+        self.get_with_hash(key, Self::hash_of(key))
+    }
+
+    /// [`Encoder::get`] for a caller that has already hashed `key`.
+    ///
+    /// The encode path asks the vocabulary and then the chunk cache about the
+    /// very same bytes, and both are keyed on the same hash of them — so it is
+    /// computed once and handed to each. `hash` must be [`Encoder::hash_of`] of
+    /// `key`; anything else answers about a different key.
+    #[inline]
+    pub fn get_with_hash(&self, key: &[u8], hash: u64) -> Option<u32> {
         let mask = self.mask();
-        let mut slot = Self::slot_of(Self::hash(key), mask);
+        let mut slot = Self::slot_of(hash, mask);
         loop {
             let entry = self.slots[slot];
             if entry.len == u32::MAX {
