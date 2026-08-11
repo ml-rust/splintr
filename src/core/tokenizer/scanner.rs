@@ -573,6 +573,9 @@ fn contraction_len(bytes: &[u8], pos: usize) -> Option<usize> {
 /// Which whitespace branch an alternation reaches first.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WhitespaceOrder {
+    /// GPT-2: no newline branch at all, just `\s+(?!\S)|\s+`, so a run is
+    /// never cut at a newline.
+    Plain,
     /// cl100k: `\s+$` precedes `\s*[\r\n]`, so a run that both contains a
     /// newline and reaches the end of the text is taken whole.
     EndOfTextFirst,
@@ -590,17 +593,19 @@ fn whitespace_span(text: &str, bytes: &[u8], pos: usize, order: WhitespaceOrder)
     let len = bytes.len();
     let run_end = scan_run(text, bytes, pos, space_at);
 
-    let last_newline = bytes[pos..run_end]
-        .iter()
-        .rposition(|&b| b == b'\r' || b == b'\n')
-        .map(|offset| pos + offset + 1);
-
     match order {
         // `\s+$` — the whole run, when it reaches the end of the text.
         WhitespaceOrder::EndOfTextFirst if run_end == len => return (pos, run_end),
+        // No newline branch to reach, so the run is never cut at one — and the
+        // scan for the last newline is not worth making either.
+        WhitespaceOrder::Plain => {}
         // `\s*[\r\n]` / `\s*[\r\n]+` — greedy `\s*` backtracks to the last
         // newline, so the token ends just past it.
         _ => {
+            let last_newline = bytes[pos..run_end]
+                .iter()
+                .rposition(|&b| b == b'\r' || b == b'\n')
+                .map(|offset| pos + offset + 1);
             if let Some(end) = last_newline {
                 return (pos, end);
             }
@@ -1567,6 +1572,99 @@ fn is_deepseek_cjk(c: char) -> bool {
 /// Appends the pre-token spans of `text` as `(start, end)` byte offsets.
 pub(crate) type SpanScanner = fn(&str, &mut Vec<(usize, usize)>);
 
+/// One of GPT-2's contractions at `pos`, and its length.
+///
+/// Case-**sensitive**, unlike every other family here: GPT-2 writes them as
+/// bare literals where cl100k and Llama 3 wrap theirs in `(?i:…)`. `"IT'S"`
+/// therefore splits as `IT`, `'`, `S` rather than `IT`, `'S`.
+#[inline]
+fn gpt2_contraction_len(bytes: &[u8], pos: usize) -> Option<usize> {
+    if bytes.get(pos) != Some(&b'\'') {
+        return None;
+    }
+    match *bytes.get(pos + 1)? {
+        b's' | b'd' | b'm' | b't' => Some(2),
+        b'l' if bytes.get(pos + 2) == Some(&b'l') => Some(3),
+        b'v' | b'r' if bytes.get(pos + 2) == Some(&b'e') => Some(3),
+        _ => None,
+    }
+}
+
+/// Splits by [`GPT2_PATTERN`](crate::core::tokenizer::patterns::GPT2_PATTERN):
+/// `'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+`
+///
+/// The oldest of these shapes, and the one every other family was derived from
+/// by narrowing. Four things separate it from the cl100k family, and each one
+/// is why this cannot be a [`Family`] row:
+///
+/// - contractions are case-sensitive, not `(?i:…)`;
+/// - a letter run's optional prefix is a literal **space**, where cl100k takes
+///   any `[^\r\n\p{L}\p{N}]` — so `"!word"` is two pieces here and one there;
+/// - digit runs are unbounded rather than `\p{N}{1,3}`, and take the same
+///   optional space the letter run does;
+/// - the punctuation branch has no trailing `[\r\n]*`, and there is no
+///   `\s*[\r\n]+` whitespace branch at all.
+///
+/// Also what Whisper's `tokenizer.json` declares, and what any file with a bare
+/// `ByteLevel` pre-tokenizer gets, since `use_regex` defaults to true.
+pub(super) fn gpt2_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0usize;
+
+    while pos < len {
+        let start = pos;
+
+        if let Some(n) = gpt2_contraction_len(bytes, pos) {
+            pos += n;
+            out.push((start, pos));
+            continue;
+        }
+
+        // The three ` ?…+` branches share one optional space, so it is stepped
+        // over once and each branch asks about what follows it.
+        let after_space = match bytes[pos] {
+            b' ' => pos + 1,
+            _ => pos,
+        };
+        if after_space < len {
+            // ` ?\p{L}+`
+            if let Some(n) = letter_at(text, bytes, after_space) {
+                pos = scan_letters(text, bytes, after_space + n);
+                out.push((start, pos));
+                continue;
+            }
+            // ` ?\p{N}+` — unbounded, so a run of digits is one piece however
+            // long it is.
+            if number_at(text, bytes, after_space).is_some() {
+                pos = scan_run(text, bytes, after_space, number_at);
+                out.push((start, pos));
+                continue;
+            }
+            // ` ?[^\s\p{L}\p{N}]+`
+            if punct_at(text, bytes, after_space).is_some() {
+                pos = scan_run(text, bytes, after_space, punct_at);
+                out.push((start, pos));
+                continue;
+            }
+        }
+
+        if space_at(text, bytes, pos).is_some() {
+            let (s, e) = whitespace_span(text, bytes, pos, WhitespaceOrder::Plain);
+            pos = e;
+            out.push((s, e));
+            continue;
+        }
+
+        // Every character is whitespace, a letter, a digit, or a member of the
+        // punctuation branch's complement class, so the alternation matches
+        // everywhere and this is unreachable. Stepping a whole character keeps
+        // it that way rather than trusting the claim.
+        let (_, l) = char_at(text, pos);
+        pos += l;
+    }
+}
+
 /// The scanner equivalent to `pattern`, if one has been proven against it.
 ///
 /// Keyed on the exact expression text rather than on a vocabulary name, so a
@@ -1586,6 +1684,8 @@ pub(crate) fn for_pattern(pattern: &str) -> Option<SpanScanner> {
         Some(o200k_spans)
     } else if pattern == p::KIMI_PATTERN {
         Some(kimi_spans)
+    } else if pattern == p::GPT2_PATTERN {
+        Some(gpt2_spans)
     } else if pattern == p::DEEPSEEK_V3_PATTERNS[0] {
         Some(deepseek_v3_pass1_spans)
     } else if pattern == p::DEEPSEEK_V3_PATTERNS[1] || pattern == p::DEEPSEEK_V3_PASS2_LITERAL {
@@ -1744,7 +1844,7 @@ mod fused_tests {
 mod tests {
     use super::*;
     use crate::core::tokenizer::patterns::{
-        CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, KIMI_PATTERN, LLAMA3_PATTERN,
+        CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN, KIMI_PATTERN, LLAMA3_PATTERN,
         O200K_BASE_PATTERN, QWEN2_PATTERN,
     };
 
@@ -1758,6 +1858,7 @@ mod tests {
             ("qwen2", QWEN2_PATTERN, qwen2_spans as Scanner),
             ("o200k", O200K_BASE_PATTERN, o200k_spans as Scanner),
             ("kimi", KIMI_PATTERN, kimi_spans as Scanner),
+            ("gpt2", GPT2_PATTERN, gpt2_spans as Scanner),
             (
                 "deepseek-pass1",
                 DEEPSEEK_V3_PATTERNS[0],
@@ -1834,14 +1935,16 @@ mod tests {
     /// arriving with a pattern nothing here recognises should be visible
     /// immediately rather than as an unexplained encode-speed cliff.
     ///
-    /// Mistral V3 and Whisper are the stated exceptions: Tekken's pattern and
-    /// GPT-2's are shapes no scanner covers yet, and they fall back to the
-    /// regex engine. Mistral V1/V2 report no pattern at all.
+    /// Mistral V3 is the one stated exception: Tekken's pattern is a shape no
+    /// scanner covers yet, and it falls back to the regex engine. Mistral V1/V2
+    /// report no pattern at all. Whisper declares GPT-2's pattern, so it is
+    /// covered by [`gpt2_spans`] — as is any `tokenizer.json` whose
+    /// pre-tokenizer is a bare `ByteLevel`, since `use_regex` defaults on.
     #[test]
     fn every_bundled_vocabulary_that_should_have_a_scanner_has_one() {
         use crate::core::pretrained::{patterns, PretrainedVocab::*};
 
-        let no_scanner = [MistralV3, WhisperV1, WhisperV2, WhisperV3];
+        let no_scanner = [MistralV3];
         for vocab in [
             Cl100kBase, O200kBase, GptOss, Llama3, DeepseekV3, Qwen3, Glm4, KimiK2, KimiK3,
             MistralV1, MistralV2, MistralV3, WhisperV1, WhisperV2, WhisperV3,
