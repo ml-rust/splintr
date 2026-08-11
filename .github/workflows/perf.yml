@@ -289,8 +289,8 @@ jobs:
           #
           # `<engine>__<vocabulary>__<family>`, which is what `perf_check.py`
           # groups on. The suite is `<vocabulary>-<family>` and a vocabulary may
-          # itself contain a hyphen (`gpt-oss`), so the family is taken from the
-          # last one and the name from everything before it.
+          # itself contain a hyphen (`mistral-small`), so the family is taken
+          # from the last one and the name from everything before it.
           check() {
             tag="ids/$3__${2%-*}__${2##*-}"
             if "./venv-$1/bin/python" .github/scripts/perf_bench.py "$2" "$3" x "$4" \

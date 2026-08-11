@@ -20,10 +20,26 @@
 #           the scheme up by name and an unrecognised one mistokenizes rather
 #           than failing.
 #
+# One row per distinct *vocabulary*, not per model family. Timing is a
+# property of the merge ranks and the corpus; a family that states another
+# family's ranks re-times the identical work and tells you nothing the row it
+# copied did not. That is why Phi-4 and OLMo-2 are absent despite being
+# bundled — both read cl100k_base's 100,256 ranks, which `cl100k` already
+# times — and it is the first question to ask of any row proposed here.
+#
+# gpt-oss went the same way, and it is the case that shows the rule is about
+# the vocabulary rather than the file: its `tokenizer.json` states o200k_base's
+# 199,998 ranks exactly (same content hash) but carries 446,189 merges to
+# Xenova's 199,742, so the two files are not byte-equivalent and the row was
+# not literally re-timing `o200k`. What it measured with the surplus was JSON
+# and merge-table ingestion, not a second vocabulary — for 27.9 MB, the
+# largest download here. Correctness coverage is untouched: `perf_parity.py`
+# still checks ids against `openai/gpt-oss-20b`.
+#
 # Most `tokenizer.json`s come from `hf-internal-testing/tokenizers-test-data`,
 # the same repo the upstream `tokenizers` benchmark reads, so a row here is
 # comparable with a row there. The two OpenAI vocabularies are not in it and
-# come from Xenova's mirrors instead.
+# come from Xenova's mirrors, and ModernBERT from Answer.AI's own repository.
 #
 # name	ranks	json	pattern	giga
 cl100k	cl100k_base	https://huggingface.co/Xenova/gpt-4/resolve/main/tokenizer.json	CL100K_BASE_PATTERN	cl100k
@@ -34,8 +50,8 @@ llama3	llama3	https://huggingface.co/datasets/hf-internal-testing/tokenizers-tes
 glm	glm4	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/glm-5.2.json	LLAMA3_PATTERN	-
 tekken	mistral_v3_tekken	-	MISTRAL_V3_PATTERN	-
 whisper	whisper	-	GPT2_PATTERN	-
+modernbert	modernbert	https://huggingface.co/answerdotai/ModernBERT-base/resolve/main/tokenizer.json	GPT2_PATTERN	-
 gpt2	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/gpt2.json	-	-
-gpt-oss	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/gpt-oss.json	-	-
 deepseek	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/deepseek-v4.json	-	-
 gemma	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/gemma-4.json	-	-
 mistral-small	-	https://huggingface.co/datasets/hf-internal-testing/tokenizers-test-data/resolve/main/mistral-small-4.json	-	-
