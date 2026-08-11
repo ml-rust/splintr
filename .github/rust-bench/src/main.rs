@@ -14,7 +14,7 @@
 //!   baked  the vocabulary compiled into the crate — bpe-openai, which offers
 //!          no way to load one
 //!
-//! Which vocabularies run is `.github/perf-models.tsv`, passed in one row at a
+//! Which vocabularies run is `.github/perf-vocabs.tsv`, passed in one row at a
 //! time; every corpus named on the command line is measured separately, because
 //! a tokenizer's cost differs by script far more than it differs by engine.
 //!

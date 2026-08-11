@@ -1,5 +1,5 @@
-# Vocabularies the perf workflow measures. One line here is one family in the
-# report — adding a model must not need a change to the workflow, the Rust
+# Vocabularies the perf workflow measures. One line here is one vocabulary in
+# the report — adding one must not need a change to the workflow, the Rust
 # harness or the Python harness, so all three read this file.
 #
 # name      what the report calls it.

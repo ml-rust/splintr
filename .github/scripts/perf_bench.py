@@ -100,9 +100,9 @@ def megabytes(texts):
 
 
 # The pre-tokenizer expression each rank-file suite is defined by, keyed by
-# **splintr's own name for it** — the name `.github/perf-models.tsv` records
+# **splintr's own name for it** — the name `.github/perf-vocabs.tsv` records
 # against each vocabulary. Keyed that way rather than by vocabulary so that a
-# new family reusing an existing expression (glm reuses Llama 3's) is one line
+# new vocabulary reusing an existing expression (glm reuses Llama 3's) is one line
 # in the manifest and nothing here.
 #
 # These are `splintr`'s constants, copied out verbatim — a hand-typed cl100k
@@ -138,12 +138,12 @@ def _pattern_of(suite):
     this file unless it also brings a new expression.
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import perf_models
+    import perf_vocabs
 
-    vocab = _vocab_of(suite)
-    for model in perf_models.models():
-        if model["name"] == vocab:
-            return RANK_FILE_PATTERNS.get(model["pattern"])
+    name = _vocab_of(suite)
+    for vocab in perf_vocabs.vocabs():
+        if vocab["name"] == name:
+            return RANK_FILE_PATTERNS.get(vocab["pattern"])
     return None
 
 

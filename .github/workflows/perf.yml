@@ -32,8 +32,8 @@ run-name: >-
 # versions. Manual only — it is a decision tool and a regression check, not
 # something to run on every push.
 #
-# **Which vocabularies are measured is `.github/perf-models.tsv`, not this
-# file.** Adding a family is one line there; nothing here, in the Rust harness
+# **Which vocabularies are measured is `.github/perf-vocabs.tsv`, not this
+# file.** Adding a vocabulary is one line there; nothing here, in the Rust harness
 # or in the Python harness needs to change. That file also explains the two
 # loader families every row belongs to:
 #
@@ -152,14 +152,14 @@ jobs:
           # Every `tokenizer.json` in the manifest, and the rank files splintr
           # bundles — the rank family reads ours, so the bytes under every
           # engine are provably the ones it ships.
-          python .github/scripts/perf_models.py fetch models
+          python .github/scripts/perf_vocabs.py fetch vocabs
           mkdir -p ranks
-          python .github/scripts/perf_models.py fields ranks \
+          python .github/scripts/perf_vocabs.py fields ranks \
             | grep -v '^-$' | while read -r r; do
                 cp "$(ls crates/vocab-*/vocabs/$r.tiktoken)" "ranks/"
               done
           python .github/scripts/build_corpus.py corpora $CORPORA
-          echo "MODELS=$(ls models | wc -l | tr -d ' ') vocabularies, $(ls corpora | wc -l | tr -d ' ') corpora" >> "$GITHUB_ENV"
+          echo "VOCABS=$(ls vocabs | wc -l | tr -d ' ') vocabularies, $(ls corpora | wc -l | tr -d ' ') corpora" >> "$GITHUB_ENV"
 
       - name: Benchmark (Rust)
         run: |
@@ -190,9 +190,9 @@ jobs:
           # named failure plus every other family's numbers, not an empty
           # summary. It is named at the top of that summary rather than turned
           # into a failed job.
-          python .github/scripts/perf_models.py fields name ranks pattern \
+          python .github/scripts/perf_vocabs.py fields name ranks pattern \
           | while IFS=$'\t' read -r name ranks pattern; do
-              json="models/$name.json"
+              json="vocabs/$name.json"
               [ -f "$json" ] || json="-"
               [ "$ranks" = "-" ] || ranks="ranks/$ranks.tiktoken"
               [ "$ranks" = "-" ] && [ "$json" = "-" ] && continue
@@ -213,7 +213,7 @@ jobs:
         run: |
           python .github/scripts/rust_report.py \
             --title "splintr in Rust — ${{ matrix.os }} — ${GITHUB_SHA:0:7}" \
-            --note "$HW — $MODELS" \
+            --note "$HW — $VOCABS" \
             --note "$(cd .github/rust-bench && cargo tree --depth 1 2>/dev/null | sed -n 's/^[^ ]* //p' | sed 's/^/    /')" \
             --note "Each family sizes its corpus from its slowest engine, so every engine in a table sees the same input." \
             --note "$RUST_PROVENANCE" \
@@ -320,7 +320,7 @@ jobs:
           fi
           cat patterns.txt
 
-          python .github/scripts/perf_models.py fields name ranks json giga \
+          python .github/scripts/perf_vocabs.py fields name ranks json giga \
           | while IFS=$'\t' read -r name ranks json giga; do
               if [ "$ranks" != "-" ]; then
                 check splintr  "$name-ranks" splintr  "ranks:ranks/$ranks.tiktoken"
@@ -329,11 +329,11 @@ jobs:
                   check gigatoken "$name-ranks" gigatoken "ranks:ranks/$ranks.tiktoken"
                 fi
               fi
-              if [ -f "models/$name.json" ]; then
-                check splintr    "$name-json" splintr    "models/$name.json"
-                check tokenizers "$name-json" tokenizers "models/$name.json"
+              if [ -f "vocabs/$name.json" ]; then
+                check splintr    "$name-json" splintr    "vocabs/$name.json"
+                check tokenizers "$name-json" tokenizers "vocabs/$name.json"
                 if [ -n "$GIGATOKEN" ]; then
-                  check gigatoken "$name-json" gigatoken "models/$name.json"
+                  check gigatoken "$name-json" gigatoken "vocabs/$name.json"
                 fi
               fi
             done
@@ -354,7 +354,7 @@ jobs:
           # Interleaved rather than engine-by-engine: a runner that slows down
           # partway through then penalises whichever engine happened to be last.
           for r in $(seq 1 "${ROUNDS:-3}"); do
-            python .github/scripts/perf_models.py fields name ranks json giga \
+            python .github/scripts/perf_vocabs.py fields name ranks json giga \
             | while IFS=$'\t' read -r name ranks json giga; do
                 if [ "$ranks" != "-" ]; then
                   spec="ranks:ranks/$ranks.tiktoken"
@@ -367,8 +367,8 @@ jobs:
                     run gigatoken "$name-ranks" gigatoken "gigatoken" "$spec"
                   fi
                 fi
-                if [ -f "models/$name.json" ]; then
-                  spec="models/$name.json"
+                if [ -f "vocabs/$name.json" ]; then
+                  spec="vocabs/$name.json"
                   if [ -n "$SPLINTR_BASELINE" ]; then
                     run baseline "$name-json" splintr "splintr $SPLINTR_BASELINE" "$spec"
                   fi
@@ -385,7 +385,7 @@ jobs:
         run: |
           python .github/scripts/perf_report.py \
             --title "splintr through the Python API — ${{ matrix.os }} — ${GITHUB_SHA:0:7}" \
-            --note "$HW — $MODELS" \
+            --note "$HW — $VOCABS" \
             --note "$(printf '%s' "$VERSIONS" | sed 's/^/    /')" \
             ${PATTERN_WARNING:+--note "$PATTERN_WARNING"} \
             --note "Output parity: $PARITY" \
