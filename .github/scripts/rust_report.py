@@ -178,100 +178,116 @@ def main():
     for note in notes:
         print(f"{note}\n")
 
-    # Parity as a count. One line per check was fine for four vocabularies and
-    # is forty lines for the manifest — and forty lines of "yes" is exactly the
-    # noise that stops anyone reading the one line that says "no".
-    checks = [
-        (vocab, family, corpus, engine)
-        for (vocab, family, corpus), engines in cells.items()
-        for engine, rec in engines.items()
-        if not rec.get("broken") and not rec["agrees"]
-    ]
-    total = sum(
-        1
-        for engines in cells.values()
-        for rec in engines.values()
-        if not rec.get("broken")
-    )
-    if checks:
+    # Parity as a count, and the failures grouped by engine. One line per
+    # check was forty lines of "yes"; naming all nineteen failing cells inline
+    # was one unreadable sentence. What a reader needs is which engine
+    # disagrees and on what — the corpus list collapses to a count.
+    disagreed = OrderedDict()
+    total = 0
+    for (vocab, family, corpus), engines in cells.items():
+        for engine, rec in engines.items():
+            if rec.get("broken"):
+                continue
+            total += 1
+            if not rec["agrees"]:
+                disagreed.setdefault(engine, OrderedDict()).setdefault(
+                    f"{vocab}-{family}", []
+                ).append(corpus)
+    failed = sum(len(c) for e in disagreed.values() for c in e.values())
+
+    if disagreed:
         print(
-            f"> **Token ids: {total - len(checks)}/{total} agreed with the oracle. "
-            "These did not, and their rows are not comparisons:** "
-            + ", ".join(f"{v}-{f}/{c}/{e}" for v, f, c, e in checks)
-            + "\n"
+            f"**Token ids: {total - failed}/{total} agreed with the oracle.** The rest "
+            "are not comparisons — that engine did not produce the same tokens:\n"
         )
+        print("| engine | disagreed on | cells |")
+        print("|---|---|---:|")
+        for engine, where in disagreed.items():
+            n = sum(len(c) for c in where.values())
+            print(f"| {engine} | {', '.join(where)} | {n} |")
+        print()
     else:
         print(f"Token ids: **{total}/{total}** agreed with the oracle, on every corpus.\n")
 
-    # --- summary ------------------------------------------------------------
-    # One row per vocabulary and family: what splintr does, who came closest,
-    # and by how much. This is the whole report for most readers.
-    print(f"## Summary — single text, one thread, over {len(corpora)} corpora\n")
-    print("| vocabulary | splintr | closest rival | ratio | load | bytes/token |")
-    print("|---|---:|---|---:|---:|---:|")
+    # --- the matrix ---------------------------------------------------------
+    # Every engine is a column, in every table. The point of this report is
+    # splintr against the other crates, so that comparison is the report — not
+    # a "closest rival" digest with the rest folded away where nobody opens it.
+    #
+    # Aggregated over the corpora first, then the same shape per corpus, since
+    # the per-script spread is itself a finding: an engine can lead on Latin
+    # text and lose by 5x on Han.
+    def matrix(rows, key):
+        return OrderedDict(
+            (label, {name: cell(rec, key) for name, rec in engines.items()})
+            for label, engines in rows.items()
+        )
+
+    aggregated, load_rows = OrderedDict(), OrderedDict()
     for family in ordered_families:
         for vocab in vocabs:
-            group = [
-                (engine, rec)
-                for (v, f, _), engines in cells.items()
-                if v == vocab and f == family
-                for engine, rec in engines.items()
-            ]
-            if not group:
-                continue
             by_engine = OrderedDict()
-            for engine, rec in group:
-                by_engine.setdefault(engine, []).append(rec)
-            agg = {name: aggregate(recs) for name, recs in by_engine.items()}
-            mine = agg.get("splintr")
-            if mine is None or mine["serial"] is None:
+            for (v, f, _), engines in cells.items():
+                if v != vocab or f != family:
+                    continue
+                for engine, rec in engines.items():
+                    by_engine.setdefault(engine, []).append(rec)
+            if not by_engine:
                 continue
-            rivals = [(n, a) for n, a in agg.items() if n != "splintr" and a and a["serial"]]
-            best = max(rivals, key=lambda x: x[1]["serial"], default=None)
-            ratio = f"{mine['serial'] / best[1]['serial']:.1f}x" if best else MISSING
-            rival = f"{best[0]} {best[1]['serial']:,.0f} MB/s" if best else MISSING
-            # A rival that took the file and then broke is worth naming here:
-            # "no rival" and "every rival crashed" are not the same result.
-            crashed = sorted(n for n, a in agg.items() if a is None)
-            if crashed:
-                rival = (rival + " " if best else "") + f"({BROKEN} {', '.join(crashed)})"
-            load = f"{mine['load_ms']:,.0f} ms"
-            if best:
-                load += f" vs {best[1]['load_ms']:,.0f}"
-            bpt = mine["bytes"] / mine["tokens"] if mine["tokens"] else 0
-            ahead = not best or mine["serial"] >= best[1]["serial"]
-            mbps = f"{mine['serial']:,.0f} MB/s"
-            print(
-                f"| {vocab}-{family} | {f'**{mbps}**' if ahead else mbps} | {rival} "
-                f"| {ratio} | {load} | {bpt:.2f} |"
-            )
+            label = f"{vocab}-{family}"
+            agg = {name: aggregate(recs) for name, recs in by_engine.items()}
+            aggregated[label] = agg
+            load_rows[label] = {
+                name: (BROKEN if a is None else a["load_ms"]) for name, a in agg.items()
+            }
+
+    def agg_table(title, key, unit, fmt, higher_is_better=True):  # noqa: FBT002
+        table(
+            title,
+            OrderedDict(
+                (label, {n: (BROKEN if a is None else a[key]) for n, a in agg.items()})
+                for label, agg in aggregated.items()
+            ),
+            columns,
+            unit,
+            higher_is_better=higher_is_better,
+            fmt=fmt,
+            ratio_against=ratio_against,
+        )
+
+    print(f"## Over all {len(corpora)} corpora\n")
+    agg_table("Single-text throughput (one thread)", "serial", "MB/s", "{:,.0f}")
+    agg_table("Batch throughput (all cores)", "par", "MB/s", "{:,.0f}")
+    table(
+        "Load time",
+        load_rows,
+        columns,
+        "ms",
+        higher_is_better=False,
+        fmt="{:,.0f}",
+        ratio_against=ratio_against,
+    )
 
     print(
-        "\nRatio is splintr over the fastest other engine that could load the same "
-        "file, so above 1.0x is splintr ahead and a row is bold only where it is. "
-        "Load is the one-off cost of building the tokenizer. `bytes/token` is the "
-        "vocabulary's compression on this text — identical across engines in a row, "
-        "since parity above says they produced the same ids, and there to show what "
-        "the throughput bought.\n"
+        f"\nBold is the best cell in its row. A `vs` column is splintr over that "
+        f"engine, so above 1.0x is splintr ahead. An empty cell is `{MISSING}` where "
+        f"the engine does not offer that shape at all — no such file is published, or "
+        f"its loader declined the one that is — and `{BROKEN}` where it accepted the "
+        f"vocabulary and then failed on the text.\n"
     )
     print(
-        f"An empty cell is `{MISSING}` where the engine does not offer that shape at "
-        f"all — no such file is published, or its loader declined the one that is — "
-        f"and `{BROKEN}` where it accepted the vocabulary and then failed on the "
-        "text. Both are reported rather than dropped: an engine missing from a row "
-        "is a fact about the engine, and the two facts are not the same one.\n"
+        "Throughput is aggregated by summing bytes and summing time, never by "
+        "averaging rates: the corpora differ in size, and a mean would weight a 1 MB "
+        "corpus like a 6 MB one. Load is the slowest of the runs, and is a one-off "
+        "cost paid per process rather than per encode.\n"
     )
 
     for family in ordered_families:
         if family in FAMILY_NOTES:
             print(f"{FAMILY_NOTES[family]}\n")
 
-    # --- detail -------------------------------------------------------------
-    print("<details>")
-    print(f"<summary>Every corpus and engine ({len(cells)} cells)</summary>\n")
-
     for corpus in corpora:
-        print(f"\n### {corpus}\n")
+        print(f"\n## {corpus}\n")
         rows = OrderedDict()
         for family in ordered_families:
             for vocab in vocabs:
@@ -280,24 +296,17 @@ def main():
                     rows[f"{vocab}-{family}"] = engines
         table(
             "Single-text throughput (one thread)",
-            OrderedDict((k, {n: cell(r, "serial_mbps") for n, r in v.items()}) for k, v in rows.items()),
-            columns,
-            "MB/s",
-            higher_is_better=True,
-            fmt="{:,.0f}",
+            matrix(rows, "serial_mbps"),
+            columns, "MB/s", higher_is_better=True, fmt="{:,.0f}",
             ratio_against=ratio_against,
         )
         table(
             "Batch throughput (all cores)",
-            OrderedDict((k, {n: cell(r, "par_mbps") for n, r in v.items()}) for k, v in rows.items()),
-            columns,
-            "MB/s",
-            higher_is_better=True,
-            fmt="{:,.0f}",
+            matrix(rows, "par_mbps"),
+            columns, "MB/s", higher_is_better=True, fmt="{:,.0f}",
             ratio_against=ratio_against,
         )
-
-    print("\n</details>\n")
+    print()
 
     borrowed = sorted(
         {

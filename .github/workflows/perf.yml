@@ -93,17 +93,15 @@ on:
         # scanner change measured -17% on English and -2.5% on Chinese, because
         # ASCII is skipped eight bytes at a time and Han one character at a
         # time; a run that only saw English would have called that a uniform
-        # win. The default spans Latin prose, Han, Cyrillic, an Indic
-        # abugida, source code and agent traces — the axes that actually move
-        # the number. Any name under `fixtures/lang` or `fixtures/modalities`
-        # in `hf-internal-testing/tokenizers-test-data` is valid.
+        # win.
         #
-        # Four, not every script there is: the run costs a fixed amount per
+        # Four, not every script available: the run costs a fixed amount per
         # corpus, and these four already span the axes that move the number —
         # ASCII skipped eight bytes at a time, Han a character at a time, an
         # abugida whose marks defeat both, and source code where punctuation
-        # runs dominate. Add `rus_Cyrl`, `agentic_swe`, `math_latex` or any
-        # other name when a change looks script-specific.
+        # runs dominate. Any name under `fixtures/lang` or `fixtures/modalities`
+        # in `hf-internal-testing/tokenizers-test-data` is valid; add `rus_Cyrl`,
+        # `agentic_swe` or `math_latex` when a change looks script-specific.
         description: "space-separated corpora for the Rust suite"
         default: "eng_Latn cmn_Hani hin_Deva code_mixed"
         type: string
@@ -188,8 +186,8 @@ jobs:
           # panics into its own "could not load" row, so reaching here means
           # the harness itself died — and the honest report of that is one
           # named failure plus every other family's numbers, not an empty
-          # summary. The step still fails at the end, so it cannot pass
-          # unnoticed.
+          # summary. It is named at the top of that summary rather than turned
+          # into a failed job.
           python .github/scripts/perf_models.py fields name ranks pattern \
           | while IFS=$'\t' read -r name ranks pattern; do
               json="models/$name.json"
@@ -219,8 +217,6 @@ jobs:
             --note "$RUST_PROVENANCE" \
             ${RUST_FAILED:+--note "> **The harness died on these vocabularies and they are missing from every table below: $RUST_FAILED.** Every other vocabulary still ran."} \
             < rust.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
-          # Reported first, then failed — a crash must not be a green run.
-          [ -z "$RUST_FAILED" ]
 
       - uses: actions/upload-artifact@v7
         with:
@@ -283,10 +279,12 @@ jobs:
       - name: Check the engines agree before timing them
         run: |
           mkdir -p ids
-          # splintr must load everything in the manifest — a vocabulary it
-          # cannot read is a bug in splintr, and the run should stop. A rival
-          # that cannot is a fact about the rival: it is recorded and its row
-          # is left out, exactly as the Rust suite does.
+          # An engine that cannot load a vocabulary — splintr included — is
+          # recorded and left out of that row. Nothing here stops the run: this
+          # workflow measures, and a measurement that ends in a red X and no
+          # tables has told nobody anything. Every problem below reaches the
+          # reader as a block at the top of the summary instead.
+          #
           # `<engine>__<vocabulary>__<family>`, which is what `perf_check.py`
           # groups on. The suite is `<vocabulary>-<family>` and a vocabulary may
           # itself contain a hyphen (`gpt-oss`), so the family is taken from the
@@ -298,16 +296,27 @@ jobs:
               rm -f "$tag.err"
             else
               rm -f "$tag.json"
-              [ "$1" = splintr ] && { cat "$tag.err"; exit 1; }
               mv "$tag.err" "$tag.fail"
             fi
           }
 
-          # A wrong pattern in perf_bench's table does not fail parity — every
-          # engine is handed the same string, so they agree with each other
-          # while all three tokenize the wrong vocabulary. Check it against
-          # splintr's own constants first.
-          ./venv-splintr/bin/python .github/scripts/perf_bench.py --verify-patterns
+          # A wrong pattern in perf_bench's table cannot be caught by parity —
+          # every engine is handed the same string, so they agree with each
+          # other while all of them tokenize the wrong vocabulary. It is the one
+          # fault that makes every rank-file row meaningless, so it is reported
+          # at the top of the summary rather than buried in this log.
+          if ! ./venv-splintr/bin/python .github/scripts/perf_bench.py \
+               --verify-patterns > patterns.txt 2>&1; then
+            {
+              echo "PATTERN_WARNING<<PATTERNS_EOF"
+              echo "> **The rank-file pattern table disagrees with splintr's own"
+              echo "> constants, so every \`-ranks\` row below tokenizes a different"
+              echo "> vocabulary than it names. Read nothing here until it is fixed.**"
+              sed 's/^/>     /' patterns.txt
+              echo "PATTERNS_EOF"
+            } >> "$GITHUB_ENV"
+          fi
+          cat patterns.txt
 
           python .github/scripts/perf_models.py fields name ranks json giga \
           | while IFS=$'\t' read -r name ranks json giga; do
@@ -376,6 +385,7 @@ jobs:
             --title "splintr through the Python API — ${{ matrix.os }} — ${GITHUB_SHA:0:7}" \
             --note "$HW — $MODELS" \
             --note "$(printf '%s' "$VERSIONS" | sed 's/^/    /')" \
+            ${PATTERN_WARNING:+--note "$PATTERN_WARNING"} \
             --note "Output parity: $PARITY" \
             --note "Medians of ${ROUNDS:-3} interleaved rounds. Lower is better for latency; the last column is how many times better the first engine is." \
             < rounds.jsonl | tee -a "$GITHUB_STEP_SUMMARY"

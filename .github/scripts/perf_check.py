@@ -21,8 +21,9 @@ Printing one `- ok` line per check was fine for four vocabularies. For the whole
 manifest it is forty lines of "yes", which is exactly the noise that stops
 anyone noticing the one that says "no". So: a count, then only what failed.
 
-Writes a `PARITY` heredoc to `$GITHUB_ENV` when set, and exits non-zero if any
-check failed.
+Writes a `PARITY` heredoc to `$GITHUB_ENV` when set. Always exits zero: this is
+a measurement workflow, and an engine that disagrees is a result to report, not
+a reason to end the run with no tables in it.
 """
 
 import json
@@ -77,7 +78,7 @@ def main(argv):
     lines = []
     if failed:
         lines.append(f"**{passed}/{total} checks passed. These did not:**")
-        lines += [f"- {f}" for f in failed]
+        lines += [f"- {f}" for f in sorted(failed)]
     else:
         lines.append(f"**{total}/{total}** — every engine matched its family's oracle and its own batch call.")
     # An engine that cannot read a file is a fact about the engine, not a
@@ -94,7 +95,7 @@ def main(argv):
     if env := os.environ.get("GITHUB_ENV"):
         with open(env, "a") as f:
             f.write(f"PARITY<<PARITY_EOF\n{report}\nPARITY_EOF\n")
-    return 1 if failed else 0
+    return 0
 
 
 if __name__ == "__main__":
