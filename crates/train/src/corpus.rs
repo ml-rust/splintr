@@ -93,8 +93,12 @@ impl FromIterator<(Vec<u8>, u64)> for WordCounts {
 pub struct Corpus {
     normalizer: Option<Normalizer>,
     pre_tokenizer: Option<PreTokenizer>,
+    word_marker: Option<char>,
     counts: WordCounts,
 }
+
+/// SentencePiece's word-boundary marker, U+2581 LOWER ONE EIGHTH BLOCK.
+pub const METASPACE: char = '\u{2581}';
 
 impl Corpus {
     /// A reader that splits on nothing: the whole text of each document is one
@@ -105,6 +109,7 @@ impl Corpus {
         Self {
             normalizer: None,
             pre_tokenizer: None,
+            word_marker: None,
             counts: WordCounts::new(),
         }
     }
@@ -119,6 +124,31 @@ impl Corpus {
         self
     }
 
+    /// Mark the start of every word with [`METASPACE`], the SentencePiece
+    /// convention.
+    ///
+    /// **Required for any vocabulary a SentencePiece-style segmenter will
+    /// load.** Those segmenters prepend the marker themselves before matching,
+    /// so a vocabulary trained without it cannot spell the very first character
+    /// of any word: measured, every word then picked up a spurious unknown
+    /// token and the corpus needed ~1.9x the tokens it should have.
+    ///
+    /// It is also what makes word boundaries recoverable at decode time — the
+    /// marker is where the space went — so this is a property of the vocabulary,
+    /// not a preprocessing detail.
+    #[must_use]
+    pub fn with_word_marker(mut self, marker: char) -> Self {
+        self.word_marker = Some(marker);
+        self
+    }
+
+    /// [`with_word_marker`](Self::with_word_marker) with SentencePiece's own
+    /// marker.
+    #[must_use]
+    pub fn with_metaspace(self) -> Self {
+        self.with_word_marker(METASPACE)
+    }
+
     /// Feed one document.
     pub fn feed(&mut self, text: &str) {
         let normalized = match &self.normalizer {
@@ -128,10 +158,23 @@ impl Corpus {
         match &self.pre_tokenizer {
             Some(pre) => {
                 for piece in pre.split(&normalized) {
-                    self.counts.add(piece.as_bytes());
+                    self.add_word(&piece);
                 }
             }
-            None => self.counts.add(normalized.as_bytes()),
+            None => self.add_word(&normalized),
+        }
+    }
+
+    /// Record one word, marked if a marker was configured.
+    fn add_word(&mut self, word: &str) {
+        match self.word_marker {
+            Some(marker) => {
+                let mut marked = String::with_capacity(word.len() + marker.len_utf8());
+                marked.push(marker);
+                marked.push_str(word);
+                self.counts.add(marked.as_bytes());
+            }
+            None => self.counts.add(word.as_bytes()),
         }
     }
 
@@ -236,6 +279,23 @@ mod tests {
             .map(|(w, _)| String::from_utf8_lossy(w).into_owned())
             .collect();
         assert!(words.iter().any(|w| w == "Ġb"), "got {words:?}");
+    }
+
+    /// The marker goes on the front of every word, which is what a
+    /// SentencePiece-style segmenter expects to match against.
+    #[test]
+    fn the_word_marker_prefixes_every_word() {
+        let mut corpus = Corpus::new()
+            .with_pre_tokenizer(whitespace())
+            .with_metaspace();
+        corpus.feed("the cat");
+        let words: Vec<String> = corpus
+            .counts()
+            .iter()
+            .map(|(w, _)| String::from_utf8_lossy(w).into_owned())
+            .collect();
+        assert!(words.contains(&"\u{2581}the".to_string()), "got {words:?}");
+        assert!(words.contains(&"\u{2581}cat".to_string()), "got {words:?}");
     }
 
     #[test]

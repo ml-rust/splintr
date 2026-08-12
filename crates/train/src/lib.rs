@@ -43,13 +43,15 @@
 pub(crate) mod bpe;
 mod corpus;
 mod error;
+mod unigram;
 mod vocab;
 mod wordpiece;
 pub mod write;
 
 pub use bpe::{BpeTrainer, BpeTrainerBuilder, Criterion};
-pub use corpus::{Corpus, WordCounts};
+pub use corpus::{Corpus, WordCounts, METASPACE};
 pub use error::TrainError;
+pub use unigram::{UnigramTrainer, UnigramTrainerBuilder, UnigramVocab};
 pub use vocab::{Seeding, TrainedVocab};
 pub use wordpiece::{
     Prune, WordPieceTrainer, WordPieceTrainerBuilder, WordPieceVocab, DEFAULT_CONTINUING_PREFIX,
