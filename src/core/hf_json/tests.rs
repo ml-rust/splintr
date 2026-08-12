@@ -939,7 +939,7 @@ fn added_token_id_disagreeing_with_the_vocab_id_errors() {
 
 /// Builds the 256 `"<0xNN>": id` vocab entries (uppercase hex, ids starting at
 /// `start_id`) that spell a *complete* byte-fallback set. A complete set is no
-/// longer required — `byte_fallback_from_encoder` keeps a partial one — but it
+/// longer required — `byte_fallback_from` keeps a partial one — but it
 /// is what the real full-coverage vocabularies (mistral-7b, embeddinggemma)
 /// declare, so the tests that pin their behavior need all 256 spelled exactly
 /// right, which is easier to get right here than in a literal JSON blob.
@@ -1293,6 +1293,46 @@ fn merges_over_byte_fallback_tokens_fire_as_huggingface_orders_them() {
     assert_eq!(t.encode("az"), vec![5]);
     assert_eq!(t.encode("zz"), vec![6]);
     assert_eq!(t.encode("zbz"), vec![4, 3]);
+}
+
+/// A `<0xNN>` piece is emitted for the BYTE it denotes and never for its own
+/// literal spelling, which BPE merges like any other characters.
+///
+/// The two roles used to be conflated: the piece sat in the encode table, so the
+/// whole-chunk lookup answered the text `<0x7A>` with that one id where
+/// HuggingFace spells it out as six. That is 256 wrong id vectors per
+/// byte-fallback vocabulary — 512 across the corpus. The encode table now
+/// declines the pieces, and the fallback table is built from the whole
+/// vocabulary instead of from the encode table, which is what kept them
+/// resolvable for the byte.
+///
+/// **Every expected id vector below was produced by the HuggingFace
+/// `tokenizers` crate (0.23.2-dev) loading this exact JSON document.** Note
+/// `<0x61>`: `a` IS in the vocabulary, so `0x61` never needs the fallback, and
+/// its spelling's `6`/`1` characters are not — those become `<unk>`, id 0.
+#[test]
+fn a_byte_fallback_piece_is_not_encodable_from_its_own_spelling() {
+    let json = r#"{
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "a": 1, "<": 2, "0": 3, "x": 4, "7": 5, "A": 6,
+                ">": 7, "<0x7A>": 8, "<0x61>": 9, "ax": 10},
+            "merges": [["a", "x"]]}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    // `z` is 0x7A and has no vocabulary entry, so the fallback resolves it —
+    // which is the piece's whole purpose and still works.
+    assert_eq!(t.encode("z"), vec![8]);
+    assert_eq!(t.encode("az"), vec![1, 8]);
+    // Its literal spelling is six ordinary characters.
+    assert_eq!(t.encode("<0x7A>"), vec![2, 3, 4, 5, 6, 7]);
+    assert_eq!(t.encode("<0x61>"), vec![2, 3, 4, 0, 0, 7]);
+    // Both pieces still decode to the bytes they denote.
+    assert_eq!(t.decode(&[8]).expect("decodes"), "z");
 }
 
 /// D23: a `<0xNN>` id decodes to the byte it denotes, so the bare BPE backend

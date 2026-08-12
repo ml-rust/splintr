@@ -22,6 +22,14 @@ use crate::core::encoder::Encoder;
 /// `merged` holds the already-concatenated result of each merge, in list order.
 /// `vocab_in_id_order` yields every vocabulary token, lowest id first, so the
 /// base ranks are deterministic.
+///
+/// Keyed by the bytes a merge produces, where HuggingFace keys by the pair it
+/// joins — so given only `ab ++ c`, this map also merges `a ++ bc`. A trained
+/// vocabulary cannot tell the difference: a merge ranks above its own operands,
+/// so building `bc` would have needed a lower-ranked merge across the `ab|c`
+/// boundary, which would then have fired while `abc` was being built. Probed
+/// over the 85,022 Qwen 3 entries where the split is ambiguous, plus four other
+/// vocabularies: no divergence.
 pub(crate) fn merge_ranks<'a>(
     merged: Vec<String>,
     vocab_in_id_order: impl Iterator<Item = &'a str>,

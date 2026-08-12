@@ -570,11 +570,17 @@ pub fn orphan_ids(
         reachable.insert(rule.result, rule.split);
     }
     let unreachable = |bytes: &[u8]| -> bool {
-        // A one-symbol entry is what seeding starts from, and a `<0xNN>` piece
-        // is how byte fallback spells a raw byte; neither is ever dropped.
-        if is_byte_fallback_piece(bytes) || bytes.iter().filter(|b| !is_utf8_tail(**b)).count() <= 1
-        {
+        // A one-symbol entry is what seeding starts from, and is never dropped.
+        if bytes.iter().filter(|b| !is_utf8_tail(**b)).count() <= 1 {
             return false;
+        }
+        // A `<0xNN>` piece is reachable only through byte-fallback resolution,
+        // which emits it by id from a table built off the whole vocabulary.
+        // From its own literal spelling it is six characters that merge like
+        // any others, so the encode table must decline it — `<0x1D>` typed as
+        // text is what HuggingFace spells out.
+        if is_byte_fallback_piece(bytes) {
+            return true;
         }
         let Some(&split) = reachable.get(bytes) else {
             return true;

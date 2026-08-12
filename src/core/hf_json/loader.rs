@@ -366,8 +366,15 @@ fn build_bpe(
     if pre.byte_level {
         raw_encoder.reserve(vocab.len());
     }
+    // The id each `<0xNN>` piece carries, for the byte fallback built below. It
+    // reads the whole vocabulary rather than the encode table, which declines
+    // those pieces, and collecting it here keeps that to no extra pass.
+    let mut fallback_ids: [Option<u32>; 256] = [None; 256];
     for (token, id) in vocab {
         let (token, id) = (token.as_ref(), *id);
+        if let Some(byte) = byte_fallback_byte(token.as_bytes()) {
+            fallback_ids[byte as usize].get_or_insert(id);
+        }
         // A vocab entry that is ALSO declared in `added_tokens` is spelled
         // literally, not byte-level-encoded: HuggingFace matches added tokens
         // against the raw text *before* the model runs, so their vocab spelling
@@ -493,7 +500,7 @@ fn build_bpe(
     // declares an unk without the flag.
     //
     // Neither half being present is still not an error: with nothing to fall
-    // back to, `byte_fallback_from_encoder` yields `None` and the
+    // back to, `byte_fallback_from` yields `None` and the
     // unrepresentable piece is dropped, exactly as HF does.
     let declares_byte_fallback = model
         .get("byte_fallback")
@@ -522,8 +529,19 @@ fn build_bpe(
         .get("fuse_unk")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // From the whole vocabulary, not from `encoder`: a `<0xNN>` piece is not
+    // encodable from its own literal spelling, so the encode table declines it,
+    // and the fallback still has to emit it for the raw byte it denotes.
+    // `fallback_ids` was collected in the vocabulary pass above, which is the
+    // only walk of it this loader makes.
     let byte_fallback = (!is_byte_level)
-        .then(|| Tokenizer::byte_fallback_from_encoder(&encoder, unk_id, declares_byte_fallback))
+        .then(|| {
+            Tokenizer::byte_fallback_from(
+                |spelling| byte_fallback_byte(spelling).and_then(|b| fallback_ids[b as usize]),
+                unk_id,
+                declares_byte_fallback,
+            )
+        })
         .flatten()
         .map(|bf| bf.with_fuse_unk(fuse_unk));
 
@@ -667,6 +685,22 @@ fn parse_merge_rules(merges: Option<&RawValue>) -> Option<Vec<(String, usize)>> 
 /// vocabulary entry would be simulating a word that model never builds; CLIP is
 /// the only such vocabulary in the corpus and is verified id-for-id under the
 /// name test.
+/// The raw byte a `<0xNN>` piece denotes, or `None` when it is not one.
+///
+/// Upper-case hex only, which is the spelling SentencePiece writes and the one
+/// `ByteFallback` resolution matches elsewhere in the crate.
+fn byte_fallback_byte(token: &[u8]) -> Option<u8> {
+    let [b'<', b'0', b'x', hi, lo, b'>'] = token else {
+        return None;
+    };
+    let digit = |b: &u8| {
+        (*b as char)
+            .to_digit(16)
+            .filter(|_| !b.is_ascii_lowercase())
+    };
+    Some((digit(hi)? * 16 + digit(lo)?) as u8)
+}
+
 /// Vocabulary size at which the reachability pass is worth a thread pool.
 /// Below it the whole pass is a few milliseconds and rayon's spin-up is not.
 #[cfg(feature = "rayon")]
@@ -708,10 +742,15 @@ fn unreachable_tokens<'v>(
     }
 
     let is_unreachable = |token: &&'v str| -> bool {
-        if is_seed_spelling(token, suffix)
-            || super::super::vocab::is_byte_fallback_piece(token.as_bytes())
-        {
+        if is_seed_spelling(token, suffix) {
             return false;
+        }
+        // A `<0xNN>` piece is reachable only through byte-fallback resolution,
+        // which emits it by id. From its own literal spelling it is six
+        // characters that merge like any others, so the encode table must
+        // decline it — `<0x1D>` typed as text is what HuggingFace spells out.
+        if super::super::vocab::is_byte_fallback_piece(token.as_bytes()) {
+            return ranks.is_some();
         }
         let Some(ranks) = ranks else {
             return !named.contains(*token);

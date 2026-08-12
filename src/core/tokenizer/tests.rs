@@ -945,8 +945,8 @@ fn byte_fallback_tokenizer() -> Tokenizer {
         encoder.insert(format!("<0x{b:02X}>").into_bytes(), 10 + i as u32);
     }
 
-    let byte_fallback = Tokenizer::byte_fallback_from_encoder(
-        &crate::core::encoder::encoder_from_owned(encoder.clone()),
+    let byte_fallback = Tokenizer::byte_fallback_from(
+        |spelling| crate::core::encoder::encoder_from_owned(encoder.clone()).get(spelling),
         None,
         true,
     );

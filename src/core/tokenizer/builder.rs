@@ -738,8 +738,17 @@ impl Tokenizer {
     /// consults them only under the flag — while `unk_id` still applies, since
     /// the unk branch is not gated on the flag at all (measured against
     /// `tokenizers` 0.22.1; see `build_bpe` in `src/core/hf_json/loader.rs`).
-    pub(crate) fn byte_fallback_from_encoder(
-        encoder: &Encoder,
+    /// The `<0xNN>` table, over any way of resolving one of those spellings to
+    /// its id.
+    ///
+    /// Deliberately not "from the encode table". A `<0xNN>` piece is not
+    /// encodable from its own literal spelling — HuggingFace spells `<0x1D>`
+    /// out as characters, and an encode table holding it would answer with one
+    /// id where BPE gives six — so the encode table declines it, while the
+    /// fallback still has to emit it for the raw byte `0x1D`. The two roles are
+    /// separate and so are their sources: callers pass the whole vocabulary.
+    pub(crate) fn byte_fallback_from(
+        id_of: impl Fn(&[u8]) -> Option<u32>,
         unk_id: Option<u32>,
         declares_byte_fallback: bool,
     ) -> Option<ByteFallback> {
@@ -747,7 +756,7 @@ impl Tokenizer {
         let mut any = false;
         if declares_byte_fallback {
             for (b, slot) in byte_ids.iter_mut().enumerate() {
-                *slot = encoder.get(format!("<0x{b:02X}>").as_bytes());
+                *slot = id_of(format!("<0x{b:02X}>").as_bytes());
                 any |= slot.is_some();
             }
         }

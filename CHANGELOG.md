@@ -11,6 +11,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 ### Fixed
 
 - A vocabulary entry the merge list names but the merge ORDER never reaches is no longer encodable, so it cannot answer with one id where BPE gives several. Gemma 4 had four (`▁yyyy`, `▁YYYY`, `▁diffformul`, `▁::::::::`) and NLLB-200 one.
+- A `<0xNN>` byte-fallback piece is no longer encodable from its own literal spelling: the text `<0x1D>` is six characters that merge like any others. It is still emitted for the byte it denotes.
 
 ### Changed
 
