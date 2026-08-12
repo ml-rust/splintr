@@ -81,10 +81,35 @@ impl Tokenizer {
     /// its spans are byte-identical to before.
     #[inline]
     pub(in crate::core::tokenizer) fn split_chunks(&self, text: &str) -> Vec<(usize, usize)> {
+        if self.splits_nothing() {
+            return match text.is_empty() {
+                true => Vec::new(),
+                false => vec![(0, text.len())],
+            };
+        }
         if self.chain.is_empty() {
             return self.regex.find_iter(text);
         }
         self.split_chunks_chained(text)
+    }
+
+    /// Whether this tokenizer's pre-tokenization yields the whole text as one
+    /// span, so the matcher need not be run to discover it.
+    ///
+    /// [`NO_SPLIT_PATTERN`] is `[\s\S]+`: greedy, newline-inclusive, and
+    /// therefore one match covering every byte of any non-empty input — by
+    /// construction, not by luck. Running a DFA over a document to be told that
+    /// was **8.7% of the instructions** on Llama 2 and Code Llama, which declare
+    /// no pre-tokenizer at all, and on bundled Gemma 4, which names this pattern
+    /// outright. Empty input matches nothing and yields no span, which is what
+    /// the matcher does too.
+    ///
+    /// A chained pre-tokenizer is excluded: later passes cut the first pass's
+    /// spans, so the whole-text span is where their work begins rather than the
+    /// answer.
+    #[inline]
+    fn splits_nothing(&self) -> bool {
+        self.chain.is_empty() && self.pattern == crate::core::tokenizer::patterns::NO_SPLIT_PATTERN
     }
 
     /// [`Tokenizer::split_chunks`] appending into a caller-owned buffer, so the
@@ -101,6 +126,12 @@ impl Tokenizer {
         text: &str,
         out: &mut Vec<(usize, usize)>,
     ) {
+        if self.splits_nothing() {
+            if !text.is_empty() {
+                out.push((0, text.len()));
+            }
+            return;
+        }
         if self.chain.is_empty() {
             self.regex.find_into(text, out);
             return;

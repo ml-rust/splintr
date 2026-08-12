@@ -117,10 +117,25 @@ impl NormOp {
                 }
             }
             NormOp::ReplaceStr { from, to } => {
-                if from.is_empty() || !s.contains(from.as_str()) {
-                    s
-                } else {
-                    Cow::Owned(s.replace(from.as_str(), to))
+                // A one-character needle searches as a `char` rather than as a
+                // `&str`. The two find the same occurrences, but `&str` goes
+                // through the two-way string searcher while `char` reduces to a
+                // memchr scan — and this op is `Replace " " -> "▁"`, the whole
+                // of the metaspace transform, run over every byte of input on
+                // the Llama 2 and Gemma pipelines. Two-way search over the
+                // document was ~9% of their profile, and the pattern is one
+                // ASCII byte.
+                let mut chars = from.chars();
+                match (chars.next(), chars.next()) {
+                    (None, _) => s,
+                    (Some(c), None) => match s.contains(c) {
+                        false => s,
+                        true => Cow::Owned(s.replace(c, to)),
+                    },
+                    _ => match s.contains(from.as_str()) {
+                        false => s,
+                        true => Cow::Owned(s.replace(from.as_str(), to)),
+                    },
                 }
             }
             NormOp::ReplaceRegex { re, to } => match re.replace_all(&s, to) {
