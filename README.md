@@ -71,7 +71,7 @@ Tokenization sits on the hot path of every LLM application — prompts, training
 
 ## Performance
 
-Batch encoding parallelizes across texts, which is where the gap is widest — and it widens with batch size, as the fixed cost of spinning up the pool is amortized over more work:
+Batch encoding parallelizes across texts, which is where the gap is widest. It opens as soon as there is more than one text to spread across cores — a single text has no parallelism to find — and holds from there:
 
 ![Batch Encoding Throughput](images/benchmark_batch.png)
 
@@ -79,26 +79,33 @@ Single texts stay on the sequential path, and still lead across every content ty
 
 ![Single Text Encoding Throughput](images/benchmark_single.png)
 
-Call it **~20x tiktoken on batches, ~5x on single texts**. The ballpark holds across machines; the exact figure does not, since absolute throughput moves with hardware, CPU architecture and the versions compared against.
+Call it **~18x tiktoken and ~5x HuggingFace on batches, ~10x and ~35x on single texts**. The ballpark holds across machines; the exact figure does not, since absolute throughput moves with hardware, CPU architecture and the versions compared against.
 
-The table below is a separate, more recent run than the charts — AMD Ryzen 9 5900X (24 cores, Linux), CPython 3.12, tiktoken 0.13.0, medians of three interleaved rounds. Where it disagrees with the charts, which were plotted on different hardware against older versions, the table is the measured one.
+Both charts and both tables come from one run of `benchmarks/benchmark_batch.py` and `benchmark_single.py`, so they agree with each other. Pinned to what it measured: **splintr 0.19.1, tiktoken 0.13.0, tokenizers 0.23.1**, CPython 3.12.7, AMD Ryzen 9 5900X (12 cores / 24 threads, Linux), idle machine. `benchmarks/requirements.txt` pins the reference libraries so a re-run measures the same comparison.
 
-Against `tiktoken`, each library loading `cl100k_base` through its own loader:
+Every engine encodes **`cl100k_base`**, each through its own `from_pretrained`: splintr from its bundled copy, tiktoken from its cached ranks file, HuggingFace from `Xenova/gpt-4` — that same vocabulary published as a `tokenizer.json`. Loading happens once before the clock starts, so which loader each library uses does not enter these numbers; splintr's packed-binary load is a separate claim, measured separately. Both scripts refuse to report a timing until all three agree on ids, so what is charted is one workload rather than three.
 
-| Batch       | Splintr        | tiktoken | vs tiktoken |
-| ----------- | -------------- | -------- | ----------- |
-| 1,000 texts | **104.8 MB/s** | 5.1 MB/s | 20.4x       |
-| 500 texts   | **93.7 MB/s**  | 4.5 MB/s | 21.0x       |
-| 100 texts   | **56.0 MB/s**  | 2.3 MB/s | 24.8x       |
-| Single text | **1.27 ms**    | 6.36 ms  | 5.0x        |
+| Batch       | Splintr        | tiktoken  | HF `tokenizers` | vs tiktoken | vs HF |
+| ----------- | -------------- | --------- | --------------- | ----------- | ----- |
+| 1,000 texts | **170.0 MB/s** | 9.5 MB/s  | 34.3 MB/s       | 18.0x       | 5.0x  |
+| 500 texts   | **170.7 MB/s** | 10.1 MB/s | 33.2 MB/s       | 16.9x       | 5.1x  |
+| 100 texts   | **148.3 MB/s** | 6.9 MB/s  | 26.9 MB/s       | 21.6x       | 5.5x  |
+
+Single texts, sequential path, three content types:
+
+| Text         | Splintr      | tiktoken | HF `tokenizers` | vs tiktoken | vs HF |
+| ------------ | ------------ | -------- | --------------- | ----------- | ----- |
+| 29 KB prose  | **0.152 ms** | 1.639 ms | 5.346 ms        | 10.8x       | 35.2x |
+| 8.9 KB code  | **0.058 ms** | 0.718 ms | 1.888 ms        | 12.4x       | 32.5x |
+| 9.6 KB mixed | **0.080 ms** | 0.577 ms | 1.582 ms        | 7.2x        | 19.8x |
 
 Against the other Rust tokenizers, every engine loading the **same** `tokenizer.json` — no loader asymmetry to argue about:
 
 | Axis            | vs HF `tokenizers`  | vs `gigatoken`                                          |
 | --------------- | ------------------- | ------------------------------------------------------- |
 | Vocabulary load | **Splintr** (~1.5x) | **Splintr** (2-4x)                                      |
-| Single text     | **Splintr** (~20x)  | **Splintr** on x86-64 (~1.5x), **tie** on Apple Silicon |
-| Batch           | **Splintr** (~10x)  | **Toss-up** — either engine, ±20% each way              |
+| Single text     | **Splintr** (~35x)  | **Splintr** on x86-64 (~1.5x), **tie** on Apple Silicon |
+| Batch           | **Splintr** (~5x)   | **Toss-up** — either engine, ±20% each way              |
 
 On `gigatoken` specifically — the other fast Rust tokenizer with Python bindings, and in the same class:
 
