@@ -1,0 +1,44 @@
+# The training half of splintr, kept out of the tokenizer crate on purpose.
+#
+# Nothing here is needed to *use* a tokenizer, and the root package fought its
+# way under the crates.io size ceiling once already (see the note at the top of
+# its manifest). A consumer that loads a vocabulary and encodes text should not
+# download a corpus reader, a merge-loop heap or a JSON writer to do it.
+#
+# The reference implementation reached the same split for the same reason:
+# HuggingFace's `tk-train` sits beside `tk-encode` rather than inside it, "so
+# that tk-encode (inference) carries no training-related coupling".
+[package]
+name = "splintr-train"
+version = "0.1.0"
+edition = "2021"
+description = "Tokenizer training for splintr: BPE, WordPiece and Unigram"
+license = "MIT"
+repository = "https://github.com/ml-rust/splintr"
+homepage = "https://github.com/ml-rust/splintr"
+keywords = ["tokenizer", "bpe", "training", "nlp", "llm"]
+categories = ["text-processing"]
+
+[dependencies]
+# Default features off: training needs the normalizer and pre-tokenizer, not a
+# bundled vocabulary or a JIT regex backend. `rayon` is re-enabled through this
+# crate's own feature so the two stay in step.
+splintr = { path = "../..", version = "0.19.1", default-features = false }
+rustc-hash = "2.0"
+thiserror = "2.0"
+# `.tiktoken` is base64(token bytes) per line.
+base64 = "0.22"
+# `tokenizer.json` output.
+serde_json = "1.0"
+rayon = { version = "1.10", optional = true }
+
+[features]
+default = ["rayon"]
+rayon = ["dep:rayon", "splintr/rayon"]
+
+[dev-dependencies]
+tempfile = "3.10"
+# The round-trip tests load a trained vocabulary back through splintr's own
+# `.tiktoken` loader, which needs a regex backend the default-features-off
+# dependency above deliberately omits.
+splintr = { path = "../..", features = ["regexr-jit"] }

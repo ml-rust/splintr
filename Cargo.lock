@@ -1371,6 +1371,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "splintr-train"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "rayon",
+ "rustc-hash",
+ "serde_json",
+ "splintr",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "splintr-vocab-cl100k"
 version = "1.0.0"
 dependencies = [
