@@ -1,7 +1,7 @@
 //! Tokenizer training for splintr.
 //!
 //! Produces vocabularies that splintr loads: a trainer emits a
-//! [`TrainedVocab`], and the writers in [`write`] state it as a `.tiktoken` rank
+//! [`TrainedVocab`], and the writers in [`mod@write`] state it as a `.tiktoken` rank
 //! file or a HuggingFace `tokenizer.json`.
 //!
 //! # Why this is a separate crate
@@ -40,13 +40,17 @@
 //! The pre-tokenizer is splintr's own, so the boundaries the vocabulary is
 //! trained on are the boundaries it will later be encoded against.
 
-mod bpe;
+pub(crate) mod bpe;
 mod corpus;
 mod error;
 mod vocab;
+mod wordpiece;
 pub mod write;
 
-pub use bpe::{BpeTrainer, BpeTrainerBuilder};
+pub use bpe::{BpeTrainer, BpeTrainerBuilder, Criterion};
 pub use corpus::{Corpus, WordCounts};
 pub use error::TrainError;
 pub use vocab::{Seeding, TrainedVocab};
+pub use wordpiece::{
+    Prune, WordPieceTrainer, WordPieceTrainerBuilder, WordPieceVocab, DEFAULT_CONTINUING_PREFIX,
+};
