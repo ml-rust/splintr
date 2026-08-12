@@ -26,13 +26,10 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-    # proc-macro-error2 is unmaintained. It reaches us only through
-    # `dynasm`, regexr's JIT code generator, and only as a build-time proc
-    # macro: nothing it contains is compiled into the shipped library, and it
-    # never sees input from a caller. Revisit when dynasm drops it.
-    "RUSTSEC-2026-0173",
-]
+# Empty, and kept that way: the `RUSTSEC-2026-0173` entry that used to sit here
+# covered proc-macro-error2, which `dynasm` no longer pulls in — cargo-deny
+# reports an ignore that matches nothing, so a stale entry cannot rot quietly.
+ignore = []
 
 # ────────────────────────────────────────────────────────────────────────
 # Licenses — allow-list. Anything not on this list fails CI. splintr ships
@@ -51,8 +48,53 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "MPL-2.0", # weak-copyleft at file level; fine for libraries we link
+    # The bundled vocabularies carry their model's licence, and four of those
+    # are vendor terms with no SPDX identifier. Each reaches a consumer only
+    # through the opt-in `vocab-*` feature that pulls its crate in, and each
+    # carries restrictions an MIT/Apache tree does not — so they are named
+    # individually here rather than waved through.
+    "LicenseRef-Gemma-Terms-of-Use",  # use restrictions, Gemma 2 and 3
+    "LicenseRef-Llama-2-Community",   # use restrictions + 700M MAU clause
+    "LicenseRef-Llama-3.1-Community", # as above, Llama 3.1's own text
+    "LicenseRef-Kimi-Modified-MIT",   # MIT plus a display-attribution clause
 ]
 confidence-threshold = 0.93
+
+# Crates whose licence has no SPDX identifier, so cargo-deny cannot read one
+# off the file. Each is pinned to the exact file it was reviewed against: change
+# the LICENSE and the hash stops matching, which is the point.
+#
+# Gemma 4 is absent deliberately — it is Apache-2.0 and declares it in
+# `license`, so nothing here has to speak for it.
+
+[[licenses.clarify]]
+crate = "splintr-vocab-gemma2"
+expression = "LicenseRef-Gemma-Terms-of-Use"
+license-files = [{ path = "LICENSE", hash = 0x69a2b43e }]
+
+[[licenses.clarify]]
+crate = "splintr-vocab-gemma3"
+expression = "LicenseRef-Gemma-Terms-of-Use"
+license-files = [{ path = "LICENSE", hash = 0x69a2b43e }]
+
+[[licenses.clarify]]
+crate = "splintr-vocab-llama2"
+expression = "LicenseRef-Llama-2-Community"
+license-files = [{ path = "LICENSE", hash = 0x96b4d1c8 }]
+
+[[licenses.clarify]]
+crate = "splintr-vocab-llama3"
+expression = "LicenseRef-Llama-3.1-Community"
+license-files = [{ path = "LICENSE", hash = 0xbb3fc207 }]
+
+# Not plain MIT, and not claimed as such: Moonshot's text adds a requirement to
+# display "Kimi K2" in any product above 100M monthly active users or $20M
+# monthly revenue. cargo-deny reads it as MIT at 0.84 confidence, under this
+# file's 0.93 threshold — correctly, because it is not MIT.
+[[licenses.clarify]]
+crate = "splintr-vocab-kimi"
+expression = "LicenseRef-Kimi-Modified-MIT"
+license-files = [{ path = "LICENSE", hash = 0x9285d303 }]
 
 # ────────────────────────────────────────────────────────────────────────
 [bans]
