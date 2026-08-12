@@ -339,7 +339,9 @@ impl BpeTrainer {
         let criterion = self.criterion;
 
         let mut queue: BinaryHeap<Candidate> = BinaryHeap::with_capacity(pairs.len());
-        for (&pair, state) in pairs.iter_mut() {
+        let Pairs { index, states } = &mut pairs;
+        for (&pair, &at) in index.iter() {
+            let state = states.get_mut(at);
             if state.count > 0 {
                 let score = criterion.score(pair, state.count, &symbol_counts, total);
                 queue.push(Candidate {
@@ -378,17 +380,17 @@ impl BpeTrainer {
             // this pair's count — so checking the count would let a stale
             // ordering through. Recomputing from live counts is exact and
             // deterministic: unchanged inputs give a bit-identical score.
-            let live = pairs.get(&top.pair).map_or(0, |state| state.count);
+            let live = pairs.get(top.pair).map_or(0, |state| state.count);
             let live_score = criterion.score(top.pair, live, &symbol_counts, total);
             if live != top.count as i64 || live_score != top.score {
                 if live > 0 {
                     top.count = live as u64;
                     top.score = live_score;
-                    if let Some(state) = pairs.get_mut(&top.pair) {
+                    if let Some(state) = pairs.get_mut(top.pair) {
                         state.queued = live_score;
                     }
                     queue.push(top);
-                } else if let Some(state) = pairs.get_mut(&top.pair) {
+                } else if let Some(state) = pairs.get_mut(top.pair) {
                     state.queued = f64::NEG_INFINITY;
                 }
                 continue;
@@ -414,7 +416,7 @@ impl BpeTrainer {
                 // occurs in the corpus though, so it is flagged rather than
                 // dropped — its word list has to survive, since a zero count
                 // otherwise means "occurs nowhere" and licenses reclaiming it.
-                if let Some(state) = pairs.get_mut(&top.pair) {
+                if let Some(state) = pairs.get_mut(top.pair) {
                     state.count = 0;
                     state.queued = f64::NEG_INFINITY;
                     state.blocked = true;
@@ -432,7 +434,7 @@ impl BpeTrainer {
             // list of those words is taken rather than borrowed — the merge
             // writes new positions back into the map as it goes.
             let words_with = pairs
-                .remove(&top.pair)
+                .remove(top.pair)
                 .map(|state| state.words)
                 .unwrap_or_default();
 
@@ -452,7 +454,7 @@ impl BpeTrainer {
                 let frequency = frequencies[index as usize] as i64;
                 rewritten += merged as i64 * frequency;
                 for &(pair, delta) in &changes {
-                    let state = pairs.entry(pair).or_default();
+                    let state = pairs.entry(pair);
                     state.count += delta * frequency;
                     // Gained by any word here means the pair must compete again;
                     // touched at all means its count may have reached zero.
@@ -478,7 +480,7 @@ impl BpeTrainer {
             total -= rewritten;
 
             for &pair in &touched {
-                let Some(state) = pairs.get_mut(&pair) else {
+                let Some(state) = pairs.get_mut(pair) else {
                     continue;
                 };
                 let (count, gained) = (state.count, state.gained);
@@ -488,7 +490,7 @@ impl BpeTrainer {
                     // No occurrence left anywhere, so nothing needs to remember
                     // where it used to be. Should it ever come back, every
                     // occurrence will be a new one and recorded as such.
-                    pairs.remove(&pair);
+                    pairs.remove(pair);
                 } else if count > 0 && gained {
                     let score = criterion.score(pair, count, &symbol_counts, total);
                     // Only if this beats what the pair already has waiting. A
@@ -524,7 +526,9 @@ impl BpeTrainer {
 
             if queue.len() > 2 * pairs.len().max(1024) {
                 let mut fresh: BinaryHeap<Candidate> = BinaryHeap::with_capacity(pairs.len());
-                for (&pair, state) in pairs.iter_mut() {
+                let Pairs { index, states } = &mut pairs;
+                for (&pair, &at) in index.iter() {
+                    let state = states.get_mut(at);
                     if state.count > 0 {
                         let score = criterion.score(pair, state.count, &symbol_counts, total);
                         fresh.push(Candidate {
@@ -782,7 +786,114 @@ impl Default for PairState {
     }
 }
 
-type Pairs = FxHashMap<(u32, u32), PairState>;
+/// States per page. At 64 KiB entries a page is a few megabytes, so growth is
+/// granular enough to waste nothing and coarse enough that the page list stays
+/// short.
+const PAIR_PAGE_SHIFT: usize = 16;
+const PAIR_PAGE: usize = 1 << PAIR_PAGE_SHIFT;
+
+/// Every pair's state, addressed by a dense index.
+///
+/// The states sit in fixed-size pages that are never reallocated, and the map
+/// from pair to state holds a four-byte index rather than the state itself.
+/// Both halves of that matter at scale. A map holding the states outright
+/// doubles its table when it fills, and since its capacity is a power of two
+/// that means allocating a second table two thirds the size of everything
+/// already there and copying into it — measured on a gigabyte of text as the
+/// single largest spike of a training run, larger than the corpus itself.
+/// Paged states never move, and an index of four-byte values is small enough
+/// that its own doubling barely registers.
+#[derive(Debug, Default)]
+struct StateArena {
+    pages: Vec<Box<[PairState]>>,
+    /// The first index never yet handed out.
+    next: usize,
+    /// Indices returned by removed pairs, reused before `next` advances.
+    free: Vec<u32>,
+}
+
+impl StateArena {
+    fn get(&self, index: u32) -> &PairState {
+        &self.pages[index as usize >> PAIR_PAGE_SHIFT][index as usize & (PAIR_PAGE - 1)]
+    }
+
+    fn get_mut(&mut self, index: u32) -> &mut PairState {
+        &mut self.pages[index as usize >> PAIR_PAGE_SHIFT][index as usize & (PAIR_PAGE - 1)]
+    }
+
+    /// A fresh, default state, reusing a removed slot when one is going spare.
+    fn alloc(&mut self) -> u32 {
+        if let Some(index) = self.free.pop() {
+            *self.get_mut(index) = PairState::default();
+            return index;
+        }
+        if self.next >> PAIR_PAGE_SHIFT == self.pages.len() {
+            self.pages
+                .push(vec![PairState::default(); PAIR_PAGE].into_boxed_slice());
+        }
+        let index = self.next as u32;
+        self.next += 1;
+        index
+    }
+
+    /// Take a state's contents and return its slot to the free list.
+    fn release(&mut self, index: u32) -> PairState {
+        let state = std::mem::take(self.get_mut(index));
+        self.free.push(index);
+        state
+    }
+}
+
+/// The pairs currently live, and what is known about each.
+#[derive(Debug, Default)]
+struct Pairs {
+    index: FxHashMap<(u32, u32), u32>,
+    states: StateArena,
+}
+
+impl Pairs {
+    fn with_capacity(pairs: usize) -> Self {
+        Self {
+            index: FxHashMap::with_capacity_and_hasher(pairs, <_>::default()),
+            states: StateArena::default(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    fn get(&self, pair: (u32, u32)) -> Option<&PairState> {
+        self.index.get(&pair).map(|&index| self.states.get(index))
+    }
+
+    fn get_mut(&mut self, pair: (u32, u32)) -> Option<&mut PairState> {
+        let index = *self.index.get(&pair)?;
+        Some(self.states.get_mut(index))
+    }
+
+    /// The pair's state, created empty if it has none.
+    fn entry(&mut self, pair: (u32, u32)) -> &mut PairState {
+        let index = match self.index.get(&pair) {
+            Some(&index) => index,
+            None => {
+                let index = self.states.alloc();
+                self.index.insert(pair, index);
+                index
+            }
+        };
+        self.states.get_mut(index)
+    }
+
+    fn insert(&mut self, pair: (u32, u32), state: PairState) {
+        *self.entry(pair) = state;
+    }
+
+    fn remove(&mut self, pair: (u32, u32)) -> Option<PairState> {
+        let index = self.index.remove(&pair)?;
+        Some(self.states.release(index))
+    }
+}
 
 /// What one pass over the corpus learns about a pair before its word list is
 /// sized.
@@ -818,7 +929,7 @@ fn count_pairs(words: &WordSet, frequencies: &[u64]) -> Pairs {
         }
     }
 
-    let mut pairs: Pairs = FxHashMap::with_capacity_and_hasher(census.len(), <_>::default());
+    let mut pairs = Pairs::with_capacity(census.len());
     for (&pair, entry) in &census {
         pairs.insert(
             pair,
@@ -833,7 +944,7 @@ fn count_pairs(words: &WordSet, frequencies: &[u64]) -> Pairs {
 
     for index in 0..words.len() {
         for pair in words.pairs(index) {
-            if let Some(state) = pairs.get_mut(&pair) {
+            if let Some(state) = pairs.get_mut(pair) {
                 state.words.note(index as u32);
             }
         }
