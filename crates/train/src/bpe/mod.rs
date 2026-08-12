@@ -510,38 +510,11 @@ impl BpeTrainer {
             }
             touched.clear();
 
-            // Stale entries are only discovered by popping them, so over a long
-            // run the queue accumulates far more of them than there are pairs.
-            // Rebuilding from the live pairs discards every one at once. What
-            // comes out is what the initial fill would have produced — exactly
-            // one entry per live pair at its true score — so the merge order is
-            // unchanged; only the entries that would have been popped, found
-            // stale and corrected are gone.
             // Merging leaves the corpus full of holes — every join frees a slot
             // that nothing reuses — and the buffer keeps its full length until
             // the words are slid together over them.
             if words.is_sparse() {
                 words.compact();
-            }
-
-            if queue.len() > 2 * pairs.len().max(1024) {
-                let mut fresh: BinaryHeap<Candidate> = BinaryHeap::with_capacity(pairs.len());
-                let Pairs { index, states } = &mut pairs;
-                for (&pair, &at) in index.iter() {
-                    let state = states.get_mut(at);
-                    if state.count > 0 {
-                        let score = criterion.score(pair, state.count, &symbol_counts, total);
-                        fresh.push(Candidate {
-                            pair,
-                            count: state.count as u64,
-                            score,
-                        });
-                        state.queued = score;
-                    } else {
-                        state.queued = f64::NEG_INFINITY;
-                    }
-                }
-                queue = fresh;
             }
         }
 
