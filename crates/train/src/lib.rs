@@ -72,7 +72,7 @@ pub mod write;
 pub use bpe::{BpeTrainer, BpeTrainerBuilder, Criterion};
 pub use corpus::{Corpus, PreTok, WordCounts, METASPACE};
 pub use error::TrainError;
-pub use unigram::{UnigramTrainer, UnigramTrainerBuilder, UnigramVocab};
+pub use unigram::{UnigramTrainer, UnigramTrainerBuilder, UnigramVocab, DEFAULT_SEED_MULTIPLE};
 pub use vocab::{Seeding, TrainedVocab};
 pub use wordpiece::{
     Prune, WordPieceTrainer, WordPieceTrainerBuilder, WordPieceVocab, DEFAULT_CONTINUING_PREFIX,

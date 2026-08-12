@@ -31,12 +31,35 @@
 //! than sampled.
 
 mod lattice;
+mod trie;
 
 use rustc_hash::FxHashMap;
 
 use crate::corpus::WordCounts;
 use crate::error::TrainError;
 use lattice::Lattice;
+use trie::PieceTrie;
+
+/// Candidates to seed per token of the target vocabulary, when
+/// [`UnigramTrainerBuilder::seed_size`] is not set.
+///
+/// Measured rather than inherited. SentencePiece uses a flat 1,000,000
+/// regardless of the vocabulary being trained, and on every corpus tried that
+/// was both the slowest setting *and* the worst — a pool of mostly
+/// frequency-two noise spreads EM's probability mass across candidates that
+/// cannot earn it, and every extra pruning round is another chance for a greedy
+/// removal to take the wrong piece.
+///
+/// Swept against held-out tokens at an 8000-piece target, on English, Chinese
+/// and Thai: a pool around twelve times the target compressed *better* than the
+/// flat million on every one of them while costing roughly half the
+/// instructions, and a pool as small as three times the target was sharply
+/// worse. Sixteen is used rather than twelve because the risk is asymmetric —
+/// too small degrades steeply, too large only gradually, and a corpus larger
+/// than any tried here may want more candidates rather than fewer.
+///
+/// The measurements are in `.claude/prep/train-checklist.md`.
+pub const DEFAULT_SEED_MULTIPLE: usize = 16;
 
 /// A trained Unigram vocabulary: pieces and their log-probabilities.
 ///
@@ -92,7 +115,7 @@ impl UnigramVocab {
 #[derive(Clone)]
 pub struct UnigramTrainerBuilder {
     vocab_size: usize,
-    seed_size: usize,
+    seed_size: Option<usize>,
     max_piece_chars: usize,
     min_frequency: u64,
     shrink_factor: f64,
@@ -104,9 +127,8 @@ impl Default for UnigramTrainerBuilder {
     fn default() -> Self {
         Self {
             vocab_size: 8_000,
-            // Large enough that pruning has real choices to make, small enough
-            // that the EM passes stay affordable.
-            seed_size: 1_000_000,
+            // Adaptive; see `seed_size` and `DEFAULT_SEED_MULTIPLE`.
+            seed_size: None,
             max_piece_chars: 16,
             min_frequency: 2,
             // Each round keeps this fraction, so the pool reaches the target in
@@ -131,9 +153,14 @@ impl UnigramTrainerBuilder {
     }
 
     /// How many candidate pieces to start from.
+    ///
+    /// Defaults to [`DEFAULT_SEED_MULTIPLE`] times the target size. Set this
+    /// only to override that; a flat number is almost never what you want,
+    /// because the useful pool depends on how big the vocabulary being trained
+    /// is rather than on a constant.
     #[must_use]
     pub fn seed_size(mut self, size: usize) -> Self {
-        self.seed_size = size;
+        self.seed_size = Some(size);
         self
     }
 
@@ -218,7 +245,7 @@ impl UnigramTrainer {
             .config
             .vocab_size
             .saturating_sub(self.config.specials.len());
-        let (mut pieces, mut scores, required) = self.seed(&words);
+        let (mut pieces, mut scores, required) = self.seed(&words, self.seed_pool(target));
         if target < required {
             return Err(TrainError::VocabTooSmall {
                 requested: self.config.vocab_size,
@@ -228,14 +255,18 @@ impl UnigramTrainer {
 
         let mut lattice = Lattice::default();
         loop {
+            // Indexed once per round rather than once per pass: the candidate
+            // set only changes when a prune happens, while the EM iterations and
+            // the loss pass below all walk the same one.
+            let trie = PieceTrie::build(&piece_texts(&pieces));
             for _ in 0..self.config.em_iterations.max(1) {
-                self.expectation_maximization(&words, &pieces, &mut scores, &mut lattice);
+                self.expectation_maximization(&words, &pieces, &mut scores, &mut lattice, &trie);
             }
             if pieces.len() <= target {
                 break;
             }
             let keep = ((pieces.len() as f64 * self.config.shrink_factor) as usize).max(target);
-            let losses = self.losses(&words, &pieces, &scores, &mut lattice);
+            let losses = self.losses(&words, &pieces, &scores, &mut lattice, &trie);
             let before = pieces.len();
             self.prune(&mut pieces, &mut scores, &losses, required, keep);
             if pieces.len() == before {
@@ -246,7 +277,8 @@ impl UnigramTrainer {
 
         // A last EM pass so the scores describe the vocabulary actually shipped
         // rather than the one before the final cut.
-        self.expectation_maximization(&words, &pieces, &mut scores, &mut lattice);
+        let trie = PieceTrie::build(&piece_texts(&pieces));
+        self.expectation_maximization(&words, &pieces, &mut scores, &mut lattice, &trie);
 
         let mut tokens = self.config.specials.clone();
         let mut out_scores = vec![0.0; self.config.specials.len()];
@@ -268,7 +300,15 @@ impl UnigramTrainer {
     /// pruning may never touch because dropping one makes some word
     /// unsegmentable.
     #[allow(clippy::type_complexity)]
-    fn seed(&self, words: &[(&str, u64)]) -> (Vec<(String, u64)>, Vec<f64>, usize) {
+    /// How many candidates to start from, resolved against the target size.
+    fn seed_pool(&self, target: usize) -> usize {
+        self.config
+            .seed_size
+            .unwrap_or_else(|| target.saturating_mul(DEFAULT_SEED_MULTIPLE))
+            .max(target)
+    }
+
+    fn seed(&self, words: &[(&str, u64)], pool: usize) -> (Vec<(String, u64)>, Vec<f64>, usize) {
         // Characters first, so their ids are the low ones and "required" is a
         // prefix of the piece list rather than a scattered set.
         let mut char_counts: FxHashMap<String, u64> = FxHashMap::default();
@@ -316,7 +356,7 @@ impl UnigramTrainer {
             let right = b.1 * b.0.chars().count() as u64;
             right.cmp(&left).then_with(|| a.0.cmp(&b.0))
         });
-        candidates.truncate(self.config.seed_size.saturating_sub(required));
+        candidates.truncate(pool.saturating_sub(required));
 
         let mut pieces = characters;
         pieces.extend(candidates);
@@ -337,16 +377,11 @@ impl UnigramTrainer {
         pieces: &[(String, u64)],
         scores: &mut [f64],
         lattice: &mut Lattice,
+        trie: &PieceTrie,
     ) {
-        let index: FxHashMap<&str, u32> = pieces
-            .iter()
-            .enumerate()
-            .map(|(id, (text, _))| (text.as_str(), id as u32))
-            .collect();
-
         let mut expected = vec![0.0f64; pieces.len()];
         for (word, frequency) in words {
-            let n = lattice.build(word, self.config.max_piece_chars, |s| index.get(s).copied());
+            let n = lattice.build(word, self.config.max_piece_chars, trie);
             if n == 0 || !lattice.is_connected(n) {
                 continue;
             }
@@ -383,18 +418,13 @@ impl UnigramTrainer {
         pieces: &[(String, u64)],
         scores: &[f64],
         lattice: &mut Lattice,
+        trie: &PieceTrie,
     ) -> Vec<f64> {
-        let index: FxHashMap<&str, u32> = pieces
-            .iter()
-            .enumerate()
-            .map(|(id, (text, _))| (text.as_str(), id as u32))
-            .collect();
-
         // How often each piece is actually chosen.
         let mut uses = vec![0.0f64; pieces.len()];
         let mut path = Vec::new();
         for (word, frequency) in words {
-            let n = lattice.build(word, self.config.max_piece_chars, |s| index.get(s).copied());
+            let n = lattice.build(word, self.config.max_piece_chars, trie);
             if n == 0 || !lattice.is_connected(n) {
                 continue;
             }
@@ -412,7 +442,7 @@ impl UnigramTrainer {
             if uses[id] == 0.0 {
                 continue;
             }
-            let n = lattice.build(text, self.config.max_piece_chars, |s| index.get(s).copied());
+            let n = lattice.build(text, self.config.max_piece_chars, trie);
             let alternative = lattice.viterbi_excluding(n, scores, id as u32);
             let penalty = if alternative.is_finite() {
                 scores[id] - alternative
@@ -462,6 +492,11 @@ impl UnigramTrainer {
             keep
         });
     }
+}
+
+/// The piece spellings, for indexing into a [`PieceTrie`].
+fn piece_texts(pieces: &[(String, u64)]) -> Vec<&str> {
+    pieces.iter().map(|(text, _)| text.as_str()).collect()
 }
 
 #[cfg(test)]
@@ -600,6 +635,31 @@ mod tests {
             assert_eq!(again.tokens(), first.tokens());
             assert_eq!(again.scores(), first.scores());
         }
+    }
+
+    /// The pool follows the target rather than a constant, and never falls
+    /// below it — a pool smaller than the vocabulary being trained could not
+    /// fill it.
+    #[test]
+    fn the_seed_pool_scales_with_the_target() {
+        let trainer = |target| UnigramTrainer::builder().vocab_size(target).build();
+        assert_eq!(
+            trainer(8_000).seed_pool(8_000),
+            8_000 * DEFAULT_SEED_MULTIPLE
+        );
+        assert_eq!(trainer(500).seed_pool(500), 500 * DEFAULT_SEED_MULTIPLE);
+
+        // An explicit setting still wins.
+        let explicit = UnigramTrainer::builder()
+            .vocab_size(8_000)
+            .seed_size(1_000)
+            .build();
+        assert_eq!(explicit.seed_pool(8_000), 8_000, "never below the target");
+        let bigger = UnigramTrainer::builder()
+            .vocab_size(8_000)
+            .seed_size(50_000)
+            .build();
+        assert_eq!(bigger.seed_pool(8_000), 50_000);
     }
 
     #[test]

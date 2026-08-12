@@ -16,6 +16,8 @@
 //! piece set and every score on each iteration, so the lattice is built here
 //! over the candidate set directly.
 
+use super::trie::{PieceTrie, ROOT};
+
 /// One edge: the piece spanning `[start, end)` and its id.
 #[derive(Clone, Copy)]
 pub(crate) struct Edge {
@@ -28,8 +30,8 @@ pub(crate) struct Edge {
 /// word.
 #[derive(Default)]
 pub(crate) struct Lattice {
-    /// Byte offset of each character boundary, `n + 1` entries.
-    offsets: Vec<usize>,
+    /// Byte offset of each character, so a start position maps to a slice.
+    starts: Vec<usize>,
     edges: Vec<Edge>,
     /// Edges ending at each position, as indices into `edges`.
     into: Vec<Vec<usize>>,
@@ -53,20 +55,21 @@ fn log_add(a: f64, b: f64) -> f64 {
 }
 
 impl Lattice {
-    /// Rebuild for `word`, admitting every piece `lookup` recognises.
+    /// Rebuild for `word`, admitting every piece `trie` holds.
     ///
-    /// `lookup` answers "is this substring a current candidate, and at what id",
-    /// which is the only thing the lattice needs to know about the piece set.
-    pub(crate) fn build(
-        &mut self,
-        word: &str,
-        max_piece_chars: usize,
-        mut lookup: impl FnMut(&str) -> Option<u32>,
-    ) -> usize {
-        self.offsets.clear();
-        self.offsets.extend(word.char_indices().map(|(i, _)| i));
-        self.offsets.push(word.len());
-        let n = self.offsets.len() - 1;
+    /// One walk per start position rather than a hash of every substring: the
+    /// walk stops at the first character no candidate continues, which on a
+    /// script without spaces — where a pre-token runs to tens of characters —
+    /// is most of the saving. See [`PieceTrie`].
+    pub(crate) fn build(&mut self, word: &str, max_piece_chars: usize, trie: &PieceTrie) -> usize {
+        // Byte offsets rather than a `Vec<char>`: the walk below reads each
+        // start's suffix through a `chars()` iterator, so materialising the
+        // characters would decode the word a second time for nothing. (It did,
+        // briefly — profiling put 8% of Unigram training in that copy.)
+        self.starts.clear();
+        self.starts
+            .extend(word.char_indices().map(|(offset, _)| offset));
+        let n = self.starts.len();
 
         self.edges.clear();
         self.into.clear();
@@ -76,10 +79,19 @@ impl Lattice {
         }
 
         for start in 0..n {
-            let limit = (start + max_piece_chars).min(n);
-            for end in (start + 1)..=limit {
-                let text = &word[self.offsets[start]..self.offsets[end]];
-                if let Some(piece) = lookup(text) {
+            let mut node = ROOT;
+            for (step, ch) in word[self.starts[start]..]
+                .chars()
+                .take(max_piece_chars)
+                .enumerate()
+            {
+                node = match trie.step(node, ch) {
+                    Some(next) => next,
+                    // Nothing spells this far, so nothing spells further either.
+                    None => break,
+                };
+                if let Some(piece) = trie.piece(node) {
+                    let end = start + step + 1;
                     self.into[end].push(self.edges.len());
                     self.edges.push(Edge { start, end, piece });
                 }
@@ -230,8 +242,9 @@ mod tests {
             .enumerate()
             .map(|(i, p)| (p.to_string(), i as u32))
             .collect();
+        let trie = PieceTrie::build(pieces);
         let mut lattice = Lattice::default();
-        let n = lattice.build(word, 16, |s| ids.get(s).copied());
+        let n = lattice.build(word, 16, &trie);
         // Uniform scores, so path length alone decides.
         let scores = vec![(1.0f64 / pieces.len() as f64).ln(); pieces.len()];
         (lattice, n, scores, ids)
