@@ -25,7 +25,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::corpus::WordCounts;
 use crate::error::TrainError;
 use crate::vocab::{Seeding, TrainedVocab};
-use word::Word;
+use word::WordSet;
 
 /// What makes one candidate merge better than another.
 ///
@@ -114,8 +114,6 @@ struct Candidate {
     /// float comparison.
     count: u64,
     score: f64,
-    /// Indices of the words containing this pair.
-    positions: FxHashSet<usize>,
 }
 
 impl PartialEq for Candidate {
@@ -321,15 +319,15 @@ impl BpeTrainer {
             });
         }
 
-        let (mut pair_counts, mut positions) = count_pairs(&words, &frequencies);
+        let mut pairs = count_pairs(&words, &frequencies);
 
         // How often each symbol occurs, which the likelihood criterion divides
         // by. Maintained through every merge rather than recomputed, since a
         // merge changes only the two symbols it consumed and the one it made.
         let mut symbol_counts: Vec<i64> = vec![0; pieces.len()];
-        for (index, word) in words.iter().enumerate() {
-            let frequency = frequencies[index] as i64;
-            for &symbol in word.symbols() {
+        for (index, &frequency) in frequencies.iter().enumerate() {
+            let frequency = frequency as i64;
+            for &symbol in words.word(index) {
                 symbol_counts[symbol as usize] += frequency;
             }
         }
@@ -339,26 +337,26 @@ impl BpeTrainer {
         let mut total: i64 = symbol_counts.iter().sum();
 
         let criterion = self.criterion;
-        let score = |pair: (u32, u32), count: i64, symbol_counts: &[i64], total: i64| {
-            criterion.score(pair, count, symbol_counts, total)
-        };
 
-        let mut queue: BinaryHeap<Candidate> = BinaryHeap::with_capacity(pair_counts.len());
-        for (pair, words_with) in positions.drain() {
-            let count = pair_counts.get(&pair).copied().unwrap_or(0);
-            if count > 0 {
+        let mut queue: BinaryHeap<Candidate> = BinaryHeap::with_capacity(pairs.len());
+        for (&pair, state) in pairs.iter_mut() {
+            if state.count > 0 {
+                let score = criterion.score(pair, state.count, &symbol_counts, total);
                 queue.push(Candidate {
                     pair,
-                    count: count as u64,
-                    score: score(pair, count, &symbol_counts, total),
-                    positions: words_with,
+                    count: state.count as u64,
+                    score,
                 });
+                state.queued = score;
             }
         }
 
         let max_len = self.max_token_length.unwrap_or(usize::MAX);
         let mut merges: Vec<(u32, u32)> = Vec::new();
         let mut changes: Vec<((u32, u32), i64)> = Vec::new();
+        // Pairs one merge disturbed. Their flags live on the pair itself, so
+        // this only has to remember which to revisit. Reused across merges.
+        let mut touched: Vec<(u32, u32)> = Vec::new();
 
         while pieces.len() < self.vocab_size {
             let Some(mut top) = queue.pop() else {
@@ -380,13 +378,18 @@ impl BpeTrainer {
             // this pair's count — so checking the count would let a stale
             // ordering through. Recomputing from live counts is exact and
             // deterministic: unchanged inputs give a bit-identical score.
-            let live = pair_counts.get(&top.pair).copied().unwrap_or(0);
-            let live_score = score(top.pair, live, &symbol_counts, total);
+            let live = pairs.get(&top.pair).map_or(0, |state| state.count);
+            let live_score = criterion.score(top.pair, live, &symbol_counts, total);
             if live != top.count as i64 || live_score != top.score {
                 if live > 0 {
                     top.count = live as u64;
                     top.score = live_score;
+                    if let Some(state) = pairs.get_mut(&top.pair) {
+                        state.queued = live_score;
+                    }
                     queue.push(top);
+                } else if let Some(state) = pairs.get_mut(&top.pair) {
+                    state.queued = f64::NEG_INFINITY;
                 }
                 continue;
             }
@@ -406,9 +409,16 @@ impl BpeTrainer {
             ));
 
             if piece.len() > max_len {
-                // Too long to keep, and it must not be reconsidered: drop its
-                // count so the lazy check cannot resurrect it.
-                pair_counts.remove(&top.pair);
+                // Too long to keep, and it must not be reconsidered: zero its
+                // count so the lazy check cannot resurrect it. The pair still
+                // occurs in the corpus though, so it is flagged rather than
+                // dropped — its word list has to survive, since a zero count
+                // otherwise means "occurs nowhere" and licenses reclaiming it.
+                if let Some(state) = pairs.get_mut(&top.pair) {
+                    state.count = 0;
+                    state.queued = f64::NEG_INFINITY;
+                    state.blocked = true;
+                }
                 continue;
             }
 
@@ -418,28 +428,45 @@ impl BpeTrainer {
             symbol_counts.push(0);
             merges.push(top.pair);
 
-            // The merged pair is gone from every word it occurred in.
-            pair_counts.remove(&top.pair);
+            // The merged pair is gone from every word it occurred in, and the
+            // list of those words is taken rather than borrowed — the merge
+            // writes new positions back into the map as it goes.
+            let words_with = pairs
+                .remove(&top.pair)
+                .map(|state| state.words)
+                .unwrap_or_default();
 
             // Occurrences actually rewritten, weighted by word frequency. Each
             // one consumes a `left` and a `right` and creates a `new_id`.
+            //
+            // This is not always `top.count`, and the gap is not a bug: a pair
+            // of a symbol with itself overlaps, so `a a a` counts `(a,a)` twice
+            // and only one of the two can be rewritten.
             let mut rewritten: i64 = 0;
-            for &index in &top.positions {
+            for &index in words_with.as_slice() {
                 changes.clear();
-                let merged = words[index].merge(left, right, new_id, &mut changes);
+                let merged = words.merge(index as usize, left, right, new_id, &mut changes);
                 if merged == 0 {
                     continue;
                 }
-                let frequency = frequencies[index] as i64;
+                let frequency = frequencies[index as usize] as i64;
                 rewritten += merged as i64 * frequency;
                 for &(pair, delta) in &changes {
-                    let entry = pair_counts.entry(pair).or_insert(0);
-                    *entry += delta * frequency;
+                    let state = pairs.entry(pair).or_default();
+                    state.count += delta * frequency;
+                    // Gained by any word here means the pair must compete again;
+                    // touched at all means its count may have reached zero.
+                    if !state.touched {
+                        state.touched = true;
+                        touched.push(pair);
+                    }
                     if delta > 0 {
-                        positions.entry(pair).or_default().insert(index);
+                        state.gained = true;
+                        state.words.note(index);
                     }
                 }
             }
+            drop(words_with);
 
             // Applied to both operands unconditionally, which is also right when
             // they are the same symbol: merging `a a` consumes two `a`s, and
@@ -450,16 +477,67 @@ impl BpeTrainer {
             // Each rewritten occurrence turned two symbols into one.
             total -= rewritten;
 
-            for (pair, words_with) in positions.drain() {
-                let count = pair_counts.get(&pair).copied().unwrap_or(0);
-                if count > 0 {
-                    queue.push(Candidate {
-                        pair,
-                        count: count as u64,
-                        score: score(pair, count, &symbol_counts, total),
-                        positions: words_with,
-                    });
+            for &pair in &touched {
+                let Some(state) = pairs.get_mut(&pair) else {
+                    continue;
+                };
+                let (count, gained) = (state.count, state.gained);
+                state.touched = false;
+                state.gained = false;
+                if count <= 0 && !state.blocked {
+                    // No occurrence left anywhere, so nothing needs to remember
+                    // where it used to be. Should it ever come back, every
+                    // occurrence will be a new one and recorded as such.
+                    pairs.remove(&pair);
+                } else if count > 0 && gained {
+                    let score = criterion.score(pair, count, &symbol_counts, total);
+                    // Only if this beats what the pair already has waiting. A
+                    // lower-scored duplicate would be popped, found stale,
+                    // corrected and pushed again — it decides nothing, and
+                    // pushing one per gained pair per merge is what makes the
+                    // queue grow without bound over a long run.
+                    if score > state.queued {
+                        state.queued = score;
+                        queue.push(Candidate {
+                            pair,
+                            count: count as u64,
+                            score,
+                        });
+                    }
                 }
+            }
+            touched.clear();
+
+            // Stale entries are only discovered by popping them, so over a long
+            // run the queue accumulates far more of them than there are pairs.
+            // Rebuilding from the live pairs discards every one at once. What
+            // comes out is what the initial fill would have produced — exactly
+            // one entry per live pair at its true score — so the merge order is
+            // unchanged; only the entries that would have been popped, found
+            // stale and corrected are gone.
+            // Merging leaves the corpus full of holes — every join frees a slot
+            // that nothing reuses — and the buffer keeps its full length until
+            // the words are slid together over them.
+            if words.is_sparse() {
+                words.compact();
+            }
+
+            if queue.len() > 2 * pairs.len().max(1024) {
+                let mut fresh: BinaryHeap<Candidate> = BinaryHeap::with_capacity(pairs.len());
+                for (&pair, state) in pairs.iter_mut() {
+                    if state.count > 0 {
+                        let score = criterion.score(pair, state.count, &symbol_counts, total);
+                        fresh.push(Candidate {
+                            pair,
+                            count: state.count as u64,
+                            score,
+                        });
+                        state.queued = score;
+                    } else {
+                        state.queued = f64::NEG_INFINITY;
+                    }
+                }
+                queue = fresh;
             }
         }
 
@@ -525,25 +603,23 @@ impl BpeTrainer {
         let mut corpus: Vec<(&[u8], u64)> = counts.iter().collect();
         corpus.sort_unstable();
 
-        let mut words = Vec::with_capacity(corpus.len());
+        let mut words = WordSet::with_capacity(corpus.len());
         let mut frequencies = Vec::with_capacity(corpus.len());
+        let mut symbols: Vec<u32> = Vec::new();
         for (word, frequency) in corpus {
             let units = self.seeding.units(word);
             let last = units.len().saturating_sub(1);
-            let symbols: Vec<u32> = units
-                .into_iter()
-                .enumerate()
-                .map(|(i, unit)| {
-                    let decorated = self.decorate(unit, i == 0, i == last);
-                    intern(decorated, &mut pieces, &mut ids)
-                })
-                .collect();
+            symbols.clear();
+            symbols.extend(units.into_iter().enumerate().map(|(i, unit)| {
+                let decorated = self.decorate(unit, i == 0, i == last);
+                intern(decorated, &mut pieces, &mut ids)
+            }));
             if symbols.len() < 2 {
                 // Nothing to merge inside a one-symbol word, and it contributes
                 // no pairs — keeping it would only cost a scan per merge.
                 continue;
             }
-            words.push(Word::from_symbols(symbols));
+            words.push(&symbols);
             frequencies.push(frequency);
         }
 
@@ -581,7 +657,7 @@ struct Seeded {
     pieces: Vec<Vec<u8>>,
     piece_ids: FxHashMap<Vec<u8>, u32>,
     alphabet_len: usize,
-    words: Vec<Word>,
+    words: WordSet,
     frequencies: Vec<u64>,
 }
 
@@ -606,25 +682,162 @@ fn strip_prefix<'a>(piece: &'a [u8], prefix: Option<&[u8]>) -> &'a [u8] {
     }
 }
 
-/// How often each pair occurs across the corpus, weighted by word frequency.
-type PairCounts = FxHashMap<(u32, u32), i64>;
+/// How many words a pair can be seen in before it needs a heap allocation.
+///
+/// Sized so the inline array costs nothing: a `Vec` is already three words, and
+/// four indices plus a length fit inside that. Measured on a gigabyte of
+/// multilingual text at a 128k vocabulary, most live pairs occur in one or two
+/// words, so this keeps the great majority of them off the allocator entirely.
+const INLINE_WORDS: usize = 4;
 
-/// For each pair, the indices of the words containing it — so a merge visits
-/// only the words it affects.
-type PairPositions = FxHashMap<(u32, u32), FxHashSet<usize>>;
+/// The words containing a pair, ascending and without repeats.
+#[derive(Debug, Clone)]
+enum WordList {
+    Inline([u32; INLINE_WORDS], u8),
+    Spilled(Vec<u32>),
+}
 
-/// Initial pair counts and, for each pair, which words contain it.
-fn count_pairs(words: &[Word], frequencies: &[u64]) -> (PairCounts, PairPositions) {
-    let mut counts: PairCounts = FxHashMap::default();
-    let mut positions: PairPositions = FxHashMap::default();
-    for (index, word) in words.iter().enumerate() {
-        let frequency = frequencies[index] as i64;
-        for pair in word.pairs() {
-            *counts.entry(pair).or_insert(0) += frequency;
-            positions.entry(pair).or_default().insert(index);
+impl Default for WordList {
+    fn default() -> Self {
+        WordList::Inline([0; INLINE_WORDS], 0)
+    }
+}
+
+impl WordList {
+    fn with_capacity(words: usize) -> Self {
+        if words <= INLINE_WORDS {
+            Self::default()
+        } else {
+            WordList::Spilled(Vec::with_capacity(words))
         }
     }
-    (counts, positions)
+
+    fn as_slice(&self) -> &[u32] {
+        match self {
+            WordList::Inline(items, len) => &items[..*len as usize],
+            WordList::Spilled(items) => items,
+        }
+    }
+
+    /// Record that `index` contains the pair, keeping the list sorted and
+    /// unique.
+    ///
+    /// Callers visit words in ascending order, so a repeat can only ever be the
+    /// entry just pushed. Duplicates would be harmless — merging a word twice
+    /// finds nothing the second time — but they are pure waste in the structure
+    /// that dominates memory.
+    fn note(&mut self, index: u32) {
+        if self.as_slice().last() == Some(&index) {
+            return;
+        }
+        match self {
+            WordList::Inline(items, len) if (*len as usize) < INLINE_WORDS => {
+                items[*len as usize] = index;
+                *len += 1;
+            }
+            WordList::Inline(items, len) => {
+                let mut spilled = Vec::with_capacity(INLINE_WORDS * 2);
+                spilled.extend_from_slice(&items[..*len as usize]);
+                spilled.push(index);
+                *self = WordList::Spilled(spilled);
+            }
+            WordList::Spilled(items) => items.push(index),
+        }
+    }
+}
+
+/// Everything the merge loop knows about one pair.
+///
+/// One record in one map rather than a count map, a position map and a queue
+/// map side by side. At a 128k vocabulary on a gigabyte of text there are tens
+/// of millions of live pairs, so a separate map per attribute means paying the
+/// key and the hash three times over.
+#[derive(Debug, Clone)]
+struct PairState {
+    count: i64,
+    /// The best score already waiting in the queue for this pair, which is what
+    /// keeps the queue to one useful entry per pair.
+    queued: f64,
+    words: WordList,
+    /// Set when a merge disturbed this pair, and whether any word gained it.
+    touched: bool,
+    gained: bool,
+    /// Set when the joined piece would be longer than `max_token_length`. The
+    /// pair still occurs in the corpus, so its word list must be kept even
+    /// though its count is forced to zero to stop it competing.
+    blocked: bool,
+}
+
+impl Default for PairState {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            queued: f64::NEG_INFINITY,
+            words: WordList::default(),
+            touched: false,
+            gained: false,
+            blocked: false,
+        }
+    }
+}
+
+type Pairs = FxHashMap<(u32, u32), PairState>;
+
+/// What one pass over the corpus learns about a pair before its word list is
+/// sized.
+#[derive(Default, Clone, Copy)]
+struct PairCensus {
+    count: i64,
+    /// How many distinct words contain the pair.
+    words: u32,
+    /// The last word counted, so a pair occurring twice in one word is counted
+    /// once. Stored as index plus one, leaving zero to mean "none yet".
+    last: u32,
+}
+
+/// Each pair's count and the words containing it.
+///
+/// Two passes rather than one: the first learns how long each word list will be
+/// so the second can size it exactly. Growing them by doubling instead would
+/// leave up to half of a multi-gigabyte structure as slack. The census carries
+/// the counts too, so this costs no more hash lookups per pair than filling the
+/// lists directly would.
+fn count_pairs(words: &WordSet, frequencies: &[u64]) -> Pairs {
+    let mut census: FxHashMap<(u32, u32), PairCensus> = FxHashMap::default();
+    for (index, &frequency) in frequencies.iter().enumerate() {
+        let frequency = frequency as i64;
+        let marker = index as u32 + 1;
+        for pair in words.pairs(index) {
+            let entry = census.entry(pair).or_default();
+            entry.count += frequency;
+            if entry.last != marker {
+                entry.words += 1;
+                entry.last = marker;
+            }
+        }
+    }
+
+    let mut pairs: Pairs = FxHashMap::with_capacity_and_hasher(census.len(), <_>::default());
+    for (&pair, entry) in &census {
+        pairs.insert(
+            pair,
+            PairState {
+                count: entry.count,
+                words: WordList::with_capacity(entry.words as usize),
+                ..PairState::default()
+            },
+        );
+    }
+    drop(census);
+
+    for index in 0..words.len() {
+        for pair in words.pairs(index) {
+            if let Some(state) = pairs.get_mut(&pair) {
+                state.words.note(index as u32);
+            }
+        }
+    }
+    pairs
 }
 
 #[cfg(test)]

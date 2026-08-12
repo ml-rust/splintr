@@ -11,7 +11,9 @@
 //! output: the boundaries a vocabulary is trained on and the boundaries it is
 //! later encoded against come from one implementation, so they cannot drift.
 
-use rustc_hash::FxHashMap;
+use std::hash::Hasher;
+
+use rustc_hash::FxHasher;
 use splintr::{Normalizer, PreTokStage, PreTokenizer, SplitBehavior, SplitPattern};
 
 use crate::error::TrainError;
@@ -66,6 +68,28 @@ impl PreTok {
     }
 }
 
+/// One distinct word: where its bytes end in the arena, and how often it
+/// occurred.
+///
+/// Only the *end* is stored — words are appended in insertion order, so a
+/// word's start is the previous word's end. That halves the per-word bookkeeping
+/// and leaves no length ceiling.
+#[derive(Debug, Clone, Copy)]
+struct Entry {
+    end: u64,
+    count: u64,
+}
+
+/// An index slot: the top half of the hash, and the entry index plus one so
+/// that an all-zero slot means empty.
+const EMPTY: u64 = 0;
+
+fn hash(word: &[u8]) -> u64 {
+    let mut hasher = FxHasher::default();
+    hasher.write(word);
+    hasher.finish()
+}
+
 /// Words and their frequencies, the input every trainer takes.
 ///
 /// Keyed by raw bytes rather than `String`: a pre-tokenizer with a `ByteLevel`
@@ -73,14 +97,41 @@ impl PreTok {
 /// without it emits ordinary text, but both are handed on as the bytes the
 /// vocabulary will actually be keyed by. See [`Seeding`](crate::Seeding) for how
 /// those bytes are then cut into initial symbols.
-#[derive(Debug, Default, Clone)]
+///
+/// The words live end to end in one arena rather than in a `Vec<u8>` each. A
+/// hash map keyed by owned bytes needs an allocation per *occurrence* to look a
+/// word up at all, and keeps one per distinct word forever; on a gigabyte of
+/// text that is tens of millions of allocations for a few hundred megabytes of
+/// actual bytes, and the fragmentation costs more than the data. Here a repeat
+/// occurrence allocates nothing and a new word appends.
+#[derive(Debug, Clone)]
 pub struct WordCounts {
-    counts: FxHashMap<Vec<u8>, u64>,
+    arena: Vec<u8>,
+    entries: Vec<Entry>,
+    /// Open-addressed, linear-probed, always a power of two.
+    slots: Vec<u64>,
+    total: u64,
 }
 
 impl WordCounts {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            arena: Vec::new(),
+            entries: Vec::new(),
+            slots: Vec::new(),
+            total: 0,
+        }
+    }
+
+    /// Preallocate for `words` distinct words, avoiding the rehashes that
+    /// growing from empty would otherwise cost.
+    pub fn with_capacity(words: usize) -> Self {
+        let mut counts = Self::new();
+        if words > 0 {
+            counts.entries.reserve(words);
+            counts.slots = vec![EMPTY; (words * 2).next_power_of_two().max(16)];
+        }
+        counts
     }
 
     /// Record one occurrence of `word`.
@@ -93,35 +144,117 @@ impl WordCounts {
         if word.is_empty() {
             return;
         }
-        *self.counts.entry(word.to_vec()).or_insert(0) += n;
+        // Keep the table under three-quarters full; past that, linear probing
+        // starts clustering badly.
+        if (self.entries.len() + 1) * 4 > self.slots.len() * 3 {
+            self.grow();
+        }
+
+        let hash = hash(word);
+        let tag = hash >> 32;
+        let mask = self.slots.len() - 1;
+        let mut probe = hash as usize & mask;
+        loop {
+            let slot = self.slots[probe];
+            if slot == EMPTY {
+                self.arena.extend_from_slice(word);
+                self.entries.push(Entry {
+                    end: self.arena.len() as u64,
+                    count: n,
+                });
+                self.slots[probe] = tag << 32 | self.entries.len() as u64;
+                self.total += n;
+                return;
+            }
+            // Compare the stored hash half first: a mismatch here is settled
+            // without touching the arena, which is the expensive read.
+            if slot >> 32 == tag {
+                let index = (slot as u32 - 1) as usize;
+                if self.word_at(index) == word {
+                    self.entries[index].count += n;
+                    self.total += n;
+                    return;
+                }
+            }
+            probe = (probe + 1) & mask;
+        }
+    }
+
+    /// The bytes of the `index`th distinct word.
+    fn word_at(&self, index: usize) -> &[u8] {
+        let start = if index == 0 {
+            0
+        } else {
+            self.entries[index - 1].end as usize
+        };
+        &self.arena[start..self.entries[index].end as usize]
+    }
+
+    /// Double the index and reinsert. Hashes are recomputed from the arena
+    /// rather than stored: a full hash per word would cost more memory than the
+    /// occasional rehash costs time.
+    fn grow(&mut self) {
+        let capacity = (self.slots.len() * 2).max(16);
+        let mask = capacity - 1;
+        let mut slots = vec![EMPTY; capacity];
+        let mut start = 0usize;
+        for (index, entry) in self.entries.iter().enumerate() {
+            let end = entry.end as usize;
+            let hash = hash(&self.arena[start..end]);
+            start = end;
+            let mut probe = hash as usize & mask;
+            while slots[probe] != EMPTY {
+                probe = (probe + 1) & mask;
+            }
+            slots[probe] = (hash >> 32) << 32 | (index as u64 + 1);
+        }
+        self.slots = slots;
     }
 
     /// Fold another set of counts into this one.
     pub fn merge(&mut self, other: WordCounts) {
-        for (word, count) in other.counts {
-            *self.counts.entry(word).or_insert(0) += count;
+        for (word, count) in other.iter() {
+            self.add_n(word, count);
         }
     }
 
     /// How many distinct words were seen. The trainer's cost is driven by this
     /// rather than by corpus size, so it is worth knowing before starting.
     pub fn len(&self) -> usize {
-        self.counts.len()
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.counts.is_empty()
+        self.entries.is_empty()
     }
 
     /// Total occurrences across all words.
     pub fn total(&self) -> u64 {
-        self.counts.values().sum()
+        self.total
+    }
+
+    /// How many bytes the counts occupy, arena and index together. Worth
+    /// checking before a long run: this is the floor under a trainer's memory.
+    pub fn memory_bytes(&self) -> usize {
+        self.arena.capacity()
+            + self.entries.capacity() * std::mem::size_of::<Entry>()
+            + self.slots.capacity() * std::mem::size_of::<u64>()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], u64)> + '_ {
-        self.counts
-            .iter()
-            .map(|(word, &count)| (word.as_slice(), count))
+        let mut start = 0usize;
+        self.entries.iter().map(move |entry| {
+            let end = entry.end as usize;
+            let word = &self.arena[start..end];
+            start = end;
+            (word, entry.count)
+        })
+    }
+}
+
+impl Default for WordCounts {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -145,6 +278,9 @@ pub struct Corpus {
     pre_tokenizer: Option<PreTokenizer>,
     word_marker: Option<char>,
     counts: WordCounts,
+    /// Reused by [`Corpus::add_word`] so that marking a word does not allocate
+    /// once per occurrence.
+    marked: Vec<u8>,
 }
 
 /// SentencePiece's word-boundary marker, U+2581 LOWER ONE EIGHTH BLOCK.
@@ -161,6 +297,7 @@ impl Corpus {
             pre_tokenizer: None,
             word_marker: None,
             counts: WordCounts::new(),
+            marked: Vec::new(),
         }
     }
 
@@ -229,10 +366,12 @@ impl Corpus {
     fn add_word(&mut self, word: &str) {
         match self.word_marker {
             Some(marker) => {
-                let mut marked = String::with_capacity(word.len() + marker.len_utf8());
-                marked.push(marker);
-                marked.push_str(word);
-                self.counts.add(marked.as_bytes());
+                let marked = &mut self.marked;
+                marked.clear();
+                let mut encoded = [0u8; 4];
+                marked.extend_from_slice(marker.encode_utf8(&mut encoded).as_bytes());
+                marked.extend_from_slice(word.as_bytes());
+                self.counts.add(marked);
             }
             None => self.counts.add(word.as_bytes()),
         }
@@ -255,10 +394,23 @@ impl Corpus {
     /// the pre-tokenizer's decision, and stripping it here would answer that
     /// question differently from how encoding will.
     pub fn feed_file(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), TrainError> {
+        self.feed_reader(std::fs::File::open(path)?)
+    }
+
+    /// Feed anything readable, one document per line, a line at a time.
+    ///
+    /// Nothing larger than the current line is ever held, so corpus size does
+    /// not enter the memory cost — only the number of *distinct* words does.
+    /// Prefer this over reading a file into a `String` and calling
+    /// [`feed`](Self::feed): the two produce identical counts, but the string
+    /// costs the whole corpus in resident memory on top of the counts.
+    ///
+    /// # Errors
+    /// [`TrainError::Io`] if the reader fails or yields text that is not UTF-8.
+    pub fn feed_reader(&mut self, reader: impl std::io::Read) -> Result<(), TrainError> {
         use std::io::BufRead;
 
-        let file = std::fs::File::open(path)?;
-        let mut reader = std::io::BufReader::with_capacity(1 << 20, file);
+        let mut reader = std::io::BufReader::with_capacity(1 << 20, reader);
         let mut line = String::new();
         loop {
             line.clear();
@@ -290,6 +442,7 @@ impl Default for Corpus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustc_hash::FxHashMap;
     use splintr::{PreTokStage, SplitBehavior, SplitPattern};
 
     fn whitespace() -> PreTokenizer {
@@ -380,5 +533,108 @@ mod tests {
         let mut counts = WordCounts::new();
         counts.add(b"");
         assert!(counts.is_empty());
+    }
+
+    /// Enough distinct words to force the index through several growths, with
+    /// every count checked afterwards: a probe or rehash that loses an entry
+    /// would show up as a wrong count rather than a crash.
+    #[test]
+    fn many_words_survive_repeated_growth() {
+        let mut counts = WordCounts::new();
+        let words: Vec<Vec<u8>> = (0..10_000u32)
+            .map(|i| format!("word{i}").into_bytes())
+            .collect();
+        for (i, word) in words.iter().enumerate() {
+            counts.add_n(word, i as u64 + 1);
+        }
+        // Again, so every add is a hit rather than an insert.
+        for word in &words {
+            counts.add(word);
+        }
+
+        assert_eq!(counts.len(), words.len());
+        let map: FxHashMap<Vec<u8>, u64> = counts.iter().map(|(w, c)| (w.to_vec(), c)).collect();
+        assert_eq!(map.len(), words.len());
+        for (i, word) in words.iter().enumerate() {
+            assert_eq!(map[word], i as u64 + 2, "count for {i}");
+        }
+        assert_eq!(counts.total(), map.values().sum::<u64>());
+    }
+
+    /// Words are stored end to end, so a word that is a prefix of another must
+    /// still compare unequal — the length has to come from the entry, not from
+    /// scanning the arena.
+    #[test]
+    fn prefixes_are_distinct_words() {
+        let mut counts = WordCounts::new();
+        counts.add_n(b"can", 1);
+        counts.add_n(b"candle", 2);
+        counts.add_n(b"c", 3);
+        counts.add_n(b"can", 4);
+
+        let map: FxHashMap<Vec<u8>, u64> = counts.iter().map(|(w, c)| (w.to_vec(), c)).collect();
+        assert_eq!(map[b"can".as_slice()], 5);
+        assert_eq!(map[b"candle".as_slice()], 2);
+        assert_eq!(map[b"c".as_slice()], 3);
+        assert_eq!(counts.len(), 3);
+        assert_eq!(counts.total(), 10);
+    }
+
+    #[test]
+    fn merging_sums_shared_words() {
+        let mut left = WordCounts::new();
+        left.add_n(b"the", 2);
+        left.add_n(b"cat", 1);
+        let mut right = WordCounts::new();
+        right.add_n(b"the", 3);
+        right.add_n(b"dog", 5);
+        left.merge(right);
+
+        let map: FxHashMap<Vec<u8>, u64> = left.iter().map(|(w, c)| (w.to_vec(), c)).collect();
+        assert_eq!(map[b"the".as_slice()], 5);
+        assert_eq!(map[b"cat".as_slice()], 1);
+        assert_eq!(map[b"dog".as_slice()], 5);
+        assert_eq!(left.total(), 11);
+    }
+
+    /// Streaming a reader and feeding the same text as one string must give the
+    /// same counts, or the memory saving would be a change of behaviour.
+    #[test]
+    fn streaming_a_reader_matches_feeding_the_text() {
+        let text = "the cat sat\non the mat\nthe cat\n";
+
+        let mut streamed = Corpus::new().with_pre_tokenizer(whitespace());
+        streamed
+            .feed_reader(text.as_bytes())
+            .expect("reading from memory cannot fail");
+
+        let mut fed = Corpus::new().with_pre_tokenizer(whitespace());
+        for line in text.split_inclusive('\n') {
+            fed.feed(line);
+        }
+
+        let streamed: FxHashMap<Vec<u8>, u64> = streamed
+            .counts()
+            .iter()
+            .map(|(w, c)| (w.to_vec(), c))
+            .collect();
+        let fed: FxHashMap<Vec<u8>, u64> =
+            fed.counts().iter().map(|(w, c)| (w.to_vec(), c)).collect();
+        assert_eq!(streamed, fed);
+    }
+
+    /// The arena is the point: distinct words cost their bytes plus fixed
+    /// bookkeeping, and repeats cost nothing at all.
+    #[test]
+    fn repeats_do_not_grow_the_arena() {
+        let mut counts = WordCounts::with_capacity(4);
+        counts.add(b"repeated");
+        let after_first = counts.memory_bytes();
+        for _ in 0..1000 {
+            counts.add(b"repeated");
+        }
+        assert_eq!(counts.memory_bytes(), after_first);
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts.total(), 1001);
     }
 }
