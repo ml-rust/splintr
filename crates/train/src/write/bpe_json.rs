@@ -25,7 +25,7 @@ use crate::vocab::{Seeding, TrainedVocab};
 /// `tokenizer.json` is normally written for — a vocabulary trained under
 /// [`Seeding::Bytes`] has pieces that are raw bytes and may not be valid UTF-8,
 /// which this format cannot key by.
-pub struct HfJsonOptions {
+pub struct BpeJsonOptions {
     /// Emit the `ByteLevel` pre-tokenizer and decoder pair.
     pub byte_level: bool,
     /// `ByteLevel { add_prefix_space }`.
@@ -34,7 +34,7 @@ pub struct HfJsonOptions {
     pub use_regex: bool,
 }
 
-impl Default for HfJsonOptions {
+impl Default for BpeJsonOptions {
     fn default() -> Self {
         Self {
             byte_level: true,
@@ -51,7 +51,7 @@ impl Default for HfJsonOptions {
 /// vocabulary by string, so such a piece has no key — which is why a vocabulary
 /// meant for it is trained under [`Seeding::Chars`] over byte-level
 /// pre-tokenized text, where every piece is printable by construction.
-pub fn hf_json(vocab: &TrainedVocab, options: &HfJsonOptions) -> Result<Value, TrainError> {
+pub fn bpe_json(vocab: &TrainedVocab, options: &BpeJsonOptions) -> Result<Value, TrainError> {
     let mut model_vocab = Map::with_capacity(vocab.pieces().len());
     for (id, piece) in vocab.pieces().iter().enumerate() {
         let key = std::str::from_utf8(piece).map_err(|_| TrainError::NotUtf8 { id: id as u32 })?;
@@ -128,13 +128,13 @@ fn piece_str(vocab: &TrainedVocab, id: u32) -> Result<&str, TrainError> {
     std::str::from_utf8(piece).map_err(|_| TrainError::NotUtf8 { id })
 }
 
-/// [`hf_json`], written to a file.
-pub fn hf_json_file(
+/// [`bpe_json`], written to a file.
+pub fn bpe_json_file(
     vocab: &TrainedVocab,
-    options: &HfJsonOptions,
+    options: &BpeJsonOptions,
     path: impl AsRef<Path>,
 ) -> Result<(), TrainError> {
-    let value = hf_json(vocab, options)?;
+    let value = bpe_json(vocab, options)?;
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     serde_json::to_writer_pretty(&mut file, &value)?;
     file.flush()?;
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn states_the_vocabulary_and_merges() {
         let vocab = byte_level_vocab();
-        let value = hf_json(&vocab, &HfJsonOptions::default()).unwrap();
+        let value = bpe_json(&vocab, &BpeJsonOptions::default()).unwrap();
         let model = &value["model"];
         assert_eq!(model["type"], "BPE");
         assert_eq!(
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn every_merge_names_its_operands() {
         let vocab = byte_level_vocab();
-        let value = hf_json(&vocab, &HfJsonOptions::default()).unwrap();
+        let value = bpe_json(&vocab, &BpeJsonOptions::default()).unwrap();
         let merges = value["model"]["merges"].as_array().unwrap();
         for (i, merge) in merges.iter().enumerate() {
             let left = merge[0].as_str().unwrap();
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn specials_are_added_tokens_above_the_vocabulary() {
         let vocab = byte_level_vocab();
-        let value = hf_json(&vocab, &HfJsonOptions::default()).unwrap();
+        let value = bpe_json(&vocab, &BpeJsonOptions::default()).unwrap();
         let added = value["added_tokens"].as_array().unwrap();
         assert_eq!(added.len(), 1);
         assert_eq!(added[0]["content"], "<|endoftext|>");
@@ -217,18 +217,18 @@ mod tests {
             .build()
             .train(&counts)
             .unwrap();
-        let error = hf_json(&vocab, &HfJsonOptions::default()).unwrap_err();
+        let error = bpe_json(&vocab, &BpeJsonOptions::default()).unwrap_err();
         assert!(matches!(error, TrainError::NotUtf8 { .. }));
     }
 
     #[test]
     fn byte_level_can_be_left_out() {
         let vocab = byte_level_vocab();
-        let options = HfJsonOptions {
+        let options = BpeJsonOptions {
             byte_level: false,
-            ..HfJsonOptions::default()
+            ..BpeJsonOptions::default()
         };
-        let value = hf_json(&vocab, &options).unwrap();
+        let value = bpe_json(&vocab, &options).unwrap();
         assert!(value["pre_tokenizer"].is_null());
         assert!(value["decoder"].is_null());
     }
@@ -238,7 +238,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tokenizer.json");
         let vocab = byte_level_vocab();
-        hf_json_file(&vocab, &HfJsonOptions::default(), &path).unwrap();
+        bpe_json_file(&vocab, &BpeJsonOptions::default(), &path).unwrap();
         let parsed: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(parsed["model"]["type"], "BPE");
     }

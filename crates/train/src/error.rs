@@ -19,6 +19,11 @@ pub enum TrainError {
     #[error("token {id} is not valid UTF-8 and cannot be written to a tokenizer.json vocabulary")]
     NotUtf8 { id: u32 },
 
+    /// A format named a token the vocabulary does not contain — caught while
+    /// writing, where the caller can be pointed at it, rather than at load.
+    #[error("the vocabulary has no token {token:?}")]
+    MissingToken { token: String },
+
     #[error("failed to build the pre-tokenizer: {0}")]
     PreTokenizer(#[from] splintr::TokenizerError),
 

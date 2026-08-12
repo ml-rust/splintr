@@ -93,6 +93,15 @@ impl WordPieceVocab {
         self.tokens.is_empty()
     }
 
+    /// Build one directly from a token list, for a caller holding a vocabulary
+    /// that did not come from this trainer.
+    pub fn from_parts(tokens: Vec<String>, special_count: usize) -> Self {
+        Self {
+            tokens,
+            special_count,
+        }
+    }
+
     /// The id of a token, if the vocabulary has it.
     pub fn id(&self, token: &str) -> Option<u32> {
         self.tokens
