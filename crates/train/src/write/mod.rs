@@ -19,6 +19,7 @@
 
 mod bpe_json;
 mod model_json;
+mod recipe;
 mod spm;
 mod tiktoken;
 mod vocab_txt;
@@ -28,6 +29,7 @@ pub use model_json::{
     unigram_json, unigram_json_file, wordpiece_json, wordpiece_json_file, UnigramJsonOptions,
     WordPieceJsonOptions,
 };
+pub use recipe::{recipe_json, recipe_json_file, Trained};
 pub use spm::{spm, spm_file};
-pub use tiktoken::{recipe_json, recipe_json_file, tiktoken, tiktoken_file};
+pub use tiktoken::{tiktoken, tiktoken_file};
 pub use vocab_txt::{vocab_txt, vocab_txt_file};

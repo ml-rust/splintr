@@ -149,16 +149,7 @@ fn run() -> Result<(), TrainError> {
                 _ => write::tiktoken_file(&vocab, &output)?,
             }
             report(&output, vocab.pieces().len() + vocab.specials().len());
-            if extension(&output) != "json" {
-                // A rank file carries no pattern, and loading it with the wrong
-                // one silently produces different ids — so the recipe is written
-                // beside it rather than left for the user to remember.
-                let sidecar = output.with_extension(format!("{}.recipe.json", extension(&output)));
-                if write::recipe_json_file(&vocab, &sidecar)? {
-                    println!("recipe (needed to load this file): {}", sidecar.display());
-                }
-                println!("pattern (needed to load this file): {}", pattern(&common));
-            }
+            write_recipe(&vocab, &output, Some(&pattern(&common)))?;
         }
 
         Command::WordPiece {
@@ -180,6 +171,7 @@ fn run() -> Result<(), TrainError> {
                 _ => write::vocab_txt_file(&vocab, &output)?,
             }
             report(&output, vocab.len());
+            write_recipe(&vocab, &output, None)?;
         }
 
         Command::Unigram { common, output } => {
@@ -199,6 +191,7 @@ fn run() -> Result<(), TrainError> {
                 _ => write::spm_file(&vocab, &output)?,
             }
             report(&output, vocab.len());
+            write_recipe(&vocab, &output, None)?;
         }
     }
     Ok(())
@@ -241,6 +234,30 @@ fn read(common: &Common, force_metaspace: bool) -> Result<splintr_train::WordCou
 
 fn extension(path: &Path) -> &str {
     path.extension().and_then(|e| e.to_str()).unwrap_or("")
+}
+
+/// Write the recipe beside a piece-list output.
+///
+/// `.tiktoken`, `vocab.txt` and a SentencePiece model all state pieces and
+/// nothing else, so loading one against different word boundaries than it was
+/// trained on silently produces different ids. The `.json` forms state their own
+/// boundaries and need no companion.
+fn write_recipe<V: write::Trained>(
+    vocab: &V,
+    output: &std::path::Path,
+    pattern: Option<&str>,
+) -> Result<(), TrainError> {
+    if extension(output) == "json" {
+        return Ok(());
+    }
+    let sidecar = output.with_extension(format!("{}.recipe.json", extension(output)));
+    if write::recipe_json_file(vocab, &sidecar)? {
+        println!("recipe (needed to load this file): {}", sidecar.display());
+    }
+    if let Some(pattern) = pattern {
+        println!("pattern (needed to load this file): {pattern}");
+    }
+    Ok(())
 }
 
 fn report(output: &Path, tokens: usize) {

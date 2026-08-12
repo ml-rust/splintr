@@ -63,9 +63,18 @@ pub const DEFAULT_CONTINUING_PREFIX: &str = "##";
 pub struct WordPieceVocab {
     tokens: Vec<String>,
     special_count: usize,
+    recipe: Option<crate::Recipe>,
 }
 
 impl WordPieceVocab {
+    /// How the corpus this was trained on was cut into words, when that is
+    /// known. See [`Recipe`](crate::Recipe) — a `vocab.txt` states no
+    /// boundaries, so loading one against different ones silently produces
+    /// different ids.
+    pub fn recipe(&self) -> Option<&crate::Recipe> {
+        self.recipe.as_ref()
+    }
+
     /// Every token in id order: special tokens first, then pieces.
     ///
     /// Specials lead so an `[UNK]` gets a low, stable id — the layout a
@@ -95,10 +104,14 @@ impl WordPieceVocab {
 
     /// Build one directly from a token list, for a caller holding a vocabulary
     /// that did not come from this trainer.
+    ///
+    /// It carries no [`Recipe`](crate::Recipe): nothing here says how those
+    /// tokens were cut, and guessing would be worse than admitting it.
     pub fn from_parts(tokens: Vec<String>, special_count: usize) -> Self {
         Self {
             tokens,
             special_count,
+            recipe: None,
         }
     }
 
@@ -300,6 +313,7 @@ impl WordPieceTrainer {
         Ok(WordPieceVocab {
             tokens,
             special_count: self.specials.len(),
+            recipe: counts.recipe().cloned(),
         })
     }
 

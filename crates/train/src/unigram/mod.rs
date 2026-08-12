@@ -70,9 +70,17 @@ pub struct UnigramVocab {
     tokens: Vec<String>,
     scores: Vec<f64>,
     special_count: usize,
+    recipe: Option<crate::Recipe>,
 }
 
 impl UnigramVocab {
+    /// How the corpus this was trained on was cut into words, when that is
+    /// known. See [`Recipe`](crate::Recipe). A SentencePiece model is loaded
+    /// against boundaries the file does not state, so this is what pairs them.
+    pub fn recipe(&self) -> Option<&crate::Recipe> {
+        self.recipe.as_ref()
+    }
+
     /// Every token in id order, specials first.
     pub fn tokens(&self) -> &[String] {
         &self.tokens
@@ -304,6 +312,7 @@ impl UnigramTrainer {
             tokens,
             scores: out_scores,
             special_count: self.config.specials.len(),
+            recipe: counts.recipe().cloned(),
         })
     }
 

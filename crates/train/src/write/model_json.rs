@@ -78,7 +78,13 @@ pub fn wordpiece_json(
         "padding": null,
         "added_tokens": added_tokens(vocab.tokens(), vocab.special_count(), 0),
         "normalizer": normalizer,
-        "pre_tokenizer": { "type": "BertPreTokenizer" },
+        // What actually cut the words, when the vocabulary knows. A file that
+        // declares boundaries it was not trained on is wrong about itself, and
+        // nothing downstream can tell.
+        "pre_tokenizer": match vocab.recipe() {
+            Some(recipe) => recipe.pre_tokenizer_json(),
+            None => json!({ "type": "BertPreTokenizer" }),
+        },
         "post_processor": null,
         "decoder": {
             "type": "WordPiece",
@@ -127,12 +133,26 @@ pub fn unigram_json(vocab: &UnigramVocab, options: &UnigramJsonOptions) -> Value
         .map(|(token, score)| json!([token, score]))
         .collect();
 
-    let metaspace = json!({
-        "type": "Metaspace",
-        "replacement": options.replacement.to_string(),
-        "prepend_scheme": if options.prepend_scheme_always { "always" } else { "never" },
-        "split": true,
-    });
+    // A Metaspace pre-tokenizer is only right if the corpus was actually marked
+    // with one, and by the same character. Declaring it otherwise is the failure
+    // measured in `.claude/prep/train-checklist.md`: the segmenter prepends a
+    // marker the vocabulary cannot spell, and every word picks up an unknown.
+    let marker = match vocab.recipe() {
+        Some(recipe) => recipe.word_marker,
+        None => Some(options.replacement),
+    };
+    let metaspace = match marker {
+        Some(replacement) => json!({
+            "type": "Metaspace",
+            "replacement": replacement.to_string(),
+            "prepend_scheme": if options.prepend_scheme_always { "always" } else { "never" },
+            "split": true,
+        }),
+        None => match vocab.recipe() {
+            Some(recipe) => recipe.pre_tokenizer_json(),
+            None => Value::Null,
+        },
+    };
 
     json!({
         "version": "1.0",
