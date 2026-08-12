@@ -78,9 +78,18 @@ impl Utf8Buffer {
             return String::new();
         }
 
-        let result = String::from_utf8_lossy(&self.buffer).into_owned();
-        self.buffer.clear();
-        result
+        // Same move as `scan`'s: `from_utf8_lossy` borrows when valid, but
+        // `into_owned` then copies the whole buffer anyway.
+        match String::from_utf8(std::mem::take(&mut self.buffer)) {
+            Ok(text) => text,
+            Err(error) => {
+                let bytes = error.into_bytes();
+                let result = String::from_utf8_lossy(&bytes).into_owned();
+                self.buffer = bytes;
+                self.buffer.clear();
+                result
+            }
+        }
     }
 
     /// Extract every character the buffer can already decide on.
@@ -126,6 +135,15 @@ impl Utf8Buffer {
     fn scan<E>(&mut self, on_invalid: impl Fn() -> Result<char, E>) -> Result<Option<String>, E> {
         if self.buffer.is_empty() {
             return Ok(None);
+        }
+
+        // Whole buffer valid, which is every token that doesn't split a
+        // character: hand it its allocation instead of copying the text out.
+        // `String::from_utf8` validates once and returns the bytes untouched on
+        // failure, so the scan below sees exactly the buffer it would have.
+        match String::from_utf8(std::mem::take(&mut self.buffer)) {
+            Ok(text) => return Ok(Some(text)),
+            Err(error) => self.buffer = error.into_bytes(),
         }
 
         let mut out = String::new();

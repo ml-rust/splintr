@@ -222,6 +222,11 @@ harness = false
 # itself out with `#![cfg]` the way the integration tests do.
 required-features = ["vocab-llama3"]
 
+[[bench]]
+name = "decode"
+harness = false
+required-features = ["vocab-llama3"]
+
 [profile.release]
 opt-level = 3
 lto = true

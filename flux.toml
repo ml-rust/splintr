@@ -1,0 +1,18 @@
+# Benchmark harness config, shared by `benches/encode.rs` and `benches/decode.rs`.
+
+[runner]
+# On the time-based defaults every benchmark came back `samples: 1, stddev: 0` —
+# one measurement, with no dispersion to judge a difference against. A fixed
+# count takes the samples directly and gives the bootstrap CI something to work
+# with.
+samples = 100
+isolation = "process"
+
+[allocator]
+# Allocation counts are deterministic where timings on a loaded machine are not,
+# so changes are judged on these first. Uniform across benchmarks, so the
+# synthetic ratios are unaffected.
+track = true
+# Decoding legitimately allocates (it returns owned `String`s), so a budget here
+# would be a false gate.
+fail_on_allocation = false

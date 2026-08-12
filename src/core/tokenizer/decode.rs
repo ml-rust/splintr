@@ -98,6 +98,25 @@ impl Tokenizer {
         let mut result = Vec::with_capacity(tokens.len() * 4);
         let state = self.decode_state();
         let rules = state.render();
+
+        // The same shape `DecodeCursor` specializes on: id-keyed surfaces with
+        // no fallback, separator or cleanup, so the render reduces to a lookup.
+        if let Some(map) = rules.plain_by_id() {
+            for &token in tokens {
+                if rules.skips(token) {
+                    continue;
+                }
+                match map.get(token) {
+                    Some(bytes) => result.extend_from_slice(bytes),
+                    None => match rules.special_surface(token) {
+                        Some(text) => result.extend_from_slice(text.as_bytes()),
+                        None => return Err(TokenizerError::InvalidTokenId(token)),
+                    },
+                }
+            }
+            return Ok(result);
+        }
+
         // The one bit of position this byte-level path carries, for the same
         // reason the cursor carries it: a separator is emitted between rendered
         // tokens, never before the first. Inert on this backend, whose rules
@@ -154,19 +173,7 @@ impl Tokenizer {
         tokens: &[u32],
         specials: SpecialDecode,
     ) -> Result<String, TokenizerError> {
-        let state = self.decode_state().with_special_decode(specials);
-        let mut cursor = state.cursor_with_capacity(tokens.len() * 4);
-
-        let emitted = cursor.feed_strict(
-            tokens,
-            |id| Err(TokenizerError::InvalidTokenId(id)),
-            || TokenizerError::Utf8Error,
-        )?;
-
-        let mut text = emitted.unwrap_or_default();
-        text.push_str(&cursor.finish_strict(|| TokenizerError::Utf8Error)?);
-
-        Ok(text)
+        decode_one(&self.decode_state().with_special_decode(specials), tokens)
     }
 
     /// Decode token IDs to a string, replacing invalid UTF-8 with replacement character.
@@ -178,52 +185,76 @@ impl Tokenizer {
     /// [`Infallible`], letting the compiler prove the `Err` arm away rather
     /// than a runtime assertion claiming it.
     pub fn decode_lossy(&self, tokens: &[u32]) -> String {
-        let state = self.decode_state();
-        let mut cursor = state.cursor_with_capacity(tokens.len() * 4);
-
-        let mut text = match cursor.feed(tokens, |_| Ok::<(), Infallible>(())) {
-            Ok(text) => text.unwrap_or_default(),
-            // `Infallible` has no values, so this match has no arms to write.
-            Err(never) => match never {},
-        };
-        text.push_str(&cursor.flush());
-
-        text
+        decode_one_lossy(&self.decode_state(), tokens)
     }
 
     /// Batch decode multiple token lists.
+    ///
+    /// Builds the decode state once for the batch rather than per sequence,
+    /// which matters because this API's workload is many short sequences.
     pub fn decode_batch(&self, token_lists: &[Vec<u32>]) -> Result<Vec<String>, TokenizerError> {
+        let state = self.decode_state();
+
         #[cfg(feature = "rayon")]
         {
             token_lists
                 .par_iter()
-                .map(|tokens| self.decode(tokens))
+                .map(|ids| decode_one(&state, ids))
                 .collect()
         }
         #[cfg(not(feature = "rayon"))]
         {
             token_lists
                 .iter()
-                .map(|tokens| self.decode(tokens))
+                .map(|ids| decode_one(&state, ids))
                 .collect()
         }
     }
 
     /// Batch decode multiple token lists, replacing invalid UTF-8.
     pub fn decode_batch_lossy(&self, token_lists: &[Vec<u32>]) -> Vec<String> {
+        let state = self.decode_state();
+
         #[cfg(feature = "rayon")]
         {
             token_lists
                 .par_iter()
-                .map(|tokens| self.decode_lossy(tokens))
+                .map(|ids| decode_one_lossy(&state, ids))
                 .collect()
         }
         #[cfg(not(feature = "rayon"))]
         {
             token_lists
                 .iter()
-                .map(|tokens| self.decode_lossy(tokens))
+                .map(|ids| decode_one_lossy(&state, ids))
                 .collect()
         }
     }
+}
+
+/// One strict decode against an already-built [`DecodeState`] — the body of
+/// [`Tokenizer::decode_with`], shared with the batch path so the two cannot
+/// decode differently.
+fn decode_one(state: &DecodeState, tokens: &[u32]) -> Result<String, TokenizerError> {
+    let mut cursor = state.cursor_with_capacity(tokens.len() * 4);
+    let emitted = cursor.feed_strict(
+        tokens,
+        |id| Err(TokenizerError::InvalidTokenId(id)),
+        || TokenizerError::Utf8Error,
+    )?;
+    let mut text = emitted.unwrap_or_default();
+    text.push_str(&cursor.finish_strict(|| TokenizerError::Utf8Error)?);
+    Ok(text)
+}
+
+/// The lossy twin of [`decode_one`].
+fn decode_one_lossy(state: &DecodeState, tokens: &[u32]) -> String {
+    let mut cursor = state.cursor_with_capacity(tokens.len() * 4);
+    let mut text = match cursor.feed(tokens, |_| Ok::<(), Infallible>(())) {
+        Ok(text) => text.unwrap_or_default(),
+        // `Infallible` has no values, so this match has no arms to write.
+        Err(never) => match never {},
+    };
+    text.push_str(&cursor.flush());
+    text
 }

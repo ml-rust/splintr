@@ -6,6 +6,18 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [Unreleased]
+
+### Added
+
+- Decode-path benchmarks (`benches/decode.rs`), covering whole-sequence, streaming, lossy-vs-strict and batch decoding.
+
+### Changed
+
+- Decoding hands the UTF-8 buffer's allocation to the string it produces instead of copying the text out of it, on both the whole-sequence and streaming drives.
+- `decode_bytes` takes the plain id-keyed fast path the cursor already used.
+- `decode_batch` and `decode_batch_lossy` build their decode state once per batch rather than once per sequence.
+
 ## [0.19.1] - 2026-08-12
 
 ### Fixed
