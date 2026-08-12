@@ -122,10 +122,15 @@ def load_tokenizers():
     except ImportError:
         print("tiktoken not available")
 
-    # HuggingFace tokenizers - native batch
+    # HuggingFace tokenizers - native batch.
+    #
+    # `Xenova/gpt-4`, not `gpt2`: it is cl100k_base as a `tokenizer.json`, the
+    # same vocabulary splintr and tiktoken load above. Comparing against gpt2
+    # would be comparing a 50k vocabulary with a different pre-tokenizer
+    # against a 100k one and calling the difference throughput.
     try:
         from tokenizers import Tokenizer as HFTokenizer
-        hf_enc = HFTokenizer.from_pretrained("gpt2")
+        hf_enc = HFTokenizer.from_pretrained("Xenova/gpt-4")
 
         def hf_encode_batch(texts):
             return [e.ids for e in hf_enc.encode_batch(texts)]
@@ -152,6 +157,31 @@ def load_tokenizers():
         print(f"tokendagger not available: {e}")
 
     return tokenizers
+
+
+def verify_ids(tokenizers: dict) -> None:
+    """Refuse to time engines that disagree on ids.
+
+    Every engine here encodes the same vocabulary, so their ids must match
+    exactly. Two engines producing different tokens are two different
+    workloads, and charting them against each other measures the difference in
+    work, not in speed. `tiktoken` is the reference because it is the one that
+    defines `cl100k_base`.
+    """
+    reference = tokenizers.get("tiktoken")
+    if reference is None:
+        print("\nNo tiktoken loaded; skipping the id parity check.")
+        return
+
+    probe = [SAMPLE_TEXT, SAMPLE_TEXT[:200], "def f(x): return x ** 2  # 中文, Ελληνικά"]
+    want = reference(probe)
+    for name, encode_batch in tokenizers.items():
+        if encode_batch(probe) != want:
+            raise SystemExit(
+                f"{name} disagrees with tiktoken — same vocabulary, different ids. "
+                "Fix the loader before reading any timing."
+            )
+    print(f"\nId parity: {len(tokenizers)} engines agree on {len(probe)} texts.")
 
 
 def run_benchmarks(tokenizers: dict) -> list[BenchmarkResult]:
@@ -316,6 +346,8 @@ def main():
     if len(tokenizers) < 2:
         print("\nNeed at least 2 tokenizers for comparison")
         return
+
+    verify_ids(tokenizers)
 
     results = run_benchmarks(tokenizers)
 

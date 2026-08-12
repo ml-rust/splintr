@@ -145,10 +145,15 @@ def load_tokenizers():
     except ImportError:
         print("tiktoken not available")
 
-    # HuggingFace tokenizers
+    # HuggingFace tokenizers.
+    #
+    # `Xenova/gpt-4`, not `gpt2`: it is cl100k_base as a `tokenizer.json`, the
+    # same vocabulary splintr and tiktoken load above. Comparing against gpt2
+    # would be comparing a 50k vocabulary with a different pre-tokenizer
+    # against a 100k one and calling the difference throughput.
     try:
         from tokenizers import Tokenizer as HFTokenizer
-        hf_enc = HFTokenizer.from_pretrained("gpt2")
+        hf_enc = HFTokenizer.from_pretrained("Xenova/gpt-4")
 
         def hf_encode(text):
             return hf_enc.encode(text).ids
@@ -175,6 +180,30 @@ def load_tokenizers():
         print(f"tokendagger not available: {e}")
 
     return tokenizers
+
+
+def verify_ids(tokenizers: dict) -> None:
+    """Refuse to time engines that disagree on ids.
+
+    Every engine here encodes the same vocabulary, so their ids must match
+    exactly. Two engines producing different tokens are two different
+    workloads, and charting them against each other measures the difference in
+    work, not in speed. `tiktoken` is the reference because it is the one that
+    defines `cl100k_base`.
+    """
+    reference = tokenizers.get("tiktoken")
+    if reference is None:
+        print("\nNo tiktoken loaded; skipping the id parity check.")
+        return
+
+    for name, encode in tokenizers.items():
+        for label, text in SAMPLE_TEXTS.items():
+            if encode(text) != reference(text):
+                raise SystemExit(
+                    f"{name} disagrees with tiktoken on {label!r} — same vocabulary, "
+                    "different ids. Fix the loader before reading any timing."
+                )
+    print(f"\nId parity: {len(tokenizers)} engines agree on all {len(SAMPLE_TEXTS)} texts.")
 
 
 def run_benchmarks(tokenizers: dict) -> list[BenchmarkResult]:
@@ -435,6 +464,8 @@ def main():
         return
 
     # Run main benchmarks
+    verify_ids(tokenizers)
+
     results = run_benchmarks(tokenizers)
 
     # Generate charts

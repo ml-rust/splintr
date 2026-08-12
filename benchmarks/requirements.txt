@@ -1,0 +1,12 @@
+# Pinned so a re-run measures the same comparison the README quotes.
+#
+# The reference libraries are the versions the published numbers were taken
+# against; bump them deliberately and re-run both scripts together, rather than
+# letting a resolver decide and leaving the README describing a run nobody can
+# reproduce.
+tiktoken==0.13.0
+tokenizers==0.23.1
+
+# Charting only.
+matplotlib>=3.10
+numpy>=2.0
