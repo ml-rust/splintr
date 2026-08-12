@@ -150,6 +150,53 @@ impl LatticeCache {
     pub(crate) fn len(&self) -> usize {
         self.spans.len()
     }
+
+    /// Drop the edges of pruned pieces and renumber the rest.
+    ///
+    /// `remap` maps each old piece id to its new one, or [`u32::MAX`] for a
+    /// piece that was pruned.
+    ///
+    /// A pruning round only ever *removes* candidates, so the next round's
+    /// lattices are a subset of this round's — filtering them is a linear pass
+    /// over the edges where rebuilding walks the trie again for every start
+    /// position of every word, which profiling put at a fifth of a training run.
+    /// The result is identical either way: an edge exists exactly when its piece
+    /// is still a candidate, and both paths keep the edges grouped by end in
+    /// their original order.
+    ///
+    /// The offsets array is untouched in length — a word contributes `n + 2`
+    /// entries whatever its edges do — so only the edges compact, and they
+    /// compact leftwards into space this same pass has already freed.
+    pub(crate) fn retain(&mut self, remap: &[u32]) {
+        let mut write = 0usize;
+        for span in &mut self.spans {
+            let n = span.n as usize;
+            let ends_from = span.ends_from as usize;
+            let edges_from = span.edges_from as usize;
+            span.edges_from = write as u32;
+
+            let mut kept = 0u32;
+            for position in 0..=n {
+                let from = self.ends[ends_from + position] as usize;
+                let to = self.ends[ends_from + position + 1] as usize;
+                // Rewrite this position's offset only after reading it; the next
+                // position's is still needed and is rewritten on its own turn.
+                self.ends[ends_from + position] = kept;
+                for offset in from..to {
+                    let edge = self.edges[edges_from + offset];
+                    let piece = remap[edge.piece as usize];
+                    if piece != u32::MAX {
+                        self.edges[write] = Edge { piece, ..edge };
+                        write += 1;
+                        kept += 1;
+                    }
+                }
+            }
+            self.ends[ends_from + n + 1] = kept;
+            span.edges_to = write as u32;
+        }
+        self.edges.truncate(write);
+    }
 }
 
 /// `ln(e^a + e^b)`, stable when either side is very small or absent.

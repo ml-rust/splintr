@@ -262,12 +262,12 @@ impl UnigramTrainer {
 
         let mut scratch = Scratch::default();
         let mut cache = LatticeCache::default();
+        // Walked once for the whole run. Every later round narrows these
+        // lattices to its surviving pieces rather than walking the trie again —
+        // see [`LatticeCache::retain`].
+        let mut trie = PieceTrie::build(&piece_texts(&pieces));
+        self.fill_cache(&words, &trie, &mut scratch.builder, &mut cache);
         loop {
-            // Indexed once per round rather than once per pass: the candidate
-            // set only changes when a prune happens, while the EM iterations and
-            // the loss pass below all replay the same lattices.
-            let trie = PieceTrie::build(&piece_texts(&pieces));
-            self.fill_cache(&words, &trie, &mut scratch.builder, &mut cache);
             for _ in 0..self.config.em_iterations.max(1) {
                 self.expectation_maximization(
                     &words,
@@ -282,18 +282,17 @@ impl UnigramTrainer {
             }
             let keep = ((pieces.len() as f64 * self.config.shrink_factor) as usize).max(target);
             let losses = self.losses(&words, &pieces, &scores, &mut scratch, &cache, &trie);
-            let before = pieces.len();
-            self.prune(&mut pieces, &mut scores, &losses, required, keep);
-            if pieces.len() == before {
+            let Some(remap) = self.prune(&mut pieces, &mut scores, &losses, required, keep) else {
                 // Nothing could be dropped — every remaining piece is required.
                 break;
-            }
+            };
+            cache.retain(&remap);
+            trie = PieceTrie::build(&piece_texts(&pieces));
         }
 
         // A last EM pass so the scores describe the vocabulary actually shipped
-        // rather than the one before the final cut.
-        let trie = PieceTrie::build(&piece_texts(&pieces));
-        self.fill_cache(&words, &trie, &mut scratch.builder, &mut cache);
+        // rather than the one before the final cut. The cache already describes
+        // it: whatever ended the loop left the two in step.
         self.expectation_maximization(&words, &pieces, &mut scores, &mut scratch.lattice, &cache);
 
         let mut tokens = self.config.specials.clone();
@@ -505,9 +504,9 @@ impl UnigramTrainer {
         losses: &[f64],
         required: usize,
         keep: usize,
-    ) {
+    ) -> Option<Vec<u32>> {
         if pieces.len() <= keep {
-            return;
+            return None;
         }
         let mut ranked: Vec<usize> = (required..pieces.len()).collect();
         // Costliest first; ties by id so the choice is total and reproducible.
@@ -518,6 +517,19 @@ impl UnigramTrainer {
         survives[..required].fill(true);
         for id in ranked {
             survives[id] = true;
+        }
+
+        // Survivors keep their relative order, so a piece's new id is simply how
+        // many survivors precede it. Pruned pieces map to `u32::MAX`.
+        let mut remap = Vec::with_capacity(pieces.len());
+        let mut next = 0u32;
+        for &lives in &survives {
+            if lives {
+                remap.push(next);
+                next += 1;
+            } else {
+                remap.push(u32::MAX);
+            }
         }
 
         let mut id = 0;
@@ -532,6 +544,7 @@ impl UnigramTrainer {
             id += 1;
             keep
         });
+        Some(remap)
     }
 }
 
