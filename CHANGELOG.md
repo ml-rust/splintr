@@ -6,37 +6,37 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
-## [Unreleased]
+## [0.19.0] - 2026-08-12
 
 ### Added
 
 - Eight bundled vocabularies: `phi4`, `olmo2`, `llama2` (also `tinyllama`, `vicuna`), `codellama`, `modernbert`, `gemma2`, `gemma3` (also `embeddinggemma`) and `gemma4`. Phi-4 and OLMo-2 ship no payload — both state cl100k_base's ranks.
 - A packed merge-order payload, for a vocabulary whose token ids and merge priority differ. Gemma 4 is the first; a `.tiktoken` rank cannot serve as both.
-- `.mbpe`, a text format stating a BPE vocabulary and its merge order — including each rule's operand split, which is what separates an entry BPE builds from one it can never reach. Specified in `docs/mbpe.md`.
-- Agent-token constants for Gemma 2, 3 and 4 — `gemma2_agent_tokens` and friends in Rust, `GEMMA2_AGENT_TOKENS` and friends in Python. The vocabularies already carried all 54; only the named constants and the tables in `docs/special_tokens.md` were missing.
-- Python: `MISTRAL_V3_PATTERN` and `GPT2_PATTERN`, the two pre-tokenizer expressions
+- `.mbpe`, a text format stating a BPE vocabulary and its merge order, including each rule's operand split — which is what separates an entry BPE can build from one it can never reach. Specified in `docs/mbpe.md`.
+- Agent-token constants for Gemma 2, 3 and 4, in Rust and Python. Those vocabularies already resolved all 54 names; only the named constants were missing.
+- `Tokenizer::with_decode_table`, so a vocabulary can decode ids its encode tables deliberately omit.
+- Python: `MISTRAL_V3_PATTERN` and `GPT2_PATTERN`, the two pre-tokenizer expressions.
+
+### Changed
+
+- **Breaking:** `load_spm_vocab` returns `SpmVocab` instead of a `(pieces, scores)` pair, carrying the piece type `.spm` now records. Two-column files still load, read as `NORMAL`.
+- **Breaking:** a `tokenizer.json` declaring `model.continuing_subword_prefix` is refused instead of silently ignored. Nothing implements it, and ignoring it tokenizes plausibly and wrongly.
+- Bundled vocabularies moved to one `splintr-vocab-*` crate per family, pulled in by the `vocab-*` feature that needs it. Feature names and the `*_VOCAB_PACKED` constants are unchanged.
+- `splintr-vocab-gemma4` ships an `.mbpe` instead of Google's `tokenizer.json`, packing to byte-identical binaries.
+- A `split: false` metaspace vocabulary splits at marker runs where its own tokens prove no id changes, including the whole-document chunk a normalizer-side transform produces.
+- Tekken's pre-tokenizer shares the o200k scanner instead of the regex engine.
+- The cl100k-family scanner picks its branch from the first byte's class instead of trying them in order, and GPT-2's starts each run past the character that chose its branch.
+- The vocabulary probe confirms a slot on its key's hash instead of reading the key.
+- A bit per hashed pair retires the merge lookups that find nothing, without reaching the merge table.
 
 ### Fixed
 
 - `Metaspace` honours `split` and `prepend_scheme`: Mistral is byte-exact.
 - An `lstrip` added token now wins the whitespace run before it against a whitespace added token, as the reference does.
 - `USER_DEFINED` SentencePiece pieces are matched verbatim instead of merged, which needs the piece type the `.spm` format now carries.
-- A vocabulary entry no merge can reach is no longer encodable: the whole-chunk lookup answered `<blockquote>` with one id where merging the same bytes gives three. 6,298 entries in Gemma 4, and it applies to `tokenizer.json` too, except under `ignore_merges`. Decoding is unchanged.
-- `model.end_of_word_suffix` is honoured instead of ignored: CLIP encodes `hello` as `hello</w>`, not the mid-word `hello`. 4,005/4,005 cases match `tokenizers`.
+- A vocabulary entry no merge can reach is no longer encodable: the whole-chunk lookup answered `<blockquote>` with one id where merging the same bytes gives three. Applies to `tokenizer.json` too, except under `ignore_merges`. Decoding is unchanged.
+- `model.end_of_word_suffix` is honoured instead of ignored: CLIP encodes `hello` as `hello</w>`, not the mid-word `hello`.
 - The `from_pretrained` doc example no longer breaks `cargo test --doc` under the `python` feature.
-
-### Changed
-
-- `.spm` gains a piece-type column and `load_spm_vocab` returns `SpmVocab`; two-column files still load, read as `NORMAL`.
-- `splintr-vocab-gemma4` ships an `.mbpe` instead of Google's `tokenizer.json`, packing to byte-identical binaries: the crate goes from 5.2 MB to 1.9 MB.
-- Bundled vocabularies moved to one `splintr-vocab-*` crate per family, pulled in by the `vocab-*` feature that needs it. Enabling one family downloads that family. Feature names and the `*_VOCAB_PACKED` constants are unchanged.
-- A `split: false` metaspace vocabulary splits at marker runs where its own tokens prove no id changes.
-- Tekken's pre-tokenizer shares the o200k scanner instead of the regex engine.
-- The vocabulary probe confirms a slot on its key's hash instead of reading the key.
-- A bit per hashed pair retires the merge lookups that find nothing, without reaching the merge table.
-- The cl100k-family scanner picks its branch from the first byte's class instead of trying them in order: up to 21% fewer instructions.
-- A metaspace vocabulary whose transform sits in the normalizer cuts its one whole-document chunk at marker runs, guarding the cuts its own tokens span: Gemma up to 65% fewer instructions.
-- GPT-2's scanner starts each run past the character that chose its branch instead of re-classifying it: up to 11% fewer instructions.
 
 ## [0.18.0] - 2026-08-11
 
