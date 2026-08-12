@@ -48,6 +48,8 @@ required-features = ["cli"]
 
 [dev-dependencies]
 tempfile = "3.10"
+# The HF parity test reads a committed JSON fixture.
+rustc-hash = "2.0"
 # The round-trip tests load a trained vocabulary back through splintr's own
 # `.tiktoken` loader, which needs a regex backend the default-features-off
 # dependency above deliberately omits.
