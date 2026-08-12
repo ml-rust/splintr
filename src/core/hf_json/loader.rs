@@ -323,8 +323,29 @@ fn build_bpe(
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty());
 
+    // Merge priority comes from the `merges` list, which is independent of token
+    // id (RoBERTa orders them differently from GPT-2). Build a bytes→merge-rank
+    // map so BPE merges in the correct order regardless of id assignment.
+    //
+    // Built here rather than after the encode tables because reachability is
+    // decided by running the merge, and running it needs these ranks.
+    let merge_ranks = match &merge_rules {
+        Some(rules) => parse_merge_ranks(rules, vocab),
+        None => None,
+    };
+
     let unreachable = match &merge_rules {
-        Some(rules) if !ignore_merges => unreachable_tokens(rules, vocab, suffix),
+        Some(rules) if !ignore_merges => unreachable_tokens(
+            rules,
+            vocab,
+            suffix,
+            merge_ranks.as_ref(),
+            // The granularity the encode path will seed at: a HuggingFace merge
+            // list operates on characters unless the vocabulary is ByteLevel,
+            // whose alphabet is its characters and whose surfaces are already in
+            // the mapped space. Same condition as `Tokenizer::bpe_into`'s.
+            !pre.byte_level,
+        ),
         _ => FxHashSet::default(),
     };
 
@@ -410,14 +431,6 @@ fn build_bpe(
         }
         encoder.insert(token.as_bytes(), id);
     }
-
-    // Merge priority comes from the `merges` list, which is independent of token
-    // id (RoBERTa orders them differently from GPT-2). Build a bytes→merge-rank
-    // map so BPE merges in the correct order regardless of id assignment.
-    let merge_ranks = match &merge_rules {
-        Some(rules) => parse_merge_ranks(rules, vocab),
-        None => None,
-    };
 
     // Every id the file states, including the ones the encode tables declined.
     // Built only when something was declined: otherwise the encoder covers the
@@ -626,43 +639,125 @@ fn parse_merge_rules(merges: Option<&RawValue>) -> Option<Vec<(String, usize)>> 
 
 /// The vocabulary entries BPE can neither produce nor build from.
 ///
-/// The json counterpart of `vocab::orphan_ids`, and the same rule: an entry is
-/// unreachable when no merge names it as a result or an operand. Such an entry
-/// must not be encodable — a whole-chunk lookup would answer with one id where
-/// merging the same bytes gives several — while still decoding, which is why
-/// only the encode tables drop it.
+/// The json counterpart of `vocab::orphan_ids`. Such an entry must not be
+/// encodable — a whole-chunk lookup would answer with one id where merging the
+/// same bytes gives several — while still decoding, which is why only the encode
+/// tables drop it.
 ///
-/// Single-symbol entries are never unreachable: a merge joins two non-empty
-/// tokens, so nothing shorter than two symbols can be merged into, and seeding
-/// must keep every one-symbol spelling it might start from. Neither are `<0xNN>`
-/// byte-fallback pieces, which are six characters and frequently named by no
-/// merge, yet are exactly how a raw byte is spelled.
+/// The test is the merge itself: an entry is reachable exactly when merging its
+/// own surface produces it whole ([`merges_to_whole`]). Asking instead whether
+/// some merge *names* the entry is the cheaper question and the wrong one — a
+/// merge list can name an entry the merge ORDER never reaches, and Gemma 4 has
+/// four such entries and NLLB-200 one. See [`merges_to_whole`] for why the
+/// standalone answer settles the question in every context.
 ///
-/// `suffix` widens what counts as one symbol. A model declaring
-/// `end_of_word_suffix` seeds the last character of every word as that character
-/// *plus* the marker, so `1</w>` is a seed spelling exactly as `1` is — CLIP
-/// names 139 of its 256 marked characters in no merge at all, and dropping those
-/// would lose the id for every one-character word spelled with them.
+/// Two kinds of entry skip the test:
+///
+/// - **Seed spellings.** One symbol, which the merge leaves alone by
+///   construction, and which seeding must be able to start from. `suffix`
+///   widens this: a model declaring `end_of_word_suffix` seeds the last
+///   character of every word as that character *plus* the marker, so `1</w>` is
+///   a seed spelling exactly as `1` is — CLIP names 139 of its 256 marked
+///   characters in no merge at all.
+/// - **`<0xNN>` byte-fallback pieces**, which are six characters and frequently
+///   named by no merge, yet are exactly how a raw byte is spelled.
+///
+/// A model declaring `end_of_word_suffix` keeps the name test outright. Its
+/// merge list is keyed by marked spellings, so simulating a merge over a bare
+/// vocabulary entry would be simulating a word that model never builds; CLIP is
+/// the only such vocabulary in the corpus and is verified id-for-id under the
+/// name test.
+/// Vocabulary size at which the reachability pass is worth a thread pool.
+/// Below it the whole pass is a few milliseconds and rayon's spin-up is not.
+#[cfg(feature = "rayon")]
+const MIN_PARALLEL_VOCAB: usize = 16_384;
+
 fn unreachable_tokens<'v>(
     rules: &[(String, usize)],
     vocab: &'v [(Cow<'v, str>, u32)],
     suffix: Option<&str>,
+    ranks: Option<&Encoder>,
+    char_granular: bool,
 ) -> FxHashSet<&'v str> {
-    let mut reachable: FxHashSet<&str> = FxHashSet::default();
-    reachable.reserve(rules.len() * 2);
-    for (merged, split) in rules {
-        reachable.insert(merged.as_str());
-        reachable.insert(&merged[..*split]);
-        reachable.insert(&merged[*split..]);
+    // The name test is kept for a suffixed model, and is the only test
+    // available when the ranks could not be built.
+    let ranks = suffix.is_none().then_some(ranks).flatten();
+
+    // What the merge can produce at all, and from which pair. An entry no merge
+    // results in is one no merge can build — no simulation needed to know that
+    // — and the pair settles the shortest entries the same way. Under the name
+    // test the operands count as reachable too, which is the older, looser rule
+    // kept for the vocabularies that still take it.
+    let mut results: FxHashMap<&str, usize> = FxHashMap::default();
+    let mut named: FxHashSet<&str> = FxHashSet::default();
+    match ranks.is_some() {
+        true => {
+            results.reserve(rules.len());
+            for (merged, split) in rules {
+                results.insert(merged.as_str(), *split);
+            }
+        }
+        false => {
+            named.reserve(rules.len() * 2);
+            for (merged, split) in rules {
+                named.insert(merged.as_str());
+                named.insert(&merged[..*split]);
+                named.insert(&merged[*split..]);
+            }
+        }
     }
+
+    let is_unreachable = |token: &&'v str| -> bool {
+        if is_seed_spelling(token, suffix)
+            || super::super::vocab::is_byte_fallback_piece(token.as_bytes())
+        {
+            return false;
+        }
+        let Some(ranks) = ranks else {
+            return !named.contains(*token);
+        };
+        // Cheap and decisive in one direction: nothing the merge list ever
+        // produces can be reached.
+        let Some(&split) = results.get(*token) else {
+            return true;
+        };
+        // Two symbols, one per operand: seeding produces exactly this rule's
+        // pair, and the rule ranks it, so the merge fires. The commonest shape
+        // in a vocabulary, answered without running anything.
+        let symbols = |s: &str| match char_granular {
+            true => s.chars().count(),
+            false => s.len(),
+        };
+        if symbols(&token[..split]) == 1 && symbols(&token[split..]) == 1 {
+            return false;
+        }
+        !super::super::bpe::merges_to_whole(
+            token.as_bytes(),
+            super::super::bpe::RankLookup::new(ranks),
+            char_granular,
+        )
+    };
+
+    // The merge test runs BPE once per entry, which on a large vocabulary is
+    // the most expensive thing in the load — and every entry is independent, so
+    // it parallelizes exactly. The threshold keeps a small vocabulary off the
+    // thread pool, whose spin-up would cost more than the answer.
+    #[cfg(feature = "rayon")]
+    if ranks.is_some() && vocab.len() >= MIN_PARALLEL_VOCAB {
+        use rayon::prelude::*;
+        return vocab
+            .par_iter()
+            .map(|(token, _)| token.as_ref())
+            .filter(is_unreachable)
+            .collect::<Vec<&'v str>>()
+            .into_iter()
+            .collect();
+    }
+
     vocab
         .iter()
         .map(|(token, _)| token.as_ref())
-        .filter(|token| {
-            !is_seed_spelling(token, suffix)
-                && !reachable.contains(token)
-                && !super::super::vocab::is_byte_fallback_piece(token.as_bytes())
-        })
+        .filter(is_unreachable)
         .collect()
 }
 

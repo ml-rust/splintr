@@ -540,6 +540,22 @@ pub(super) fn merge_and_collect(
 /// instead.
 /// Appends to `out` rather than returning a fresh `Vec`, so a caller encoding
 /// many chunks into one buffer pays no allocation per chunk.
+/// How many symbols the merge leaves, with no interest in what they are.
+///
+/// The question a *reachability* test asks: an entry is one BPE can produce
+/// exactly when merging its own surface leaves a single symbol, and that symbol
+/// is then the entry by construction — merging preserves the concatenation, so
+/// one surviving node spans the whole surface. Nothing needs resolving, which
+/// is why this takes no encoder.
+pub(super) fn merge_and_count(
+    piece: &[u8],
+    nodes: &mut [Node],
+    merge_ranks: RankLookup<'_>,
+    queue: &mut QueueScratch,
+) -> usize {
+    link_and_merge(piece, nodes, merge_ranks, queue)
+}
+
 pub(super) fn merge_and_collect_ids_into(
     piece: &[u8],
     nodes: &mut [Node],

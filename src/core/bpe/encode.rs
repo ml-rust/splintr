@@ -1,7 +1,9 @@
 use crate::core::encoder::Encoder;
+use crate::core::precompiled::utf8_len;
 
 use super::merge::{
-    merge_and_collect, merge_and_collect_ids_into, prefers_scan, QueueScratch, SCAN_SYMBOL_LIMIT,
+    merge_and_collect, merge_and_collect_ids_into, merge_and_count, prefers_scan, QueueScratch,
+    SCAN_SYMBOL_LIMIT,
 };
 use super::nodes::Node;
 use super::ranks::{PairRanks, RankLookup};
@@ -208,6 +210,177 @@ pub(crate) fn byte_pair_encode_ids_seeded_into(
     byte_pair_merge_ids_into(piece, merge_ranks, id_encoder, seeding, out)
 }
 
+/// Byte-pair encoding for a caller that has a byte fallback **configured** but
+/// usually does not need it: ids straight into `out` when the piece needs no
+/// fallback, and the [`Piece`] list when it does.
+///
+/// `None` means the ids are written and there is nothing left to resolve.
+/// `Some(pieces)` means some symbol of the piece is not a token of this
+/// vocabulary, `out` is untouched, and the caller must render the unresolved
+/// spans as it would have anyway.
+///
+/// **Why the id-keyed merge is sound whenever the seeding resolves.** A merge
+/// fires only on a pair the id-keyed rank table names, and that table is built
+/// from vocabulary entries split into vocabulary entries, so a merged node's id
+/// is a vocabulary id by construction. If every seed already had one too, then
+/// every node — before, during and after the merge — carries a real id, and no
+/// `Piece::Unresolved` could arise. HuggingFace's resolve-before-merge order
+/// (see `Tokenizer::bpe_fallback_first`) coincides for the same reason: with no
+/// character substituted, it merges over exactly these symbols.
+///
+/// This is the ordinary case for byte-fallback vocabularies — Llama 2, Code
+/// Llama, Mistral V1/V2, Gemma — whose text is overwhelmingly characters they
+/// contain. Without it they merge byte-keyed, re-hashing a surface that grows
+/// with every merge where the others pair two u32s, which is the whole point of
+/// the id table.
+///
+/// A piece that does need the fallback pays no second seeding pass: the walk
+/// that discovered the missing symbol seeded the node list the byte-keyed merge
+/// then runs over (see [`seed_nodes_pushing`]).
+pub(crate) fn byte_pair_encode_ids_or_pieces(
+    piece: &[u8],
+    merge_ranks: RankLookup<'_>,
+    id_encoder: &Encoder,
+    seeding: Seeding,
+    out: &mut Vec<u32>,
+) -> Option<Vec<Piece>> {
+    // Without the id table there is no id-keyed merge to attempt, and the
+    // byte-keyed one *drops* what it cannot represent — precisely what the
+    // caller must not do. Straight to pieces.
+    let Some(table) = merge_ranks.by_id() else {
+        return Some(byte_pair_encode_pieces_seeded(
+            piece,
+            merge_ranks,
+            id_encoder,
+            seeding == Seeding::Chars,
+        ));
+    };
+    if piece.is_empty() {
+        return None;
+    }
+    // The two fast paths [`byte_pair_encode_pieces_seeded`] opens with,
+    // answering in ids. A single byte the vocabulary lacks is the fallback's
+    // case, not a drop, so it becomes an unresolved piece rather than nothing.
+    if piece.len() == 1 {
+        return match id_encoder.get(piece) {
+            Some(id) => {
+                out.push(id);
+                None
+            }
+            None => Some(vec![Piece::Unresolved { start: 0, len: 1 }]),
+        };
+    }
+    if let Some(id) = id_encoder.get(piece) {
+        out.push(id);
+        return None;
+    }
+
+    with_merge_scratch(|s| {
+        if !seed_nodes_pushing(piece, seeding, &mut s.nodes, table) {
+            // Seeded, minus the ids the byte-keyed merge does not read.
+            return Some(merge_and_collect(
+                piece,
+                &mut s.nodes,
+                merge_ranks.without_ids(),
+                id_encoder,
+                None,
+                &mut s.queue,
+            ));
+        }
+        merge_and_collect_ids_into(
+            piece,
+            &mut s.nodes,
+            merge_ranks,
+            id_encoder,
+            out,
+            &mut s.queue,
+        );
+        None
+    })
+}
+
+/// Whether merging `piece` from its own symbols produces `piece` whole — that
+/// is, whether BPE can ever emit the vocabulary entry this surface spells.
+///
+/// The test the *reachability* of a vocabulary entry turns on. An entry that no
+/// merge names is trivially unreachable, and that much a scan of the merge list
+/// answers; but an entry the merge list *does* name can still be one the merge
+/// ORDER routes around, because the operands that would produce it are consumed
+/// by earlier merges and never meet. Gemma 4's `▁yyyy` is named by both
+/// `▁yy ++ yy` and `▁ ++ yyyy` and is reachable by neither: the far earlier
+/// `▁ ++ y` and `y ++ y` merges have already built `▁y` and `yy`. HuggingFace
+/// emits three ids for that text, so an encode table holding the entry would
+/// answer with one id where BPE gives three — the same disagreement unreachable
+/// entries produce, from a cause the "named by a merge" test cannot see.
+///
+/// Context cannot rescue an entry this refuses. For a node to span exactly this
+/// surface, every merge that built it must lie inside the surface, and which of
+/// those fire is decided by their ranks among themselves; a neighbouring symbol
+/// can only take part in a merge that *crosses* the boundary, which removes an
+/// edge symbol and prevents the entry rather than enabling it. So the standalone
+/// answer is the general one.
+///
+/// **A `<0xNN>` spelling seeds as one symbol.** Byte fallback substitutes an
+/// unrepresentable character with those tokens *before* merging (see
+/// `Tokenizer::bpe_fallback_first`), so a merge list naming `<0x7A> ++ b` is
+/// naming a pair of symbols, not seven characters — and the entry `<0x7A>b` is
+/// reachable, from the input `zb`. Seeding it per character would find no merge
+/// at all and call every such entry unreachable. Recognized by shape, and only
+/// where the vocabulary actually has that token, which is how the rest of the
+/// crate recognizes them.
+pub(crate) fn merges_to_whole(
+    piece: &[u8],
+    merge_ranks: RankLookup<'_>,
+    char_granular: bool,
+) -> bool {
+    with_merge_scratch(|s| {
+        s.nodes.clear();
+        s.nodes.reserve(piece.len());
+        let mut at = 0;
+        while at < piece.len() {
+            let len = match byte_fallback_symbol(&piece[at..], merge_ranks) {
+                true => BYTE_FALLBACK_SPELLING_LEN,
+                false => match char_granular {
+                    true => utf8_len(piece[at]).min(piece.len() - at),
+                    false => 1,
+                },
+            };
+            let index = s.nodes.len();
+            s.nodes.push(Node {
+                prev: index.wrapping_sub(1),
+                next: index + 1,
+                start: at,
+                len,
+                id: u32::MAX,
+            });
+            at += len;
+        }
+        // One symbol is the entry itself, whatever the merge list says; an
+        // empty surface has nothing to decide.
+        if s.nodes.len() <= 1 {
+            return true;
+        }
+        s.nodes
+            .last_mut()
+            .expect("at least two nodes, checked above")
+            .next = usize::MAX;
+        // No ids: the merge reads surfaces here, and the caller is deciding
+        // what the id tables will contain in the first place.
+        merge_and_count(piece, &mut s.nodes, merge_ranks, &mut s.queue) == 1
+    })
+}
+
+/// Bytes in a `<0xNN>` spelling.
+const BYTE_FALLBACK_SPELLING_LEN: usize = 6;
+
+/// Whether `rest` opens with a `<0xNN>` spelling this vocabulary has.
+#[inline]
+fn byte_fallback_symbol(rest: &[u8], merge_ranks: RankLookup<'_>) -> bool {
+    rest.len() >= BYTE_FALLBACK_SPELLING_LEN
+        && crate::core::vocab::is_byte_fallback_piece(&rest[..BYTE_FALLBACK_SPELLING_LEN])
+        && merge_ranks.get(&rest[..BYTE_FALLBACK_SPELLING_LEN]) != u32::MAX
+}
+
 /// [`byte_pair_encode_ids_seeded_into`] for a caller that has already asked the
 /// vocabulary whether the whole piece is one token, and been told no.
 ///
@@ -223,8 +396,37 @@ pub(crate) fn byte_pair_merge_ids_into(
     seeding: Seeding,
     out: &mut Vec<u32>,
 ) {
+    if !byte_pair_merge_ids_attempt(piece, merge_ranks, id_encoder, seeding, out) {
+        byte_pair_merge_ids_into(piece, merge_ranks.without_ids(), id_encoder, seeding, out);
+    }
+}
+
+/// [`byte_pair_merge_ids_into`], reporting an id seeding that did not resolve
+/// rather than retrying on the byte-keyed path.
+///
+/// `false` means one of the piece's symbols is not a token of this vocabulary,
+/// and that **nothing was written** to `out`: seeding runs to completion before
+/// any merge does, so the failure is known before there is anything to emit.
+/// A caller with a byte fallback needs exactly that signal — an unresolvable
+/// symbol is the only reason it must build [`Piece`]s at all.
+///
+/// Always `true` when the lookup carries no id table, since the byte-keyed path
+/// resolves every symbol by construction (dropping what it cannot).
+///
+/// Inlined into [`byte_pair_merge_ids_into`], which is the crate's hottest call
+/// and had this body before the retry was expressed as a return value:
+/// measured, the extra frame costs every family a fifth of a percent for a
+/// branch that is taken almost never.
+#[inline(always)]
+fn byte_pair_merge_ids_attempt(
+    piece: &[u8],
+    merge_ranks: RankLookup<'_>,
+    id_encoder: &Encoder,
+    seeding: Seeding,
+    out: &mut Vec<u32>,
+) -> bool {
     if piece.len() <= 1 {
-        return;
+        return true;
     }
 
     // Merging by id needs an id for every symbol the merge starts from, which
@@ -253,7 +455,7 @@ pub(crate) fn byte_pair_merge_ids_into(
         // take for a short piece: declaring that array costs a kilobyte of
         // stack writes per call, and measured against this path it loses on
         // every script — including the ones whose pieces are short.
-        return with_merge_scratch(|s| {
+        with_merge_scratch(|s| {
             s.nodes.clear();
             s.nodes.reserve(piece.len());
             walk_raw_chars(piece, table, |mut node| {
@@ -274,19 +476,14 @@ pub(crate) fn byte_pair_merge_ids_into(
                 &mut s.queue,
             );
         });
+        return true;
     }
     let symbols = symbol_count(piece, seeding == Seeding::Chars);
     if prefers_scan(piece, symbols) {
         let mut buf = [Node::PLACEHOLDER; SCAN_SYMBOL_LIMIT];
         let nodes = &mut buf[..symbols];
         if !seed_nodes_into(piece, seeding, nodes, merge_ranks.by_id()) {
-            return byte_pair_merge_ids_into(
-                piece,
-                merge_ranks.without_ids(),
-                id_encoder,
-                seeding,
-                out,
-            );
+            return false;
         }
         // The scan never looks at the queue, and an empty `QueueScratch` holds
         // empty buffers, so this allocates nothing — and this branch is chosen
@@ -315,9 +512,10 @@ pub(crate) fn byte_pair_merge_ids_into(
             true
         });
         if !seeded {
-            byte_pair_merge_ids_into(piece, merge_ranks.without_ids(), id_encoder, seeding, out);
+            return false;
         }
     }
+    true
 }
 
 /// How many symbols [`seed_nodes_into`] will produce for `piece`.
@@ -408,6 +606,72 @@ fn walk_raw_chars(piece: &[u8], table: &PairRanks, mut emit: impl FnMut(Node)) {
         }
         at += len;
     }
+}
+
+/// [`seed_nodes_into`] for a caller that expects the seeding to fail sometimes
+/// and wants the nodes either way.
+///
+/// Two differences, both for that caller. Nodes are **pushed** rather than
+/// written into a list sized up front, so the piece is walked once whatever
+/// happens. And an unresolvable symbol does not abandon the walk: it reports
+/// `false` and stops *asking the table*, seeding the rest with no id at all —
+/// which is exactly the node list the byte-keyed merge wants, since that merge
+/// reads surfaces and never looks at an id. So a failed attempt leaves behind
+/// the seeding its fallback would have had to do anyway.
+fn seed_nodes_pushing(
+    piece: &[u8],
+    seeding: Seeding,
+    nodes: &mut Vec<Node>,
+    table: &PairRanks,
+) -> bool {
+    nodes.clear();
+    nodes.reserve(piece.len());
+
+    // Same shape as `seed_nodes_into`: characters when asked for and the piece
+    // is UTF-8, bytes otherwise — the two must agree on what a symbol is, since
+    // the same merge runs over either.
+    let mut push = |start: usize, len: usize, id: u32| {
+        let index = nodes.len();
+        nodes.push(Node {
+            prev: index.wrapping_sub(1),
+            next: index + 1,
+            start,
+            len,
+            id,
+        });
+    };
+    let mut resolved = true;
+    match (seeding == Seeding::Chars)
+        .then(|| std::str::from_utf8(piece).ok())
+        .flatten()
+    {
+        Some(text) => {
+            for (start, c) in text.char_indices() {
+                let len = c.len_utf8();
+                let id = match resolved {
+                    true => table.seed_id(&piece[start..start + len]),
+                    false => u32::MAX,
+                };
+                resolved &= id != u32::MAX;
+                push(start, len, id);
+            }
+        }
+        None => {
+            for (start, &byte) in piece.iter().enumerate() {
+                let id = match (resolved, seeding == Seeding::RawBytes) {
+                    (false, _) => u32::MAX,
+                    (true, true) => table.raw_byte_id(byte),
+                    (true, false) => table.byte_id(byte),
+                };
+                resolved &= id != u32::MAX;
+                push(start, 1, id);
+            }
+        }
+    }
+    if let Some(tail) = nodes.last_mut() {
+        tail.next = usize::MAX;
+    }
+    resolved
 }
 
 fn seed_nodes_reusing(

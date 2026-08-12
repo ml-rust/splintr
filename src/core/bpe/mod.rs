@@ -75,8 +75,8 @@ mod tests;
 
 pub use encode::byte_pair_encode;
 pub(crate) use encode::{
-    byte_pair_encode_pieces_presegmented, byte_pair_encode_pieces_seeded, byte_pair_merge_ids_into,
-    Piece, Seed, Seeding,
+    byte_pair_encode_ids_or_pieces, byte_pair_encode_pieces_presegmented, byte_pair_merge_ids_into,
+    merges_to_whole, Piece, Seed, Seeding,
 };
 pub(crate) use ranks::{merge_ranks, merge_ranks_bytes, BytePairRanks, PairRanks, RankLookup};
 
@@ -87,5 +87,10 @@ pub(crate) use ranks::{merge_ranks, merge_ranks_bytes, BytePairRanks, PairRanks,
 // the tests bind it here.
 #[allow(unused_imports)]
 use encode::byte_pair_encode_with_ranks;
+// The `Piece`-reporting entry point. The encode path reaches it only through
+// [`byte_pair_encode_ids_or_pieces`], which tries the id-keyed merge first, so
+// outside `encode` it is the tests and the intra-doc links that name it.
+#[allow(unused_imports)]
+use encode::byte_pair_encode_pieces_seeded;
 #[allow(unused_imports)]
 use nodes::Node;

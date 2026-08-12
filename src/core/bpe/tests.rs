@@ -909,3 +909,107 @@ mod char_seeding {
             .expect("character seeding must equal byte seeding on every generated string");
     }
 }
+
+/// The entry point byte-fallback vocabularies take: ids when the piece needs no
+/// fallback, pieces when it does.
+///
+/// Its whole reason to exist is that the two answers must be the same answer —
+/// it takes the id-keyed merge on the strength of an argument (every symbol
+/// resolved, so nothing downstream can fail to resolve) rather than by running
+/// the piece-reporting merge and looking. These check the argument against the
+/// implementation it replaces.
+mod ids_or_pieces {
+    use super::*;
+    use crate::core::bpe::byte_pair_encode_ids_or_pieces;
+
+    /// Run both paths over one piece and return them for comparison.
+    fn both(piece: &[u8], seeding: Seeding) -> (Option<Vec<Piece>>, Vec<u32>, Vec<Piece>) {
+        let (merge_ranks, id_encoder) = prop_two_maps();
+        let table = PairRanks::build(&merge_ranks, &id_encoder, None)
+            .expect("this vocabulary is addressable by id");
+        let ranks = RankLookup::new(&merge_ranks).with_ids(Some(&table));
+
+        let mut ids = Vec::new();
+        let pieces = byte_pair_encode_ids_or_pieces(piece, ranks, &id_encoder, seeding, &mut ids);
+        let reference = byte_pair_encode_pieces_seeded(
+            piece,
+            RankLookup::new(&merge_ranks),
+            &id_encoder,
+            seeding == Seeding::Chars,
+        );
+        (pieces, ids, reference)
+    }
+
+    /// A piece of characters the vocabulary has takes the id-keyed merge, and
+    /// gets the piece-reporting merge's answer.
+    #[test]
+    fn a_representable_piece_is_answered_in_ids() {
+        for piece in [&b"abab"[..], b"aaaa", b"abcd", b"a", b"", b"bbba"] {
+            let (pieces, ids, reference) = both(piece, Seeding::Bytes);
+            assert!(
+                pieces.is_none(),
+                "{piece:?} is representable and must not reach the fallback path"
+            );
+            assert_eq!(ids, tokens_only(reference), "diverged on {piece:?}");
+        }
+    }
+
+    /// A piece with a character the vocabulary lacks reports pieces, writes no
+    /// ids, and reports exactly what the piece-reporting merge would have.
+    #[test]
+    fn an_unrepresentable_piece_is_answered_in_pieces() {
+        // `z` is in neither map, alone and in company.
+        for piece in [&b"z"[..], b"az", b"zab", b"abzab", b"zz"] {
+            let (pieces, ids, reference) = both(piece, Seeding::Bytes);
+            assert!(
+                ids.is_empty(),
+                "{piece:?} needs the fallback, so nothing may be written to the id buffer"
+            );
+            assert_eq!(pieces, Some(reference), "diverged on {piece:?}");
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(400))]
+
+    /// Over arbitrary bytes, the two answers agree — ids where the piece
+    /// resolves, and the piece-reporting merge's own output where it does not.
+    ///
+    /// Arbitrary bytes rather than an alphabet, so most generated pieces take
+    /// the fallback path and the boundary between the two is crossed
+    /// constantly.
+    #[test]
+    fn prop_ids_or_pieces_matches_pieces_seeded(
+        piece in prop::collection::vec(any::<u8>(), 0..200),
+        char_granular in any::<bool>()
+    ) {
+        let (merge_ranks, id_encoder) = prop_two_maps();
+        let table = PairRanks::build(&merge_ranks, &id_encoder, None)
+            .expect("this vocabulary is addressable by id");
+        let ranks = RankLookup::new(&merge_ranks).with_ids(Some(&table));
+        let seeding = match char_granular {
+            true => Seeding::Chars,
+            false => Seeding::Bytes,
+        };
+
+        let mut ids = Vec::new();
+        let pieces = byte_pair_encode_ids_or_pieces(&piece, ranks, &id_encoder, seeding, &mut ids);
+        let reference = byte_pair_encode_pieces_seeded(
+            &piece, RankLookup::new(&merge_ranks), &id_encoder, char_granular);
+
+        match pieces {
+            None => {
+                prop_assert!(
+                    !reference.iter().any(|p| matches!(p, Piece::Unresolved { .. })),
+                    "answered in ids, but the piece merge found something unresolved"
+                );
+                prop_assert_eq!(ids, tokens_only(reference));
+            }
+            Some(pieces) => {
+                prop_assert!(ids.is_empty(), "the fallback path must write no ids");
+                prop_assert_eq!(pieces, reference);
+            }
+        }
+    }
+}

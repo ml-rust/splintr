@@ -534,22 +534,25 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
         // `<0xNN>` byte fallback, decoded by reversing the marker.
         PretrainedVocab::Gemma4 => {
             // The decode table comes from the packed bytes rather than from the
-            // encoder, because the two no longer hold the same set: 20,522 of
-            // Gemma 4's entries are reachable by no merge, and while every one
+            // encoder, because the two no longer hold the same set: 6,326 of
+            // Gemma 4's entries are ones BPE cannot reach, and while every one
             // must still decode, encoding into one would answer `<blockquote>`
             // with a single id where BPE gives three.
             let decoder = crate::core::vocab::decoder_from_packed(data)?;
             let rules =
                 crate::core::vocab::load_packed_merge_rules(merges_bytes(vocab)?, &decoder)?;
-            let encoder = crate::core::vocab::load_packed_bpe_without(
-                data,
-                &crate::core::vocab::orphan_ids(&decoder, &rules),
-            )?;
+            // Built before the encode table, which is what it decides: whether
+            // an entry is reachable is a question about the merge, so it takes
+            // the merge's own ranks to answer.
             let ranks = crate::core::bpe::merge_ranks_bytes(
                 rules.iter().map(|rule| rule.result),
                 rules.len(),
                 decoder.iter().map(|(_, bytes)| bytes),
             );
+            let encoder = crate::core::vocab::load_packed_bpe_without(
+                data,
+                &crate::core::vocab::orphan_ids(&decoder, &rules, &ranks),
+            )?;
             let byte_fallback = byte_fallback_from_pieces(&decoder, 3);
             Tokenizer::from_encoder_with_metaspace_decoder(encoder, special, pats[0]).map(|t| {
                 t.with_merge_ranks(ranks)

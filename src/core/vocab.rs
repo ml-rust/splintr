@@ -518,16 +518,24 @@ pub fn load_packed_merge_rules<'a>(
     Ok(rules)
 }
 
-/// The ids no merge can produce and no merge builds from.
+/// The ids BPE can never produce.
 ///
-/// BPE reaches a token in exactly two ways: it is the result of some merge, or
-/// it is an operand that seeding starts from. An entry that is neither is
-/// unreachable — correct BPE will never emit it, whatever the input.
+/// An entry is reachable exactly when merging its own surface produces it whole,
+/// which is what `ranks` is for: the test is a merge, not a scan of the merge
+/// list. Naming is the cheaper question and the wrong one — a merge list can
+/// name an entry the merge ORDER never reaches, because the operands that would
+/// produce it are consumed by earlier merges and never meet. Gemma 4's `▁yyyy`
+/// is named by `▁yy ++ yy` and by `▁ ++ yyyy`, and reachable by neither.
+///
+/// `ranks` is the same bytes→priority map the tokenizer will merge with (see
+/// [`crate::core::bpe::merge_ranks_bytes`]), so this asks precisely the question
+/// the encode path will answer.
 ///
 /// Unreachable entries are not a defect in the vocabulary; they are reserved
 /// ids, markers a caller may emit deliberately, and pieces the trainer kept out
-/// of the merge table on purpose. Gemma 4 has 20,522 of them, `<blockquote>`
-/// and `<unused0>` among them. Decoding must still spell every one.
+/// of the merge table on purpose. Gemma 4 has 6,326 of them, `<blockquote>` and
+/// `<unused0>` among them — 6,322 that no merge names, and four more that the
+/// merge order routes around. Decoding must still spell every one.
 ///
 /// What must not happen is *encoding* into one. The whole-chunk fast path — ask
 /// the vocabulary whether the entire chunk is a token before merging — answers
@@ -548,24 +556,69 @@ pub fn load_packed_merge_rules<'a>(
 ///   `byte_fallback` flag: keeping an entry encodable is the safe direction,
 ///   since the failure this guards against is a merge that should not happen,
 ///   never one that should.
-pub fn orphan_ids(pieces: &Decoder, rules: &[MergeRule<'_>]) -> FxHashSet<u32> {
-    let mut reachable: FxHashSet<&[u8]> = FxHashSet::default();
-    reachable.reserve(rules.len() * 2);
+pub fn orphan_ids(
+    pieces: &Decoder,
+    rules: &[MergeRule<'_>],
+    ranks: &crate::core::encoder::Encoder,
+) -> FxHashSet<u32> {
+    // What the merge can produce at all, and from which pair: an entry no rule
+    // results in is one no merge can build, which settles it without running
+    // anything, and the pair settles the shortest entries the same way.
+    let mut reachable: rustc_hash::FxHashMap<&[u8], usize> = rustc_hash::FxHashMap::default();
+    reachable.reserve(rules.len());
     for rule in rules {
-        let (left, right) = rule.operands();
-        reachable.insert(rule.result);
-        reachable.insert(left);
-        reachable.insert(right);
+        reachable.insert(rule.result, rule.split);
     }
-    pieces
-        .iter()
-        .filter(|(_, bytes)| {
-            !reachable.contains(*bytes)
-                && !is_byte_fallback_piece(bytes)
-                && bytes.iter().filter(|b| !is_utf8_tail(**b)).count() > 1
-        })
-        .map(|(id, _)| id)
-        .collect()
+    let unreachable = |bytes: &[u8]| -> bool {
+        // A one-symbol entry is what seeding starts from, and a `<0xNN>` piece
+        // is how byte fallback spells a raw byte; neither is ever dropped.
+        if is_byte_fallback_piece(bytes) || bytes.iter().filter(|b| !is_utf8_tail(**b)).count() <= 1
+        {
+            return false;
+        }
+        let Some(&split) = reachable.get(bytes) else {
+            return true;
+        };
+        // Two symbols, one per operand: seeding produces exactly this rule's
+        // pair, and the rule ranks it, so the merge fires and the entry is
+        // reachable. The commonest shape in a vocabulary, answered without
+        // running anything.
+        let symbols = |b: &[u8]| b.iter().filter(|b| !is_utf8_tail(**b)).count();
+        let (left, right) = MergeRule {
+            result: bytes,
+            split,
+        }
+        .operands();
+        if symbols(left) == 1 && symbols(right) == 1 {
+            return false;
+        }
+        // A packed vocabulary carrying its own merge order is a HuggingFace
+        // model's, which merges over characters.
+        !crate::core::bpe::merges_to_whole(bytes, crate::core::bpe::RankLookup::new(ranks), true)
+    };
+
+    // One BPE run per entry, and every entry independent — the same parallel
+    // pass the json loader's `unreachable_tokens` makes, for the same reason.
+    #[cfg(feature = "rayon")]
+    {
+        use rayon::prelude::*;
+        let entries: Vec<(u32, &[u8])> = pieces.iter().collect();
+        entries
+            .par_iter()
+            .filter(|(_, bytes)| unreachable(bytes))
+            .map(|(id, _)| *id)
+            .collect::<Vec<u32>>()
+            .into_iter()
+            .collect()
+    }
+    #[cfg(not(feature = "rayon"))]
+    {
+        pieces
+            .iter()
+            .filter(|(_, bytes)| unreachable(bytes))
+            .map(|(id, _)| id)
+            .collect()
+    }
 }
 
 /// Is this the `<0xNN>` spelling SentencePiece gives a raw byte?

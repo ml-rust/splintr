@@ -1,6 +1,6 @@
 use super::super::types::{ByteFallback, Tokenizer};
 use crate::core::bpe::{
-    byte_pair_encode_pieces_presegmented, byte_pair_encode_pieces_seeded, byte_pair_merge_ids_into,
+    byte_pair_encode_ids_or_pieces, byte_pair_encode_pieces_presegmented, byte_pair_merge_ids_into,
     PairRanks, Piece, RankLookup, Seed, Seeding,
 };
 use crate::core::precompiled::utf8_len;
@@ -151,7 +151,25 @@ impl Tokenizer {
             return;
         };
 
-        let pieces = byte_pair_encode_pieces_seeded(bytes, ranks, &self.encoder, char_granular);
+        // A fallback is *configured*, which is not the same as being *needed*:
+        // it is needed only for a character this vocabulary lacks, and ordinary
+        // text is overwhelmingly characters it has. Try the id-keyed merge
+        // first, which reports that case instead of guessing at it — a merge
+        // whose every symbol resolved to an id can leave nothing unresolved, so
+        // the resolution loop below would have found nothing to do. Only the
+        // seeding pass is repeated when it does fire, before any merge work.
+        //
+        // Without this every byte-fallback family merges byte-keyed, re-hashing
+        // a surface that grows with each merge where the others pair two u32s.
+        let seeding = match char_granular {
+            true => Seeding::Chars,
+            false => Seeding::Bytes,
+        };
+        let Some(pieces) =
+            byte_pair_encode_ids_or_pieces(bytes, ranks, &self.encoder, seeding, out)
+        else {
+            return;
+        };
         out.reserve(pieces.len());
 
         // HuggingFace resolves the fallback BEFORE merging, so its `<0xNN>`/
