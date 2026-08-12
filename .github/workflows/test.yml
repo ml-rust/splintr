@@ -70,15 +70,23 @@ jobs:
       # `--locked` builds and `cargo publish` reject it. Anything that runs
       # cargo can do it, including rust-analyzer in the background, so it lands
       # without anyone deciding to commit it.
+      #
+      # The workspace's own crates have no `source` either, legitimately — they
+      # are path members, not registry ones. They are excluded by asking cargo
+      # which crates those are rather than by naming them here: this check
+      # listed only `splintr` until the vocabularies became fifteen crates of
+      # their own, and a list written here goes stale the moment one is added.
       - name: Check Cargo.lock resolves against the registry
         run: |
+          members=$(cargo metadata --format-version 1 --no-deps \
+            | python3 -c 'import json,sys; print("\n".join(p["name"] for p in json.load(sys.stdin)["packages"]))')
           patched=$(awk '
             /^\[\[package\]\]/ { name=""; has_source=0; next }
             /^name = / { gsub(/"/, "", $3); name=$3; next }
             /^source = / { has_source=1; next }
             /^$/ { if (name != "" && !has_source) print name; name=""; next }
             END { if (name != "" && !has_source) print name }
-          ' Cargo.lock | grep -vx "splintr" || true)
+          ' Cargo.lock | grep -vxF "$members" || true)
           if [ -n "$patched" ]; then
             echo "::error::Cargo.lock resolved through a local override: $patched"
             echo "Re-resolve against the registry:"
