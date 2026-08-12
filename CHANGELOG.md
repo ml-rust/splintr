@@ -6,6 +6,12 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [Unreleased]
+
+### Changed
+
+- A vocabulary that declares no pre-tokenizer at all cuts its one whole-document chunk at proven marker runs, which a vocabulary declaring a non-splitting one already did. Llama 2 and Code Llama merged every document whole; their ids are unchanged.
+
 ## [0.19.0] - 2026-08-12
 
 ### Added

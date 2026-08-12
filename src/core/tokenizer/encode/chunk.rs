@@ -43,25 +43,45 @@ impl Tokenizer {
             out.push(rank);
             return;
         }
-        // A metaspace pipeline can hand this a chunk spanning many words, and
-        // merging that whole is the expensive way to the same ids — see
-        // [`RunSplit`].
-        //
-        // Only the pre-tokenizer fork asks. A `Metaspace` node cuts its own text
-        // at the same boundaries before any chunk reaches here, so asking again
-        // would rescan every word to find the cut already taken; and a
-        // ByteLevel vocabulary maps every byte into an alphabet `▁` is not in,
-        // so a marker in a chunk there is not the marker at all. What is left is
-        // the shape Gemma ships: a `Split` pre-tokenizer looking for the space
-        // its own normalizer has already replaced, which therefore splits
-        // nothing.
-        if self.pre_tokenizer.is_some()
-            && !self.use_byte_level
+        // A chunk that spans many words merges to the same ids as those words
+        // merged apart — where the vocabulary proves the cut free — and merging
+        // the whole is the expensive way to get there. See [`RunSplit`].
+        if !self.use_byte_level
+            && self.chunks_may_span_words()
             && self.split_marker_runs_into(bytes, out)
         {
             return;
         }
         self.encode_unresolved_bytes_into(bytes, hash, out);
+    }
+
+    /// Whether a chunk arriving at the merge can hold more than one word, and
+    /// so is worth scanning for a free cut.
+    ///
+    /// Conservative on purpose — it asks whether the pipeline *may* hand over a
+    /// multi-word chunk, and [`Tokenizer::split_marker_runs_into`] and the
+    /// vocabulary proof behind it decide whether any cut is actually taken. Two
+    /// shapes answer yes:
+    ///
+    /// - **A pre-tokenizer engine is attached.** Its stages need not cut at the
+    ///   marker: Gemma declares `Split(" ")` while its own normalizer has
+    ///   already replaced every space with `▁`, so the stage splits nothing and
+    ///   the whole document arrives as one chunk.
+    /// - **Nothing splits at all** — `pre_tokenizer: null`, which distils to
+    ///   [`NO_SPLIT_PATTERN`]. Llama 2 and Code Llama ship exactly this: the
+    ///   metaspace transform lives entirely in the normalizer and no stage
+    ///   follows it. Their documents also arrive whole, and they are the shape
+    ///   that needs this most — a 4 MB document merged as one chunk runs at a
+    ///   fraction of the throughput the same text cut into words does.
+    ///
+    /// A `Metaspace` node answers no, because it has already cut its text at
+    /// these very boundaries and rescanning would look for cuts already taken.
+    /// So does a ByteLevel vocabulary, which maps every byte into an alphabet
+    /// `▁` is not in — a marker found in such a chunk is not the marker at all.
+    #[inline]
+    fn chunks_may_span_words(&self) -> bool {
+        self.pre_tokenizer.is_some()
+            || self.pattern == crate::core::tokenizer::patterns::NO_SPLIT_PATTERN
     }
 
     /// Cut `bytes` at every marker-run start the vocabulary proves free, encode
