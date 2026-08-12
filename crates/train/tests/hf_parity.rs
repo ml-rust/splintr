@@ -19,13 +19,27 @@
 //! since HuggingFace seeds from the characters present where byte seeding would
 //! add all 256.
 //!
+//! The corpus is 250 KB of Latin and Cyrillic text — Cyrillic because it is two
+//! bytes per character, so the merge loop is exercised over characters wider
+//! than a byte. Scripts with very large character inventories are left out on
+//! purpose: several thousand Han characters would exceed the target vocabulary
+//! as an alphabet, leaving nothing to merge and reducing this to a check that
+//! both sides can list the corpus's characters.
+//!
+//! Scale matters here. An earlier version of this fixture ran dry at 101 pieces
+//! and 78 merges, which pins the first few decisions and says nothing about
+//! whether the two implementations still agree once the corpus is thoroughly
+//! merged. It now covers 2000 pieces and 1861 merges, and a separate run
+//! against a live `tokenizers` at a 32000-piece target on 9 MB of text agreed
+//! on all 32000 pieces and all 31673 merges in order.
+//!
 //! A failure here is a finding, not a flake. It means our selection moved, or
 //! theirs did — and either is worth knowing before shipping a vocabulary.
 
 use rustc_hash::FxHashSet;
 use splintr_train::{BpeTrainer, Corpus, PreTok, Seeding};
 
-const VOCAB_SIZE: usize = 500;
+const VOCAB_SIZE: usize = 2000;
 
 fn reference() -> serde_json::Value {
     let text = include_str!("fixtures/hf_bpe_reference.json");

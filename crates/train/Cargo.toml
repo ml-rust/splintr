@@ -14,6 +14,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Tokenizer training for splintr: BPE, WordPiece and Unigram"
 license = "MIT"
+readme = "README.md"
 repository = "https://github.com/ml-rust/splintr"
 homepage = "https://github.com/ml-rust/splintr"
 keywords = ["tokenizer", "bpe", "training", "nlp", "llm"]

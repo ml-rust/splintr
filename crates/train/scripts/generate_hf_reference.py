@@ -7,6 +7,11 @@
 Writes `crates/train/tests/fixtures/hf_bpe_reference.json` from
 `crates/train/tests/fixtures/parity_corpus.txt`.
 
+The corpus is Latin and Cyrillic letters, digits and single spaces — no
+punctuation, so splintr's punctuation-isolating pre-tokenizer and HuggingFace's
+whitespace-only one cut identically, and no large-inventory script, so the seed
+alphabet stays well under the target and there is real merging to compare.
+
 The fixture is committed so the test needs no Python and no network. Run this
 only to refresh it against a newer `tokenizers`, and treat a resulting diff as a
 finding rather than something to paper over: it means either they changed their
@@ -33,7 +38,7 @@ try:
 except ImportError:
     sys.exit("needs `pip install tokenizers`")
 
-VOCAB_SIZE = 500
+VOCAB_SIZE = 2000
 
 fixtures = pathlib.Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 corpus = fixtures / "parity_corpus.txt"

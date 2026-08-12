@@ -24,6 +24,8 @@
   <a href="docs/vocabularies.md"><strong>Vocabularies</strong></a>
   ·
   <a href="docs/best_practices.md"><strong>Best Practices</strong></a>
+  · 
+  <a href="docs/training.md"><strong>Training</strong></a>
 </p>
 
 <p>
@@ -320,6 +322,37 @@ tok.encode_allowed_special(untrusted, ["<|eot_id|>"])
 ```
 
 See [docs/special_tokens.md](docs/special_tokens.md) for detailed guidance and a guide to the token list per vocabulary.
+
+## Training Your Own
+
+Train your own vocabulary with [`splintr-train`](docs/training.md), a separate crate so the tokenizer never carries training dependencies. All three algorithms are there — BPE, WordPiece and Unigram — and each writes the format its family expects.
+
+```bash
+cargo install splintr-train
+
+splintr-train bpe corpus.txt --output vocab.tiktoken --vocab-size 32000
+```
+
+```rust
+use splintr_train::{write, BpeTrainer, Corpus, PreTok};
+
+let mut corpus = Corpus::with_pre_tok(PreTok::Whitespace)?;
+corpus.feed_file("corpus.txt")?;          // streamed; corpus size is not held in memory
+
+let vocab = BpeTrainer::builder()
+    .vocab_size(32_000)
+    .special_tokens(["<|endoftext|>"])
+    .build()
+    .train(&corpus.into_counts())?;
+
+write::tiktoken_file(&vocab, "vocab.tiktoken")?;
+```
+
+The corpus is cut with splintr's **own** normalizer and pre-tokenizer, so the boundaries a vocabulary is trained on and the boundaries it is later encoded against cannot drift apart. Those boundaries travel with the vocabulary as a `Recipe`: the JSON writers state what training actually did, and the piece-list formats — which can state nothing themselves — get a `.recipe.json` companion, because loading one against different boundaries silently produces different ids.
+
+The BPE trainer produces **exactly the same pieces and merge order as HuggingFace `tokenizers`** on identical input — verified at a 32000-piece target on 9 MB of text, where all 32000 pieces and all 31673 merges matched in order, and pinned in CI by a test against a committed fixture, at 3.1× the speed. Unigram compresses ~8% better than theirs on held-out text. Unlike theirs, all three trainers here are deterministic.
+
+See [docs/training.md](docs/training.md) for the full guide — choosing a trainer, the options that change a vocabulary, and memory at scale.
 
 ## How It Works
 

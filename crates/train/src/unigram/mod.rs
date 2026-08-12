@@ -57,8 +57,6 @@ use trie::PieceTrie;
 /// worse. Sixteen is used rather than twelve because the risk is asymmetric —
 /// too small degrades steeply, too large only gradually, and a corpus larger
 /// than any tried here may want more candidates rather than fewer.
-///
-/// The measurements are in `.claude/prep/train-checklist.md`.
 pub const DEFAULT_SEED_MULTIPLE: usize = 16;
 
 /// A trained Unigram vocabulary: pieces and their log-probabilities.

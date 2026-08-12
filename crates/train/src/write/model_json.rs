@@ -134,9 +134,9 @@ pub fn unigram_json(vocab: &UnigramVocab, options: &UnigramJsonOptions) -> Value
         .collect();
 
     // A Metaspace pre-tokenizer is only right if the corpus was actually marked
-    // with one, and by the same character. Declaring it otherwise is the failure
-    // measured in `.claude/prep/train-checklist.md`: the segmenter prepends a
-    // marker the vocabulary cannot spell, and every word picks up an unknown.
+    // with one, and by the same character. Declaring it otherwise costs roughly
+    // twice the tokens, measured: the segmenter prepends a marker the vocabulary
+    // cannot spell, so every word picks up an unknown.
     let marker = match vocab.recipe() {
         Some(recipe) => recipe.word_marker,
         None => Some(options.replacement),
