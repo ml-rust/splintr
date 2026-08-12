@@ -37,7 +37,7 @@ use rustc_hash::FxHashMap;
 
 use crate::corpus::WordCounts;
 use crate::error::TrainError;
-use lattice::Lattice;
+use lattice::{Lattice, LatticeBuilder, LatticeCache};
 use trie::PieceTrie;
 
 /// Candidates to seed per token of the target vocabulary, when
@@ -207,6 +207,13 @@ impl UnigramTrainerBuilder {
     }
 }
 
+/// The reusable scratch a training run threads through its passes.
+#[derive(Default)]
+struct Scratch {
+    lattice: Lattice,
+    builder: LatticeBuilder,
+}
+
 /// Trains a Unigram vocabulary from [`WordCounts`].
 pub struct UnigramTrainer {
     config: UnigramTrainerBuilder,
@@ -253,20 +260,28 @@ impl UnigramTrainer {
             });
         }
 
-        let mut lattice = Lattice::default();
+        let mut scratch = Scratch::default();
+        let mut cache = LatticeCache::default();
         loop {
             // Indexed once per round rather than once per pass: the candidate
             // set only changes when a prune happens, while the EM iterations and
-            // the loss pass below all walk the same one.
+            // the loss pass below all replay the same lattices.
             let trie = PieceTrie::build(&piece_texts(&pieces));
+            self.fill_cache(&words, &trie, &mut scratch.builder, &mut cache);
             for _ in 0..self.config.em_iterations.max(1) {
-                self.expectation_maximization(&words, &pieces, &mut scores, &mut lattice, &trie);
+                self.expectation_maximization(
+                    &words,
+                    &pieces,
+                    &mut scores,
+                    &mut scratch.lattice,
+                    &cache,
+                );
             }
             if pieces.len() <= target {
                 break;
             }
             let keep = ((pieces.len() as f64 * self.config.shrink_factor) as usize).max(target);
-            let losses = self.losses(&words, &pieces, &scores, &mut lattice, &trie);
+            let losses = self.losses(&words, &pieces, &scores, &mut scratch, &cache, &trie);
             let before = pieces.len();
             self.prune(&mut pieces, &mut scores, &losses, required, keep);
             if pieces.len() == before {
@@ -278,7 +293,8 @@ impl UnigramTrainer {
         // A last EM pass so the scores describe the vocabulary actually shipped
         // rather than the one before the final cut.
         let trie = PieceTrie::build(&piece_texts(&pieces));
-        self.expectation_maximization(&words, &pieces, &mut scores, &mut lattice, &trie);
+        self.fill_cache(&words, &trie, &mut scratch.builder, &mut cache);
+        self.expectation_maximization(&words, &pieces, &mut scores, &mut scratch.lattice, &cache);
 
         let mut tokens = self.config.specials.clone();
         let mut out_scores = vec![0.0; self.config.specials.len()];
@@ -299,7 +315,24 @@ impl UnigramTrainer {
     /// how many leading entries are *required* — the single characters, which
     /// pruning may never touch because dropping one makes some word
     /// unsegmentable.
-    #[allow(clippy::type_complexity)]
+    /// Build every word's lattice once, for the candidate set `trie` holds.
+    ///
+    /// Called once per pruning round. Everything downstream replays these edges
+    /// rather than walking the trie again — see [`LatticeCache`].
+    fn fill_cache(
+        &self,
+        words: &[(&str, u64)],
+        trie: &PieceTrie,
+        builder: &mut LatticeBuilder,
+        cache: &mut LatticeCache,
+    ) {
+        cache.clear();
+        for (word, _) in words {
+            builder.build(word, self.config.max_piece_chars, trie);
+            cache.push(builder);
+        }
+    }
+
     /// How many candidates to start from, resolved against the target size.
     fn seed_pool(&self, target: usize) -> usize {
         self.config
@@ -351,10 +384,16 @@ impl UnigramTrainer {
         // Ranked by count times length: what a piece is worth is how much text
         // it covers, not how often it appears. Ties broken by spelling so the
         // pool does not depend on hash order.
-        candidates.sort_by(|a, b| {
-            let left = a.1 * a.0.chars().count() as u64;
-            let right = b.1 * b.0.chars().count() as u64;
-            right.cmp(&left).then_with(|| a.0.cmp(&b.0))
+        //
+        // The key is computed once per candidate rather than inside the
+        // comparator: counting the characters of a string is a walk, and doing
+        // it on both sides of every comparison made it 3% of all training
+        // instructions on its own.
+        candidates.sort_by_cached_key(|(text, count)| {
+            (
+                std::cmp::Reverse(count * text.chars().count() as u64),
+                text.clone(),
+            )
         });
         candidates.truncate(pool.saturating_sub(required));
 
@@ -377,16 +416,16 @@ impl UnigramTrainer {
         pieces: &[(String, u64)],
         scores: &mut [f64],
         lattice: &mut Lattice,
-        trie: &PieceTrie,
+        cache: &LatticeCache,
     ) {
         let mut expected = vec![0.0f64; pieces.len()];
-        for (word, frequency) in words {
-            let n = lattice.build(word, self.config.max_piece_chars, trie);
-            if n == 0 || !lattice.is_connected(n) {
+        for (index, (_, frequency)) in words.iter().enumerate() {
+            let view = cache.view(index);
+            if view.n == 0 || !view.is_connected() {
                 continue;
             }
             let weight = *frequency as f64;
-            lattice.expectations(n, scores, |piece, expectation| {
+            lattice.expectations(view, scores, |piece, expectation| {
                 expected[piece as usize] += expectation * weight;
             });
         }
@@ -417,19 +456,21 @@ impl UnigramTrainer {
         words: &[(&str, u64)],
         pieces: &[(String, u64)],
         scores: &[f64],
-        lattice: &mut Lattice,
+        scratch: &mut Scratch,
+        cache: &LatticeCache,
         trie: &PieceTrie,
     ) -> Vec<f64> {
+        let Scratch { lattice, builder } = scratch;
         // How often each piece is actually chosen.
         let mut uses = vec![0.0f64; pieces.len()];
         let mut path = Vec::new();
-        for (word, frequency) in words {
-            let n = lattice.build(word, self.config.max_piece_chars, trie);
-            if n == 0 || !lattice.is_connected(n) {
+        for (index, (_, frequency)) in words.iter().enumerate().take(cache.len()) {
+            let view = cache.view(index);
+            if view.n == 0 || !view.is_connected() {
                 continue;
             }
             path.clear();
-            lattice.viterbi(n, scores, &mut path);
+            lattice.viterbi(view, scores, &mut path);
             for &piece in &path {
                 uses[piece as usize] += *frequency as f64;
             }
@@ -442,8 +483,8 @@ impl UnigramTrainer {
             if uses[id] == 0.0 {
                 continue;
             }
-            let n = lattice.build(text, self.config.max_piece_chars, trie);
-            let alternative = lattice.viterbi_excluding(n, scores, id as u32);
+            builder.build(text, self.config.max_piece_chars, trie);
+            let alternative = lattice.viterbi_excluding(builder.view(), scores, id as u32);
             let penalty = if alternative.is_finite() {
                 scores[id] - alternative
             } else {
