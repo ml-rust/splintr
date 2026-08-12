@@ -37,6 +37,41 @@ pub fn tiktoken_file(vocab: &TrainedVocab, path: impl AsRef<Path>) -> Result<(),
     Ok(())
 }
 
+/// What a `.tiktoken` file cannot say about itself: the boundaries its ranks
+/// were trained against, and the special tokens that sit above them.
+///
+/// Loading a rank file with a different pre-tokenizer produces different ids and
+/// reports nothing, so this is the companion that makes the pair reproducible.
+/// `None` when the vocabulary carries no [`Recipe`](crate::Recipe) — a
+/// hand-assembled `PreTokenizer` cannot be written back down.
+pub fn recipe_json(vocab: &TrainedVocab) -> Option<serde_json::Value> {
+    let recipe = vocab.recipe()?;
+    Some(serde_json::json!({
+        "pre_tokenizer": recipe.pre_tokenizer_json(),
+        "pattern": recipe.pattern(),
+        "word_marker": recipe.word_marker.map(String::from),
+        "special_tokens": vocab.specials(),
+    }))
+}
+
+/// [`recipe_json`], written beside a `.tiktoken` file.
+///
+/// Returns whether anything was written — a vocabulary with no recorded recipe
+/// has nothing to say here.
+///
+/// # Errors
+/// [`TrainError::Io`] if the file cannot be written.
+pub fn recipe_json_file(vocab: &TrainedVocab, path: impl AsRef<Path>) -> Result<bool, TrainError> {
+    let Some(value) = recipe_json(vocab) else {
+        return Ok(false);
+    };
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    file.write_all(serde_json::to_string_pretty(&value)?.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

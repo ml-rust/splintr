@@ -29,5 +29,5 @@ pub use model_json::{
     WordPieceJsonOptions,
 };
 pub use spm::{spm, spm_file};
-pub use tiktoken::{tiktoken, tiktoken_file};
+pub use tiktoken::{recipe_json, recipe_json_file, tiktoken, tiktoken_file};
 pub use vocab_txt::{vocab_txt, vocab_txt_file};

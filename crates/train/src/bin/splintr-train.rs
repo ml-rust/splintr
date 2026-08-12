@@ -151,7 +151,12 @@ fn run() -> Result<(), TrainError> {
             report(&output, vocab.pieces().len() + vocab.specials().len());
             if extension(&output) != "json" {
                 // A rank file carries no pattern, and loading it with the wrong
-                // one silently produces different ids.
+                // one silently produces different ids — so the recipe is written
+                // beside it rather than left for the user to remember.
+                let sidecar = output.with_extension(format!("{}.recipe.json", extension(&output)));
+                if write::recipe_json_file(&vocab, &sidecar)? {
+                    println!("recipe (needed to load this file): {}", sidecar.display());
+                }
                 println!("pattern (needed to load this file): {}", pattern(&common));
             }
         }

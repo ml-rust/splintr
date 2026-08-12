@@ -68,6 +68,59 @@ impl PreTok {
     }
 }
 
+/// How a corpus was cut into words.
+///
+/// A vocabulary is only meaningful against the boundaries it was trained on. A
+/// `.tiktoken` rank file states none of them, and loading one with the wrong
+/// pre-tokenizer produces different ids with no error anywhere — so the recipe
+/// travels with the vocabulary rather than being left for a human to carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recipe {
+    pub pre_tok: PreTok,
+    /// The marker prefixed to every word, if any. See
+    /// [`Corpus::with_word_marker`].
+    pub word_marker: Option<char>,
+}
+
+impl Recipe {
+    /// The recipe as the `pre_tokenizer` value of a `tokenizer.json`, or
+    /// `Value::Null` for [`PreTok::None`].
+    pub fn pre_tokenizer_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        match &self.pre_tok {
+            PreTok::None => serde_json::Value::Null,
+            PreTok::ByteLevel => json!({
+                "type": "ByteLevel",
+                "add_prefix_space": false,
+                "trim_offsets": true,
+                "use_regex": true,
+            }),
+            PreTok::Whitespace => json!({
+                "type": "Sequence",
+                "pretokenizers": [
+                    { "type": "WhitespaceSplit" },
+                    { "type": "Punctuation", "behavior": "Isolated" },
+                ],
+            }),
+            PreTok::Pattern(pattern) => json!({
+                "type": "Split",
+                "pattern": { "Regex": pattern },
+                "behavior": "Isolated",
+                "invert": true,
+            }),
+        }
+    }
+
+    /// The pattern a `.tiktoken` file has to be loaded with, for the shapes that
+    /// are expressible as one.
+    pub fn pattern(&self) -> Option<&str> {
+        match &self.pre_tok {
+            PreTok::Pattern(pattern) => Some(pattern),
+            _ => None,
+        }
+    }
+}
+
 /// One distinct word: where its bytes end in the arena, and how often it
 /// occurred.
 ///
@@ -111,6 +164,9 @@ pub struct WordCounts {
     /// Open-addressed, linear-probed, always a power of two.
     slots: Vec<u64>,
     total: u64,
+    /// How these words were cut, when that is known and expressible. Counts
+    /// assembled by hand carry none.
+    recipe: Option<Recipe>,
 }
 
 impl WordCounts {
@@ -120,7 +176,13 @@ impl WordCounts {
             entries: Vec::new(),
             slots: Vec::new(),
             total: 0,
+            recipe: None,
         }
+    }
+
+    /// How these words were cut, when it is known. See [`Recipe`].
+    pub fn recipe(&self) -> Option<&Recipe> {
+        self.recipe.as_ref()
     }
 
     /// Preallocate for `words` distinct words, avoiding the rehashes that
@@ -212,7 +274,13 @@ impl WordCounts {
     }
 
     /// Fold another set of counts into this one.
+    ///
+    /// Counts cut two different ways describe no single recipe, so the merged
+    /// result claims none rather than the first one's.
     pub fn merge(&mut self, other: WordCounts) {
+        if self.recipe != other.recipe {
+            self.recipe = None;
+        }
         for (word, count) in other.iter() {
             self.add_n(word, count);
         }
@@ -277,6 +345,9 @@ pub struct Corpus {
     normalizer: Option<Normalizer>,
     pre_tokenizer: Option<PreTokenizer>,
     word_marker: Option<char>,
+    /// Set only when the pre-tokenizer came from a [`PreTok`], since a
+    /// hand-assembled [`PreTokenizer`] cannot be written back down.
+    pre_tok: Option<PreTok>,
     counts: WordCounts,
     /// Reused by [`Corpus::add_word`] so that marking a word does not allocate
     /// once per occurrence.
@@ -296,9 +367,19 @@ impl Corpus {
             normalizer: None,
             pre_tokenizer: None,
             word_marker: None,
+            pre_tok: None,
             counts: WordCounts::new(),
             marked: Vec::new(),
         }
+    }
+
+    /// Stamp the counts with how they were cut, so the recipe reaches the
+    /// vocabulary and the writers.
+    fn stamp(&mut self) {
+        self.counts.recipe = self.pre_tok.clone().map(|pre_tok| Recipe {
+            pre_tok,
+            word_marker: self.word_marker,
+        });
     }
 
     pub fn with_normalizer(mut self, normalizer: Normalizer) -> Self {
@@ -318,6 +399,8 @@ impl Corpus {
     pub fn with_pre_tok(pre_tok: PreTok) -> Result<Self, TrainError> {
         let mut corpus = Self::new();
         corpus.pre_tokenizer = pre_tok.build()?;
+        corpus.pre_tok = Some(pre_tok);
+        corpus.stamp();
         Ok(corpus)
     }
 
@@ -336,6 +419,7 @@ impl Corpus {
     #[must_use]
     pub fn with_word_marker(mut self, marker: char) -> Self {
         self.word_marker = Some(marker);
+        self.stamp();
         self
     }
 

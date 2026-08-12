@@ -58,6 +58,7 @@ pub struct TrainedVocab {
     merges: Vec<(u32, u32)>,
     specials: Vec<String>,
     seeding: Seeding,
+    recipe: Option<crate::corpus::Recipe>,
 }
 
 impl TrainedVocab {
@@ -67,6 +68,7 @@ impl TrainedVocab {
         merges: Vec<(u32, u32)>,
         specials: Vec<String>,
         seeding: Seeding,
+        recipe: Option<crate::corpus::Recipe>,
     ) -> Self {
         Self {
             pieces,
@@ -74,7 +76,15 @@ impl TrainedVocab {
             merges,
             specials,
             seeding,
+            recipe,
         }
+    }
+
+    /// How the corpus this was trained on was cut into words, when that is
+    /// known. See [`Recipe`](crate::Recipe) — a vocabulary loaded against
+    /// different boundaries silently produces different ids.
+    pub fn recipe(&self) -> Option<&crate::corpus::Recipe> {
+        self.recipe.as_ref()
     }
 
     /// Every piece, lowest id first. Index is the id.

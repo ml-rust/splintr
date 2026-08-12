@@ -547,6 +547,7 @@ impl BpeTrainer {
             merges,
             self.specials.clone(),
             self.seeding,
+            counts.recipe().cloned(),
         ))
     }
 

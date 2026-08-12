@@ -85,6 +85,27 @@ pub fn bpe_json(vocab: &TrainedVocab, options: &BpeJsonOptions) -> Result<Value,
         })
         .collect();
 
+    // The recipe the vocabulary was trained under wins over the option. The
+    // option describes what the caller wants the file to claim; the recipe is
+    // what actually cut the words, and a file claiming boundaries it was not
+    // trained on is the failure this exists to prevent.
+    if let Some(recipe) = vocab.recipe() {
+        let pre_tokenizer = recipe.pre_tokenizer_json();
+        let decoder = if matches!(recipe.pre_tok, crate::PreTok::ByteLevel) {
+            pre_tokenizer.clone()
+        } else {
+            Value::Null
+        };
+        return Ok(assemble(
+            vocab,
+            model_vocab,
+            merges,
+            added,
+            pre_tokenizer,
+            decoder,
+        ));
+    }
+
     let (pre_tokenizer, decoder) = if options.byte_level {
         (
             json!({
@@ -99,7 +120,25 @@ pub fn bpe_json(vocab: &TrainedVocab, options: &BpeJsonOptions) -> Result<Value,
         (Value::Null, Value::Null)
     };
 
-    Ok(json!({
+    Ok(assemble(
+        vocab,
+        model_vocab,
+        merges,
+        added,
+        pre_tokenizer,
+        decoder,
+    ))
+}
+
+fn assemble(
+    vocab: &TrainedVocab,
+    model_vocab: Map<String, Value>,
+    merges: Vec<Value>,
+    added: Vec<Value>,
+    pre_tokenizer: Value,
+    decoder: Value,
+) -> Value {
+    json!({
         "version": "1.0",
         "truncation": null,
         "padding": null,
@@ -120,7 +159,7 @@ pub fn bpe_json(vocab: &TrainedVocab, options: &BpeJsonOptions) -> Result<Value,
             "vocab": model_vocab,
             "merges": merges,
         },
-    }))
+    })
 }
 
 fn piece_str(vocab: &TrainedVocab, id: u32) -> Result<&str, TrainError> {
@@ -230,7 +269,82 @@ mod tests {
         };
         let value = bpe_json(&vocab, &options).unwrap();
         assert!(value["pre_tokenizer"].is_null());
+    }
+
+    /// The whole point of the recipe: a vocabulary trained on one set of
+    /// boundaries cannot be written out claiming another, however the options
+    /// are set. Before this, `byte_level: true` here would have produced a file
+    /// declaring a pre-tokenizer the vocabulary was never trained under.
+    #[test]
+    fn the_training_recipe_overrides_the_requested_pre_tokenizer() {
+        use crate::{Corpus, PreTok};
+
+        let mut corpus = Corpus::with_pre_tok(PreTok::Whitespace).unwrap();
+        corpus.feed("the cat sat on the mat the cat");
+        let counts = corpus.into_counts();
+        let vocab = BpeTrainer::builder()
+            .vocab_size(300)
+            .min_frequency(1)
+            .seeding(Seeding::Chars)
+            .build()
+            .train(&counts)
+            .unwrap();
+
+        assert_eq!(
+            vocab.recipe().map(|r| &r.pre_tok),
+            Some(&PreTok::Whitespace)
+        );
+
+        let options = BpeJsonOptions {
+            byte_level: true,
+            ..Default::default()
+        };
+        let value = bpe_json(&vocab, &options).unwrap();
+        assert_eq!(value["pre_tokenizer"]["type"], "Sequence");
+        assert_eq!(
+            value["pre_tokenizer"]["pretokenizers"][0]["type"],
+            "WhitespaceSplit"
+        );
+        // Only a byte-level vocabulary gets a byte-level decoder.
         assert!(value["decoder"].is_null());
+    }
+
+    /// A pattern-trained vocabulary states its pattern, which is what a
+    /// `.tiktoken` needs and cannot hold.
+    #[test]
+    fn a_pattern_recipe_reaches_the_sidecar() {
+        use crate::{write::recipe_json, Corpus, PreTok};
+
+        let pattern = r"\s*\S+";
+        let mut corpus = Corpus::with_pre_tok(PreTok::Pattern(pattern.into())).unwrap();
+        corpus.feed("the cat sat on the mat the cat");
+        let counts = corpus.into_counts();
+        let vocab = BpeTrainer::builder()
+            .vocab_size(300)
+            .min_frequency(1)
+            .special_tokens(["<eos>"])
+            .build()
+            .train(&counts)
+            .unwrap();
+
+        let sidecar = recipe_json(&vocab).expect("a PreTok-built corpus records its recipe");
+        assert_eq!(sidecar["pattern"], pattern);
+        assert_eq!(sidecar["special_tokens"][0], "<eos>");
+        assert_eq!(sidecar["pre_tokenizer"]["type"], "Split");
+    }
+
+    /// Counts assembled by hand describe no recipe, and must not invent one.
+    #[test]
+    fn hand_built_counts_carry_no_recipe() {
+        let counts: WordCounts = [(b"low".to_vec(), 5u64)].into_iter().collect();
+        let vocab = BpeTrainer::builder()
+            .vocab_size(300)
+            .min_frequency(1)
+            .build()
+            .train(&counts)
+            .unwrap();
+        assert!(vocab.recipe().is_none());
+        assert!(crate::write::recipe_json(&vocab).is_none());
     }
 
     #[test]
