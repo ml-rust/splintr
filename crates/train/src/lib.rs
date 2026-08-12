@@ -70,7 +70,7 @@ pub(crate) mod wordpiece;
 pub mod write;
 
 pub use bpe::{BpeTrainer, BpeTrainerBuilder, Criterion};
-pub use corpus::{Corpus, WordCounts, METASPACE};
+pub use corpus::{Corpus, PreTok, WordCounts, METASPACE};
 pub use error::TrainError;
 pub use unigram::{UnigramTrainer, UnigramTrainerBuilder, UnigramVocab};
 pub use vocab::{Seeding, TrainedVocab};

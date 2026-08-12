@@ -1375,6 +1375,7 @@ name = "splintr-train"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "clap",
  "rayon",
  "rustc-hash",
  "serde_json",

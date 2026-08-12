@@ -12,9 +12,59 @@
 //! later encoded against come from one implementation, so they cannot drift.
 
 use rustc_hash::FxHashMap;
-use splintr::{Normalizer, PreTokenizer};
+use splintr::{Normalizer, PreTokStage, PreTokenizer, SplitBehavior, SplitPattern};
 
 use crate::error::TrainError;
+
+/// The pre-tokenizer shapes worth naming, so a caller does not have to assemble
+/// a stage list to get an ordinary one.
+///
+/// [`PreTokenizer`] itself is still accepted by
+/// [`Corpus::with_pre_tokenizer`] for anything these do not cover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreTok {
+    /// Split on whitespace and isolate punctuation. The word-level default.
+    Whitespace,
+    /// GPT-2 byte level: pieces come out already mapped into the byte-level
+    /// alphabet, so train them with [`Seeding::Chars`](crate::Seeding::Chars).
+    ByteLevel,
+    /// Split with a regex, tiktoken-style — the expression matches the pieces
+    /// themselves rather than the separators.
+    Pattern(String),
+    /// No splitting at all: a document is one word. Rarely wanted, since BPE
+    /// will then merge straight across word boundaries.
+    None,
+}
+
+impl PreTok {
+    /// Compile to a [`PreTokenizer`], or `None` for [`PreTok::None`].
+    ///
+    /// # Errors
+    /// [`TrainError::PreTokenizer`] if a [`PreTok::Pattern`] does not compile.
+    pub fn build(&self) -> Result<Option<PreTokenizer>, TrainError> {
+        let stages = match self {
+            PreTok::None => return Ok(None),
+            PreTok::Whitespace => vec![
+                PreTokStage::WhitespaceSplit,
+                PreTokStage::Punctuation {
+                    behavior: SplitBehavior::Isolated,
+                },
+            ],
+            PreTok::ByteLevel => vec![PreTokStage::ByteLevel {
+                use_regex: true,
+                add_prefix_space: false,
+            }],
+            PreTok::Pattern(pattern) => vec![PreTokStage::Split {
+                pattern: SplitPattern::Regex(pattern.clone()),
+                behavior: SplitBehavior::Isolated,
+                // The expression names the pieces, so the spans *between*
+                // matches are the separators.
+                invert: true,
+            }],
+        };
+        Ok(Some(PreTokenizer::new(stages)?))
+    }
+}
 
 /// Words and their frequencies, the input every trainer takes.
 ///
@@ -122,6 +172,16 @@ impl Corpus {
     pub fn with_pre_tokenizer(mut self, pre_tokenizer: PreTokenizer) -> Self {
         self.pre_tokenizer = Some(pre_tokenizer);
         self
+    }
+
+    /// A reader using one of the named [`PreTok`] shapes.
+    ///
+    /// # Errors
+    /// [`TrainError::PreTokenizer`] if a [`PreTok::Pattern`] does not compile.
+    pub fn with_pre_tok(pre_tok: PreTok) -> Result<Self, TrainError> {
+        let mut corpus = Self::new();
+        corpus.pre_tokenizer = pre_tok.build()?;
+        Ok(corpus)
     }
 
     /// Mark the start of every word with [`METASPACE`], the SentencePiece
@@ -296,6 +356,23 @@ mod tests {
             .collect();
         assert!(words.contains(&"\u{2581}the".to_string()), "got {words:?}");
         assert!(words.contains(&"\u{2581}cat".to_string()), "got {words:?}");
+    }
+
+    /// Every named shape compiles, so the CLI cannot offer one that fails only
+    /// when a user picks it.
+    #[test]
+    fn every_named_pre_tokenizer_builds() {
+        assert!(PreTok::Whitespace.build().unwrap().is_some());
+        assert!(PreTok::ByteLevel.build().unwrap().is_some());
+        assert!(PreTok::Pattern(r"\s*\S+".into()).build().unwrap().is_some());
+        assert!(PreTok::None.build().unwrap().is_none());
+    }
+
+    /// A pattern that does not compile is reported rather than silently
+    /// dropping the stage, which would change the ids with nothing to point at.
+    #[test]
+    fn a_broken_pattern_is_an_error() {
+        assert!(PreTok::Pattern("(unclosed".into()).build().is_err());
     }
 
     #[test]
