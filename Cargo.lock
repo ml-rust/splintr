@@ -1135,9 +1135,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "regexr"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86a1349fbb85141d3c4fbb05249ae2060c4f79de1fa279ac81ee1cba645d47df"
+checksum = "4517eabcacff4d42a9242a75b867b37d54593beec2a427b514bfb646bb32c2c7"
 dependencies = [
  "aho-corasick",
  "dynasm",

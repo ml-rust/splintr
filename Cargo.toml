@@ -187,7 +187,7 @@ memchr = "2.7"
 # LRU cache for frequent token sequences
 lru = "0.18"
 # regexr regex engine (default backend)
-regexr = { version = "0.3.2", default-features = false }
+regexr = { version = "0.4", default-features = false }
 # Unicode normalization for WordPiece accent stripping
 unicode-normalization = "0.1"
 # Grapheme clustering for `CharsmapDialect::HuggingFace`. Same crate
