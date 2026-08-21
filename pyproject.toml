@@ -38,7 +38,13 @@ python-source = "python"
 # crate has no other business there. Name the pure-Python half here so the
 # sdist carries it regardless, rather than relying on `python-source` being
 # swept in by some other path.
-include = [{ path = "python/splintr/**/*.py", format = "sdist" }]
+include = [
+    { path = "python/splintr/**/*.py", format = "sdist" },
+    { path = "python/splintr/**/*.pyi", format = "sdist" },
+    { path = "python/splintr/**/*.pyi", format = "wheel" },
+    { path = "python/splintr/py.typed", format = "sdist" },
+    { path = "python/splintr/py.typed", format = "wheel" },
+]
 module-name = "splintr._core"
 bindings = "pyo3"
 # `python` pulls in `vocabs` (see Cargo.toml), so the wheel carries every
