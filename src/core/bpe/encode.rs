@@ -534,21 +534,16 @@ fn symbol_count(piece: &[u8], char_granular: bool) -> usize {
         return piece.len();
     }
     let mut count = 0usize;
-    let mut chunks = piece.chunks_exact(8);
-    for chunk in &mut chunks {
+    let (chunks, remainder) = piece.as_chunks::<8>();
+    for chunk in chunks {
         // A continuation byte is `0b10xxxxxx`. `x & !(x << 1)` leaves the high
         // bit set exactly where a byte has bit 7 set and bit 6 clear, so the
         // ones counted below are the lead and ASCII bytes.
-        let word = u64::from_le_bytes(chunk.try_into().expect("chunks_exact(8) is 8 bytes"));
+        let word = u64::from_le_bytes(*chunk);
         let continuation = word & !(word << 1) & 0x8080_8080_8080_8080;
         count += 8 - continuation.count_ones() as usize;
     }
-    count
-        + chunks
-            .remainder()
-            .iter()
-            .filter(|&&b| b & 0xC0 != 0x80)
-            .count()
+    count + remainder.iter().filter(|&&b| b & 0xC0 != 0x80).count()
 }
 
 /// Seed the linked list: one node per byte, or one node per whole UTF-8
