@@ -101,9 +101,11 @@ jobs:
         run: cargo fmt --all --check
 
       # The agent-token ids exist in four places — the Rust modules, the PyO3
-      # classes, and the tables in docs/special_tokens.md — all emitted from one
-      # table in this script. Regenerating must be a no-op, or one of the four
-      # is stale and callers reading it get an id the tokenizer disagrees with.
+      # classes, the type stub, and the tables in docs/special_tokens.md — all
+      # emitted from one table in this script. Regenerating must be a no-op, or
+      # one of the four is stale and callers reading it get an id the tokenizer
+      # disagrees with. The stub is the worst of the four to let drift: with
+      # `py.typed` shipped, a checker rejects a constant that exists.
       - name: Check generated agent tokens are current
         run: |
           python3 scripts/generate_agent_tokens.py --update-docs --check
@@ -114,6 +116,7 @@ jobs:
           diff -u src/core/tokenizer/agent_tokens_generated.rs \
             /tmp/agent_tokens_generated.rs
           diff -u src/python/agent_tokens_generated.rs /tmp/agent_tokens_py.rs
+          python3 scripts/generate_agent_tokens.py --update-stub --check
 
       - name: Clippy (all targets, all features)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -235,6 +238,18 @@ jobs:
 
       - name: Run the Python test suite
         run: .venv/bin/python -m pytest python/tests -q
+
+      # The wheel ships `py.typed`, so these stubs are what every downstream
+      # type checker reads. `stubtest` imports the built module and compares it
+      # against the stub, which catches the drift a diff cannot: a renamed
+      # method, a property that became a method, a changed default.
+      - name: Check the type stubs against the built module
+        run: |
+          set -euo pipefail
+          . .venv/bin/activate
+          pip install mypy
+          stubtest splintr
+          mypy python/tests/conftest.py
 
       # Differential, not self-consistent: the suite above fixes behaviour
       # splintr already knows about, this asserts it still matches tiktoken.

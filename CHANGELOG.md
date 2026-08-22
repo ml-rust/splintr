@@ -10,6 +10,7 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Added
 
+- Python wheels now publish a `py.typed` marker and complete type stubs for the public `splintr` API.
 - `splintr-train`, a sibling crate that trains BPE, WordPiece and Unigram vocabularies and writes them as `.tiktoken`, `tokenizer.json`, `vocab.txt` or `.spm`. Nothing in this package changes; it is a separate dependency and a `splintr-train` binary.
 - Decode-path benchmarks (`benches/decode.rs`), covering whole-sequence, streaming, lossy-vs-strict and batch decoding.
 

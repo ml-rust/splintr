@@ -88,8 +88,10 @@ impl Precompiled {
             return None;
         }
         let trie = blob[4..trie_end]
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect();
         let normalized = blob[trie_end..].to_vec();
         let mut me = Self {

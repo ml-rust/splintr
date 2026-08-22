@@ -588,6 +588,85 @@ def generate_rust_module(
     return "\n".join(lines)
 
 
+def generate_stub_class(class_name: str, base_id: int, description: str, extra_tokens: list, skip_tokens: set) -> str:
+    """Generate the `.pyi` class for one vocabulary's agent tokens.
+
+    No constructor is declared. A stub whose `__new__`/`__init__` returns
+    `NoReturn` collapses the class object to `Callable[[], Never]` in mypy, and
+    every `ClassVar` on it stops resolving -- which is the whole class. `@final`
+    carries what that was reaching for: PyO3 registers these `frozen`, so they
+    cannot be subclassed.
+    """
+    lines = [
+        "@final",
+        f"class {class_name}:",
+        f'    """{description} agent token ids ({base_id}-{base_id + 53})."""',
+        "",
+    ]
+
+    if extra_tokens:
+        lines.append("    # Model-specific native tokens")
+        for const_name, _, _ in extra_tokens:
+            lines.append(f"    {const_name}: ClassVar[int]")
+        lines.append("")
+
+    for cat_name, start, end in CATEGORIES:
+        emitted = [
+            const_name
+            for const_name, _, offset, _ in AGENT_TOKENS
+            if start <= offset < end and const_name not in skip_tokens
+        ]
+        if not emitted:
+            continue
+        lines.append(f"    # {cat_name} ({base_id + start}-{base_id + end - 1})")
+        for const_name in emitted:
+            lines.append(f"    {const_name}: ClassVar[int]")
+        lines.append("")
+
+    return "\n".join(lines).rstrip("\n")
+
+
+# The half of `splintr._core.__all__` that is not an agent-token class. The other
+# half is `MODELS`, so the list stays right when a vocabulary is added -- and
+# `stubtest` in CI compares the whole of it against the built module.
+CORE_EXPORTS = [
+    "Tokenizer",
+    "SentencePieceTokenizer",
+    "SpmTokenizer",
+    "WordPieceTokenizer",
+    "AnyTokenizer",
+    "StreamingDecoder",
+    "from_json",
+    "from_json_bytes",
+    "base_vocab_size",
+    "CL100K_BASE_PATTERN",
+    "O200K_BASE_PATTERN",
+    "LLAMA3_PATTERN",
+    "QWEN2_PATTERN",
+    "KIMI_PATTERN",
+    "MISTRAL_V3_PATTERN",
+    "GPT2_PATTERN",
+    "HAS_PCRE2",
+]
+
+
+def generate_stub_exports() -> str:
+    """Generate the `__all__` region of the type stub."""
+    names = CORE_EXPORTS + [py_name for _, _, _, py_name, _, _, _, _ in MODELS]
+    lines = ["__all__ = ["]
+    lines += [f'    "{name}",' for name in sorted(names)]
+    lines.append("]")
+    return "\n".join(lines)
+
+
+def generate_all_stub() -> str:
+    """Generate the agent-token region of `python/splintr/_core.pyi`."""
+    output = []
+    for _, _, _, py_name, base_id, description, extra_tokens, skip_tokens in MODELS:
+        output.append(generate_stub_class(py_name, base_id, description, extra_tokens, skip_tokens))
+    return "\n\n\n".join(output)
+
+
 def generate_all_rust() -> str:
     """Generate the Rust constants module for every vocabulary."""
     output = []
@@ -626,6 +705,13 @@ import re
 DOC_PATH = "docs/special_tokens.md"
 BEGIN = "<!-- BEGIN GENERATED: {} -->"
 END = "<!-- END GENERATED: {} -->"
+
+# The stub is the fourth copy of these ids, the one the type checkers read now
+# that the package ships `py.typed`. A stale copy there is worse than a missing
+# one: a checker rejects a constant that exists, or accepts one that does not.
+STUB_PATH = "python/splintr/_core.pyi"
+STUB_BEGIN = "# BEGIN GENERATED: {}"
+STUB_END = "# END GENERATED: {}"
 
 
 def _rustdoc_escape(text: str) -> str:
@@ -682,37 +768,57 @@ def doc_regions() -> dict:
     return regions
 
 
-def rewrite_docs(check_only: bool = False) -> int:
-    """Replace every sentinel-marked region in the doc. Returns an exit code."""
+def _rewrite(path: str, regions: dict, begin_fmt: str, end_fmt: str, cmd: str, check_only: bool) -> int:
+    """Replace every sentinel-marked region in one file. Returns an exit code."""
     import sys
 
-    with open(DOC_PATH, encoding="utf-8") as handle:
+    with open(path, encoding="utf-8") as handle:
         original = handle.read()
 
     updated = original
-    for name, body in doc_regions().items():
-        begin, end = BEGIN.format(name), END.format(name)
+    for name, body in regions.items():
+        begin, end = begin_fmt.format(name), end_fmt.format(name)
         if begin not in updated or end not in updated:
-            print(f"error: {DOC_PATH} has no region {name!r}", file=sys.stderr)
+            print(f"error: {path} has no region {name!r}", file=sys.stderr)
             return 1
         head, _, rest = updated.partition(begin)
         _, _, tail = rest.partition(end)
         updated = f"{head}{begin}\n\n{body}\n\n{end}{tail}"
 
     if updated == original:
-        print(f"ok    {DOC_PATH} is up to date")
+        print(f"ok    {path} is up to date")
         return 0
     if check_only:
-        print(
-            f"error: {DOC_PATH} is stale — run "
-            f"`python scripts/generate_agent_tokens.py --update-docs`",
-            file=sys.stderr,
-        )
+        print(f"error: {path} is stale — run `{cmd}`", file=sys.stderr)
         return 1
-    with open(DOC_PATH, "w", encoding="utf-8") as handle:
+    with open(path, "w", encoding="utf-8") as handle:
         handle.write(updated)
-    print(f"ok    rewrote {len(doc_regions())} regions in {DOC_PATH}")
+    print(f"ok    rewrote {len(regions)} regions in {path}")
     return 0
+
+
+def rewrite_docs(check_only: bool = False) -> int:
+    """Replace every sentinel-marked region in the doc. Returns an exit code."""
+    return _rewrite(
+        DOC_PATH,
+        doc_regions(),
+        BEGIN,
+        END,
+        "python scripts/generate_agent_tokens.py --update-docs",
+        check_only,
+    )
+
+
+def rewrite_stub(check_only: bool = False) -> int:
+    """Replace the agent-token region of the type stub. Returns an exit code."""
+    return _rewrite(
+        STUB_PATH,
+        {"stub-all": generate_stub_exports(), "agent-tokens": generate_all_stub()},
+        STUB_BEGIN,
+        STUB_END,
+        "python scripts/generate_agent_tokens.py --update-stub",
+        check_only,
+    )
 
 
 if __name__ == "__main__":
@@ -720,6 +826,9 @@ if __name__ == "__main__":
 
     if "--update-docs" in sys.argv:
         raise SystemExit(rewrite_docs(check_only="--check" in sys.argv))
+
+    if "--update-stub" in sys.argv:
+        raise SystemExit(rewrite_stub(check_only="--check" in sys.argv))
 
     lang = "python"
     if "--lang" in sys.argv:
