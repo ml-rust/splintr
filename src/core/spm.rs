@@ -342,6 +342,18 @@ impl SpmTokenizer {
     /// This answers *whether* a stretch handed to
     /// [`encode_segment`](Self::encode_segment) gets a marker;
     /// [`SpmPrefixScheme`] answers *which* stretches are handed one.
+    ///
+    /// # Why the HuggingFace metaspace path does the opposite
+    ///
+    /// A `tokenizer.json` `Metaspace` node prepends only when the escaped text
+    /// does not already open with the marker ([`Prefix::WhenAbsent`]), so
+    /// `" double"` is one `▁double` there and `▁`, `▁double` here. Both are
+    /// measured, and each is right for the file it reads: llama.cpp runs GGUF
+    /// vocabularies and prepends without looking, `tokenizers` runs
+    /// `tokenizer.json` and tests `!normalized.starts_with(replacement)` first.
+    /// This is a genuine split between two ecosystems, not one convention with
+    /// a bug in it — converging the two backends would break whichever one it
+    /// was converged away from, silently, since every id stays in range.
     fn prefix(&self) -> Prefix {
         if self.add_prefix_space {
             Prefix::Always

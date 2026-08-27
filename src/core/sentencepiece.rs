@@ -98,6 +98,15 @@ pub struct SentencePieceTokenizer {
     /// Metaspace `add_prefix_space`: mark the start of the input with `▁` when
     /// it is not already marked.
     add_prefix_space: bool,
+    /// Metaspace `prepend_scheme`: WHICH splits of one sequence are offered
+    /// that mark. Added tokens are what cut a sequence into more than one, so
+    /// this is inert until a matcher is attached.
+    ///
+    /// `PrependScheme::Always` by default, which is what this backend did
+    /// before the field existed and what every bundled Unigram file states
+    /// (bge-m3 and t5-base carry the legacy `add_prefix_space: true`, which
+    /// `tokenizers` reads as `always`).
+    prepend_scheme: super::metaspace::PrependScheme,
     /// SentencePiece `remove_extra_whitespaces`: a run of spaces escapes to a
     /// single `▁` rather than one per space.
     remove_extra_whitespaces: bool,
@@ -205,6 +214,7 @@ impl SentencePieceTokenizer {
             min_score,
             normalizer: super::normalizer::Normalizer::default(),
             add_prefix_space: true,
+            prepend_scheme: super::metaspace::PrependScheme::Always,
             remove_extra_whitespaces: false,
             word_split: None,
             added: None,
@@ -246,6 +256,27 @@ impl SentencePieceTokenizer {
     /// input is *the* prefix rather than getting a second marker in front of it.
     pub fn with_prefix_space(mut self, add_prefix_space: bool) -> Self {
         self.add_prefix_space = add_prefix_space;
+        self
+    }
+
+    /// Set Metaspace `prepend_scheme`, which decides WHICH splits of one
+    /// sequence are offered the leading `▁` — see
+    /// [`PrependScheme`](super::metaspace::PrependScheme).
+    ///
+    /// Distinct from [`with_prefix_space`](Self::with_prefix_space), which says
+    /// whether there is a mark to offer at all and also governs the decode-side
+    /// strip; both must say yes for a split to be marked. Defaults to
+    /// [`Always`](super::metaspace::PrependScheme::Always), which is every
+    /// bundled Unigram vocabulary's, so an existing caller is unaffected.
+    ///
+    /// Inert without an added-token matcher: with nothing to split on, the
+    /// sequence is one split and the arms agree everywhere.
+    ///
+    /// Crate-internal: the enum is, and the `tokenizer.json` loader is the only
+    /// caller that can answer this, because the file is the only place the
+    /// scheme is stated.
+    pub(crate) fn with_prepend_scheme(mut self, scheme: super::metaspace::PrependScheme) -> Self {
+        self.prepend_scheme = scheme;
         self
     }
 
@@ -318,7 +349,7 @@ impl SentencePieceTokenizer {
     /// HuggingFace.
     pub fn encode(&self, text: &str) -> Vec<u32> {
         super::added::AddedTokens::dispatch(&self.added, text, |gap, out| {
-            out.extend(self.encode_ordinary(gap))
+            out.extend(self.encode_gap(gap, super::added::opens_input(text, gap)))
         })
     }
 
@@ -330,13 +361,45 @@ impl SentencePieceTokenizer {
     /// `AnyTokenizer::encode_with`.
     pub fn encode_with(&self, text: &str, mode: &SpecialMode<'_>) -> Result<Vec<u32>, PolicyError> {
         super::added::AddedTokens::dispatch_with_mode(&self.added, text, mode, |gap, out| {
-            out.extend(self.encode_ordinary(gap))
+            out.extend(self.encode_gap(gap, super::added::opens_input(text, gap)))
         })
+    }
+
+    /// The escaping rule one split runs under, from the two knobs that decide
+    /// it: `add_prefix_space` (is there a mark at all) and `prepend_scheme`
+    /// (does THIS split get it).
+    ///
+    /// [`Prefix::WhenAbsent`](super::metaspace::Prefix::WhenAbsent) — never
+    /// `Always` — whenever a mark applies. HuggingFace's `Metaspace` prepends
+    /// only when the escaped text does not already open with the marker, so
+    /// `" a"` is one `▁a` and not `▁`, `▁a`. The unconditional rule is
+    /// llama.cpp's and lives in
+    /// [`SpmTokenizer`](super::spm::SpmTokenizer); the two references genuinely
+    /// disagree and neither backend may be converged onto the other.
+    fn split_prefix(&self, is_first: bool) -> super::metaspace::Prefix {
+        match self.add_prefix_space && self.prepend_scheme.marks(is_first) {
+            true => super::metaspace::Prefix::WhenAbsent,
+            false => super::metaspace::Prefix::None,
+        }
     }
 
     /// Encode without added-token matching (pure Unigram Viterbi). Never emits
     /// BOS/EOS — see [`encode`](Self::encode).
     pub fn encode_ordinary(&self, text: &str) -> Vec<u32> {
+        // The whole text is by construction the split that opens the sequence,
+        // so `prepend_scheme: "first"` marks it here exactly as `"always"`
+        // would. Only added-token dispatch produces a later split.
+        self.encode_gap(text, true)
+    }
+
+    /// [`encode_ordinary`](Self::encode_ordinary) for one gap between added
+    /// tokens, told whether that gap opens the sequence.
+    ///
+    /// `is_first` is read only under
+    /// [`PrependScheme::First`](super::metaspace::PrependScheme::First), where
+    /// the mark goes on the opening split and nowhere else; the other two arms
+    /// mark every gap or none.
+    fn encode_gap(&self, text: &str, is_first: bool) -> Vec<u32> {
         // Empty input has nothing to mark a boundary *of*: HuggingFace and
         // SentencePiece both return no ids. The guard belongs here rather than
         // in the escaping, whose leading marker is correct for every non-empty
@@ -354,11 +417,14 @@ impl SentencePieceTokenizer {
             return Vec::new();
         }
 
-        let prefix = if self.add_prefix_space {
-            super::metaspace::Prefix::WhenAbsent
-        } else {
-            super::metaspace::Prefix::None
-        };
+        // Two questions, both answered here: `add_prefix_space` says whether a
+        // mark exists to place at all, `prepend_scheme` says whether THIS split
+        // is one that gets it. `WhenAbsent` — never `Always` — is the escaping
+        // rule for both, because HuggingFace's `Metaspace` prepends only when
+        // the escaped text does not already open with the marker. The
+        // unconditional rule belongs to llama.cpp and lives in `SpmTokenizer`;
+        // see `metaspace::Prefix`.
+        let prefix = self.split_prefix(is_first);
 
         let mut tokens = Vec::new();
         let mut chars: Vec<char> = Vec::new();
@@ -376,13 +442,21 @@ impl SentencePieceTokenizer {
                 // buffer: the collected form allocated a `String` per word for
                 // the split and another for the escape.
                 let mut escaped = String::new();
+                // `WhitespaceSplit` hands `Metaspace` several splits, and
+                // HuggingFace runs its node over all of them with one
+                // first-split flag — so under `"first"` only the opening word
+                // of the opening gap is marked, not the opening word of each.
+                let later = self.split_prefix(false);
+                let mut word_prefix = prefix;
                 pre.for_each_piece(&normalized, |word| {
-                    if self.marked_word_into(word, prefix, &mut tokens, &mut chars, &mut lattice) {
+                    let this_word = std::mem::replace(&mut word_prefix, later);
+                    if self.marked_word_into(word, this_word, &mut tokens, &mut chars, &mut lattice)
+                    {
                         return;
                     }
                     super::metaspace::escape_into(
                         word,
-                        prefix,
+                        this_word,
                         self.remove_extra_whitespaces,
                         &mut escaped,
                     );

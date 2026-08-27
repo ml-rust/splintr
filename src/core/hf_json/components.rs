@@ -5,6 +5,7 @@
 use serde_json::Value;
 
 use super::super::added::{AddedToken, AddedTokenSet};
+use super::super::metaspace::PrependScheme;
 use super::super::normalizer::NormOp;
 use super::super::precompiled::{CharsmapDialect, Precompiled};
 use super::super::tokenizer::{GPT2_PATTERN, NO_SPLIT_PATTERN, SENTENCEPIECE_PATTERN};
@@ -24,6 +25,12 @@ pub(super) struct PreTokenization {
     /// Prepend a space to the input (ByteLevel/Metaspace `add_prefix_space`, or
     /// Metaspace `prepend_scheme` != "never").
     pub add_prefix_space: bool,
+    /// `Metaspace.prepend_scheme`, resolved from whichever of the two fields
+    /// the node states — see [`PrependScheme`]. With neither stated it mirrors
+    /// `add_prefix_space`, which is HuggingFace's own default for a `Metaspace`
+    /// node and leaves a file carrying no such node reading exactly as that
+    /// flag alone made it read.
+    pub metaspace_prepend: PrependScheme,
     /// `Metaspace.split`, defaulting to true as HuggingFace's node does. False
     /// on Mistral's `tokenizer.json`, where the model sees the whole text as one
     /// piece and merges may cross what would otherwise be word boundaries.
@@ -77,7 +84,14 @@ pub(super) struct PreTokenization {
 /// containing one — so refusing them is what matches the reference. The last two
 /// already did; the two in between reached [`GPT2_PATTERN`] silently, and are now
 /// recorded in `unknown` so the same guard catches them.
-pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
+///
+/// # Errors
+///
+/// [`HfJsonError::UnsupportedPrependScheme`] when a `Metaspace` node names a
+/// `prepend_scheme` this crate does not model. The three it does model place
+/// the word boundary in three different places, so reading a fourth as one of
+/// them moves the first token of every sequence and reports success.
+pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> Result<PreTokenization, HfJsonError> {
     // A `"pre_tokenizer": null` member is the same thing as no member at all —
     // both deserialize to `Option<PreTokenizerWrapper>::None` in `tokenizers`.
     let pre = pre.filter(|v| !v.is_null());
@@ -91,6 +105,12 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
         metaspace: bool,
         /// None until a ByteLevel/Metaspace node sets it; defaulted by the caller.
         add_prefix_space: Option<bool>,
+        /// None until a `Metaspace` node states one of the two fields that
+        /// settle it; defaulted by the caller to HuggingFace's own default.
+        metaspace_prepend: Option<PrependScheme>,
+        /// A `prepend_scheme` string this crate does not model, kept so the
+        /// walk can finish and the caller can name it in the error.
+        bad_prepend: Option<String>,
         /// HuggingFace's `Metaspace` defaults `split` to true.
         metaspace_split: bool,
         /// Pre-tokenizer types neither parsed here nor handled implicitly by a
@@ -117,10 +137,23 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
             Some("Metaspace") => {
                 w.metaspace = true;
                 // Newer configs use `prepend_scheme` ("always"/"first"/"never");
-                // older ones use `add_prefix_space`.
+                // older ones use `add_prefix_space`, which `tokenizers` itself
+                // converts to a scheme on the way in — true is `always`, false
+                // is `never` — so the two spellings meet here rather than
+                // staying two knobs that can disagree.
                 if let Some(scheme) = v.get("prepend_scheme").and_then(Value::as_str) {
-                    w.add_prefix_space = Some(scheme != "never");
+                    match PrependScheme::parse(scheme) {
+                        Some(scheme) => {
+                            w.metaspace_prepend = Some(scheme);
+                            w.add_prefix_space = Some(scheme != PrependScheme::Never);
+                        }
+                        None => w.bad_prepend = Some(scheme.to_string()),
+                    }
                 } else if let Some(b) = v.get("add_prefix_space").and_then(Value::as_bool) {
+                    w.metaspace_prepend = Some(match b {
+                        true => PrependScheme::Always,
+                        false => PrependScheme::Never,
+                    });
                     w.add_prefix_space = Some(b);
                 }
                 if let Some(b) = v.get("split").and_then(Value::as_bool) {
@@ -177,6 +210,8 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
         split_regex: None,
         metaspace: false,
         add_prefix_space: None,
+        metaspace_prepend: None,
+        bad_prepend: None,
         metaspace_split: true,
         unknown: Vec::new(),
         stages: 0,
@@ -184,11 +219,16 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
     if let Some(pre) = pre {
         walk(pre, &mut w);
     }
+    if let Some(scheme) = w.bad_prepend.take() {
+        return Err(HfJsonError::UnsupportedPrependScheme(scheme));
+    }
     let Walk {
         byte_level,
         split_regex,
         metaspace,
         add_prefix_space,
+        metaspace_prepend,
+        bad_prepend: _,
         metaspace_split,
         unknown,
         stages,
@@ -206,17 +246,30 @@ pub(super) fn parse_pre_tokenizer(pre: Option<&Value>) -> PreTokenization {
         (None, false, _) => GPT2_PATTERN.to_string(),
     };
 
-    PreTokenization {
+    // ByteLevel/Metaspace default `add_prefix_space` to true in HF when the
+    // field is absent; real configs set it explicitly.
+    let add_prefix_space = add_prefix_space.unwrap_or(metaspace || byte_level);
+    // A `Metaspace` node stating neither field is `always` — that is where
+    // `tokenizers`' own `PrependScheme` field defaults — and `always` is what
+    // the resolved flag then says. Falling back to the flag also keeps a file
+    // with no `Metaspace` node at all (a ByteLevel one, say) reading exactly as
+    // its flag alone made it read: the scheme cannot subtract a prefix the flag
+    // asked for.
+    let metaspace_prepend = metaspace_prepend.unwrap_or(match add_prefix_space {
+        true => PrependScheme::Always,
+        false => PrependScheme::Never,
+    });
+
+    Ok(PreTokenization {
         byte_level,
         metaspace,
         pattern,
-        // ByteLevel/Metaspace default `add_prefix_space` to true in HF when the
-        // field is absent; real configs set it explicitly.
-        add_prefix_space: add_prefix_space.unwrap_or(metaspace || byte_level),
+        add_prefix_space,
+        metaspace_prepend,
         metaspace_split,
         anchored: byte_level || metaspace || split_regex.is_some() || stages == 0,
         unknown,
-    }
+    })
 }
 
 /// BERT-family normalizer flags consumed by the WordPiece backend.

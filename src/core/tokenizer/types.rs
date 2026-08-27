@@ -289,6 +289,14 @@ pub struct Tokenizer {
     /// no split, a merge may cross what would otherwise be a piece boundary, and
     /// the ids genuinely differ.
     pub(super) metaspace_split: bool,
+    /// `Metaspace.prepend_scheme`: WHICH splits of one sequence get the leading
+    /// marker, as opposed to `add_prefix_space`, which says whether there is one
+    /// to place at all. Read only by the metaspace fork.
+    ///
+    /// `PrependScheme::First` by default, which is what this backend did before
+    /// the field existed and what mistral-7b-v0.3 states; the `tokenizer.json`
+    /// loader states whichever the file names.
+    pub(super) metaspace_prepend: crate::core::metaspace::PrependScheme,
     /// Prepend a space to input before tokenizing (HF ByteLevel `add_prefix_space`).
     pub(super) add_prefix_space: bool,
     /// Optional multi-stage pre-tokenizer pipeline (HF `pre_tokenizer` graphs
@@ -369,6 +377,7 @@ impl Clone for Tokenizer {
             use_byte_level: self.use_byte_level,
             use_metaspace_decoder: self.use_metaspace_decoder,
             metaspace_split: self.metaspace_split,
+            metaspace_prepend: self.metaspace_prepend,
             add_prefix_space: self.add_prefix_space,
             pre_tokenizer: self.pre_tokenizer.clone(),
             match_added_tokens: self.match_added_tokens,

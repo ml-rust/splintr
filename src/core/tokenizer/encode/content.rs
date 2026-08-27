@@ -156,6 +156,18 @@ impl Tokenizer {
     /// newline the vocabulary spells with its own byte token; guarding the
     /// prepend on the *replaced* text rather than the input is what makes
     /// `" a"` and `"▁a"` agree, while `"\ta"` still takes the prefix.
+    ///
+    /// # Why this is conditional and `SpmTokenizer`'s is not
+    ///
+    /// [`SpmTokenizer`](crate::core::spm::SpmTokenizer) prepends its marker
+    /// **unconditionally**, so `" hello"` there is `▁`, `▁hello`. That is not a
+    /// second opinion about the same question: llama.cpp's `llm_tokenizer_spm`
+    /// is the reference that runs GGUF vocabularies and it prepends without
+    /// looking, which is what its `" Hello"` → `[29871, 15043]` against
+    /// `ggml-vocab-llama-spm.gguf` rests on, while `tokenizers` is the
+    /// reference for a `tokenizer.json` and it tests
+    /// `!normalized.starts_with(replacement)` first. Two ecosystems, two
+    /// measured behaviors, two backends — do not unify them.
     pub(in crate::core::tokenizer) fn metaspace_transform(&self, text: &str, out: &mut String) {
         self.metaspace_transform_at(text, true, out)
     }
@@ -163,11 +175,14 @@ impl Tokenizer {
     /// [`Tokenizer::metaspace_transform`] told whether this text opens the
     /// sequence.
     ///
-    /// `prepend_scheme: "first"` — every metaspace vocabulary here — prepends to
-    /// the first split and no other, so a content gap that follows an added
-    /// token is transformed without a prefix. Measured on mistral-7b-v0.3:
-    /// `"([0-5]"` is `['▁(', '[', …]` while `"<s>([0-5]"` is `['<s>', '([', …]`,
-    /// which is a different first token, not merely a missing one.
+    /// Which splits are marked is `prepend_scheme`'s answer, and this argument
+    /// is what `"first"` — mistral-7b-v0.3's — reads: it prepends to the
+    /// sequence's first split and no other, so a content gap that follows an
+    /// added token is transformed without a marker. Measured on
+    /// mistral-7b-v0.3: `"([0-5]"` is `['▁(', '[', …]` while `"<s>([0-5]"` is
+    /// `['<s>', '([', …]`, which is a different first token, not merely a
+    /// missing one. Under `"always"` every gap is marked and the argument is
+    /// not read; under `"never"` none is.
     pub(in crate::core::tokenizer) fn metaspace_transform_at(
         &self,
         text: &str,
@@ -185,7 +200,10 @@ impl Tokenizer {
         // written, which on a whole document is a memmove the size of the
         // document. `out` starts with the marker exactly when the text starts
         // with a space (which becomes one) or with a marker already.
-        if self.add_prefix_space && is_first && !text.starts_with(' ') && !text.starts_with(MARKER)
+        if self.add_prefix_space
+            && self.metaspace_prepend.marks(is_first)
+            && !text.starts_with(' ')
+            && !text.starts_with(MARKER)
         {
             out.push_str(MARKER);
         }

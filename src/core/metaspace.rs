@@ -18,9 +18,69 @@
 //!   [`SentencePieceTokenizer`](super::sentencepiece::SentencePieceTokenizer),
 //!   whose Unigram references (HF `tokenizers`, SentencePiece itself) both
 //!   behave that way: `" a "` is `▁a` + `▁`, not `▁` + `▁a` + `▁`.
+//!
+//! [`PrependScheme`] answers the other half of the question — which *splits* of
+//! one sequence are offered a marker at all — and only added tokens, which cut
+//! a sequence into more than one split, make its arms differ.
 
 /// The SentencePiece word-boundary marker (U+2581 LOWER ONE EIGHTH BLOCK).
 pub const WORD_BOUNDARY: &str = "\u{2581}";
+
+/// Which splits of one sequence carry a leading word-boundary marker —
+/// HuggingFace's `Metaspace.prepend_scheme`.
+///
+/// A different question from [`Prefix`], and the two are read together.
+/// [`Prefix`] says *whether* a marker goes in front of a split that is offered
+/// one; this says *which* splits are offered one at all. Added tokens cut a
+/// sequence into several splits, and that is where the arms disagree:
+/// `"<s>a"` is `<s>`, `▁a` under [`Always`](Self::Always) and `<s>`, `a` under
+/// [`First`](Self::First) — a different first content token, not merely a
+/// missing marker.
+///
+/// No `Default`: the two backends that read this were measured under different
+/// arms and each states its own — the BPE metaspace fork under
+/// [`First`](Self::First), the Unigram fork under [`Always`](Self::Always) —
+/// so a defaulted value would silently give one of them the other's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PrependScheme {
+    /// No split is marked (`"never"`, or the legacy
+    /// `add_prefix_space: false`).
+    Never,
+    /// Only the split that opens the sequence (`"first"`). A gap that follows
+    /// an added token is not it, and neither is anything after that.
+    /// mistral-7b-v0.3's `tokenizer.json` states this.
+    First,
+    /// Every split, a gap following an added token included (`"always"`, the
+    /// legacy `add_prefix_space: true`, and HuggingFace's default when the node
+    /// states neither field).
+    Always,
+}
+
+impl PrependScheme {
+    /// The scheme a `tokenizer.json` `prepend_scheme` string names, or `None`
+    /// when the file names something this crate cannot represent.
+    ///
+    /// `None` is for the caller to refuse the file with. Reading an unknown
+    /// value as "prepend" (or as "never") loads a tokenizer that is plausible
+    /// and wrong, which is the failure this crate refuses everywhere else.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "never" => Some(Self::Never),
+            "first" => Some(Self::First),
+            "always" => Some(Self::Always),
+            _ => None,
+        }
+    }
+
+    /// Whether a split carries a marker, given whether it opens the sequence.
+    pub fn marks(self, is_first: bool) -> bool {
+        match self {
+            Self::Never => false,
+            Self::First => is_first,
+            Self::Always => true,
+        }
+    }
+}
 
 /// Whether — and on what condition — a leading word-boundary marker is added.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -162,6 +222,90 @@ mod tests {
         assert_eq!(escape("   ", Prefix::WhenAbsent, false), "▁▁▁");
         // Other whitespace is a normalizer's job, not this one's.
         assert_eq!(escape("a\n\nb", Prefix::None, true), "a\n\nb");
+    }
+
+    /// A `▁`-marked BPE vocabulary carrying the whitespace-run piece `▁▁`, so
+    /// the two conventions produce visibly different pieces rather than merely
+    /// different counts. `split: false` and `prepend_scheme: "always"` are
+    /// VoxCPM2's shape; `merges` is empty, so every input below is one
+    /// whole-chunk lookup and the ids name the piece directly.
+    const HF_METASPACE_JSON: &str = r#"{
+        "added_tokens": [],
+        "pre_tokenizer": {"type": "Metaspace", "replacement": "▁",
+            "prepend_scheme": "always", "split": false},
+        "model": {"type": "BPE", "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "▁double": 1, "▁▁double": 2,
+                "▁": 3, "▁▁": 4, "double": 5},
+            "merges": []}
+    }"#;
+
+    /// A `tokenizer.json` loaded through the real loader, encoding without the
+    /// post-processor so the ids are the content pieces alone.
+    fn hf(json: &str) -> crate::core::AnyTokenizer {
+        crate::core::hf_json::from_json_bytes(json.as_bytes()).expect("the document loads")
+    }
+
+    /// A `▁`-marked SPM-BPE vocabulary reaching `▁hello` through the
+    /// intermediates a real merge list carries, scored as merge ranks (`-id`).
+    /// `▁▁` is deliberately absent: llama.cpp's second marker has nothing to
+    /// merge into here, so it stays a piece of its own and is countable.
+    fn spm() -> crate::core::spm::SpmTokenizer {
+        let tokens: Vec<String> = [
+            "<unk>", "▁", "h", "e", "l", "o", "▁h", "▁he", "▁hel", "▁hell", "▁hello",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        let scores = (0..tokens.len()).map(|i| -(i as f32)).collect();
+        crate::core::spm::SpmTokenizer::new(tokens, scores, None, None)
+            .expect("the vocabulary is non-empty")
+    }
+
+    /// The pieces `spm` produces, by name.
+    fn spm_pieces(text: &str) -> Vec<String> {
+        let tok = spm();
+        crate::core::tokenize::Tokenize::encode(&tok, text)
+            .into_iter()
+            .filter_map(|id| tok.token_surface(id))
+            .collect()
+    }
+
+    /// The two ecosystems disagree about a leading space, and both readings are
+    /// measured. They must stay apart: converging them moves the first token of
+    /// every affected sequence while every id stays in range and decodes back
+    /// to the original string, so nothing downstream reports it.
+    ///
+    /// HuggingFace `tokenizers` 0.22.1, `pre_tokenizer.pre_tokenize_str`:
+    ///
+    /// | text | result |
+    /// |---|---|
+    /// | `"double"` | `▁double` |
+    /// | `" double"` | `▁double` |
+    /// | `"  double"` | `▁▁double` |
+    /// | `" "` | `▁` |
+    /// | `"  "` | `▁▁` |
+    ///
+    /// llama.cpp `llm_tokenizer_spm` over `ggml-vocab-llama-spm.gguf`:
+    /// `"Hello"` is `[15043]` and `" Hello"` is `[29871, 15043]` — one extra
+    /// standalone boundary piece, never a swallowed space.
+    #[test]
+    fn the_two_prefix_conventions_stay_apart_on_a_leading_space() {
+        let tok = hf(HF_METASPACE_JSON);
+        // HuggingFace: the marker goes on only when the escaped text does not
+        // already open with one, so one space and no space agree.
+        assert_eq!(tok.encode_raw("double"), vec![1], "▁double");
+        assert_eq!(tok.encode_raw(" double"), vec![1], "▁double");
+        // Two spaces escape to two markers, which is the `▁▁double` piece —
+        // one marker more than `" double"`, not two more.
+        assert_eq!(tok.encode_raw("  double"), vec![2], "▁▁double");
+        assert_eq!(tok.encode_raw(" "), vec![3], "▁");
+        assert_eq!(tok.encode_raw("  "), vec![4], "▁▁");
+
+        // llama.cpp: the marker goes on without looking, so a leading space is
+        // a second boundary rather than the one that was going to be added.
+        assert_eq!(spm_pieces("hello"), vec!["▁hello"]);
+        assert_eq!(spm_pieces(" hello"), vec!["▁", "▁hello"]);
+        assert_eq!(spm_pieces(" "), vec!["▁", "▁"]);
     }
 
     #[test]

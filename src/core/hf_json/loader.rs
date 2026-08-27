@@ -281,7 +281,7 @@ fn build_bpe(
     vocab: &[(Cow<'_, str>, u32)],
     merges: Option<&RawValue>,
 ) -> Result<Backend, HfJsonError> {
-    let pre = parse_pre_tokenizer(root.get("pre_tokenizer"));
+    let pre = parse_pre_tokenizer(root.get("pre_tokenizer"))?;
     let specials = parse_special_tokens(root);
 
     // Parsed before the encode tables are filled, because which entries belong
@@ -598,7 +598,13 @@ fn build_bpe(
             // the Metaspace branch it previously force-disabled a prefix the
             // vocab actually needs (`prepend_scheme: "first"` resolves
             // `add_prefix_space` to `true`).
+            // `prepend_scheme` rides alongside `add_prefix_space` rather than
+            // replacing it: the flag also governs the decode-side strip and the
+            // ByteLevel branch, while the scheme governs only *which* metaspace
+            // splits are marked. `parse_pre_tokenizer` resolves both from the
+            // same node, so they cannot disagree about whether a marker exists.
             t.with_prefix_space(pre.add_prefix_space)
+                .with_metaspace_prepend(pre.metaspace_prepend)
                 .with_metaspace_split(pre.metaspace_split)
         }
     };
@@ -864,10 +870,11 @@ fn build_unigram(root: &Value, model: &Value) -> Result<Backend, HfJsonError> {
     // here. Space-run merging stays off: a `tokenizer.json` that wants it
     // declares it as a normalizer step (XLM-R's `Replace{" {2,}" → " "}`), which
     // the pipeline above already applies.
-    let pre = parse_pre_tokenizer(root.get("pre_tokenizer"));
+    let pre = parse_pre_tokenizer(root.get("pre_tokenizer"))?;
     let tok = SentencePieceTokenizer::new(tokens, scores, None, eos)?
         .with_normalizer(Normalizer::new(ops))
         .with_prefix_space(pre.add_prefix_space)
+        .with_prepend_scheme(pre.metaspace_prepend)
         .with_added_tokens(parse_special_tokens(root))?
         .with_special_decode_ids(parse_special_decode_ids(root));
     // Stages the escaping cannot express — `WhitespaceSplit` and friends, which

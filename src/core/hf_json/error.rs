@@ -24,6 +24,12 @@ pub enum HfJsonError {
     InvalidNormalizerRegex(String),
     #[error("unsupported pre_tokenizer type(s) `{0}` and no recognized split — refusing to guess the split pattern")]
     UnsupportedPreTokenizer(String),
+    /// A `Metaspace.prepend_scheme` this crate cannot represent. Refused rather
+    /// than read as one of the three it knows: every reading places the word
+    /// boundary somewhere, and the wrong placement moves the first token of
+    /// every sequence while every id stays in range.
+    #[error("unsupported Metaspace prepend_scheme `{0}` (expected always, first, or never)")]
+    UnsupportedPrependScheme(String),
     #[error("vocab entry `{0}` is not valid byte-level encoding")]
     InvalidByteLevel(String),
     /// A declared `model` field that changes tokenization and is not

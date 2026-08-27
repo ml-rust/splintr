@@ -1,5 +1,11 @@
 use super::super::types::Tokenizer;
-use crate::core::added::AddedTokens;
+// Shared with the Unigram backend, which asks the same question of the same
+// gaps: only `Metaspace`'s `prepend_scheme: "first"` reads it, and here that is
+// `Tokenizer::metaspace_transform_at`. Pinned by
+// `metaspace_prefix_is_first_split_only` in the tokenizer tests, so a gap that
+// ever stopped borrowing from the input would fail loudly rather than silently
+// move a token id.
+use crate::core::added::{opens_input, AddedTokens};
 use crate::core::batch;
 use crate::core::policy::{PolicyError, SpecialMode};
 
@@ -99,21 +105,4 @@ impl Tokenizer {
     pub fn encode_batch_with_special(&self, texts: &[String]) -> Vec<Vec<u32>> {
         batch::map(texts, String::len, |text| self.encode_with_special(text))
     }
-}
-
-/// Whether `gap` is the split that opens `text`.
-///
-/// Added-token dispatch hands out gaps as subslices of the input, so the one
-/// starting at its first byte is the sequence's first split and every other is
-/// not — including the gap that follows a leading added token, which is the
-/// case that distinguishes this from "the first gap the closure sees".
-///
-/// Only `Metaspace`'s `prepend_scheme: "first"` reads it; see
-/// `Tokenizer::metaspace_transform_at`. Pinned by
-/// `metaspace_prefix_is_first_split_only` in the tokenizer tests, so a gap that
-/// ever stopped borrowing from the input would fail loudly rather than silently
-/// move a token id.
-#[inline]
-fn opens_input(text: &str, gap: &str) -> bool {
-    std::ptr::eq(text.as_ptr(), gap.as_ptr())
 }

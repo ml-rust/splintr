@@ -275,6 +275,22 @@ impl Iterator for Matches<'_, '_> {
     }
 }
 
+/// Whether `gap` is the split that opens `text`.
+///
+/// Added-token dispatch hands out gaps as subslices of the input, so the one
+/// starting at its first byte is the sequence's first split and every other is
+/// not — including the gap that follows a leading added token, which is the
+/// case that distinguishes this from "the first gap the closure sees".
+///
+/// Read by the two metaspace backends, and only under
+/// [`PrependScheme::First`](super::metaspace::PrependScheme::First), which
+/// marks that split and no other. A gap that ever stopped borrowing from the
+/// input would report every split as "not first", which the backends' own
+/// first-split tests pin.
+pub(crate) fn opens_input(text: &str, gap: &str) -> bool {
+    std::ptr::eq(text.as_ptr(), gap.as_ptr())
+}
+
 /// An Aho-Corasick matcher over a set of added-token strings → [`AddedToken`]s.
 #[derive(Clone)]
 pub struct AddedTokens {

@@ -280,6 +280,7 @@ impl Tokenizer {
             use_byte_level,
             use_metaspace_decoder,
             metaspace_split: true,
+            metaspace_prepend: crate::core::metaspace::PrependScheme::First,
             add_prefix_space: false,
             pre_tokenizer: None,
             match_added_tokens: false,
@@ -672,6 +673,7 @@ impl Tokenizer {
             use_byte_level: false,
             use_metaspace_decoder: true,
             metaspace_split: true,
+            metaspace_prepend: crate::core::metaspace::PrependScheme::First,
             add_prefix_space: false,
             pre_tokenizer: None,
             match_added_tokens: false,
@@ -692,6 +694,33 @@ impl Tokenizer {
     /// path ignores it. Defaults to true, as HuggingFace's node does.
     pub fn with_metaspace_split(mut self, split: bool) -> Self {
         self.metaspace_split = split;
+        self
+    }
+
+    /// Set `Metaspace.prepend_scheme`, which decides WHICH splits of one
+    /// sequence carry the leading marker — see
+    /// [`PrependScheme`](crate::core::metaspace::PrependScheme).
+    ///
+    /// Distinct from [`with_prefix_space`](Self::with_prefix_space), which says
+    /// whether there is a marker to place at all and also governs the ByteLevel
+    /// fork and the decode-side strip. Both must say yes for a split to be
+    /// marked, so turning the prefix off is enough to silence this whatever it
+    /// is set to.
+    ///
+    /// Only the metaspace fork reads it, and only added tokens make the arms
+    /// differ: with no added token in the input the sequence is one split, and
+    /// [`First`](crate::core::metaspace::PrependScheme::First) and
+    /// [`Always`](crate::core::metaspace::PrependScheme::Always) agree
+    /// everywhere. Defaults to `First`.
+    ///
+    /// Crate-internal: the enum is, and the `tokenizer.json` loader is the only
+    /// caller that can answer this, because the file is the only place the
+    /// scheme is stated.
+    pub(crate) fn with_metaspace_prepend(
+        mut self,
+        scheme: crate::core::metaspace::PrependScheme,
+    ) -> Self {
+        self.metaspace_prepend = scheme;
         self
     }
 

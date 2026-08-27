@@ -328,6 +328,158 @@ fn metaspace_prefix_is_first_split_only() {
     assert_eq!(t.encode("<s>(["), vec![1, 5955]);
 }
 
+/// `prepend_scheme: "always"` prepends to EVERY split, so the gap after an
+/// added token is marked too — which is the whole of what separates it from
+/// `"first"`, since a sequence with no added token in it is one split and the
+/// two arms then agree everywhere.
+///
+/// The same vocabulary and the same input as
+/// [`metaspace_prefix_is_first_split_only`], with only the scheme changed, so
+/// the divergence cannot be read as a difference in anything else.
+#[test]
+fn metaspace_always_marks_the_gap_after_an_added_token() {
+    let json = r#"{
+        "added_tokens": [{"id": 1, "content": "<s>", "special": true,
+            "lstrip": false, "rstrip": false, "single_word": false, "normalized": false}],
+        "pre_tokenizer": {"type": "Metaspace", "replacement": "▁",
+            "prepend_scheme": "always", "split": false},
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "vocab": {"<unk>": 0, "<s>": 1, "▁": 29473, "(": 29572, "[": 29560,
+                "▁(": 1093, "([": 5955},
+            "merges": [["▁", "("], ["(", "["]]}
+    }"#;
+    let Backend::Bpe(t) = from_json_bytes(json.as_bytes())
+        .expect("the metaspace document loads")
+        .into_backend()
+    else {
+        panic!("expected BPE backend");
+    };
+    // The opening split is marked under both schemes.
+    assert_eq!(t.encode("(["), vec![1093, 29560]);
+    // After an added token `"always"` marks it too, so `▁(` forms where
+    // `"first"` leaves `([` to form instead.
+    assert_eq!(t.encode("<s>(["), vec![1, 1093, 29560]);
+}
+
+/// The Unigram backend reads the scheme too: under `"first"` the gap after an
+/// added token is left unmarked, where the whole-sequence default `"always"`
+/// (every bundled Unigram file's, via the legacy `add_prefix_space: true`)
+/// marks it.
+#[test]
+fn unigram_prepend_scheme_first_leaves_the_later_gap_unmarked() {
+    let json = |scheme: &str| {
+        format!(
+            r#"{{
+        "added_tokens": [{{"id": 1, "content": "</s>", "special": true}}],
+        "pre_tokenizer": {{"type": "Metaspace", "replacement": "▁",
+            "prepend_scheme": "{scheme}"}},
+        "model": {{"type": "Unigram", "unk_id": 0, "vocab": [
+            ["<unk>", 0.0], ["</s>", 0.0], ["▁a", -1.0], ["a", -2.0]
+        ]}}
+    }}"#
+        )
+    };
+    let load = |scheme: &str| {
+        let Backend::Unigram(t) = from_json_bytes(json(scheme).as_bytes())
+            .expect("the unigram document loads")
+            .into_backend()
+        else {
+            panic!("expected Unigram backend");
+        };
+        t
+    };
+    // `▁a`, `</s>`, then a bare `a`: only the opening split is marked.
+    assert_eq!(load("first").encode("a</s>a"), vec![2, 1, 3]);
+    // `always` marks the later gap as well, so `▁a` comes back.
+    assert_eq!(load("always").encode("a</s>a"), vec![2, 1, 2]);
+}
+
+/// A `prepend_scheme` this crate does not model is refused by name.
+///
+/// The three it models put the word boundary in three different places, so
+/// reading a fourth as one of them loads a tokenizer whose ids are all in range
+/// and whose first token is wrong — the silent failure this loader refuses
+/// everywhere else.
+#[test]
+fn an_unknown_prepend_scheme_is_refused_by_name() {
+    let json = r#"{
+        "added_tokens": [],
+        "pre_tokenizer": {"type": "Metaspace", "replacement": "▁",
+            "prepend_scheme": "sometimes", "split": false},
+        "model": {"type": "BPE", "vocab": {"▁a": 0, "a": 1}, "merges": []}
+    }"#;
+    // `expect_err` would require `AnyTokenizer: Debug`; match instead of
+    // widening the public type's derives just to satisfy a test.
+    let err = match from_json_bytes(json.as_bytes()) {
+        Ok(_) => panic!("an unmodelled scheme must be refused"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, HfJsonError::UnsupportedPrependScheme(s) if s.as_str() == "sometimes"),
+        "expected the scheme to be named, got {err}"
+    );
+}
+
+/// The `Prepend` **normalizer** prepends unconditionally, which is a different
+/// node from the `Metaspace` **pre-tokenizer** and must not be given that
+/// node's conditional rule.
+///
+/// A `▁`-marked BPE file can put its metaspace transform in either place, and
+/// the two disagree on a leading space. HuggingFace's `Prepend` normalizer runs
+/// `normalized.prepend(..)` with no test at all, and it runs BEFORE the
+/// `Replace{" " → "▁"}` beside it, so `" a"` normalizes to `▁▁a` — two markers.
+/// `Metaspace` replaces first and then prepends only
+/// `if !normalized.starts_with(replacement)`, so the same input is `▁a` there.
+///
+/// VoxCPM2 (`openbmb/VoxCPM2`) is the shape pinned here: `pre_tokenizer: null`
+/// and `normalizer: Sequence[Prepend "▁", Replace " " → "▁"]`. Its own
+/// reference tokenizer — `VoxCPM2Tokenizer.from_pretrained(ckpt).tokenize(t)`
+/// then `convert_tokens_to_ids`, a `LlamaTokenizerFast` subclass — was measured
+/// on 2026-08-27 with transformers 4.57.3 / tokenizers 0.22.1:
+///
+/// | text | tokens | ids |
+/// |---|---|---|
+/// | `"double"` | `▁double` | `[5371]` |
+/// | `" double"` | `▁▁`, `double` | `[1345, 9738]` |
+/// | `"  double"` | `▁▁`, `▁double` | `[1345, 5371]` |
+/// | `" "` | `▁▁` | `[1345]` |
+///
+/// The rows below are the same shape over a synthetic vocabulary, measured on
+/// that document with `tokenizers` 0.22.1 so the test needs no checkpoint.
+/// Making this path conditional to "fix" the leading space would break exact
+/// agreement with the reference on every such file.
+#[test]
+fn a_prepend_normalizer_marks_a_leading_space_a_second_time() {
+    let json = r#"{
+        "added_tokens": [],
+        "normalizer": {"type": "Sequence", "normalizers": [
+            {"type": "Prepend", "prepend": "▁"},
+            {"type": "Replace", "pattern": {"String": " "}, "content": "▁"}
+        ]},
+        "pre_tokenizer": null,
+        "model": {"type": "BPE", "byte_fallback": true, "unk_token": "<unk>",
+            "fuse_unk": true,
+            "vocab": {"<unk>": 0, "▁": 1, "a": 2, "▁▁": 3, "▁a": 4},
+            "merges": [["▁", "▁"], ["▁", "a"]]}
+    }"#;
+    let tok = from_json_bytes(json.as_bytes()).expect("the document loads");
+
+    // The normalizer stage itself, against `normalizer.normalize_str`.
+    assert_eq!(tok.normalize("a").as_deref(), Some("▁a"));
+    assert_eq!(tok.normalize(" a").as_deref(), Some("▁▁a"));
+    assert_eq!(tok.normalize("  a").as_deref(), Some("▁▁▁a"));
+
+    // And the ids the merge reaches from it.
+    assert_eq!(tok.encode_raw("a"), vec![4], "▁a");
+    // Two markers, so the word loses its own: `▁▁` then a bare `a`. This is
+    // the row a `Metaspace` node would give as one `▁a` instead.
+    assert_eq!(tok.encode_raw(" a"), vec![3, 2], "▁▁ + a");
+    assert_eq!(tok.encode_raw("  a"), vec![3, 4], "▁▁ + ▁a");
+    assert_eq!(tok.encode_raw("a a"), vec![4, 4], "▁a + ▁a");
+    assert_eq!(tok.encode_raw(" "), vec![3], "▁▁");
+    assert_eq!(tok.encode_raw("  "), vec![3, 1], "▁▁ + ▁");
+}
+
 /// Gemma's shape: the metaspace transform lives in the `normalizer`, so the
 /// `Split` pre-tokenizer looks for a space that is no longer there and hands
 /// BPE the whole text as one chunk.
