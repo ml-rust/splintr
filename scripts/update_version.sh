@@ -172,6 +172,33 @@ else
     echo "  Warning: $PYTHON_INIT not found"
 fi
 
+# Bump the workspace crates that depend on splintr by version. They resolve it
+# through `path` while the workspace builds, but the `version` field still has
+# to match the sibling beside them: cargo refuses to select splintr for a
+# requirement the new version falls outside, so a stale pin here fails
+# `cargo update`, `cargo package --workspace` and the release gate that runs it
+# — not merely that crate's own publish.
+for dependent in "$PROJECT_ROOT"/crates/*/Cargo.toml; do
+    [[ -f "$dependent" ]] || continue
+    grep -q '^splintr = {.*version = "' "$dependent" || continue
+
+    awk -v ver="$CARGO_VERSION" '
+        /^splintr = \{/ && /version = "/ {
+            sub(/version = "[^"]*"/, "version = \"" ver "\"")
+        }
+        { print }
+    ' "$dependent" > "$dependent.tmp" && mv "$dependent.tmp" "$dependent"
+
+    UPDATED_VERSION=$(sed -n 's/^splintr = {.*version = "\([^"]*\)".*/\1/p' "$dependent" | head -1)
+    if [[ "$UPDATED_VERSION" != "$CARGO_VERSION" ]]; then
+        echo "Error: Failed to update splintr dependency in $dependent"
+        echo "  Expected: $CARGO_VERSION"
+        echo "  Got: $UPDATED_VERSION"
+        exit 1
+    fi
+    echo "  Updated $dependent -> splintr $CARGO_VERSION"
+done
+
 # Bump Cargo.lock so the tracked lockfile matches the new package version
 if [[ -f "$PROJECT_ROOT/Cargo.lock" ]]; then
     if command -v cargo >/dev/null 2>&1; then

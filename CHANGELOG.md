@@ -6,7 +6,7 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
-## [Unreleased]
+## [0.20.0] - 2026-09-09
 
 ### Added
 
@@ -24,10 +24,9 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ### Fixed
 
-- `scripts/ci/verify_release_artifacts.sh` matched Linux wheels on `*linux*`, which a `musllinux` wheel satisfies as readily as a `manylinux` one. A release whose glibc build produced nothing would have passed on the musl wheel standing in for it. The two families are matched separately.
-
 - A `tokenizer.json` `Metaspace` node's `prepend_scheme` is read as the three values it has. `always` now marks every split, including the content gap after an added token, where it previously marked only the first — `"<s>double"` reached the model as a different first token. `first` and `never` are unchanged, and a `Metaspace` node stating neither `prepend_scheme` nor the legacy `add_prefix_space` reads as `always`, which is what `tokenizers` defaults to.
 - A `prepend_scheme` value this crate does not model is refused by name instead of read as "prepend". Every reading places the word boundary somewhere, so the wrong one moved the first token of every sequence while every id stayed in range.
+- `scripts/ci/verify_release_artifacts.sh` matched Linux wheels on `*linux*`, which a `musllinux` wheel satisfies as readily as a `manylinux` one. A release whose glibc build produced nothing would have passed on the musl wheel standing in for it. The two families are matched separately.
 
 ## [0.19.1] - 2026-08-12
 
