@@ -13,14 +13,18 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 - Python wheels now publish a `py.typed` marker and complete type stubs for the public `splintr` API.
 - `splintr-train`, a sibling crate that trains BPE, WordPiece and Unigram vocabularies and writes them as `.tiktoken`, `tokenizer.json`, `vocab.txt` or `.spm`. Nothing in this package changes; it is a separate dependency and a `splintr-train` binary.
 - Decode-path benchmarks (`benches/decode.rs`), covering whole-sequence, streaming, lossy-vs-strict and batch decoding.
+- Wheels for Linux aarch64, Linux x86-64 musl, Linux aarch64 musl and Windows arm64. Alpine and 64-bit Arm installs no longer compile the sdist. Eight platform wheels per release, up from four, each built and smoke-tested on a runner of its own architecture.
 
 ### Changed
 
 - Decoding hands the UTF-8 buffer's allocation to the string it produces instead of copying the text out of it, on both the whole-sequence and streaming drives.
 - `decode_bytes` takes the plain id-keyed fast path the cursor already used.
 - `decode_batch` and `decode_batch_lossy` build their decode state once per batch rather than once per sequence.
+- The wheel smoke test moved to `scripts/ci/smoke_test_wheel.sh` and now asserts the optional `pcre2` backend agrees with the default one, so a wheel whose C dependency failed to build cannot ship with `Tokenizer.pcre2()` raising on one platform only.
 
 ### Fixed
+
+- `scripts/ci/verify_release_artifacts.sh` matched Linux wheels on `*linux*`, which a `musllinux` wheel satisfies as readily as a `manylinux` one. A release whose glibc build produced nothing would have passed on the musl wheel standing in for it. The two families are matched separately.
 
 - A `tokenizer.json` `Metaspace` node's `prepend_scheme` is read as the three values it has. `always` now marks every split, including the content gap after an added token, where it previously marked only the first — `"<s>double"` reached the model as a different first token. `first` and `never` are unchanged, and a `Metaspace` node stating neither `prepend_scheme` nor the legacy `add_prefix_space` reads as `always`, which is what `tokenizers` defaults to.
 - A `prepend_scheme` value this crate does not model is refused by name instead of read as "prepend". Every reading places the word boundary somewhere, so the wrong one moved the first token of every sequence while every id stayed in range.

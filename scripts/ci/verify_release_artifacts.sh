@@ -70,11 +70,22 @@ test "$sdists" -eq 1 ||
 # Mirrors the wheel matrix in .github/workflows/release-prepare.yml. Adding a
 # platform means changing both lists in the same commit; dropping one silently
 # is how a platform stops receiving wheels without anyone noticing.
+#
+# The Linux patterns say `manylinux` and `musllinux` rather than a shared
+# `linux`: the two tags are distinct C libraries and a wheel for one does not
+# run on the other. A `*linux*` glob matches both, so a run whose glibc job
+# produced nothing would be waved through by the musl wheel standing in its
+# place — the silent platform drop this list exists to catch. The substrings
+# are disjoint, so each pattern matches exactly its own family.
 families=(
-  "linux-x86_64:${prefix}-*linux*_x86_64.whl"
+  "linux-x86_64:${prefix}-*manylinux*_x86_64.whl"
+  "linux-x86_64-musl:${prefix}-*musllinux*_x86_64.whl"
+  "linux-aarch64:${prefix}-*manylinux*_aarch64.whl"
+  "linux-aarch64-musl:${prefix}-*musllinux*_aarch64.whl"
   "macos-x86_64:${prefix}-*macosx*_x86_64.whl"
   "macos-arm64:${prefix}-*macosx*_arm64.whl"
   "windows-x86_64:${prefix}-*win_amd64.whl"
+  "windows-arm64:${prefix}-*win_arm64.whl"
 )
 
 for family in "${families[@]}"; do

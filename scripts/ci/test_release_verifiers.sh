@@ -15,6 +15,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 artifacts_sh="$repo_root/scripts/ci/verify_release_artifacts.sh"
 prepare_sh="$repo_root/scripts/ci/verify_prepare_run.sh"
 changelog_sh="$repo_root/scripts/ci/changelog_section.sh"
+smoke_sh="$repo_root/scripts/ci/smoke_test_wheel.sh"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -49,14 +50,22 @@ rejects() { # rejects <case> <cmd...>  — the command must fail
 VERSION="9.9.9"
 PREFIX="splintr_rs-${VERSION}"
 
-populate() { # populate <dir> — a complete, valid distribution set
+# Tags are the ones the release actually produces, compressed manylinux pair
+# included: a fixture that names a simpler tag than reality would let a pattern
+# pass here and fail on the wheel it was written for.
+populate() { # populate <dir> [version] — a complete, valid distribution set
   local dir="$1"
+  local pfx="splintr_rs-${2:-$VERSION}"
   mkdir -p "$dir"
-  : > "$dir/${PREFIX}.tar.gz"
-  : > "$dir/${PREFIX}-cp38-abi3-manylinux_2_34_x86_64.whl"
-  : > "$dir/${PREFIX}-cp38-abi3-macosx_10_12_x86_64.whl"
-  : > "$dir/${PREFIX}-cp38-abi3-macosx_11_0_arm64.whl"
-  : > "$dir/${PREFIX}-cp38-abi3-win_amd64.whl"
+  : > "$dir/${pfx}.tar.gz"
+  : > "$dir/${pfx}-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+  : > "$dir/${pfx}-cp310-abi3-musllinux_1_2_x86_64.whl"
+  : > "$dir/${pfx}-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+  : > "$dir/${pfx}-cp310-abi3-musllinux_1_2_aarch64.whl"
+  : > "$dir/${pfx}-cp310-abi3-macosx_10_12_x86_64.whl"
+  : > "$dir/${pfx}-cp310-abi3-macosx_11_0_arm64.whl"
+  : > "$dir/${pfx}-cp310-abi3-win_amd64.whl"
+  : > "$dir/${pfx}-cp310-abi3-win_arm64.whl"
 }
 
 echo "verify_release_artifacts.sh"
@@ -66,12 +75,7 @@ populate "$complete"
 ok "complete set" bash "$artifacts_sh" "$complete" "$VERSION"
 
 prerelease="$work/prerelease"
-mkdir -p "$prerelease"
-: > "$prerelease/splintr_rs-9.9.9b1.tar.gz"
-: > "$prerelease/splintr_rs-9.9.9b1-cp38-abi3-manylinux_2_34_x86_64.whl"
-: > "$prerelease/splintr_rs-9.9.9b1-cp38-abi3-macosx_10_12_x86_64.whl"
-: > "$prerelease/splintr_rs-9.9.9b1-cp38-abi3-macosx_11_0_arm64.whl"
-: > "$prerelease/splintr_rs-9.9.9b1-cp38-abi3-win_amd64.whl"
+populate "$prerelease" "9.9.9b1"
 ok "PEP 440 prerelease version" bash "$artifacts_sh" "$prerelease" "9.9.9b1"
 
 rejects "missing directory" bash "$artifacts_sh" "$work/absent" "$VERSION"
@@ -85,19 +89,36 @@ populate "$no_sdist"
 rm "$no_sdist/${PREFIX}.tar.gz"
 rejects "sdist absent" bash "$artifacts_sh" "$no_sdist" "$VERSION"
 
-no_windows="$work/no-windows"
-populate "$no_windows"
-rm "$no_windows/${PREFIX}-cp38-abi3-win_amd64.whl"
-rejects "platform wheel absent" bash "$artifacts_sh" "$no_windows" "$VERSION"
+# One case per platform family, each removing only that family's wheel, so a
+# pattern that stopped matching shows up as its own failure rather than being
+# masked by a neighbour.
+#
+# The two Linux glibc/musl pairs are the point of the exercise: `manylinux` and
+# `musllinux` wheels sit side by side in the same directory and differ by one
+# substring, so a `*linux*` pattern accepts either as proof of both. Each of
+# these four cases leaves its sibling in place — the set is complete except for
+# the one family named, and it must still be rejected.
+drop() { # drop <case> <suffix> — the set minus one wheel must be rejected
+  local case_name="$1" suffix="$2" dir="$work/drop-${1// /-}"
+  populate "$dir"
+  rm "$dir/${PREFIX}-cp310-abi3-${suffix}.whl"
+  rejects "$case_name" bash "$artifacts_sh" "$dir" "$VERSION"
+}
 
-no_arm="$work/no-arm"
-populate "$no_arm"
-rm "$no_arm/${PREFIX}-cp38-abi3-macosx_11_0_arm64.whl"
-rejects "macOS arm64 wheel absent" bash "$artifacts_sh" "$no_arm" "$VERSION"
+drop "glibc x86_64 wheel absent, musl wheel present" \
+  "manylinux_2_17_x86_64.manylinux2014_x86_64"
+drop "musl x86_64 wheel absent, glibc wheel present" "musllinux_1_2_x86_64"
+drop "glibc aarch64 wheel absent, musl wheel present" \
+  "manylinux_2_17_aarch64.manylinux2014_aarch64"
+drop "musl aarch64 wheel absent, glibc wheel present" "musllinux_1_2_aarch64"
+drop "macOS x86_64 wheel absent" "macosx_10_12_x86_64"
+drop "macOS arm64 wheel absent" "macosx_11_0_arm64"
+drop "Windows x86_64 wheel absent" "win_amd64"
+drop "Windows arm64 wheel absent" "win_arm64"
 
 stale="$work/stale"
 populate "$stale"
-: > "$stale/splintr_rs-9.9.8-cp38-abi3-manylinux_2_34_x86_64.whl"
+: > "$stale/splintr_rs-9.9.8-cp310-abi3-musllinux_1_2_aarch64.whl"
 rejects "wheel from another version" bash "$artifacts_sh" "$stale" "$VERSION"
 
 intruder="$work/intruder"
@@ -107,11 +128,34 @@ rejects "unexpected attachment" bash "$artifacts_sh" "$intruder" "$VERSION"
 
 link="$work/link"
 populate "$link"
-rm "$link/${PREFIX}-cp38-abi3-win_amd64.whl"
-ln -s /nonexistent "$link/${PREFIX}-cp38-abi3-win_amd64.whl"
+rm "$link/${PREFIX}-cp310-abi3-win_amd64.whl"
+ln -s /nonexistent "$link/${PREFIX}-cp310-abi3-win_amd64.whl"
 rejects "symlinked distribution" bash "$artifacts_sh" "$link" "$VERSION"
 
 rejects "malformed version" bash "$artifacts_sh" "$complete" "v9.9.9"
+
+# ── smoke_test_wheel.sh ─────────────────────────────────────────────────────
+# Only the rejection cases: the accepting path installs the wheel and imports
+# it, which needs a real build rather than a fixture. Every check below runs
+# before the script reaches pip, so an empty file named like a wheel is enough.
+echo "smoke_test_wheel.sh"
+
+smoke() { # smoke <dir> <wheel-name...>
+  local dir="$work/$1"
+  shift
+  mkdir -p "$dir"
+  local name
+  for name in "$@"; do : > "$dir/$name"; done
+  printf '%s' "$dir"
+}
+
+rejects "dist directory absent" bash "$smoke_sh" "$work/no-dist"
+rejects "no wheel built" bash "$smoke_sh" "$(smoke smoke-empty)"
+rejects "more than one wheel built" bash "$smoke_sh" \
+  "$(smoke smoke-two "${PREFIX}-cp310-abi3-win_amd64.whl" \
+    "${PREFIX}-cp310-abi3-win_arm64.whl")"
+rejects "wheel is not abi3" bash "$smoke_sh" \
+  "$(smoke smoke-versioned "${PREFIX}-cp312-cp312-win_amd64.whl")"
 
 # ── verify_prepare_run.sh ───────────────────────────────────────────────────
 echo "verify_prepare_run.sh"

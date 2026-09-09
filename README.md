@@ -180,7 +180,7 @@ See the [API Guide](docs/api_guide.md) and [docs.rs](https://docs.rs/splintr) fo
 - **Streaming decoder** — Real-time LLM output with proper UTF-8 boundary handling; one decoder per tokenizer ([guide](docs/api_guide.md#streaming-decoder))
 - **54 agent tokens** — ChatML, thinking, ReAct, tool-calling and RAG citation markers, on every bundled vocabulary ([docs](docs/special_tokens.md))
 - **Special-token policy** — `encode_ordinary` / `encode_allowed_special` so untrusted text cannot forge a control token
-- **Cross-platform** — Python bindings via PyO3 (Linux, macOS, Windows), CPython 3.10+; native Rust library
+- **Cross-platform** — Prebuilt CPython 3.10+ wheels for Linux x86-64 and aarch64 (glibc and musl), macOS x86-64 and Apple silicon, Windows x86-64 and arm64; native Rust library
 
 ## Vocabularies
 

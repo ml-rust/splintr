@@ -141,13 +141,18 @@ jobs:
         run: bash scripts/ci/test_release_verifiers.sh
 
   # ─────────────────────────────────────────────────────────────────────────
+  # `ubuntu-24.04-arm` is here because the release publishes Linux aarch64
+  # wheels. macos-latest is arm64 and covers the architecture, but not this
+  # platform: regexr's aarch64 JIT and NEON paths are selected at run time, and
+  # without this entry a Linux aarch64 wheel would be the only artifact of that
+  # target the project ever produces with no suite having run on it.
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

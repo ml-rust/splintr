@@ -46,6 +46,18 @@ jobs:
   # One wheel per platform family the README claims support for. A platform
   # dropped here silently stops receiving wheels, which is why
   # verify_release_artifacts.sh checks the same list from the other side.
+  #
+  # Every entry runs on a runner of its own architecture, never a cross-compile
+  # from x86_64. maturin-action would happily build the aarch64 wheels from an
+  # ubuntu-latest runner through `manylinux2014-cross:aarch64`, but an aarch64
+  # wheel cannot be imported on an x86_64 host, so the smoke test below would
+  # stop running for exactly the two platforms no job here has ever executed.
+  # The arm runners are free and unlimited on public repositories; if that ever
+  # changes, the replacement is QEMU under the same native-execution rule, not
+  # a cross build with the smoke test dropped.
+  #
+  # The musl targets name a container explicitly through `manylinux:`; the glibc
+  # and Windows/macOS ones take the runner's own default.
   build-wheels:
     name: Build wheels (${{ matrix.label }})
     needs: [validate-version, ci]
@@ -56,12 +68,33 @@ jobs:
         include:
           - os: ubuntu-latest
             label: linux-x86_64
+            manylinux: auto
+          - os: ubuntu-latest
+            label: linux-x86_64-musl
+            target: x86_64-unknown-linux-musl
+            manylinux: musllinux_1_2
+            smoke_image: python:3.12-alpine
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+            manylinux: auto
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64-musl
+            target: aarch64-unknown-linux-musl
+            manylinux: musllinux_1_2
+            smoke_image: python:3.12-alpine
           - os: macos-15-intel
             label: macos-x86_64
+            manylinux: auto
           - os: macos-latest
             label: macos-arm64
+            manylinux: auto
           - os: windows-latest
             label: windows-x86_64
+            manylinux: auto
+          - os: windows-11-arm
+            label: windows-arm64
+            manylinux: auto
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -81,45 +114,20 @@ jobs:
           # regexr (the default) is always compiled in. regexr's SIMD is chosen
           # at run time; its JIT and PCRE2's are build-time decisions, so they
           # have to be made here.
+          #
+          # `pcre2` is not negotiable per platform: `Tokenizer.pcre2()` is
+          # public Python API, so a wheel missing the feature turns one method
+          # into a platform-dependent error. The smoke test asserts it.
           args: --release --out dist --features python,pcre2
           sccache: "true"
-          manylinux: auto
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
         env:
           PCRE2_SYS_JIT: "1"
 
-      # An importable wheel is the minimum bar for shipping one, and a wheel
-      # that fails to load is a failure the Linux-only `python` CI job cannot
-      # see — it is the platform-specific builds that break this way.
-      #
-      # The abi3 assertion is the load-bearing half: a version-specific wheel
-      # still installs on the interpreter that built it, so without this check
-      # the smoke test passes while every other CPython version is left to
-      # compile the sdist. That is exactly what shipped before — one cp39 wheel
-      # from the manylinux container, one cp312 wheel from each other runner.
       - name: Smoke-test the wheel
         shell: bash
-        run: |
-          set -euo pipefail
-
-          shopt -s nullglob
-          wheels=(dist/*.whl)
-          shopt -u nullglob
-          test "${#wheels[@]}" -eq 1 ||
-            { echo "::error::expected one wheel, built ${#wheels[@]}: ${wheels[*]}"; exit 1; }
-          case "${wheels[0]}" in
-            *-abi3-*) ;;
-            *) echo "::error::not an abi3 wheel: ${wheels[0]##*/}"; exit 1 ;;
-          esac
-
-          python -m pip install --upgrade pip
-          python -m pip install --no-index --find-links dist splintr-rs
-          python -c "
-          import splintr
-          tok = splintr.Tokenizer.from_pretrained('cl100k_base')
-          ids = tok.encode('Hello, world!')
-          assert tok.decode(ids) == 'Hello, world!', 'round-trip failed'
-          print('wheel ok:', splintr.__version__, ids)
-          "
+        run: bash scripts/ci/smoke_test_wheel.sh dist "${{ matrix.smoke_image }}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
