@@ -85,6 +85,17 @@ pub const NO_SPLIT_PATTERN: &str = r"[\s\S]+";
 /// and must stay separate constants.
 pub const QWEN2_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+/// Pre-tokenizer pattern for Qwen 3.5 (llama.cpp's `qwen35` pre-tokenizer,
+/// PrismML fork `llama-vocab.cpp:2236-2237`, matching upstream llama.cpp's
+/// `regex_exprs` list at `llama-vocab.cpp:382-386`).
+///
+/// Differs from [`QWEN2_PATTERN`] in exactly one place: the letter branch
+/// pulls in combining marks (`[\p{L}\p{M}]+` vs `\p{L}+`), so a base letter
+/// plus its combining mark joins the same piece, and that mark is excluded
+/// from the punctuation branch (`[^\s\p{L}\p{M}\p{N}]+` vs
+/// `[^\s\p{L}\p{N}]+`) so it cannot also be swept up there.
+pub const QWEN35_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
 /// Pre-tokenizer pattern for the Kimi family (Moonshot AI).
 ///
 /// Transcribed verbatim from `pat_str` in the `tokenization_kimi.py` that

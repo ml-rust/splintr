@@ -5,7 +5,7 @@ use super::loader::{
     unigram_prefix_space,
 };
 use super::{from_gguf_vocab, GgufVocab, GgufVocabError};
-use crate::core::tokenizer::{GPT2_PATTERN, LLAMA3_PATTERN, QWEN2_PATTERN};
+use crate::core::tokenizer::{GPT2_PATTERN, LLAMA3_PATTERN, QWEN2_PATTERN, QWEN35_PATTERN};
 
 fn v(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_owned()).collect()
@@ -205,6 +205,58 @@ fn qwen2_family_pre_names_all_select_the_qwen2_pattern() {
     }
 }
 
+/// `qwen35` has its own `case` label and its own byte-identical constant — it
+/// must not fall through to `QWEN2_PATTERN`.
+#[test]
+fn qwen35_pre_name_selects_the_qwen35_pattern() {
+    assert_eq!(
+        byte_level_pattern(Some("qwen35")).expect("qwen35"),
+        &[QWEN35_PATTERN]
+    );
+}
+
+/// [`QWEN35_PATTERN`] must differ from [`QWEN2_PATTERN`] as a string, and the
+/// two engines must disagree in exactly the documented way: a base letter plus
+/// a combining mark is one piece under Qwen 3.5's split (marks join the letter
+/// run) and two pieces under Qwen2's (marks fall through to the punctuation
+/// run), while ordinary ASCII text with no marks splits identically under
+/// both.
+#[test]
+fn qwen35_pattern_differs_from_qwen2_only_by_marks() {
+    assert_ne!(QWEN35_PATTERN, QWEN2_PATTERN);
+
+    let marked = "e\u{0301}"; // "e" + combining acute accent (U+0301)
+    assert_eq!(
+        pieces(QWEN35_PATTERN, marked).len(),
+        1,
+        "QWEN35_PATTERN joins a base letter and its combining mark"
+    );
+    assert_eq!(
+        pieces(QWEN2_PATTERN, marked).len(),
+        2,
+        "QWEN2_PATTERN splits the combining mark off its base letter"
+    );
+
+    let plain = "hello 123 world";
+    assert_eq!(
+        pieces(QWEN35_PATTERN, plain),
+        pieces(QWEN2_PATTERN, plain),
+        "text with no combining marks must split identically under both"
+    );
+}
+
+/// Split `input` the way the tokenizer does: every non-overlapping match of
+/// `pattern`, in order.
+fn pieces<'a>(pattern: &str, input: &'a str) -> Vec<&'a str> {
+    let re = regexr::RegexBuilder::new(pattern)
+        .jit(true)
+        .build()
+        .expect("pattern compiles");
+    re.find_iter(input)
+        .map(|m| &input[m.start()..m.end()])
+        .collect()
+}
+
 /// The `pre` names whose enum value carries llama.cpp's Llama-3 expression —
 /// `LLAMA3`, `DBRX`/`SMAUG` (one `case` label) and `CHATGLM4`, whose three
 /// single-expression lists are byte-identical to one another.
@@ -306,7 +358,6 @@ fn unreproduced_pre_names_stay_refused() {
         // single expression, but no byte-identical splintr constant
         "chatglm-bpe",
         "jais-2",
-        "qwen35",
         "tekken",
         "gpt-4o",
         "llama4",

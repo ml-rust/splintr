@@ -90,7 +90,7 @@ pub use tokenizer::{
     modernbert_agent_tokens, o200k_agent_tokens, olmo2_agent_tokens, phi4_agent_tokens,
     qwen3_agent_tokens, ByteFallback, Tokenizer, TokenizerError, CL100K_BASE_PATTERN,
     DEEPSEEK_V3_PATTERNS, GPT2_PATTERN, KIMI_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN,
-    NO_SPLIT_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN, SENTENCEPIECE_PATTERN,
+    NO_SPLIT_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN, QWEN35_PATTERN, SENTENCEPIECE_PATTERN,
 };
 pub use vocab::{
     build_decoder, load_packed_bpe, load_packed_bpe_borrowed, load_spm_vocab, load_tiktoken_bpe,

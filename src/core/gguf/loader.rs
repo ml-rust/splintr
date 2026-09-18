@@ -10,7 +10,9 @@ use super::super::policy::SpecialPolicy;
 use super::super::precompiled::Precompiled;
 use super::super::sentencepiece::SentencePieceTokenizer;
 use super::super::spm::{SpmPrefixScheme, SpmTokenizer};
-use super::super::tokenizer::{Tokenizer, GPT2_PATTERN, LLAMA3_PATTERN, QWEN2_PATTERN};
+use super::super::tokenizer::{
+    Tokenizer, GPT2_PATTERN, LLAMA3_PATTERN, QWEN2_PATTERN, QWEN35_PATTERN,
+};
 use super::super::wordpiece::WordPieceTokenizer;
 use super::error::GgufVocabError;
 use super::vocab::GgufVocab;
@@ -458,6 +460,17 @@ pub(super) fn byte_level_pattern(
         //   grok-2           → GROK_2      llama-vocab.cpp:2078 → :471
         "qwen2" | "deepseek-r1-qwen" | "kormo" | "megrez" | "stablelm2" | "hunyuan"
         | "solar-open" | "grok-2" => Ok(&[QWEN2_PATTERN]),
+
+        // ── QWEN35_PATTERN ───────────────────────────────────────────────────
+        // `QWEN35` (Bonsai 2) has its own `case` label and its own
+        // `regex_exprs` list, PrismML fork `llama-vocab.cpp:2236-2237`, matching
+        // upstream llama.cpp's list at `llama-vocab.cpp:382-386`. The string
+        // differs from `QWEN2`'s by exactly one thing — combining marks join the
+        // letter run instead of the punctuation run — so it is its own constant
+        // and its own arm, never folded into the `qwen2` case above.
+        //
+        //   qwen35 → QWEN35 llama-vocab.cpp:2236 → :382
+        "qwen35" => Ok(&[QWEN35_PATTERN]),
 
         // ── GPT2_PATTERN ─────────────────────────────────────────────────────
         // `GPT2`/`MPT`/`OLMO`/`JAIS`/`TRILLION`/`GRANITE_DOCLING` share one `case`

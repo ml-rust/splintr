@@ -17,7 +17,7 @@ pub use core::{
     SpmPrefixScheme, SpmTokenizer, StreamingDecoder, Tokenize, TokenizeError, Tokenizer,
     TokenizerError, WordPieceError, WordPieceTokenizer, CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS,
     GPT2_PATTERN, KIMI_PATTERN, LLAMA3_PATTERN, MISTRAL_V3_PATTERN, NO_SPLIT_PATTERN,
-    O200K_BASE_PATTERN, QWEN2_PATTERN, SENTENCEPIECE_PATTERN,
+    O200K_BASE_PATTERN, QWEN2_PATTERN, QWEN35_PATTERN, SENTENCEPIECE_PATTERN,
 };
 
 // Re-export pretrained tokenizer API
@@ -107,6 +107,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("O200K_BASE_PATTERN", O200K_BASE_PATTERN)?;
     m.add("LLAMA3_PATTERN", LLAMA3_PATTERN)?;
     m.add("QWEN2_PATTERN", QWEN2_PATTERN)?;
+    m.add("QWEN35_PATTERN", QWEN35_PATTERN)?;
     m.add("KIMI_PATTERN", KIMI_PATTERN)?;
     m.add("MISTRAL_V3_PATTERN", MISTRAL_V3_PATTERN)?;
     m.add("GPT2_PATTERN", GPT2_PATTERN)?;
