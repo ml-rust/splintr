@@ -6,6 +6,12 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [Unreleased]
+
+### Added
+
+- `QWEN35_PATTERN`, the split for llama.cpp's `qwen35` pre-tokenizer (Qwen 3.5, Bonsai 2), exported from Rust and Python. A GGUF vocabulary declaring `qwen35` loads with it instead of being refused. It differs from `QWEN2_PATTERN` only in keeping a combining mark in the same piece as the letter before it. It splits on a direct scanner, as `QWEN2_PATTERN` does, not on the regex engine.
+
 ## [0.20.0] - 2026-09-09
 
 ### Added

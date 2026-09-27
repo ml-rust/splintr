@@ -44,6 +44,7 @@ __all__ = [
     "OLMO2_AGENT_TOKENS",
     "PHI4_AGENT_TOKENS",
     "QWEN2_PATTERN",
+    "QWEN35_PATTERN",
     "QWEN3_AGENT_TOKENS",
     "SentencePieceTokenizer",
     "SpmTokenizer",
@@ -60,6 +61,7 @@ __all__ = [
 CL100K_BASE_PATTERN: Final[str]
 KIMI_PATTERN: Final[str]
 QWEN2_PATTERN: Final[str]
+QWEN35_PATTERN: Final[str]
 O200K_BASE_PATTERN: Final[str]
 LLAMA3_PATTERN: Final[str]
 MISTRAL_V3_PATTERN: Final[str]

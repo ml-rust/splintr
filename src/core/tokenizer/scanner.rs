@@ -404,6 +404,19 @@ fn punct_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
     )
 }
 
+/// `[^\s\p{L}\p{M}\p{N}]`, Qwen 3.5's punctuation class. Every mark is outside
+/// ASCII, so the two classes differ only on the non-ASCII path.
+#[inline]
+fn punct_not_mark_at(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
+    char_len_if(
+        text,
+        bytes,
+        pos,
+        |c| c == Class::Punct,
+        |c| !c.is_whitespace() && !is_letter_char(c) && !is_mark_char(c) && !is_number_char(c),
+    )
+}
+
 /// Scan `[\p{L}\p{M}]` from `pos`, whose first character is `n` bytes long.
 ///
 /// Both scanners accept the same class and differ only in whether they try to
@@ -664,7 +677,7 @@ fn whitespace_span(text: &str, bytes: &[u8], pos: usize, order: WhitespaceOrder)
 
 // --- the cl100k family ------------------------------------------------------
 
-/// Shape shared by cl100k_base, Llama 3 and Qwen 2.
+/// Shape shared by cl100k_base, Llama 3, Qwen 2 and Qwen 3.5.
 #[derive(Clone, Copy)]
 struct Family {
     /// `\p{N}{1,3}` versus Qwen's single `\p{N}`.
@@ -687,7 +700,17 @@ const QWEN2: Family = Family {
 
 /// Splits by a cl100k-shaped pattern:
 /// `contraction | [^\r\n\p{L}\p{N}]?\p{L}+ | \p{N}{1,n} | ?[^\s\p{L}\p{N}]+[\r\n]* | whitespace`
-fn family_spans(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
+///
+/// `MARKS` is Qwen 3.5's variant: the letter branch is `[\p{L}\p{M}]+` and the
+/// punctuation branch `[^\s\p{L}\p{M}\p{N}]+`, so a combining mark joins the
+/// letters around it instead of the punctuation, and opens a letter run by
+/// itself. The prefix class still admits a mark, but taking the mark as the
+/// prefix or as the run's first character ends the piece in the same place,
+/// so the scanner only takes the second.
+///
+/// `MARKS` is a const parameter rather than a [`Family`] field: as a runtime
+/// flag its tests on the letter path cost Qwen 2 about 9% more instructions.
+fn family_spans<const MARKS: bool>(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
     let bytes = text.as_bytes();
     let len = bytes.len();
     let mut pos = 0usize;
@@ -704,6 +727,7 @@ fn family_spans(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
     // from that class, including the ones it would have skipped — the tests at
     // the bottom of this file diff the result against the compiled expression,
     // which is the definition of correctness.
+    let marks = MARKS;
     while pos < len {
         let start = pos;
         let byte = bytes[pos];
@@ -711,7 +735,7 @@ fn family_spans(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
         match CLASS[byte as usize] {
             // `\p{L}+` with no prefix.
             Class::Letter => {
-                pos = scan_letters(text, bytes, pos + 1);
+                pos = letter_run(text, bytes, pos, 1, marks);
             }
 
             // `\p{N}{1,n}`, never prefixed.
@@ -730,10 +754,10 @@ fn family_spans(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
             Class::Punct => {
                 if let Some(n) = contraction_len(bytes, pos) {
                     pos += n;
-                } else if let Some(n) = prefixed_letters(text, bytes, pos + 1, len) {
+                } else if let Some(n) = prefixed_letters(text, bytes, pos + 1, len, marks) {
                     pos = n;
                 } else {
-                    pos = punct_run(text, bytes, pos, len);
+                    pos = punct_run(text, bytes, pos, len, marks);
                 }
             }
 
@@ -741,11 +765,13 @@ fn family_spans(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
             // `\tword` are each one piece; a space also prefixes a punctuation
             // run. Anything else is the whitespace branch.
             Class::Space => {
-                if let Some(n) = prefixed_letters(text, bytes, pos + 1, len) {
+                if let Some(n) = prefixed_letters(text, bytes, pos + 1, len, marks) {
                     pos = n;
                 } else if byte == b' ' && pos + 1 < len && punct_at(text, bytes, pos + 1).is_some()
                 {
-                    pos = punct_run(text, bytes, pos + 1, len);
+                    // `prefixed_letters` has failed, so the next character is
+                    // not a mark and both punctuation classes agree on it.
+                    pos = punct_run(text, bytes, pos + 1, len, marks);
                 } else {
                     let (s, e) = whitespace_span(text, bytes, pos, scheme.whitespace);
                     pos = e;
@@ -770,8 +796,8 @@ fn family_spans(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
             // this way.
             Class::Lead => {
                 let (c, l) = char_at(text, pos);
-                if is_letter_char(c) {
-                    pos = scan_letters(text, bytes, pos + l);
+                if is_letter_char(c) || (marks && is_mark_char(c)) {
+                    pos = letter_run(text, bytes, pos, l, marks);
                 } else if is_number_char(c) {
                     pos += l;
                     for _ in 1..scheme.max_digits {
@@ -780,12 +806,13 @@ fn family_spans(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
                             None => break,
                         }
                     }
-                } else if let Some(n) = prefixed_letters(text, bytes, pos + l, len) {
+                } else if let Some(n) = prefixed_letters(text, bytes, pos + l, len, marks) {
                     pos = n;
                 } else if !c.is_whitespace() {
                     // Neither letter, digit nor whitespace is what
-                    // `[^\s\p{L}\p{N}]` asks for, so the run opens here.
-                    pos = punct_run(text, bytes, pos, len);
+                    // `[^\s\p{L}\p{N}]` asks for, so the run opens here. With
+                    // `marks`, a mark took the letter branch above.
+                    pos = punct_run(text, bytes, pos, len, marks);
                 } else {
                     let (s, e) = whitespace_span(text, bytes, pos, scheme.whitespace);
                     pos = e;
@@ -799,24 +826,52 @@ fn family_spans(text: &str, out: &mut Vec<(usize, usize)>, scheme: Family) {
     }
 }
 
-/// End of the `\p{L}+` run at `pos`, when one starts there.
+/// End of the letter run at `pos`, whose first character is `n` bytes long and
+/// already known to be in the run's class: `\p{L}+`, or `[\p{L}\p{M}]+` with
+/// `marks`.
+#[inline]
+fn letter_run(text: &str, bytes: &[u8], pos: usize, n: usize, marks: bool) -> usize {
+    if marks {
+        scan_letter_or_mark_run(text, bytes, pos, n)
+    } else {
+        scan_letters(text, bytes, pos + n)
+    }
+}
+
+/// End of the `\p{L}+` run at `pos`, when one starts there, or of the
+/// `[\p{L}\p{M}]+` run with `marks`.
 ///
 /// The caller has already consumed the optional `[^\r\n\p{L}\p{N}]?` prefix and
 /// established that it qualifies; this is the `\p{L}+` the branch needs to see
 /// before it can win at all.
 #[inline]
-fn prefixed_letters(text: &str, bytes: &[u8], pos: usize, len: usize) -> Option<usize> {
+fn prefixed_letters(
+    text: &str,
+    bytes: &[u8],
+    pos: usize,
+    len: usize,
+    marks: bool,
+) -> Option<usize> {
     if pos >= len {
         return None;
     }
-    let n = letter_at(text, bytes, pos)?;
-    Some(scan_letters(text, bytes, pos + n))
+    let n = if marks {
+        letter_or_mark_at(text, bytes, pos)?
+    } else {
+        letter_at(text, bytes, pos)?
+    };
+    Some(letter_run(text, bytes, pos, n, marks))
 }
 
 /// End of `[^\s\p{L}\p{N}]+[\r\n]*` starting at `pos`, which must open the run.
+/// With `marks` the class is `[^\s\p{L}\p{M}\p{N}]`, so a mark ends the run.
 #[inline]
-fn punct_run(text: &str, bytes: &[u8], pos: usize, len: usize) -> usize {
-    let mut end = scan_run(text, bytes, pos, punct_at);
+fn punct_run(text: &str, bytes: &[u8], pos: usize, len: usize, marks: bool) -> usize {
+    let mut end = if marks {
+        scan_run(text, bytes, pos, punct_not_mark_at)
+    } else {
+        scan_run(text, bytes, pos, punct_at)
+    };
     while end < len && (bytes[end] == b'\r' || bytes[end] == b'\n') {
         end += 1;
     }
@@ -843,15 +898,20 @@ fn prefix_len(text: &str, bytes: &[u8], pos: usize) -> Option<usize> {
 }
 
 pub(super) fn cl100k_spans(text: &str, out: &mut Vec<(usize, usize)>) {
-    family_spans(text, out, CL100K)
+    family_spans::<false>(text, out, CL100K)
 }
 
 pub(super) fn llama3_spans(text: &str, out: &mut Vec<(usize, usize)>) {
-    family_spans(text, out, LLAMA3)
+    family_spans::<false>(text, out, LLAMA3)
 }
 
 pub(super) fn qwen2_spans(text: &str, out: &mut Vec<(usize, usize)>) {
-    family_spans(text, out, QWEN2)
+    family_spans::<false>(text, out, QWEN2)
+}
+
+/// Qwen 2's shape with combining marks joined to letters.
+pub(super) fn qwen35_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    family_spans::<true>(text, out, QWEN2)
 }
 
 // --- o200k ------------------------------------------------------------------
@@ -1904,6 +1964,8 @@ pub(crate) fn for_pattern(pattern: &str) -> Option<SpanScanner> {
         Some(llama3_spans)
     } else if pattern == p::QWEN2_PATTERN {
         Some(qwen2_spans)
+    } else if pattern == p::QWEN35_PATTERN {
+        Some(qwen35_spans)
     } else if pattern == p::O200K_BASE_PATTERN {
         Some(o200k_spans)
     } else if pattern == p::MISTRAL_V3_PATTERN {
@@ -2071,7 +2133,7 @@ mod tests {
     use super::*;
     use crate::core::tokenizer::patterns::{
         CL100K_BASE_PATTERN, DEEPSEEK_V3_PATTERNS, GPT2_PATTERN, KIMI_PATTERN, LLAMA3_PATTERN,
-        MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN,
+        MISTRAL_V3_PATTERN, O200K_BASE_PATTERN, QWEN2_PATTERN, QWEN35_PATTERN,
     };
 
     type Scanner = fn(&str, &mut Vec<(usize, usize)>);
@@ -2082,6 +2144,7 @@ mod tests {
             ("cl100k", CL100K_BASE_PATTERN, cl100k_spans as Scanner),
             ("llama3", LLAMA3_PATTERN, llama3_spans as Scanner),
             ("qwen2", QWEN2_PATTERN, qwen2_spans as Scanner),
+            ("qwen35", QWEN35_PATTERN, qwen35_spans as Scanner),
             ("o200k", O200K_BASE_PATTERN, o200k_spans as Scanner),
             ("kimi", KIMI_PATTERN, kimi_spans as Scanner),
             (
@@ -2405,6 +2468,31 @@ mod tests {
         "Supercalifragilisticexpialidocious and more words here",
         "aaaaaaaa\u{4e2d}",
         "aaaaaaaaaaaaaaaa\u{4e2d}bbbbbbbb",
+        // Combining marks in every position Qwen 3.5's `[\p{L}\p{M}]+` and
+        // `[^\s\p{L}\p{M}\p{N}]+` classes treat differently from Qwen 2's:
+        // opening the text, after a prefix, after a space, inside and after a
+        // punctuation run, after a digit and a newline, and all three mark
+        // categories (Mn, Mc, Me).
+        "\u{0301}",
+        "\u{0301}abc",
+        "\u{0301}\u{0301}!",
+        "!\u{0301}",
+        "!\u{0301}abc",
+        "!!\u{0301}",
+        "!!\u{0301}!!",
+        " \u{0301}",
+        " \u{0301}abc",
+        "\u{a0}\u{0301}",
+        "«\u{0301}x",
+        "1\u{0301}",
+        "\n\u{0301}",
+        "'\u{0301}s",
+        "abcdefghij\u{0301}klm",
+        "\u{4e2d}\u{0301}\u{6587}",
+        "हिन्दी",
+        "नमस्ते दुनिया",
+        "x\u{20dd} \u{20dd}!",
+        "e\u{0301}\u{0327}\u{0308}",
     ];
 
     #[test]
@@ -2573,6 +2661,10 @@ mod tests {
             "Ⅷ",
             "½",
             "\u{0301}",
+            // A spacing and an enclosing mark, the two mark categories that
+            // are not nonspacing.
+            "\u{093f}",
+            "\u{20dd}",
             "«",
             "€",
             "\u{05d0}",
