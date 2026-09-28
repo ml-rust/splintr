@@ -24,7 +24,7 @@ categories = ["text-processing"]
 # Default features off: training needs the normalizer and pre-tokenizer, not a
 # bundled vocabulary or a JIT regex backend. `rayon` is re-enabled through this
 # crate's own feature so the two stay in step.
-splintr = { path = "../..", version = "0.20.0", default-features = false }
+splintr = { path = "../..", version = "0.21.0", default-features = false }
 rustc-hash = "2.0"
 thiserror = "2.0"
 # `.tiktoken` is base64(token bytes) per line.

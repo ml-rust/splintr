@@ -1135,9 +1135,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "regexr"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a10e63d4a65161fc4e8a0bf34c9b65aaee6a325fd6cf44a624204d18276c6551"
+checksum = "c1dc7d7bd6a78cbb6945d786c6394bd2c7766fa8a7ba0e2ae38920043a3938bf"
 dependencies = [
  "aho-corasick",
  "dynasm",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "splintr"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "aho-corasick",
  "base64",
