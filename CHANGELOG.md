@@ -15,6 +15,8 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 ### Changed
 
 - Requires `regexr` 0.6. Patterns that run on the regex engine instead of a scanner pick up its fixes: leftmost-first priority on the DFA engines, assertions inside a match, and linear-time search where some searches were quadratic.
+- Requires `base64` 0.23. `VocabError::Base64Error` and `VocabError::SpmBase64` carry `base64` 0.23's `DecodeError`, so code that matches on that type needs the same `base64` version.
+- Dependencies are updated to their latest releases.
 
 ## [0.20.0] - 2026-09-09
 

@@ -28,7 +28,7 @@ splintr = { path = "../..", version = "0.21.0", default-features = false }
 rustc-hash = "2.0"
 thiserror = "2.0"
 # `.tiktoken` is base64(token bytes) per line.
-base64 = "0.22"
+base64 = "0.23"
 # `tokenizer.json` output.
 serde_json = "1.0"
 rayon = { version = "1.10", optional = true }
