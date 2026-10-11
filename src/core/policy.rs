@@ -175,6 +175,39 @@ impl SpecialPolicy {
         out
     }
 
+    /// The special token the single-sequence template places before the
+    /// content, or `None` when the content comes first.
+    ///
+    /// For a decoder-only model this is the BOS token that
+    /// [`apply_single`](Self::apply_single) prepends.
+    pub fn leading_special(&self) -> Option<u32> {
+        match self.template.single.first() {
+            Some(Segment::Special(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// This policy with the special tokens before the single-sequence content
+    /// replaced by `bos`. `None` removes them.
+    ///
+    /// For a caller whose model files state BOS apart from the vocabulary:
+    /// a HuggingFace `tokenizer_config.json` `add_bos_token` beside a bundled
+    /// vocabulary. The tokens after the content, the pair template, the EOS id
+    /// and the named tokens stay as they are.
+    #[must_use]
+    pub fn with_leading_bos(mut self, bos: Option<u32>) -> Self {
+        let content = self
+            .template
+            .single
+            .iter()
+            .position(|s| *s == Segment::A)
+            .unwrap_or(0);
+        self.template
+            .single
+            .splice(..content, bos.map(Segment::Special));
+        self
+    }
+
     /// Wrap two sequences' content ids using the pair template.
     ///
     /// Errors when the json defined no pair template — concatenating `a` and `b`
@@ -429,7 +462,7 @@ fn parse_template_processing(pp: &Value) -> Template {
                 .get("SpecialToken")
                 .and_then(|s| s.get("id"))
                 .and_then(Value::as_str)
-                .and_then(&resolve)
+                .and_then(resolve)
             {
                 out.push(Segment::Special(id));
             }
@@ -508,6 +541,32 @@ mod tests {
             p.apply_pair(&[7], &[8]),
             Err(PolicyError::NoPairTemplate)
         ));
+    }
+
+    /// `with_leading_bos` sets, replaces and removes the leading token. The
+    /// trailing EOS and the pair template stay.
+    #[test]
+    fn with_leading_bos_sets_replaces_and_removes() {
+        let identity = policy("{}").expect("parses");
+        assert_eq!(identity.leading_special(), None);
+        let added = identity.with_leading_bos(Some(1));
+        assert_eq!(added.leading_special(), Some(1));
+        assert_eq!(added.apply_single(vec![7, 8]), vec![1, 7, 8]);
+
+        let bert = policy(
+            r#"{"post_processor": {"type": "BertProcessing",
+                "cls": ["[CLS]", 1], "sep": ["[SEP]", 2]}}"#,
+        )
+        .expect("parses");
+        let swapped = bert.clone().with_leading_bos(Some(9));
+        assert_eq!(swapped.apply_single(vec![3]), vec![9, 3, 2]);
+        assert_eq!(
+            swapped.apply_pair(&[3], &[4]).expect("pair"),
+            vec![1, 3, 2, 4, 2]
+        );
+        let removed = bert.with_leading_bos(None);
+        assert_eq!(removed.leading_special(), None);
+        assert_eq!(removed.apply_single(vec![3]), vec![3, 2]);
     }
 
     #[test]

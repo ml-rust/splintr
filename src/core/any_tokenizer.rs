@@ -205,6 +205,14 @@ impl AnyTokenizer {
         &self.policy
     }
 
+    /// This tokenizer with `bos` as the single token [`encode`](Self::encode)
+    /// prepends, or none for `None`. See [`SpecialPolicy::with_leading_bos`].
+    #[must_use]
+    pub fn with_leading_bos(mut self, bos: Option<u32>) -> Self {
+        self.policy = self.policy.with_leading_bos(bos);
+        self
+    }
+
     /// Whether the source declared a `decoder` pipeline that
     /// [`decode`](Self::decode) drives.
     ///
