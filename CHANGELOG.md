@@ -6,6 +6,13 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [0.21.1] - 2026-10-11
+
+### Added
+
+- `SpecialPolicy::with_leading_bos` and `AnyTokenizer::with_leading_bos` set, replace or remove the token that `encode` prepends. Tokens after the content, the pair template and the EOS id stay as they are. A caller whose model files state BOS apart from the vocabulary uses it, such as a `tokenizer_config.json` `add_bos_token` beside a bundled vocabulary.
+- `SpecialPolicy::leading_special` returns the special token the single-sequence template places before the content.
+
 ## [0.21.0] - 2026-09-28
 
 ### Added
