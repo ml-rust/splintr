@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="images/splntr.png" alt="Splintr" width="640">
+
 # splintr
 
 <h3>A fast, correct tokenizer for Rust and Python.</h3>
@@ -232,6 +234,10 @@ For the subcommands, flags, and library API, see [docs/training.md](docs/trainin
 ## Performance
 
 Batch encoding runs texts in parallel across cores with Rayon. Single texts run sequentially.
+
+![Batch Encoding Throughput](images/benchmark_batch.png)
+
+![Single Text Encoding Throughput](images/benchmark_single.png)
 
 Published throughput numbers, with the scripts that produced them, are in [docs/benchmarks.md](docs/benchmarks.md).
 The [design notes](docs/design.md) cover the backends, the correctness approach, and the citation.
