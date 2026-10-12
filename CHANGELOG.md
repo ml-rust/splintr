@@ -8,6 +8,12 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-12
+
+### Removed
+
+- `HfJsonError::InvalidByteLevel`. No load returns it any more. A `match` that names it no longer compiles.
+
 ### Fixed
 
 - A byte-level `tokenizer.json` whose vocabulary holds literal entries outside `added_tokens` now loads. Cohere's holds 1403, such as `™` and emoji pieces. Encode never emits such an entry, and decode renders its literal text, as `tokenizers` does. The load failed with `InvalidByteLevel` before, and that error variant is removed.
