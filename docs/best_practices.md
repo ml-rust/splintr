@@ -26,7 +26,7 @@ Two things a bundled vocabulary does _not_ reproduce, both by design:
 
 Training from scratch is the case where the vocabulary is a decision. Three routes, in order of how much you own.
 
-Splintr does not **train** vocabularies. It is a tokenizer runtime: it loads merge tables and applies them. Producing a new one is HuggingFace `tokenizers`' job (`BpeTrainer`), and splintr reads the result.
+The `splintr` crate does not **train** vocabularies. It loads merge tables and applies them. The `splintr-train` crate trains them, and HuggingFace `tokenizers` (`BpeTrainer`) also produces them. See [docs/training.md](training.md).
 
 ### 1. A bundled vocabulary, as-is
 

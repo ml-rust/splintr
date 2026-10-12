@@ -113,3 +113,49 @@ python benchmarks/benchmark_regexr_comparison.py --model cl100k_base
 # Visual comparison with charts
 python benchmarks/benchmark_regexr_viz.py --model cl100k_base
 ```
+
+## Published Tables
+
+These tables come from the same run as the charts above.
+They use the default `regexr` backend and the scripts named in [Running Benchmarks Yourself](#running-benchmarks-yourself).
+
+### Batch
+
+| Batch       | Splintr        | tiktoken  | HF `tokenizers` | vs tiktoken | vs HF |
+| ----------- | -------------- | --------- | --------------- | ----------- | ----- |
+| 1,000 texts | **170.0 MB/s** | 9.5 MB/s  | 34.3 MB/s       | 18.0x       | 5.0x  |
+| 500 texts   | **170.7 MB/s** | 10.1 MB/s | 33.2 MB/s       | 16.9x       | 5.1x  |
+| 100 texts   | **148.3 MB/s** | 6.9 MB/s  | 26.9 MB/s       | 21.6x       | 5.5x  |
+
+### Single text, sequential path
+
+| Text         | Splintr      | tiktoken | HF `tokenizers` | vs tiktoken | vs HF |
+| ------------ | ------------ | -------- | --------------- | ----------- | ----- |
+| 29 KB prose  | **0.152 ms** | 1.639 ms | 5.346 ms        | 10.8x       | 35.2x |
+| 8.9 KB code  | **0.058 ms** | 0.718 ms | 1.888 ms        | 12.4x       | 32.5x |
+| 9.6 KB mixed | **0.080 ms** | 0.577 ms | 1.582 ms        | 7.2x        | 19.8x |
+
+Summary ratios: about 18x tiktoken and 5x HuggingFace on batches, and about 10x and 35x on single texts.
+The ratios shift across machines.
+
+### Other Rust tokenizers
+
+Every engine loads the same `tokenizer.json`.
+
+| Axis            | vs HF `tokenizers`  | vs `gigatoken`                                          |
+| --------------- | ------------------- | ------------------------------------------------------- |
+| Vocabulary load | **Splintr** (~1.5x) | **Splintr** (2-4x)                                      |
+| Single text     | **Splintr** (~35x)  | **Splintr** on x86-64 (~1.5x), **tie** on Apple Silicon |
+| Batch           | **Splintr** (~5x)   | **Toss-up** — either engine, ±20% each way              |
+
+`gigatoken` is the other fast Rust tokenizer with Python bindings.
+
+- The batch winner flips by machine, by vocabulary, and by output form. Read one row as one data point.
+- Load is the one axis where splintr leads everywhere. Bundled vocabularies are packed binary and borrowed, not copied.
+
+### Current numbers
+
+The tables above are a dated snapshot. Two ways get current numbers:
+
+- [Latest perf run](https://github.com/ml-rust/splintr/actions/workflows/perf.yml). Each run publishes its hardware, library versions, id-parity check, and every vocabulary and corpus.
+- Run it yourself with `gh workflow run perf.yml` on a fork, or run `.github/scripts/perf_bench.py` and `perf_report.py` locally. The scripts build the checkout, so a branch measures before release. They refuse to report timings for engines that disagree on ids.
