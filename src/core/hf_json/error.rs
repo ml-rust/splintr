@@ -30,8 +30,6 @@ pub enum HfJsonError {
     /// every sequence while every id stays in range.
     #[error("unsupported Metaspace prepend_scheme `{0}` (expected always, first, or never)")]
     UnsupportedPrependScheme(String),
-    #[error("vocab entry `{0}` is not valid byte-level encoding")]
-    InvalidByteLevel(String),
     /// A declared `model` field that changes tokenization and is not
     /// implemented. Refused rather than ignored: ignoring it produces plausible
     /// wrong ids, which is worse than not loading.

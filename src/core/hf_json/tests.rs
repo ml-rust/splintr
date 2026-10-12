@@ -60,14 +60,16 @@ fn bpe_applies_nfc_normalizer_to_content() {
     }
 }
 
+/// A non-byte-level vocab key is a literal spelling, as `tokenizers` reads
+/// it (Cohere ships 1403 of them): it loads and decodes as its own text.
 #[test]
-fn rejects_non_byte_level_keys_when_byte_level() {
+fn literal_vocab_keys_load_and_decode_as_text_when_byte_level() {
     let json = r#"{
         "pre_tokenizer": {"type": "ByteLevel"},
-        "model": {"type": "BPE", "vocab": {"你好": 0}, "merges": []}
+        "model": {"type": "BPE", "vocab": {"你好": 0, "a": 1}, "merges": []}
     }"#;
-    let err = from_json_bytes(json.as_bytes());
-    assert!(matches!(err, Err(HfJsonError::InvalidByteLevel(_))));
+    let tok = from_json_bytes(json.as_bytes()).expect("a literal vocab key loads");
+    assert_eq!(tok.decode(&[0]).expect("decodes"), "你好");
 }
 
 #[test]
@@ -1045,13 +1047,10 @@ fn vocab_entry_that_is_also_an_added_token_is_taken_literally() {
     assert_eq!(Tokenize::decode(&tok, &[3]).expect("decodes"), "");
 }
 
-/// The literal-spelling exemption is per entry, keyed on membership in
-/// `added_tokens` — never a blanket "ignore byte-level decode failures". A vocab
-/// entry that is NOT an added token and fails to decode means a corrupt
-/// vocabulary, so it must still be a hard error even in a file that does declare
-/// added tokens.
+/// A literal vocab entry outside `added_tokens` is never matched in text:
+/// encoding its spelling goes through byte-level BPE, as `tokenizers` does.
 #[test]
-fn non_added_token_vocab_entry_that_is_not_byte_level_still_errors() {
+fn literal_vocab_entry_outside_added_tokens_is_never_encoded() {
     let json = r#"{
         "added_tokens": [{"id": 3, "content": "<｜eos｜>", "special": true}],
         "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false},
@@ -1059,8 +1058,9 @@ fn non_added_token_vocab_entry_that_is_not_byte_level_still_errors() {
             "vocab": {"a": 0, "<｜eos｜>": 3, "你好": 5},
             "merges": []}
     }"#;
-    let err = from_json_bytes(json.as_bytes());
-    assert!(matches!(&err, Err(HfJsonError::InvalidByteLevel(t)) if t == "你好"));
+    let tok = from_json_bytes(json.as_bytes()).expect("loads");
+    assert!(!tok.encode("你好").contains(&5));
+    assert_eq!(tok.decode(&[5]).expect("decodes"), "你好");
 }
 
 /// When both sections claim a token but give it different ids, neither can win:

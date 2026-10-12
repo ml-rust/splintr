@@ -6,6 +6,12 @@ Every release is gated on the section below carrying its version: `scripts/ci/ch
 
 Releases before `0.11.0` predate this file; their contents are in the git history.
 
+## [Unreleased]
+
+### Fixed
+
+- A byte-level `tokenizer.json` whose vocabulary holds literal entries outside `added_tokens` now loads. Cohere's holds 1403, such as `™` and emoji pieces. Encode never emits such an entry, and decode renders its literal text, as `tokenizers` does. The load failed with `InvalidByteLevel` before, and that error variant is removed.
+
 ## [0.21.1] - 2026-10-11
 
 ### Added

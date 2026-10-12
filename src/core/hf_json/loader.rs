@@ -386,10 +386,12 @@ fn build_bpe(
         // them as byte-level fails outright (`｜` is U+FF5C, outside the
         // byte-level alphabet), so the whole file used to be unloadable.
         //
-        // The exemption is per entry and driven solely by membership in
-        // `added_tokens` — a vocab entry that is NOT an added token and fails to
-        // byte-level-decode is still a hard error, because there the failure
-        // means a genuinely corrupt vocabulary rather than a literal spelling.
+        // A vocab entry outside `added_tokens` that does not byte-level-decode
+        // is spelled literally too. Cohere's vocabulary holds 1403 of them
+        // (`™`, `‼`, emoji pieces). `tokenizers` loads such a file: no merge
+        // can produce the entry, so encode never emits it, and its ByteLevel
+        // decoder passes it through as literal text. Keeping its literal bytes
+        // below gives the same decode.
         // Lookup is a single `FxHashMap` probe per entry, so an 818-token added
         // set over a 128k vocab stays O(vocab), not O(vocab × added).
         match specials.get(token) {
@@ -408,20 +410,12 @@ fn build_bpe(
             // Agreed added token: literal text, so skip the byte-level check.
             Some(_) => {}
             None => {
-                if pre.byte_level {
-                    match byte_level_decode(token) {
-                        None => return Err(HfJsonError::InvalidByteLevel(token.to_string())),
-                        // Validated either way — an entry that fails to
-                        // byte-level-decode is a corrupt vocabulary whether or
-                        // not merges can reach it — but an unreachable one is
-                        // not recorded, because this table is an encode path
-                        // too and would reintroduce exactly what the encoder
-                        // above declines.
-                        Some(raw) => {
-                            if !unreachable.contains(token) {
-                                raw_encoder.insert(&raw, id);
-                            }
-                        }
+                // An unreachable entry is not recorded, because this table
+                // is an encode path too and would reintroduce exactly what the
+                // encoder above declines. A literal entry has no raw form.
+                if pre.byte_level && !unreachable.contains(token) {
+                    if let Some(raw) = byte_level_decode(token) {
+                        raw_encoder.insert(&raw, id);
                     }
                 }
             }
