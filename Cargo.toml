@@ -33,12 +33,12 @@ exclude = [".github/rust-bench", "research"]
 name = "splintr"
 version = "0.22.1"
 edition = "2021"
-description = "Fast Rust tokenizer (BPE + SentencePiece + WordPiece) with Python bindings"
+description = "BPE tokenizer for Rust with Python bindings, an alternative to tiktoken and Hugging Face tokenizers. Covers BPE, SentencePiece and WordPiece"
 license = "MIT"
 repository = "https://github.com/ml-rust/splintr"
 homepage = "https://github.com/ml-rust/splintr"
 readme = "README.md"
-keywords = ["tokenizer", "bpe", "sentencepiece", "wordpiece", "llm"]
+keywords = ["tokenizer", "bpe", "tiktoken", "sentencepiece", "llm"]
 categories = ["text-processing", "encoding"]
 # Everything shipped to crates.io, listed explicitly rather than left to
 # "whatever is not gitignored". No vocabulary payload is here — each family is
