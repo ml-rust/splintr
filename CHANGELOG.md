@@ -8,6 +8,8 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-11-06
+
 ### Added
 
 - `AddedTokenSet::insert_vocabulary`: inserts a non-special token. Call it for a token that encodes to its own id under every `SpecialMode`.
