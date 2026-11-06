@@ -233,4 +233,4 @@ __all__ = [
     "GEMMA3_AGENT_TOKENS",
     "GEMMA4_AGENT_TOKENS",
 ]
-__version__ = "0.22.0"
+__version__ = "0.22.1"
