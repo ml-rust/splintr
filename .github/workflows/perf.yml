@@ -131,9 +131,9 @@ jobs:
       ROUNDS: ${{ inputs.rounds }}
       CORPORA: ${{ inputs.corpora }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7.1.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
 
@@ -220,7 +220,7 @@ jobs:
             ${RUST_FAILED:+--note "> **The harness died on these vocabularies and they are missing from every table below: $RUST_FAILED.** Every other vocabulary still ran."} \
             < rust.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: perf-rust-${{ matrix.os }}
           path: rust.jsonl
@@ -392,7 +392,7 @@ jobs:
             --note "Medians of ${ROUNDS:-3} interleaved rounds. Lower is better for latency; the last column is how many times better the first engine is." \
             < rounds.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: perf-${{ matrix.os }}
           path: rounds.jsonl
