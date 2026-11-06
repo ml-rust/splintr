@@ -1,8 +1,8 @@
 # CI — thin wrapper that calls the reusable test workflow.
 #
 # Runs on every pull request and can be dispatched manually. Release Prepare
-# calls test.yml directly rather than this workflow, because the draft gate
-# below would skip the whole suite under `workflow_call`.
+# calls test.yml directly rather than this workflow. The draft gate below
+# skips draft pull requests only and passes under `workflow_call`.
 
 name: CI
 
@@ -22,6 +22,6 @@ permissions:
 
 jobs:
   test:
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Test Suite
     uses: ./.github/workflows/test.yml
