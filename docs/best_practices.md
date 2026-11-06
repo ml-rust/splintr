@@ -126,7 +126,7 @@ Use the Rust-only `decode_token` / `decode_token_bytes` when you want one id's o
   `encode_batch` is unchanged and remains the ergonomic default; this is the fast path, not a replacement.
 - **Do not reach for `encode_rayon` on single texts.** The sequential path wins below roughly 1 MB, which is nearly every real input. Splitting one text across threads costs more than it saves.
 - **Let the cache work.** Repeated chunks are served from an LRU cache automatically. Call `clear_cache()` only if you are streaming millions of unique texts and memory matters — clearing it as routine hygiene just throws away hits.
-- **Do not pay for special-token matching you do not need.** `encode_ordinary` skips the matcher entirely; `encode_with_special` runs it over every input. On text that cannot contain markers, that work is pure overhead — and per [above](#encoding-text-you-did-not-write), ordinary is the safer default anyway.
+- **Do not pay for special-token matching you do not need.** `encode_ordinary` matches no special token; `encode_with_special` runs the full matcher over every input. On text that cannot contain markers, that work is pure overhead — and per [above](#encoding-text-you-did-not-write), ordinary is the safer default anyway.
 - **Build the tokenizer once.** Construction parses a vocabulary of up to 200,000 entries; hold the instance rather than rebuilding it per request. It is safe to share across threads.
 
 ## Additional Resources

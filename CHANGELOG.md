@@ -8,6 +8,15 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ## [Unreleased]
 
+### Added
+
+- `AddedTokenSet::insert_vocabulary`: inserts a non-special token. Call it for a token that encodes to its own id under every `SpecialMode`.
+- `AnyTokenizer::with_eos_ids`, `eos_token_ids`: state several end-of-sequence ids. Call it with the ids from `generation_config.json`.
+
+### Fixed
+
+- `SpecialMode::Allow`, `SpecialMode::Ordinary`: an added token with `special: false` encodes to its own id, as in `tokenizers`. Update tests that compare exact ids.
+
 ## [0.22.0] - 2026-10-12
 
 ### Removed

@@ -55,11 +55,12 @@ pub enum SpecialMode<'a> {
     /// behaviour — what every loader has always done.
     All,
     /// Never match a special token; the text is encoded as ordinary content,
-    /// even where it spells a known special token verbatim.
+    /// even where it spells a known special token verbatim. A non-special added
+    /// token still matches: it is vocabulary, and `tokenizers` always matches it.
     Ordinary,
     /// Match only the named special tokens; error with
     /// [`PolicyError::DisallowedSpecial`] on any other configured special
-    /// token found in the text.
+    /// token found in the text. A non-special added token needs no entry.
     ///
     /// Borrowed rather than owned: a caller holds one allow-list per
     /// endpoint or chat template and passes `&set` on every request, so this
@@ -160,7 +161,9 @@ impl Template {
 #[derive(Debug, Clone, Default)]
 pub struct SpecialPolicy {
     template: Template,
-    eos_id: Option<u32>,
+    /// The ids that end a sequence. The first is the id
+    /// [`eos_token_id`](SpecialPolicy::eos_token_id) names.
+    eos_ids: Vec<u32>,
     named: FxHashMap<String, u32>,
 }
 
@@ -228,12 +231,30 @@ impl SpecialPolicy {
 
     /// The end-of-sequence token id, when the json names one.
     pub fn eos_token_id(&self) -> Option<u32> {
-        self.eos_id
+        self.eos_ids.first().copied()
     }
 
-    /// Whether `id` is the end-of-sequence token.
+    /// Every id that ends a sequence, [`eos_token_id`](Self::eos_token_id) first.
+    pub fn eos_token_ids(&self) -> &[u32] {
+        &self.eos_ids
+    }
+
+    /// Whether `id` ends a sequence.
     pub fn is_eos(&self, id: u32) -> bool {
-        self.eos_id == Some(id)
+        self.eos_ids.contains(&id)
+    }
+
+    /// This policy with `ids` as the ids that end a sequence.
+    ///
+    /// A `tokenizer.json` names no EOS, so the loader picks one by spelling. A
+    /// checkpoint states the truth apart from it, in `generation_config.json`
+    /// and `tokenizer_config.json`, and a model can have several. A caller who
+    /// reads those files sets the result here. The template and the named
+    /// tokens stay as they are.
+    #[must_use]
+    pub fn with_eos_ids(mut self, ids: Vec<u32>) -> Self {
+        self.eos_ids = ids;
+        self
     }
 
     /// The id of an added token by its content (e.g. `"[CLS]"`, `"<|im_end|>"`).
@@ -283,7 +304,7 @@ impl SpecialPolicy {
                 single,
                 pair: PairTemplate::Absent,
             },
-            eos_id,
+            eos_ids: eos_id.into_iter().collect(),
             named,
         }
     }
@@ -314,7 +335,7 @@ impl SpecialPolicy {
     ) -> Self {
         Self {
             template: cls_sep_segments(Some(cls), Some(sep), PairShape::Bert),
-            eos_id,
+            eos_ids: eos_id.into_iter().collect(),
             named,
         }
     }
@@ -355,7 +376,7 @@ pub(super) fn parse(root: &Value) -> Result<SpecialPolicy, PolicyError> {
         // Deliberately a genuine `Option`: the Unigram backend's internal eos
         // falls back to `unk_id`/0 because it only drives decode-skipping, which
         // is the wrong answer for a caller asking what EOS *is*.
-        eos_id: find_added_token(root, EOS_CANDIDATES),
+        eos_ids: find_added_token(root, EOS_CANDIDATES).into_iter().collect(),
         // Name → id only: the `lstrip`/`rstrip` flags belong to the matcher that
         // splits the input, not to a lookup that answers "what id is `[CLS]`?".
         named: parse_special_tokens(root).into_id_map(),
@@ -655,6 +676,17 @@ mod tests {
             p.apply_pair(&[99], &[100]),
             Err(PolicyError::UnsupportedPairComposition(_))
         ));
+    }
+
+    #[test]
+    fn stated_eos_ids_replace_the_guess_and_all_of_them_end_a_sequence() {
+        let p = policy(r#"{"added_tokens": [{"id": 2, "content": "</s>", "special": true}]}"#)
+            .expect("parses")
+            .with_eos_ids(vec![7, 9]);
+        assert_eq!(p.eos_token_id(), Some(7));
+        assert_eq!(p.eos_token_ids(), [7, 9]);
+        assert!(p.is_eos(7) && p.is_eos(9));
+        assert!(!p.is_eos(2), "the guess is gone");
     }
 
     #[test]

@@ -189,11 +189,11 @@ A tokenizer that matches special tokens turns text that spells a control token i
 A user who types `<|im_start|>` produces the same id the server emits.
 Pick one encoding mode for untrusted text:
 
-| Mode                                              | Behavior                                             |
-| ------------------------------------------------- | ---------------------------------------------------- |
-| `encode_with_special(text)` / `All`               | Match every configured special token in the text     |
-| `encode_ordinary(text)` / `Ordinary`              | Match none. Special spellings stay ordinary content. |
-| `encode_allowed_special(text, allowed)` / `Allow` | Match only the named tokens. Raise on any other.     |
+| Mode                                              | Behavior                                                                                       |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `encode_with_special(text)` / `All`               | Match every configured special token in the text                                               |
+| `encode_ordinary(text)` / `Ordinary`              | Match no special token. Special spellings stay ordinary content. `AnyTokenizer` and `Ordinary` match `special: false` added tokens. |
+| `encode_allowed_special(text, allowed)` / `Allow` | Match only the named tokens and `special: false` added tokens. Raise on any other special token. |
 
 Every Python tokenizer type supports all three modes: `Tokenizer`, `AnyTokenizer`, `SpmTokenizer`, `SentencePieceTokenizer`, and `WordPieceTokenizer`.
 

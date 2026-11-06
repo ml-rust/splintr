@@ -528,13 +528,14 @@ pub(in crate::core) fn parse_special_tokens(root: &Value) -> AddedTokenSet {
                 t.get("content").and_then(Value::as_str),
                 t.get("id").and_then(Value::as_u64),
             ) {
-                specials.insert(
+                specials.insert_with_tier(
                     content,
                     AddedToken {
                         id: id as u32,
                         lstrip: t.get("lstrip").and_then(Value::as_bool).unwrap_or(false),
                         rstrip: t.get("rstrip").and_then(Value::as_bool).unwrap_or(false),
                     },
+                    t.get("special").and_then(Value::as_bool).unwrap_or(true),
                 );
             }
         }

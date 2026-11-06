@@ -213,6 +213,15 @@ impl AnyTokenizer {
         self
     }
 
+    /// This tokenizer with `ids` as the ids that end a sequence. The first is
+    /// the id [`eos_token_id`](Self::eos_token_id) names. See
+    /// [`SpecialPolicy::with_eos_ids`].
+    #[must_use]
+    pub fn with_eos_ids(mut self, ids: Vec<u32>) -> Self {
+        self.policy = self.policy.with_eos_ids(ids);
+        self
+    }
+
     /// Whether the source declared a `decoder` pipeline that
     /// [`decode`](Self::decode) drives.
     ///
@@ -673,9 +682,14 @@ impl AnyTokenizer {
         ))))
     }
 
-    /// Whether `id` is the end-of-sequence token.
+    /// Whether `id` ends a sequence.
     pub fn is_eos(&self, id: u32) -> bool {
         self.policy.is_eos(id)
+    }
+
+    /// Every id that ends a sequence, [`eos_token_id`](Self::eos_token_id) first.
+    pub fn eos_token_ids(&self) -> &[u32] {
+        self.policy.eos_token_ids()
     }
 
     /// The end-of-sequence token id, when the json names one.

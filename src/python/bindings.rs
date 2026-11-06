@@ -1688,8 +1688,8 @@ impl PyAnyTokenizer {
     ///
     /// tiktoken's `allowed_special="all"`. This is what `encode` already does —
     /// the name exists so the method means the same thing on every splintr
-    /// tokenizer class. Distinct from `encode_ordinary` (matches none) and
-    /// `encode_allowed_special` (matches a named subset). The boundary template is
+    /// tokenizer class. Distinct from `encode_ordinary` (matches non-special tokens
+    /// only) and `encode_allowed_special` (matches a named subset). The boundary template is
     /// applied, as in `encode`.
     ///
     /// Args:

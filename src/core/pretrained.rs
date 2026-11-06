@@ -502,7 +502,7 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
     let pats = patterns(vocab).unwrap_or(&[]);
 
     let data = vocab_bytes(vocab)?;
-    let special = added_token_set(vocab, special);
+    let special = added_token_set(vocab, special, &skipped);
 
     let tokenizer = match vocab {
         // Vocabularies whose vocabulary stores raw semantic bytes: the file was
@@ -617,44 +617,58 @@ pub fn from_vocab(vocab: PretrainedVocab) -> Result<AnyTokenizer, TokenizerError
 /// `tokenizer.json`, and the flags are not cosmetic: they decide whether the
 /// space next to a marker survives as its own token or is eaten by the marker,
 /// which is a different id sequence reaching the model.
-fn added_token_set(vocab: PretrainedVocab, special: FxHashMap<String, u32>) -> AddedTokenSet {
-    match vocab {
-        // Phi-4 declares `lstrip: true, rstrip: true` on all 96 of its added
-        // tokens, uniformly. Measured with `tokenizers` 0.22.1 on
-        // `microsoft/phi-4`: `"x <|endoftext|> y"` is `[87, 100257, 88]` — both
-        // spaces gone — where OLMo-2, same ranks and same marker id but neither
-        // flag set, keeps them: `[87, 220, 100257, 379]`.
-        PretrainedVocab::Phi4 => special
-            .into_iter()
-            .map(|(name, id)| {
-                (
-                    name,
-                    AddedToken {
-                        id,
-                        lstrip: true,
-                        rstrip: true,
-                    },
-                )
-            })
-            .collect(),
-
-        // ModernBERT declares `lstrip: true` on `[MASK]` alone, the usual BERT
-        // arrangement: `"the [MASK] sat"` must not leave a stray space token
-        // where the mask stands in for a word.
-        PretrainedVocab::ModernBert => special
-            .into_iter()
-            .map(|(name, id)| {
-                let token = AddedToken {
-                    id,
-                    lstrip: id == MODERNBERT_MASK,
-                    rstrip: false,
-                };
-                (name, token)
-            })
-            .collect(),
-
-        _ => special.into(),
+///
+/// `skipped` is [`special_decode_ids`]'s answer, and it settles the tier too. A
+/// reference with a `special` column drops exactly the tokens flagged `true`.
+fn added_token_set(
+    vocab: PretrainedVocab,
+    special: FxHashMap<String, u32>,
+    skipped: &FxHashSet<u32>,
+) -> AddedTokenSet {
+    let mut set = AddedTokenSet::new();
+    for (name, id) in special {
+        let token = match vocab {
+            // Phi-4 declares `lstrip: true, rstrip: true` on all 96 of its added
+            // tokens, uniformly. Measured with `tokenizers` 0.22.1 on
+            // `microsoft/phi-4`: `"x <|endoftext|> y"` is `[87, 100257, 88]` — both
+            // spaces gone — where OLMo-2, same ranks and same marker id but neither
+            // flag set, keeps them: `[87, 220, 100257, 379]`.
+            PretrainedVocab::Phi4 => AddedToken {
+                id,
+                lstrip: true,
+                rstrip: true,
+            },
+            // ModernBERT declares `lstrip: true` on `[MASK]` alone, the usual BERT
+            // arrangement: `"the [MASK] sat"` must not leave a stray space token
+            // where the mask stands in for a word.
+            PretrainedVocab::ModernBert => AddedToken {
+                id,
+                lstrip: id == MODERNBERT_MASK,
+                rstrip: false,
+            },
+            _ => AddedToken::plain(id),
+        };
+        set.insert_with_tier(name, token, is_special_tier(vocab, id, skipped));
     }
+    set
+}
+
+/// Whether a bundled added token is subject to the allow-list.
+///
+/// - cl100k_base and o200k_base: `tiktoken` refuses every marker under
+///   `allowed_special=set()`, and renders every marker on decode. Decode says
+///   nothing about the tier here.
+/// - Phi-4: all 96 added tokens are `special: true` in the reference.
+/// - Ids at or above [`base_vocab_size`]: splintr's agent tokens, which have no
+///   reference. They are control tokens under every vocabulary.
+/// - Every other id: special exactly when [`special_decode_ids`] drops it. Those
+///   arms state the reference's `special` column per vocabulary.
+fn is_special_tier(vocab: PretrainedVocab, id: u32, skipped: &FxHashSet<u32>) -> bool {
+    matches!(
+        vocab,
+        PretrainedVocab::Cl100kBase | PretrainedVocab::O200kBase | PretrainedVocab::Phi4
+    ) || id >= base_vocab_size(vocab)
+        || skipped.contains(&id)
 }
 
 /// The HuggingFace `normalizer` a bundled vocabulary states, if any.
@@ -731,11 +745,11 @@ fn spm_from_vocab(
         user_defined,
     } = load_spm_vocab(data)?;
 
-    let special = fold_user_defined(&pieces, &user_defined, special);
-
     // Agent tokens live above the vocabulary file's last id; give them slots so
-    // they decode and count towards `vocab_size`, not just match on encode.
+    // they decode and count towards `vocab_size`, not just match on encode. A
+    // user-defined piece already holds its own slot, so only the table needs one.
     place_special_pieces(&mut pieces, &special)?;
+    let special = fold_user_defined(&pieces, &user_defined, special, spm_control_markers(vocab));
     // Grow the scores in step: `SpmTokenizer` indexes them by id, so a shorter
     // vector is a length mismatch rather than a missing entry.
     //
@@ -765,7 +779,7 @@ fn spm_from_vocab(
     let tokenizer = SpmTokenizer::new(pieces, scores, bos_token_id(vocab), Some(eos))?
         .with_prefix_space(spm_prefix_space(vocab))
         .with_prefix_scheme(spm_prefix_scheme(vocab))
-        .with_added_tokens(&special)?
+        .with_added_tokens(special)?
         .with_special_decode_ids(skipped);
 
     Ok(AnyTokenizer::new(
@@ -793,18 +807,50 @@ fn spm_from_vocab(
 /// Gemma 3's whitespace runs into shorter ones. With it, both are exact.
 ///
 /// The vocabulary's own table wins a collision, the rule agent tokens follow
-/// too — `special` is written first and `or_insert` leaves it alone.
+/// too. Its entries stay special.
+///
+/// A folded piece is non-special, so it matches under every [`SpecialMode`], as
+/// `<blockquote>` does in `tokenizers`. `control` names the exceptions. See
+/// [`spm_control_markers`].
+///
+/// [`SpecialMode`]: super::policy::SpecialMode
 fn fold_user_defined(
     pieces: &[String],
     user_defined: &[bool],
-    mut special: FxHashMap<String, u32>,
-) -> FxHashMap<String, u32> {
+    special: FxHashMap<String, u32>,
+    control: &[&str],
+) -> AddedTokenSet {
+    let mut set = AddedTokenSet::from(special);
     for (id, piece) in pieces.iter().enumerate() {
-        if user_defined.get(id).copied().unwrap_or(false) {
-            special.entry(piece.clone()).or_insert(id as u32);
+        if user_defined.get(id).copied().unwrap_or(false) && set.get(piece).is_none() {
+            set.insert_with_tier(
+                piece.clone(),
+                AddedToken::plain(id as u32),
+                control.contains(&piece.as_str()),
+            );
         }
     }
-    special
+    set
+}
+
+/// The `USER_DEFINED` pieces of a bundled `.spm` that are control tokens.
+///
+/// The type column says `USER_DEFINED` for Gemma's turn and image markers, and
+/// so does not settle the tier. The checkpoint's `tokenizer.json` does: on
+/// `gemma-2-2b` and `embeddinggemma-300m` these are the only such pieces with
+/// `special: true`. Treating them as vocabulary lets untrusted text forge a turn
+/// under [`SpecialMode::Ordinary`](super::policy::SpecialMode::Ordinary).
+fn spm_control_markers(vocab: PretrainedVocab) -> &'static [&'static str] {
+    match vocab {
+        PretrainedVocab::Gemma2 => &["<start_of_turn>", "<end_of_turn>"],
+        PretrainedVocab::Gemma3 => &[
+            "<start_of_turn>",
+            "<end_of_turn>",
+            "<start_of_image>",
+            "<end_of_image>",
+        ],
+        _ => &[],
+    }
 }
 
 /// Whether a bundled SentencePiece vocabulary prepends a word-boundary marker
@@ -2156,7 +2202,7 @@ fn insert_agent_tokens_except(special: &mut FxHashMap<String, u32>, base: u32, s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::SpecialDecode;
+    use crate::core::policy::{PolicyError, SpecialDecode, SpecialMode};
     use crate::core::Tokenize;
 
     /// Reach the concrete BPE tokenizer for assertions on `Tokenizer`-only APIs.
@@ -2974,9 +3020,150 @@ mod tests {
             .collect();
         let flags = [false, false, true, false];
 
-        let folded = fold_user_defined(&pieces, &flags, FxHashMap::default());
+        let folded = fold_user_defined(&pieces, &flags, FxHashMap::default(), &[]);
         assert_eq!(folded.len(), 1);
-        assert_eq!(folded.get("<blockquote>"), Some(&2));
+        assert_eq!(folded.get("<blockquote>").expect("folded").id, 2);
+        assert_eq!(
+            folded.is_special("<blockquote>"),
+            Some(false),
+            "a folded piece is vocabulary"
+        );
+    }
+
+    /// `control` names the `USER_DEFINED` pieces that stay on the allow-list.
+    #[test]
+    fn a_named_control_marker_folds_as_special() {
+        let pieces: Vec<String> = ["<start_of_turn>", "<b>"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let folded = fold_user_defined(
+            &pieces,
+            &[true, true],
+            FxHashMap::default(),
+            &["<start_of_turn>"],
+        );
+        assert_eq!(folded.is_special("<start_of_turn>"), Some(true));
+        assert_eq!(folded.is_special("<b>"), Some(false));
+    }
+
+    /// Bundled Gemma 2 against `tokenizers` 0.22.1 on `gemma-2-2b/tokenizer.json`
+    /// with `encode_special_tokens = True`. `<blockquote>` and `\n` are
+    /// `special: false`, and `<start_of_turn>`, `<bos>` and `<pad>` are not.
+    #[test]
+    fn gemma2_ordinary_matches_non_special_pieces_only() {
+        let tok = from_pretrained("gemma2").unwrap();
+        for (text, ids) in [
+            ("<blockquote>", vec![191]),
+            ("a<blockquote>b", vec![235250, 191, 235268]),
+            ("<blockquote>x", vec![191, 235297]),
+            (" <blockquote>", vec![235248, 191]),
+            ("a\nb", vec![235250, 108, 235268]),
+            ("<bos>x", vec![235322, 14084, 235313, 235297]),
+            (
+                "<start_of_turn>x",
+                vec![235322, 2997, 235298, 559, 235298, 15508, 235313, 235297],
+            ),
+            ("<pad><blockquote>", vec![235322, 8939, 235313, 191]),
+        ] {
+            assert_eq!(
+                tok.encode_with(text, &SpecialMode::Ordinary).unwrap(),
+                ids,
+                "{text:?}"
+            );
+        }
+    }
+
+    /// The allow-list applies to control tokens and to nothing else.
+    #[test]
+    fn gemma2_allow_refuses_a_turn_marker_and_admits_a_user_defined_piece() {
+        let tok = from_pretrained("gemma2").unwrap();
+        let none = FxHashSet::default();
+        assert_eq!(
+            tok.encode_with("<blockquote>", &SpecialMode::Allow(&none))
+                .unwrap(),
+            [191]
+        );
+        for marker in ["<start_of_turn>", "<end_of_turn>", "<bos>"] {
+            assert!(
+                matches!(
+                    tok.encode_with(marker, &SpecialMode::Allow(&none)),
+                    Err(PolicyError::DisallowedSpecial { .. })
+                ),
+                "{marker} must stay on the allow-list"
+            );
+        }
+    }
+
+    /// Gemma 3 states two more control markers than Gemma 2, under other ids.
+    #[test]
+    fn gemma3_allow_refuses_its_image_markers() {
+        let tok = from_pretrained("gemma3").unwrap();
+        let none = FxHashSet::default();
+        assert_eq!(
+            tok.encode_with("<blockquote>", &SpecialMode::Allow(&none))
+                .unwrap(),
+            [190]
+        );
+        for marker in ["<start_of_turn>", "<start_of_image>", "<end_of_image>"] {
+            assert!(
+                matches!(
+                    tok.encode_with(marker, &SpecialMode::Allow(&none)),
+                    Err(PolicyError::DisallowedSpecial { .. })
+                ),
+                "{marker} must stay on the allow-list"
+            );
+        }
+    }
+
+    /// A byte-level bundled vocabulary takes its tier from the reference too.
+    ///
+    /// `tokenizers` 0.22.1 on the checkpoint's `tokenizer.json`: Qwen's `<think>`,
+    /// ModernBERT's space runs and OLMo-2's `<|extra_id_0|>` are `special: false`.
+    #[test]
+    fn bundled_non_special_tokens_need_no_allow_list_entry() {
+        let none = FxHashSet::default();
+        for (name, content, id) in [
+            ("qwen3", "<think>", 151667),
+            ("modernbert", "  ", 50276),
+            ("olmo2", "<|extra_id_0|>", 100256),
+            ("deepseek_v3", "<｜User｜>", 128803),
+            ("whisper_v3", "<|0.00|>", 50365),
+        ] {
+            let tok = from_pretrained(name).unwrap();
+            assert_eq!(tok.encode_raw(content), [id], "{name}: {content:?}");
+            for mode in [SpecialMode::Allow(&none), SpecialMode::Ordinary] {
+                assert_eq!(
+                    tok.encode_with(content, &mode).unwrap(),
+                    tok.encode(content),
+                    "{name}: {content:?} under {mode:?}"
+                );
+            }
+        }
+    }
+
+    /// `tiktoken` has no non-special tier, and an agent token has no reference.
+    /// Both stay on the allow-list.
+    #[test]
+    fn tiktoken_markers_and_agent_tokens_stay_special() {
+        let none = FxHashSet::default();
+        for (name, content) in [
+            ("cl100k_base", "<|endoftext|>"),
+            ("o200k_base", "<|endofprompt|>"),
+            ("qwen3", "<|im_start|>"),
+            ("modernbert", "[CLS]"),
+            ("modernbert", "<|think|>"),
+            ("whisper_v3", "<|startoftranscript|>"),
+        ] {
+            let tok = from_pretrained(name).unwrap();
+            assert!(
+                matches!(
+                    tok.encode_with(content, &SpecialMode::Allow(&none)),
+                    Err(PolicyError::DisallowedSpecial { .. })
+                ),
+                "{name}: {content} must stay on the allow-list"
+            );
+        }
     }
 
     /// A vocabulary's own table outranks the piece list, the same rule agent
@@ -2989,8 +3176,13 @@ mod tests {
         let mut stated = FxHashMap::default();
         stated.insert("<mask>".to_string(), 9999);
 
-        let folded = fold_user_defined(&pieces, &flags, stated);
-        assert_eq!(folded.get("<mask>"), Some(&9999));
+        let folded = fold_user_defined(&pieces, &flags, stated, &[]);
+        assert_eq!(folded.get("<mask>").expect("stated").id, 9999);
+        assert_eq!(
+            folded.is_special("<mask>"),
+            Some(true),
+            "the table's entries stay special"
+        );
     }
 
     /// A shorter flag vector must not panic or mis-flag: a `.spm` written
@@ -2999,7 +3191,7 @@ mod tests {
     #[test]
     fn a_vocabulary_without_type_information_folds_nothing() {
         let pieces: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
-        let folded = fold_user_defined(&pieces, &[], FxHashMap::default());
+        let folded = fold_user_defined(&pieces, &[], FxHashMap::default(), &[]);
         assert!(folded.is_empty());
     }
 

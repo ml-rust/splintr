@@ -541,13 +541,13 @@ impl SpmTokenizer {
     /// marker never exists to begin with — llama.cpp prefixes *text* fragments,
     /// and a leading added token has none before it — so the sentinel rule has
     /// nothing to suppress and needs no second code path here.
-    fn prefix_stands_alone(&self, text: &str) -> bool {
+    fn prefix_stands_alone(&self, text: &str, mode: &SpecialMode<'_>) -> bool {
         if !self.add_prefix_space || self.prefix_scheme != SpmPrefixScheme::Once {
             return false;
         }
         self.added
             .as_ref()
-            .and_then(|added| added.id_at_start(text))
+            .and_then(|added| added.id_at_start(text, mode))
             .is_some_and(|id| {
                 let leading = Some(id);
                 leading != self.bos_token_id
@@ -556,29 +556,28 @@ impl SpmTokenizer {
             })
     }
 
-    /// Whether an added token occupies byte 0, so that no gap begins the input.
+    /// Whether `mode` matches an added token at byte 0, so that no gap begins
+    /// the input.
     ///
     /// This — not "a standalone marker was emitted" — is what spends the single
     /// [`Once`](SpmPrefixScheme::Once) prefix: a leading sentinel swallows it
     /// (`"<s>x"` -> `['<s>', 'x']`, bare `x`) while any other leading added
     /// token leaves it standing alone (`"[INST]Write"` -> `['▁', '[INST]',
     /// 'Write']`). Both spend it; only one of them emits anything.
-    fn starts_with_added_token(&self, text: &str, split: bool) -> bool {
-        split
-            && self
-                .added
-                .as_ref()
-                .is_some_and(|added| added.id_at_start(text).is_some())
+    fn starts_with_added_token(&self, text: &str, mode: &SpecialMode<'_>) -> bool {
+        self.added
+            .as_ref()
+            .is_some_and(|added| added.id_at_start(text, mode).is_some())
     }
 
     /// The ids that precede the added-token split: the lone `▁` piece when the
     /// whole-input dummy prefix has nothing to attach to, otherwise nothing.
     ///
-    /// `split` is false for [`SpecialMode::Ordinary`], which never consults the
-    /// matcher: the whole text is then one stretch starting at byte 0 and
-    /// carries the prefix itself.
-    fn standalone_prefix(&self, text: &str, split: bool) -> Vec<u32> {
-        if split && self.prefix_stands_alone(text) {
+    /// Under [`SpecialMode::Ordinary`] a leading special token is text. The
+    /// stretch starting at byte 0 then carries the prefix itself. A leading
+    /// non-special token matches under every mode and takes the same prefix.
+    fn standalone_prefix(&self, text: &str, mode: &SpecialMode<'_>) -> Vec<u32> {
+        if self.prefix_stands_alone(text, mode) {
             // An empty stretch escaped *with* the prefix is exactly the lone
             // boundary piece, so no separate id lookup is needed and a
             // vocabulary that spells the marker differently still agrees with
@@ -679,9 +678,8 @@ impl SpmTokenizer {
         if text.is_empty() {
             return Ok(Vec::new());
         }
-        let split = !matches!(mode, SpecialMode::Ordinary);
-        let mut out = self.standalone_prefix(text, split);
-        let mut encode_gap = self.gap_encoder(self.starts_with_added_token(text, split));
+        let mut out = self.standalone_prefix(text, mode);
+        let mut encode_gap = self.gap_encoder(self.starts_with_added_token(text, mode));
         out.extend(super::added::AddedTokens::dispatch_with_mode(
             &self.added,
             text,
@@ -867,8 +865,9 @@ impl Tokenize for SpmTokenizer {
         if text.is_empty() {
             return Vec::new();
         }
-        let mut out = self.standalone_prefix(text, true);
-        let mut encode_gap = self.gap_encoder(self.starts_with_added_token(text, true));
+        let mut out = self.standalone_prefix(text, &SpecialMode::All);
+        let mut encode_gap =
+            self.gap_encoder(self.starts_with_added_token(text, &SpecialMode::All));
         out.extend(super::added::AddedTokens::dispatch(
             &self.added,
             text,
@@ -1405,14 +1404,60 @@ mod tests {
         }
     }
 
-    /// [`SpecialMode::Ordinary`] never splits, so the whole text is one stretch
-    /// beginning at byte 0 and carries the prefix — the marker's literal
-    /// spelling is content, and no standalone prefix piece appears.
+    /// With no non-special token, [`SpecialMode::Ordinary`] never splits. The
+    /// whole text is one stretch beginning at byte 0 and carries the prefix. The
+    /// marker's literal spelling is content, and no standalone prefix appears.
     #[test]
     fn ordinary_mode_prefixes_the_whole_text_once() {
         let t = tok_with_added();
         let ids = t.encode_with("<bos>hello", &SpecialMode::Ordinary).unwrap();
         assert_eq!(ids, t.encode_ordinary("<bos>hello"));
+        assert!(!ids.contains(&2), "the marker is content, not its own id");
+    }
+
+    /// A special `<bos>` at id 2, and a non-special `<n>` at id 1 under the
+    /// [`SpmPrefixScheme::Once`] placement, which spends one prefix per input.
+    fn tok_with_non_special() -> SpmTokenizer {
+        let (tokens, scores) = rank_scored_vocab();
+        let mut set = crate::core::AddedTokenSet::new();
+        set.insert_plain("<bos>", 2);
+        set.insert_vocabulary("<n>", crate::core::AddedToken::plain(1));
+        SpmTokenizer::new(tokens, scores, None, None)
+            .unwrap()
+            .with_prefix_scheme(SpmPrefixScheme::Once)
+            .with_added_tokens(set)
+            .unwrap()
+    }
+
+    /// A non-special token at byte 0 spends the one prefix under every mode, so
+    /// the prefix stands alone and the gap after the token stays bare. A second
+    /// prefix on the gap gives `▁hello` in place of `h`, `el`, `lo`.
+    #[test]
+    fn ordinary_mode_treats_a_leading_non_special_token_as_all_mode_does() {
+        let t = tok_with_non_special();
+        let none = rustc_hash::FxHashSet::default();
+        let all = t.encode_with("<n>hello", &SpecialMode::All).unwrap();
+        let bare = t.encode_segment("hello", Prefix::None);
+        let lone = t.encode_segment("", t.prefix());
+        assert_eq!(all, [lone, vec![1], bare].concat());
+        assert_eq!(
+            t.encode_with("<n>hello", &SpecialMode::Ordinary).unwrap(),
+            all
+        );
+        assert_eq!(
+            t.encode_with("<n>hello", &SpecialMode::Allow(&none))
+                .unwrap(),
+            all
+        );
+    }
+
+    /// A special token at byte 0 is text under `Ordinary` and spends no prefix.
+    /// The first gap carries the prefix, and a later non-special token splits.
+    #[test]
+    fn ordinary_mode_prefixes_a_leading_special_spelling_and_splits_after_it() {
+        let t = tok_with_non_special();
+        let ids = t.encode_with("<bos>h<n>", &SpecialMode::Ordinary).unwrap();
+        assert_eq!(ids, [t.encode_ordinary("<bos>h"), vec![1]].concat());
         assert!(!ids.contains(&2), "the marker is content, not its own id");
     }
 

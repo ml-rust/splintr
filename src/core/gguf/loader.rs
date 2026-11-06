@@ -3,6 +3,7 @@
 
 use rustc_hash::FxHashMap;
 
+use super::super::added::{AddedToken, AddedTokenSet};
 use super::super::any_tokenizer::{AnyTokenizer, Backend};
 use super::super::bpe;
 use super::super::normalizer::{NormOp, Normalizer};
@@ -93,12 +94,13 @@ fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
     // it would lose a lookup that works today.
     for name in ["[UNK]", "[PAD]", "[CLS]", "[SEP]"] {
         if let Some(id) = lookup_special(&tokens, &vocab, name) {
-            named.insert(name.to_owned(), id);
+            named.insert_plain(name, id);
         }
     }
 
     // Read before `named` is moved into the policy below.
-    let (cls, sep) = (named.get("[CLS]").copied(), named.get("[SEP]").copied());
+    let id_of = |name: &str| named.get(name).map(|token| token.id);
+    let (cls, sep) = (id_of("[CLS]"), id_of("[SEP]"));
 
     // Which ids decode drops. The backend tests ids, not surface strings, so the
     // file's OWN declared specials go in — otherwise a vocabulary that spells
@@ -119,15 +121,16 @@ fn build_wordpiece(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError>
     special_decode.extend(
         ["[UNK]", "[PAD]", "[CLS]", "[SEP]"]
             .into_iter()
-            .filter_map(|name| named.get(name).copied()),
+            .filter_map(id_of),
     );
 
     let eos_token_id = vocab.eos_token_id.unwrap_or(0);
     let backend = Backend::WordPiece(
         WordPieceTokenizer::new(tokens, unk_token_id, 200, do_lower_case)
-            .with_added_tokens(&named)?
+            .with_added_tokens(named.clone())?
             .with_special_decode_ids(special_decode),
     );
+    let named = named.into_id_map();
 
     // `add_bos_token` / `add_eos_token` are not how a BERT file states its
     // boundaries — the `[CLS]`/`[SEP]` ids are — so the template is built from
@@ -198,12 +201,12 @@ fn build_unigram(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
             .with_normalizer(normalizer)
             .with_prefix_space(prefix_space)
             .with_remove_extra_whitespaces(remove_extra_whitespaces(&vocab))
-            .with_added_tokens(&specials)?,
+            .with_added_tokens(specials.clone())?,
     );
 
     Ok(AnyTokenizer::new(
         backend,
-        boundary_policy(&vocab, eos_token_id, true, true, specials),
+        boundary_policy(&vocab, eos_token_id, true, true, specials.into_id_map()),
     ))
 }
 
@@ -250,12 +253,12 @@ fn build_spm(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabError> {
             .with_prefix_space(add_space_prefix(&vocab, true))
             .with_prefix_scheme(SpmPrefixScheme::AfterEachSpecial)
             .with_special_decode_ids(special_decode)
-            .with_added_tokens(&specials)?,
+            .with_added_tokens(specials.clone())?,
     );
 
     Ok(AnyTokenizer::new(
         backend,
-        boundary_policy(&vocab, eos_token_id, true, false, specials),
+        boundary_policy(&vocab, eos_token_id, true, false, specials.into_id_map()),
     ))
 }
 
@@ -278,7 +281,7 @@ fn build_byte_level_bpe(mut vocab: GgufVocab) -> Result<AnyTokenizer, GgufVocabE
     // teaches the encoder to match them in the input, `named` lets a caller
     // look one up by name. Neither substitutes for the other.
     let specials = special_token_map(&vocab, &tokens);
-    let named = specials.clone();
+    let named = specials.clone().into_id_map();
     let patterns = byte_level_pattern(vocab.pre.as_deref())?;
 
     let eos_token_id = vocab.eos_token_id.unwrap_or(0);
@@ -694,8 +697,7 @@ const CONTROL_TOKEN_TYPE: u32 = 3;
 /// USER_DEFINED in the GGUF `tokenizer.ggml.token_type` enum.
 const USER_DEFINED_TOKEN_TYPE: u32 = 4;
 
-/// Map of special/control/user-defined token strings to ids, for added-token
-/// matching.
+/// The CONTROL and USER_DEFINED tokens of a vocabulary, for added-token matching.
 ///
 /// llama.cpp partitions both CONTROL and USER_DEFINED tokens out of the input
 /// text as literal strings before merging even begins — neither ever
@@ -703,18 +705,24 @@ const USER_DEFINED_TOKEN_TYPE: u32 = 4;
 /// that spell their added tokens as USER_DEFINED, e.g. Gemma's whitespace-run
 /// pieces (`"  "`, `"   "`, ...), which then never match and silently fall
 /// through to be re-merged from single-space pieces instead.
-fn special_token_map(vocab: &GgufVocab, tokens: &[String]) -> FxHashMap<String, u32> {
-    let mut specials = FxHashMap::default();
+///
+/// The type states the tier. A CONTROL token is special. A USER_DEFINED token is
+/// not: llama.cpp matches it with `parse_special` off, and `convert_hf_to_gguf`
+/// writes USER_DEFINED for a `tokenizer.json` entry with `special: false`.
+fn special_token_map(vocab: &GgufVocab, tokens: &[String]) -> AddedTokenSet {
+    let mut specials = AddedTokenSet::new();
 
     if let Some(types) = vocab.token_type.as_ref() {
         // Driven from the tokens so an id the type array covers but the vocab
         // does not is skipped rather than indexed.
         for (id, token) in tokens.iter().enumerate() {
-            if matches!(
-                types.get(id),
-                Some(&CONTROL_TOKEN_TYPE) | Some(&USER_DEFINED_TOKEN_TYPE)
-            ) {
-                specials.insert(token.clone(), id as u32);
+            let id = id as u32;
+            match types.get(id as usize) {
+                Some(&CONTROL_TOKEN_TYPE) => specials.insert_plain(token.clone(), id),
+                Some(&USER_DEFINED_TOKEN_TYPE) => {
+                    specials.insert_vocabulary(token.clone(), AddedToken::plain(id));
+                }
+                _ => {}
             }
         }
     }

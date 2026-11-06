@@ -41,11 +41,9 @@ pub struct AddedToken {
 impl AddedToken {
     /// An added token with both strip flags off.
     ///
-    /// This is the shape of every added token that does not come from a
-    /// `tokenizer.json`: GGUF vocabularies and the bundled tiktoken-style
-    /// vocabularies have no place to declare the flags, so "no flags" is their
-    /// only correct reading — unlike the `tokenizer.json` loader, which must
-    /// read whatever the file says.
+    /// GGUF vocabularies and the bundled vocabularies have no place to declare
+    /// strip flags, so "no flags" is their only correct reading. The
+    /// `tokenizer.json` loader reads the flags from the file.
     pub const fn plain(id: u32) -> Self {
         Self {
             id,
@@ -55,17 +53,39 @@ impl AddedToken {
     }
 }
 
+/// An [`AddedToken`] and its tier.
+///
+/// The tier stays apart from [`AddedToken`], whose fields are public and fixed.
+#[derive(Clone, Copy, Debug)]
+struct Entry {
+    token: AddedToken,
+    /// Whether this token is a control token, subject to the allow-list.
+    special: bool,
+}
+
+impl Entry {
+    const fn special(token: AddedToken) -> Self {
+        Self {
+            token,
+            special: true,
+        }
+    }
+}
+
 /// An owned content → [`AddedToken`] set: what a backend is handed to build its
 /// matcher from.
 ///
-/// A bare `FxHashMap<String, u32>` cannot express the strip flags, and every
-/// caller that *has* none (GGUF, the bundled vocabularies, tests) still gets to
-/// pass one — the `From` impls below turn it into a set of
-/// [`plain`](AddedToken::plain) tokens — so only the `tokenizer.json` loader
-/// pays the cost of spelling the flags out.
+/// A bare `FxHashMap<String, u32>` cannot express the strip flags or the tier.
+/// A caller with neither passes one, and the `From` impls below turn it into a
+/// set of special [`plain`](AddedToken::plain) tokens. A loader that reads either
+/// fact inserts the tokens one by one.
+///
+/// Every token is special unless [`insert_vocabulary`](Self::insert_vocabulary)
+/// declares it. That includes every token from [`insert`](Self::insert),
+/// [`insert_plain`](Self::insert_plain), and the `From` and `FromIterator` impls.
 #[derive(Clone, Debug, Default)]
 pub struct AddedTokenSet {
-    tokens: FxHashMap<String, AddedToken>,
+    tokens: FxHashMap<String, Entry>,
 }
 
 impl AddedTokenSet {
@@ -74,19 +94,47 @@ impl AddedTokenSet {
         Self::default()
     }
 
-    /// Declare `content` as an added token with explicit flags.
+    /// Declare `content` as a special added token with explicit flags. This
+    /// replaces any token already declared for `content`, tier included.
     pub fn insert(&mut self, content: impl Into<String>, token: AddedToken) {
-        self.tokens.insert(content.into(), token);
+        self.insert_with_tier(content, token, true);
     }
 
-    /// Declare `content` as an added token with both strip flags off.
+    /// Declare `content` as a non-special added token with explicit flags. This
+    /// replaces any token already declared for `content`, tier included.
+    ///
+    /// A non-special added token is vocabulary. Gemma 2 declares `\n` and its
+    /// HTML tags this way, and GPT-NeoX its whitespace runs. It encodes to its
+    /// own id under every [`SpecialMode`], as it does in `tokenizers`. Only a
+    /// special token is subject to the allow-list.
+    pub fn insert_vocabulary(&mut self, content: impl Into<String>, token: AddedToken) {
+        self.insert_with_tier(content, token, false);
+    }
+
+    /// Declare `content` under the tier a loader read from its source.
+    pub(in crate::core) fn insert_with_tier(
+        &mut self,
+        content: impl Into<String>,
+        token: AddedToken,
+        special: bool,
+    ) {
+        self.tokens.insert(content.into(), Entry { token, special });
+    }
+
+    /// Declare `content` as a special added token with both strip flags off.
     pub fn insert_plain(&mut self, content: impl Into<String>, id: u32) {
         self.insert(content, AddedToken::plain(id));
     }
 
     /// The token declared for `content`, if any.
     pub fn get(&self, content: &str) -> Option<AddedToken> {
-        self.tokens.get(content).copied()
+        self.tokens.get(content).map(|entry| entry.token)
+    }
+
+    /// The tier declared for `content`, if any.
+    #[cfg(test)]
+    pub(in crate::core) fn is_special(&self, content: &str) -> Option<bool> {
+        self.tokens.get(content).map(|entry| entry.special)
     }
 
     /// Number of declared added tokens.
@@ -101,14 +149,17 @@ impl AddedTokenSet {
 
     /// Iterate the declared tokens as `(content, token)` pairs.
     pub fn iter(&self) -> impl Iterator<Item = (&str, AddedToken)> + '_ {
-        self.tokens.iter().map(|(k, v)| (k.as_str(), *v))
+        self.tokens.iter().map(|(k, v)| (k.as_str(), v.token))
     }
 
     /// Consume the set into the plain name→id map the rest of the crate speaks
     /// (decode tables, `SpecialPolicy`'s named lookups). Consuming rather than
     /// borrowing moves the token strings instead of cloning every one of them.
     pub fn into_id_map(self) -> FxHashMap<String, u32> {
-        self.tokens.into_iter().map(|(k, v)| (k, v.id)).collect()
+        self.tokens
+            .into_iter()
+            .map(|(k, v)| (k, v.token.id))
+            .collect()
     }
 }
 
@@ -117,7 +168,7 @@ impl From<FxHashMap<String, u32>> for AddedTokenSet {
         Self {
             tokens: map
                 .into_iter()
-                .map(|(k, id)| (k, AddedToken::plain(id)))
+                .map(|(k, id)| (k, Entry::special(AddedToken::plain(id))))
                 .collect(),
         }
     }
@@ -128,7 +179,7 @@ impl From<&FxHashMap<String, u32>> for AddedTokenSet {
         Self {
             tokens: map
                 .iter()
-                .map(|(k, id)| (k.clone(), AddedToken::plain(*id)))
+                .map(|(k, id)| (k.clone(), Entry::special(AddedToken::plain(*id))))
                 .collect(),
         }
     }
@@ -137,7 +188,10 @@ impl From<&FxHashMap<String, u32>> for AddedTokenSet {
 impl FromIterator<(String, AddedToken)> for AddedTokenSet {
     fn from_iter<T: IntoIterator<Item = (String, AddedToken)>>(iter: T) -> Self {
         Self {
-            tokens: iter.into_iter().collect(),
+            tokens: iter
+                .into_iter()
+                .map(|(k, token)| (k, Entry::special(token)))
+                .collect(),
         }
     }
 }
@@ -295,10 +349,21 @@ pub(crate) fn opens_input(text: &str, gap: &str) -> bool {
 #[derive(Clone)]
 pub struct AddedTokens {
     matcher: AhoCorasick,
-    tokens: Vec<AddedToken>,
+    tokens: Vec<Entry>,
     /// Drives the scan when the patterns open with few enough distinct bytes,
     /// leaving the automaton to verify candidates rather than find them.
     starts: Option<StartBytes>,
+    /// The matcher [`SpecialMode::Ordinary`] runs: the non-special tokens only.
+    /// `None` when every token is special, so the whole text is one gap.
+    ///
+    /// A non-special token nested in a special token's spelling matches here.
+    /// `tokenizers` 0.22.1 matches it only when the two tokens differ in
+    /// `normalized`, because it runs one trie per value. This type does not read
+    /// `normalized`. With `Q` nested in the special `<aQb>`, `Q` matches on
+    /// GPT-NeoX's shape (`true` beside `false`), and the reference consumes it
+    /// on Gemma's shape (`false` on both). None of 79 `tokenizer.json` documents
+    /// measured nests one.
+    vocabulary: Option<Box<AddedTokens>>,
 }
 
 impl AddedTokens {
@@ -315,12 +380,28 @@ impl AddedTokens {
     /// enforcement mode relies on this same matcher, so a silently-absent
     /// matcher would also silently skip that check.
     pub fn new(set: &AddedTokenSet) -> Result<Option<Self>, aho_corasick::BuildError> {
+        let vocabulary = AddedTokenSet {
+            tokens: set
+                .tokens
+                .iter()
+                .filter(|(_, entry)| !entry.special)
+                .map(|(content, entry)| (content.clone(), *entry))
+                .collect(),
+        };
+        let vocabulary = Self::build(&vocabulary, None)?.map(Box::new);
+        Self::build(set, vocabulary)
+    }
+
+    /// One automaton over `set`, with its [`SpecialMode::Ordinary`] matcher.
+    fn build(
+        set: &AddedTokenSet,
+        vocabulary: Option<Box<AddedTokens>>,
+    ) -> Result<Option<Self>, aho_corasick::BuildError> {
         if set.is_empty() {
             return Ok(None);
         }
-        let entries: Vec<(&str, AddedToken)> = set.iter().collect();
-        let patterns: Vec<&str> = entries.iter().map(|(k, _)| *k).collect();
-        let tokens: Vec<AddedToken> = entries.iter().map(|(_, t)| *t).collect();
+        let (patterns, tokens): (Vec<&str>, Vec<Entry>) =
+            set.tokens.iter().map(|(k, e)| (k.as_str(), *e)).unzip();
         // Leftmost-longest so a longer added token (e.g. a 24-space run) wins over
         // a shorter one (a 2-space run) starting at the same position, matching
         // HuggingFace. Default (Standard) reports the earliest-ending match,
@@ -345,6 +426,7 @@ impl AddedTokens {
             matcher,
             tokens,
             starts,
+            vocabulary,
         }))
     }
 
@@ -365,7 +447,10 @@ impl AddedTokens {
         }
     }
 
-    /// The id of the added token occupying byte 0 of `text`, if any.
+    /// The id of the added token `mode` matches at byte 0 of `text`, if any.
+    ///
+    /// [`SpecialMode::Ordinary`] asks the matcher it splits with, which holds
+    /// the non-special tokens only. Every other mode asks the full matcher.
     ///
     /// The SentencePiece backends need this because their dummy prefix belongs
     /// to the whole input and is applied *before* the split: when an added token
@@ -381,11 +466,16 @@ impl AddedTokens {
     /// precedes the sentinel), and no loader that builds an SPM backend (GGUF,
     /// the bundled SentencePiece vocabularies) can declare strip flags at all,
     /// so the two readings never disagree on a reachable configuration.
-    pub fn id_at_start(&self, text: &str) -> Option<u32> {
-        self.matcher
+    pub fn id_at_start(&self, text: &str, mode: &SpecialMode<'_>) -> Option<u32> {
+        let matching = match mode {
+            SpecialMode::Ordinary => self.vocabulary.as_deref()?,
+            SpecialMode::All | SpecialMode::Allow(_) => self,
+        };
+        matching
+            .matcher
             .find(text)
             .filter(|m| m.start() == 0)
-            .map(|m| self.tokens[m.pattern().as_usize()].id)
+            .map(|m| matching.tokens[m.pattern().as_usize()].token.id)
     }
 
     /// Whether the match at `start..end` falls inside a later token's
@@ -425,7 +515,7 @@ impl AddedTokens {
             )
             .ok()
             .flatten()
-            .is_some_and(|m| self.tokens[m.pattern().as_usize()].lstrip)
+            .is_some_and(|m| self.tokens[m.pattern().as_usize()].token.lstrip)
     }
 
     /// Split `text` on added tokens, emitting their ids and encoding the gaps via
@@ -438,7 +528,7 @@ impl AddedTokens {
     where
         F: FnMut(&str, &mut Vec<u32>),
     {
-        match self.encode_matched(text, encode_gap, |_, _| Ok::<(), Infallible>(())) {
+        match self.encode_matched(text, encode_gap, |_, _, _| Ok::<(), Infallible>(())) {
             Ok(ids) => ids,
             // `Infallible` has no values, so this match has no arms to write.
             Err(never) => match never {},
@@ -449,10 +539,10 @@ impl AddedTokens {
     /// refusing per [`SpecialMode::Allow`]) and encoding the gaps via
     /// `encode_gap`.
     ///
-    /// [`SpecialMode::Ordinary`] never consults the matcher at all — the whole
-    /// text goes straight to `encode_gap` — rather than matching and then
-    /// discarding the match, which would double the matching work and could
-    /// disagree with the matcher used elsewhere about where a boundary falls.
+    /// [`SpecialMode::Ordinary`] runs a matcher over the non-special tokens
+    /// only, so a special token's spelling stays inside a gap and is encoded as
+    /// text. With no non-special token, the whole text goes straight to
+    /// `encode_gap`. [`SpecialMode::Allow`] admits every non-special token.
     pub fn encode_with_mode<F>(
         &self,
         text: &str,
@@ -463,15 +553,18 @@ impl AddedTokens {
         F: FnMut(&str, &mut Vec<u32>),
     {
         match mode {
-            SpecialMode::Ordinary => {
-                let mut out = Vec::new();
-                encode_gap(text, &mut out);
-                Ok(out)
-            }
+            SpecialMode::Ordinary => match &self.vocabulary {
+                Some(vocabulary) => Ok(vocabulary.encode_with(text, encode_gap)),
+                None => {
+                    let mut out = Vec::new();
+                    encode_gap(text, &mut out);
+                    Ok(out)
+                }
+            },
             SpecialMode::All => Ok(self.encode_with(text, encode_gap)),
             SpecialMode::Allow(allowed) => {
-                self.encode_matched(text, encode_gap, |matched, offset| {
-                    if allowed.contains(matched) {
+                self.encode_matched(text, encode_gap, |matched, special, offset| {
+                    if !special || allowed.contains(matched) {
                         Ok(())
                     } else {
                         Err(PolicyError::DisallowedSpecial {
@@ -485,8 +578,9 @@ impl AddedTokens {
     }
 
     /// The one shared match/gap loop. `admit` is consulted for every matched
-    /// added token, with the matched text and its byte offset in `text`, and
-    /// short-circuits the whole encode by returning `Err`.
+    /// added token, with the matched text, whether the token is special, and its
+    /// byte offset in `text`. It short-circuits the whole encode by returning
+    /// `Err`.
     ///
     /// Taking the per-match decision as a closure rather than a `SpecialMode`
     /// keeps [`SpecialMode::Ordinary`] — which must never reach this loop —
@@ -509,7 +603,7 @@ impl AddedTokens {
     ) -> Result<Vec<u32>, E>
     where
         F: FnMut(&str, &mut Vec<u32>),
-        A: FnMut(&str, usize) -> Result<(), E>,
+        A: FnMut(&str, bool, usize) -> Result<(), E>,
     {
         let mut out = Vec::new();
         let mut last = 0;
@@ -537,7 +631,7 @@ impl AddedTokens {
             if self.swallowed_by_lstrip(text, m.start(), m.end()) {
                 continue;
             }
-            let token = self.tokens[m.pattern().as_usize()];
+            let Entry { token, special } = self.tokens[m.pattern().as_usize()];
             // Clamped for the partial-overlap case (the strip ate the match's
             // first bytes but not all of them): the gap is then empty, never a
             // reversed range that would panic on slicing.
@@ -563,7 +657,7 @@ impl AddedTokens {
             if gap_end > last {
                 encode_gap(&text[last..gap_end], &mut out);
             }
-            admit(&text[m.start()..m.end()], m.start())?;
+            admit(&text[m.start()..m.end()], special, m.start())?;
             out.push(token.id);
             last = m.end();
             if token.rstrip {
@@ -796,7 +890,7 @@ mod tests {
     fn ordinary_mode_never_promotes_the_literal_text() {
         let at = AddedTokens::new(&special_map()).unwrap().unwrap();
         // The gap encoder must see the *whole* text, including the special
-        // token's literal spelling — the matcher must not be consulted at all.
+        // token's literal spelling.
         let mut gap_calls = Vec::new();
         let ids = at
             .encode_with_mode(
@@ -813,6 +907,88 @@ mod tests {
             ids,
             "<|im_start|>hi".bytes().map(u32::from).collect::<Vec<_>>()
         );
+    }
+
+    /// A special token, and a non-special `\n` as Gemma 2 declares it.
+    fn mixed_set() -> AddedTokenSet {
+        let mut set = AddedTokenSet::new();
+        set.insert_plain("<ctl>", 1);
+        set.insert_vocabulary("\n", AddedToken::plain(2));
+        set
+    }
+
+    /// The tier belongs to the set and leaves the token's published shape alone.
+    #[test]
+    fn the_tier_stays_out_of_the_token_and_a_later_insert_replaces_it() {
+        let mut set = AddedTokenSet::new();
+        let token = AddedToken {
+            id: 7,
+            lstrip: true,
+            rstrip: false,
+        };
+        set.insert_vocabulary("<x>", token);
+        assert_eq!(set.get("<x>"), Some(token));
+        assert_eq!(set.iter().collect::<Vec<_>>(), [("<x>", token)]);
+        assert_eq!(set.is_special("<x>"), Some(false));
+
+        set.insert("<x>", token);
+        assert_eq!(set.is_special("<x>"), Some(true));
+        set.insert_vocabulary("<x>", token);
+        assert_eq!(set.is_special("<x>"), Some(false));
+        set.insert_plain("<x>", 7);
+        assert_eq!(set.is_special("<x>"), Some(true));
+        assert_eq!(set.is_special("<y>"), None);
+    }
+
+    /// `From` and `FromIterator` carry no tier, so they declare special tokens.
+    #[test]
+    fn the_conversions_declare_special_tokens() {
+        let mut map = FxHashMap::default();
+        map.insert("<x>".to_string(), 7);
+        assert_eq!(AddedTokenSet::from(&map).is_special("<x>"), Some(true));
+        assert_eq!(
+            AddedTokenSet::from(map.clone()).is_special("<x>"),
+            Some(true)
+        );
+        let collected: AddedTokenSet = [("<x>".to_string(), AddedToken::plain(7))]
+            .into_iter()
+            .collect();
+        assert_eq!(collected.is_special("<x>"), Some(true));
+    }
+
+    #[test]
+    fn allow_mode_admits_a_non_special_token_and_refuses_a_special_one() {
+        let at = AddedTokens::new(&mixed_set()).unwrap().unwrap();
+        let none = rustc_hash::FxHashSet::default();
+        let ids = at
+            .encode_with_mode("a\nb", &SpecialMode::Allow(&none), |gap, out| {
+                out.extend(gap.bytes().map(u32::from));
+            })
+            .expect("a non-special token needs no allow-list entry");
+        assert_eq!(ids, vec![u32::from(b'a'), 2, u32::from(b'b')]);
+        let err = at
+            .encode_with_mode("a<ctl>", &SpecialMode::Allow(&none), bytes_gap)
+            .expect_err("a special token still needs one");
+        assert!(matches!(err, PolicyError::DisallowedSpecial { token, .. } if token == "<ctl>"));
+    }
+
+    #[test]
+    fn ordinary_mode_matches_a_non_special_token_and_keeps_a_special_one_as_text() {
+        let at = AddedTokens::new(&mixed_set()).unwrap().unwrap();
+        let mut gaps = Vec::new();
+        let ids = at
+            .encode_with_mode("x<ctl>y\nz", &SpecialMode::Ordinary, |gap, out| {
+                gaps.push(gap.to_string());
+                out.extend(gap.bytes().map(u32::from));
+            })
+            .unwrap();
+        assert_eq!(gaps, ["x<ctl>y", "z"]);
+        assert!(ids.contains(&2), "{ids:?}");
+        assert!(!ids.contains(&1), "{ids:?}");
+    }
+
+    fn bytes_gap(gap: &str, out: &mut Vec<u32>) {
+        out.extend(gap.bytes().map(u32::from));
     }
 
     /// A set holding one flagged token plus one plain neighbour, so every strip

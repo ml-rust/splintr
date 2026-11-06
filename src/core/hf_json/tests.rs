@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::policy::PolicyError;
+use crate::core::policy::{PolicyError, SpecialMode};
 // Raw backends expose `encode` only through the trait; `AnyTokenizer`'s is inherent.
 use crate::core::tokenize::{Tokenize, TokenizeError};
 use crate::core::{AnyTokenizer, Backend};
@@ -1767,4 +1767,44 @@ fn raw_byte_fast_path_agrees_with_the_mapped_path() {
     assert_eq!(piped.encode_raw(" a"), vec![1]);
     assert_eq!(piped.encode_raw("a"), vec![0]);
     assert_eq!(piped.encode_raw(" \u{e9}"), vec![7]);
+}
+
+/// The `special` column of a `tokenizer.json` decides the allow-list, and an
+/// entry without one counts as special.
+///
+/// Reference: `tokenizers` 0.22.1 with `encode_special_tokens = True`, where
+/// `<n>` (`special: false`) stays one token and `<c>` (`special: true`) is text.
+#[test]
+fn special_false_in_the_json_is_read_under_allow_and_ordinary() {
+    let json = r#"{
+        "added_tokens": [
+            {"id": 7, "content": "<n>", "special": false},
+            {"id": 8, "content": "<c>", "special": true},
+            {"id": 9, "content": "<d>"}
+        ],
+        "normalizer": null,
+        "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false},
+        "model": {"type": "BPE",
+            "vocab": {"a": 0, "b": 1, "<": 2, "n": 3, ">": 4, "c": 5, "d": 6},
+            "merges": []}
+    }"#;
+    let tok = from_json_bytes(json.as_bytes()).expect("the document loads");
+    let none = rustc_hash::FxHashSet::default();
+    let allow = SpecialMode::Allow(&none);
+
+    assert_eq!(tok.encode_with("a<n>b", &allow).unwrap(), [0, 7, 1]);
+    for marker in ["<c>", "<d>"] {
+        assert!(
+            matches!(
+                tok.encode_with(marker, &allow),
+                Err(PolicyError::DisallowedSpecial { .. })
+            ),
+            "{marker} needs an allow-list entry"
+        );
+    }
+
+    let ordinary = SpecialMode::Ordinary;
+    assert_eq!(tok.encode_with("a<n>b", &ordinary).unwrap(), [0, 7, 1]);
+    assert_eq!(tok.encode_with("<c>", &ordinary).unwrap(), [2, 5, 4]);
+    assert_eq!(tok.encode_with("<d>", &ordinary).unwrap(), [2, 6, 4]);
 }
