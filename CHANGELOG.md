@@ -8,6 +8,12 @@ Releases before `0.11.0` predate this file; their contents are in the git histor
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-11-06
+
+### Changed
+
+- `README`, crate description: state what the crate does.
+
 ## [0.22.1] - 2026-11-06
 
 ### Added

@@ -31,7 +31,7 @@ exclude = [".github/rust-bench", "research"]
 
 [package]
 name = "splintr"
-version = "0.22.1"
+version = "0.22.2"
 edition = "2021"
 description = "BPE tokenizer for Rust with Python bindings, an alternative to tiktoken and Hugging Face tokenizers. Covers BPE, SentencePiece and WordPiece"
 license = "MIT"
